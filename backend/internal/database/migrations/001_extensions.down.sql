@@ -1,0 +1,2 @@
+-- 001_extensions.down.sql
+-- Don't drop extensions on rollback

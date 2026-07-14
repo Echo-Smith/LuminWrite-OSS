@@ -1,0 +1,14 @@
+# Git
+.git
+.gitignore
+
+# Docs
+docs/
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db

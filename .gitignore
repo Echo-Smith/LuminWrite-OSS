@@ -1,0 +1,38 @@
+# ─── 环境变量 / 密钥 ──────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# ─── Go ───────────────────────────────────────────────
+backend/bin/
+backend/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# ─── Node / Frontend ──────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.tsbuildinfo
+frontend/eslint-cache
+
+# ─── Docker ───────────────────────────────────────────
+docker-compose.override.yml
+
+# ─── IDE / 编辑器 ─────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ─── 日志 / 临时文件 ──────────────────────────────────
+*.log
+logs/
+tmp/
