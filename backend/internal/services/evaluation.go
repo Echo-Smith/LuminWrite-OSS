@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
-	"github.com/luminbuddy/writing-agent-v2/internal/profile"
-	"github.com/luminbuddy/writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
 // EvaluationService manages evaluation sets, runs, and LLM-as-Judge scoring.

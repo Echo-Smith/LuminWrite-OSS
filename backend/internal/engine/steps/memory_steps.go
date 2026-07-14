@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/engine"
-	"github.com/luminbuddy/writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // ─── MemoryGateStep ──────────────────────────────────────

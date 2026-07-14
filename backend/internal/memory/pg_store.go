@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
-	"github.com/luminbuddy/writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // PgStore 是 memory.Store 的 PostgreSQL 实现

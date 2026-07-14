@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
-	"github.com/luminbuddy/writing-agent-v2/internal/profile"
-	"github.com/luminbuddy/writing-agent-v2/internal/routing"
-	"github.com/luminbuddy/writing-agent-v2/pkg/response"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
 // ─── Admin: Dashboard Stats ──────────────────────────────

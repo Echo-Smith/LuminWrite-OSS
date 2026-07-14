@@ -139,7 +139,7 @@ writing-agent-v2/backend/
 
 ```go
 // go.mod 核心依赖
-module github.com/luminbuddy/writing-agent-v2
+module github.com/luminbuddy/luminbuddy-writing-agent-v2
 
 go 1.24
 
@@ -168,9 +168,9 @@ import (
     "os/signal"
     "syscall"
 
-    "github.com/luminbuddy/writing-agent-v2/internal/config"
-    "github.com/luminbuddy/writing-agent-v2/internal/database"
-    "github.com/luminbuddy/writing-agent-v2/internal/server"
+    "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
+    "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+    "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/server"
 )
 
 func main() {
@@ -220,8 +220,8 @@ package server
 import (
     "github.com/go-chi/chi/v5"
     "github.com/go-chi/chi/v5/middleware"
-    "github.com/luminbuddy/writing-agent-v2/internal/handlers"
-    "github.com/luminbuddy/writing-agent-v2/internal/middleware"
+    "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/handlers"
+    "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/middleware"
 )
 
 func NewRouter(h *handlers.Handlers, mw *middleware.Middlewares) *chi.Mux {

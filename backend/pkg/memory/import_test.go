@@ -29,7 +29,7 @@ func TestNoInternalImports(t *testing.T) {
 	}
 
 	forbiddenPrefixes := []string{
-		"github.com/luminbuddy/writing-agent-v2/internal/",
+		"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/",
 	}
 
 	for pkgName, pkg := range pkgs {

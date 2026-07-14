@@ -1,4 +1,4 @@
-module github.com/luminbuddy/writing-agent-v2
+module github.com/luminbuddy/luminbuddy-writing-agent-v2
 
 go 1.25.0
 

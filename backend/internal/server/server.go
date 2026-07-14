@@ -12,17 +12,17 @@ import (
 
 	ws "github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
-	"github.com/luminbuddy/writing-agent-v2/internal/config"
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
-	"github.com/luminbuddy/writing-agent-v2/internal/engine"
-	"github.com/luminbuddy/writing-agent-v2/internal/engine/steps"
-	"github.com/luminbuddy/writing-agent-v2/internal/profile"
-	"github.com/luminbuddy/writing-agent-v2/internal/services"
-	"github.com/luminbuddy/writing-agent-v2/internal/tools"
-	"github.com/luminbuddy/writing-agent-v2/internal/websocket"
-	memsvc "github.com/luminbuddy/writing-agent-v2/internal/memory"
-	"github.com/luminbuddy/writing-agent-v2/pkg/crypto"
-	"github.com/luminbuddy/writing-agent-v2/pkg/response"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
 // Server holds all application dependencies.
