@@ -6,13 +6,14 @@
  *   text parts      → MarkdownContent (流式文章)
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
-import { useRef, useEffect } from "react";
-import { PenLine, Pause } from "lucide-react";
+import { useRef, useEffect, useState } from "react";
+import { PenLine, Pause, Copy, Check, RefreshCw } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ChatMessage, ToolCallPart, TextPart, DataPart } from "@/stores/agent-store";
+import type { WriteMode } from "@/lib/types";
 import { useAgentStore } from "@/stores/agent-store";
 import { MarkdownContent } from "./markdown-content";
 import { AgentStepCard } from "@/components/tools/agent-step-card";
@@ -97,6 +98,10 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
                 <span className="text-sm text-amber-700 font-medium">已暂停</span>
                 <span className="text-xs text-amber-600">— 点击下方播放按钮继续</span>
               </div>
+            )}
+            {/* 消息操作按钮 */}
+            {!isRunning && textParts.some((p) => p.text.trim()) && (
+              <MessageActions text={textParts.map((t) => t.text).join("")} />
             )}
           </div>
         )}
@@ -280,6 +285,61 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 消息操作按钮 — Copy / Regenerate
+ */
+function MessageActions({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleRegenerate = () => {
+    // Trigger regeneration by re-sending the last user message
+    const store = useAgentStore.getState();
+    const session = store.sessions.find((s) => s.id === store.activeSessionId);
+    if (!session) return;
+    const lastUserMsg = [...session.messages].reverse().find((m) => m.role === "user");
+    if (!lastUserMsg) return;
+    const textParts = lastUserMsg.parts.filter((p) => p.type === "text");
+    const userText = textParts.map((p: { text: string }) => p.text).join("");
+    if (userText) {
+      store.startWriting({ message: userText, style: session.style, mode: session.mode as WriteMode });
+    }
+  };
+
+  return (
+    <div className="mt-3 flex items-center gap-1 border-t pt-2">
+      <button
+        onClick={handleCopy}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+      >
+        {copied ? (
+          <>
+            <Check className="h-3.5 w-3.5 text-green-600" />
+            <span className="text-green-600">已复制</span>
+          </>
+        ) : (
+          <>
+            <Copy className="h-3.5 w-3.5" />
+            <span>复制</span>
+          </>
+        )}
+      </button>
+      <button
+        onClick={handleRegenerate}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+      >
+        <RefreshCw className="h-3.5 w-3.5" />
+        <span>重写</span>
+      </button>
     </div>
   );
 }

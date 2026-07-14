@@ -2,7 +2,7 @@
  * 右侧面板 — Trace 时间线 / 检索素材 / 风格信息
  */
 import { useState } from "react";
-import { ChevronRight, Clock, Globe, Palette } from "lucide-react";
+import { ChevronRight, Clock, Globe, Palette, FileText } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -11,13 +11,14 @@ import { useAgentStore } from "@/stores/agent-store";
 import { STEP_LABELS } from "@/lib/constants";
 import type { ToolCallPart } from "@/stores/agent-store";
 import { cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/assistant-ui/markdown-content";
 
 interface DetailPanelProps {
   onClose?: () => void;
 }
 
 export function DetailPanel({ onClose }: DetailPanelProps) {
-  const [activeTab, setActiveTab] = useState("trace");
+  const [activeTab, setActiveTab] = useState("preview");
 
   const session = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
   const messages = session?.messages ?? [];
@@ -32,6 +33,10 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   const searchStep = toolCallParts.find((p) => p.toolName === "search");
   const searchResults = searchStep?.result as { results?: Array<Record<string, unknown>> } | undefined;
   const results = searchResults?.results ?? [];
+
+  // 从消息中提取文章文本
+  const textParts = lastAssistant?.parts.filter((p) => p.type === "text") as { text: string }[] ?? [];
+  const articleText = textParts.map((p) => p.text).join("");
 
   return (
     <div className="flex h-full w-80 flex-col border-l bg-background">
@@ -53,6 +58,10 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-2 pt-2">
           <TabsList className="w-full">
+            <TabsTrigger value="preview" className="flex-1">
+              <FileText className="h-3.5 w-3.5 mr-1" />
+              预览
+            </TabsTrigger>
             <TabsTrigger value="trace" className="flex-1">
               <Clock className="h-3.5 w-3.5 mr-1" />
               流程
@@ -69,6 +78,9 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
         </div>
 
         <ScrollArea className="flex-1">
+          <TabsContent value="preview" className="p-3 m-0">
+            <ArticlePreview article={articleText} />
+          </TabsContent>
           <TabsContent value="trace" className="p-3 m-0">
             <TraceTimeline parts={toolCallParts} />
           </TabsContent>
@@ -80,6 +92,24 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
           </TabsContent>
         </ScrollArea>
       </Tabs>
+    </div>
+  );
+}
+
+/**
+ * 文章预览
+ */
+function ArticlePreview({ article }: { article: string }) {
+  if (!article || !article.trim()) {
+    return (
+      <div className="text-center text-xs text-muted-foreground py-8">
+        文章生成后将在此预览
+      </div>
+    );
+  }
+  return (
+    <div className="prose prose-sm max-w-none dark:prose-invert">
+      <MarkdownContent content={article} />
     </div>
   );
 }

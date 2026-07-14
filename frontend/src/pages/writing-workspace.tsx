@@ -1,8 +1,9 @@
 /**
  * 写作工作台 — 三栏布局：左侧栏 | 中央 Thread | 右侧详情面板
  *
- * 使用 useAgentWebSocket Hook 自动管理 WS 连接，
- * 认证就绪后自动连接触发写作流程。
+ * 左侧栏可折叠/展开
+ * 右侧面板可折叠/展开
+ * 使用 useAgentWebSocket Hook 自动管理 WS 连接
  */
 import { useState, useEffect } from "react";
 import { PanelRightOpen, WifiOff } from "lucide-react";
@@ -15,6 +16,7 @@ import { useAgentStore } from "@/stores/agent-store";
 import { useAgentWebSocket } from "@/hooks/use-agent-websocket";
 
 export function WritingWorkspace() {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
 
   // 通过 Hook 管理 WS 连接
@@ -22,7 +24,6 @@ export function WritingWorkspace() {
 
   const sessions = useAgentStore((s) => s.sessions);
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
-  const createSession = useAgentStore((s) => s.createSession);
 
   // 有活跃会话且开始写作时自动显示右侧面板
   const session = sessions.find((s) => s.id === activeSessionId);
@@ -32,19 +33,10 @@ export function WritingWorkspace() {
     if (isWriting) setShowDetail(true);
   }, [isWriting]);
 
-  // 确保有活跃会话
-  useEffect(() => {
-    if (!activeSessionId && sessions.length === 0) {
-      // 不自动创建，等用户交互
-    } else if (!activeSessionId && sessions.length > 0) {
-      // 自动切换到第一个
-    }
-  }, [activeSessionId, sessions.length]);
-
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* 左侧栏 */}
-      <Sidebar />
+      {/* 左侧栏（可折叠） */}
+      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
 
       {/* 中央区域 */}
       <div className="flex flex-1 flex-col overflow-hidden">

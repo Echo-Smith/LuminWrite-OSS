@@ -2,7 +2,7 @@
  * 增强写作 Composer — 风格/模式/素材 + 输入框 + 发送/暂停/取消
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Pause, Play, Square, Paperclip, X } from "lucide-react";
+import { Send, Pause, Play, Square, Paperclip, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { StylePicker } from "./style-picker";
@@ -136,6 +136,32 @@ export function WritingComposer() {
         </div>
       )}
 
+      {/* Suggestion 快捷入口（仅空闲且无输入时显示） */}
+      {!isRunning && !isPaused && !message.trim() && (
+        <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+          <SuggestionButton
+            icon={TrendingUp}
+            label="基于热搜写评论"
+            onClick={() => setMessage("基于热搜写一篇评论")}
+          />
+          <SuggestionButton
+            icon={FileEdit}
+            label="写一篇议论文"
+            onClick={() => setMessage("写一篇关于人工智能与就业的议论文")}
+          />
+          <SuggestionButton
+            icon={Lightbulb}
+            label="帮我构思选题"
+            onClick={() => setMessage("帮我构思3个关于城市交通的选题")}
+          />
+          <SuggestionButton
+            icon={MessageCircle}
+            label="提炼核心观点"
+            onClick={() => setMessage("提炼以下文章的核心观点：\n\n")}
+          />
+        </div>
+      )}
+
       {/* 控件行 */}
       <div className="flex items-center gap-2 px-3 pt-2">
         <StylePicker value={style} onChange={setStyle} />
@@ -214,5 +240,28 @@ export function WritingComposer() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Suggestion 快捷按钮
+ */
+function SuggestionButton({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1.5 rounded-full border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </button>
   );
 }
