@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
 // DashscopeEmbedder 是 memory.Embedder 的通义 Dashscope 实现

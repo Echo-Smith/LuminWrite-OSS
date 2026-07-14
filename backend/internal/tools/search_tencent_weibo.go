@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
 
 // ─── Tencent News Client ──────────────────────────────────

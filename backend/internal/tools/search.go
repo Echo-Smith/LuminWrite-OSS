@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
 
 // SearchClient manages multi-source search with concurrent execution.

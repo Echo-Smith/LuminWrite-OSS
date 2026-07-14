@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/tools"
-	"github.com/luminbuddy/writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // DeepSeekExtractor 是 memory.LLMExtractor 的 DeepSeek 实现

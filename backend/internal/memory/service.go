@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
-	"github.com/luminbuddy/writing-agent-v2/internal/tools"
-	"github.com/luminbuddy/writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // Service 是 V2 项目的记忆服务封装

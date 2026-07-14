@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/luminbuddy/writing-agent-v2/pkg/crypto"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
 )
 
 // ─── Model Configs ───────────────────────────────────────

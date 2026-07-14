@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 )
 
 // SensitiveCheckService provides sensitive word detection and filtering.

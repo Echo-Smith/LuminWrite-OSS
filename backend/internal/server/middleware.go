@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/pkg/response"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
 // ─── JWT (HMAC-SHA256) ──────────────────────────────────

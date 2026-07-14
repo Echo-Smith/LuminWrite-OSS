@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
-	"github.com/luminbuddy/writing-agent-v2/internal/routing"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
 )
 
 // StyleProfile is a complete style configuration.

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/luminbuddy/writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
 // KnowledgeBaseRepo handles knowledge base CRUD and semantic search.

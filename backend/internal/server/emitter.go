@@ -3,9 +3,9 @@ package server
 import (
 	"log/slog"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/engine"
-	"github.com/luminbuddy/writing-agent-v2/internal/websocket"
-	"github.com/luminbuddy/writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // WSEmitter implements engine.EventEmitter by sending events via WebSocket.

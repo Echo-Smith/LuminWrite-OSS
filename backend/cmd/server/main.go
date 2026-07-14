@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/config"
-	"github.com/luminbuddy/writing-agent-v2/internal/server"
-	"github.com/luminbuddy/writing-agent-v2/pkg/logger"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/server"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/logger"
 )
 
 func main() {

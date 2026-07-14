@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luminbuddy/writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 )
 
 // CronScheduler periodically polls the database for due cron jobs

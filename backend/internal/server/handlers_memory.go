@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/luminbuddy/writing-agent-v2/pkg/memory"
-	"github.com/luminbuddy/writing-agent-v2/pkg/response"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
 // ─── Memory Handlers ─────────────────────────────────────
