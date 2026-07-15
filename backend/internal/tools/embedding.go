@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -37,9 +38,23 @@ func NewEmbeddingClient(apiKey, model string, dimension int) *EmbeddingClient {
 	}
 }
 
-// IsConfigured returns true if the API key is set.
+// IsConfigured returns true if the API key is set and is not a placeholder value.
 func (c *EmbeddingClient) IsConfigured() bool {
-	return c.apiKey != ""
+	if c == nil {
+		return false
+	}
+	if c.apiKey == "" {
+		return false
+	}
+	// Reject common placeholder values
+	switch c.apiKey {
+	case "your-dashscope-api-key", "your-api-key", "placeholder":
+		return false
+	}
+	if strings.HasPrefix(c.apiKey, "your-") {
+		return false
+	}
+	return true
 }
 
 // EmbeddingRequest is the request body for the Dashscope embedding API.

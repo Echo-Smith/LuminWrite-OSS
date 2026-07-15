@@ -42,6 +42,15 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			return fmt.Errorf("cancelled")
 		}
 
+		// Check if the step should be skipped (e.g. chat intent skips writing steps)
+		if skipper, ok := step.(Skipper); ok && skipper.ShouldSkip(execCtx) {
+			slog.Debug("step skipped",
+				"trace_id", execCtx.TraceID,
+				"step", step.Name(),
+			)
+			continue
+		}
+
 		stepName := step.Name()
 		execCtx.CurrentStep = stepName
 
@@ -189,6 +198,10 @@ func getStepResult(step StepName, execCtx *ExecutionContext) interface{} {
 	case StepAutoFix:
 		return map[string]interface{}{
 			"fixed": execCtx.ReviewResult != nil && execCtx.ReviewResult.Passed,
+		}
+	case StepChat:
+		return map[string]interface{}{
+			"article_length": len(execCtx.Article),
 		}
 	default:
 		return nil

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
@@ -402,6 +403,172 @@ func (s *Server) handleGetEvalRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.OK(w, run)
+}
+
+// ─── Evaluation Run Comparison ────────────────────────────
+
+// handleCompareEvalRuns compares two evaluation runs and returns a dimension-level diff.
+// GET /evaluation/runs/compare?run1=xxx&run2=yyy
+func (s *Server) handleCompareEvalRuns(w http.ResponseWriter, r *http.Request) {
+	run1ID := r.URL.Query().Get("run1")
+	run2ID := r.URL.Query().Get("run2")
+
+	if run1ID == "" || run2ID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "run1 and run2 query parameters are required")
+		return
+	}
+
+	if s.evalRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	run1, err := s.evalRepo.GetRun(r.Context(), run1ID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "run1 not found")
+		return
+	}
+
+	run2, err := s.evalRepo.GetRun(r.Context(), run2ID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "run2 not found")
+		return
+	}
+
+	// Build dimension-level comparison
+	dimComparison := map[string]interface{}{}
+	allDims := map[string]bool{}
+	for dim := range run1.DimensionScores {
+		allDims[dim] = true
+	}
+	for dim := range run2.DimensionScores {
+		allDims[dim] = true
+	}
+
+	for dim := range allDims {
+		score1, ok1 := run1.DimensionScores[dim]
+		score2, ok2 := run2.DimensionScores[dim]
+		entry := map[string]interface{}{}
+		if ok1 {
+			entry["run1"] = score1
+		}
+		if ok2 {
+			entry["run2"] = score2
+		}
+		if ok1 && ok2 {
+			entry["delta"] = score2 - score1
+			if score2 > score1 {
+				entry["trend"] = "improved"
+			} else if score2 < score1 {
+				entry["trend"] = "declined"
+			} else {
+				entry["trend"] = "unchanged"
+			}
+		}
+		dimComparison[dim] = entry
+	}
+
+	// Overall score comparison
+	overall := map[string]interface{}{
+		"run1": run1.OverallScore,
+		"run2": run2.OverallScore,
+		"delta": run2.OverallScore - run1.OverallScore,
+	}
+
+	response.OK(w, map[string]interface{}{
+		"run1": map[string]interface{}{
+			"id":              run1.ID,
+			"profile_slug":    run1.ProfileSlug,
+			"profile_version": run1.ProfileVersion,
+			"overall_score":   run1.OverallScore,
+			"completed_count": run1.CompletedCount,
+			"total_samples":   run1.TotalSamples,
+			"trigger_type":    run1.TriggerType,
+			"created_at":       run1.CreatedAt,
+		},
+		"run2": map[string]interface{}{
+			"id":              run2.ID,
+			"profile_slug":    run2.ProfileSlug,
+			"profile_version": run2.ProfileVersion,
+			"overall_score":   run2.OverallScore,
+			"completed_count": run2.CompletedCount,
+			"total_samples":   run2.TotalSamples,
+			"trigger_type":    run2.TriggerType,
+			"created_at":       run2.CreatedAt,
+		},
+		"overall":    overall,
+		"dimensions": dimComparison,
+		"summary": map[string]interface{}{
+			"version_delta": run2.ProfileVersion - run1.ProfileVersion,
+			"score_delta":   run2.OverallScore - run1.OverallScore,
+			"improved_dims": countTrend(dimComparison, "improved"),
+			"declined_dims": countTrend(dimComparison, "declined"),
+		},
+	})
+}
+
+// countTrend counts how many dimensions have the given trend.
+func countTrend(dimComparison map[string]interface{}, trend string) int {
+	count := 0
+	for _, v := range dimComparison {
+		if entry, ok := v.(map[string]interface{}); ok {
+			if t, ok := entry["trend"].(string); ok && t == trend {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// ─── Evaluation Set Export (Third-Party) ─────────────────
+
+// handleExportEvalSet exports an evaluation set with all samples in JSON format
+// for use by third-party evaluation platforms.
+// GET /evaluation/sets/{id}/export
+func (s *Server) handleExportEvalSet(w http.ResponseWriter, r *http.Request) {
+	setID := chi.URLParam(r, "id")
+
+	if s.evalRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	// Get set info
+	set, err := s.evalRepo.GetSet(r.Context(), setID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "evaluation set not found")
+		return
+	}
+
+	// Get all samples
+	samples, err := s.evalRepo.ListSamples(r.Context(), setID)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list samples")
+		return
+	}
+
+	// Build export structure compatible with third-party platforms
+	export := map[string]interface{}{
+		"export_version":  "1.0",
+		"exported_at":     time.Now().Format(time.RFC3339),
+		"set_id":          set.ID,
+		"set_name":        set.Name,
+		"style_slug":      set.StyleSlug,
+		"description":     set.Description,
+		"sample_count":    len(samples),
+		"samples":         samples,
+	}
+
+	data, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to marshal export")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=eval-set-%s.json", setID))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Write(data)
 }
 
 // ─── Helpers ─────────────────────────────────────────────

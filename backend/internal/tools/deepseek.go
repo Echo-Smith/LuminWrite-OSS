@@ -233,31 +233,64 @@ func (c *LLMClient) doRequest(ctx context.Context, req *LLMRequest) ([]byte, err
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/chat/completions", bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// Retry with exponential backoff for rate limit (429) errors
+	maxRetries := 3
+	baseDelay := 500 * time.Millisecond
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST",
+			c.baseURL+"/chat/completions", bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			if attempt < maxRetries {
+				delay := baseDelay * (1 << attempt) // 500ms, 1s, 2s
+				slog.Warn("LLM request failed, retrying", "attempt", attempt+1, "delay", delay, "error", err)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, fmt.Errorf("LLM API request failed: %w", err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		// Retry on 429 (rate limit) or 503 (service unavailable)
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attempt < maxRetries {
+			delay := baseDelay * (1 << attempt)
+			slog.Warn("LLM API rate limited, retrying",
+				"status", resp.StatusCode,
+				"attempt", attempt+1,
+				"delay", delay)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		return body, nil
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("LLM API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return body, nil
+	return nil, fmt.Errorf("LLM API request failed after %d retries", maxRetries)
 }
 
 func (c *LLMClient) doStreamRequest(ctx context.Context, req *LLMRequest) (io.ReadCloser, error) {

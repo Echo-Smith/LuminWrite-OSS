@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -261,6 +262,12 @@ func (s *Server) handleAdminPublishStyle(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Validate profile before publishing
+	if err := profile.ValidateProfile(p); err != nil {
+		response.Err(w, http.StatusBadRequest, "validation_failed", fmt.Sprintf("profile validation failed: %s", err.Error()))
+		return
+	}
+
 	if req.Version == 0 {
 		req.Version = p.Version + 1
 	}
@@ -270,7 +277,9 @@ func (s *Server) handleAdminPublishStyle(w http.ResponseWriter, r *http.Request)
 
 	// Publish (persists to DB + triggers publish hook)
 	if err := s.profiles.Publish(slug, req.Version, req.Detail); err != nil {
-		slog.Warn("profile publish encountered DB error", "slug", slug, "error", err)
+		slog.Warn("profile publish encountered error", "slug", slug, "error", err)
+		response.Err(w, http.StatusInternalServerError, "publish_failed", fmt.Sprintf("publish failed: %s", err.Error()))
+		return
 	}
 
 	response.OK(w, map[string]interface{}{
@@ -327,6 +336,48 @@ func (s *Server) handleAdminListVersions(w http.ResponseWriter, r *http.Request)
 	}
 
 	response.OK(w, map[string]interface{}{"versions": versions})
+}
+
+// handleAdminRepublishVersion republishes an old version as a new version.
+// POST /admin/styles/{slug}/versions/{version}/republish
+// Body: { "changelog": "optional changelog text" }
+func (s *Server) handleAdminRepublishVersion(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	versionStr := chi.URLParam(r, "version")
+
+	oldVersion, err := strconv.Atoi(versionStr)
+	if err != nil || oldVersion < 1 {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid version number")
+		return
+	}
+
+	var req struct {
+		Changelog string `json:"changelog"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	// Determine new version number
+	p, ok := s.profiles.Get(slug)
+	if !ok {
+		response.Err(w, http.StatusNotFound, "not_found", "style not found")
+		return
+	}
+	newVersion := p.Version + 1
+
+	// Republish the old version as a new version
+	if err := s.profiles.RepublishVersion(slug, oldVersion, newVersion, req.Changelog); err != nil {
+		slog.Warn("failed to republish version", "slug", slug, "old_version", oldVersion, "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to republish: %s", err.Error()))
+		return
+	}
+
+	response.OK(w, map[string]interface{}{
+		"slug":         slug,
+		"old_version":  oldVersion,
+		"new_version":  newVersion,
+		"changelog":    req.Changelog,
+		"message":      fmt.Sprintf("version %d republished as new version %d", oldVersion, newVersion),
+	})
 }
 
 // handleAdminCompareVersions compares two versions of a profile and returns a field-level diff.

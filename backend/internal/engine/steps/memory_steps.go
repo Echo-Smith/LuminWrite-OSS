@@ -33,6 +33,11 @@ func NewMemoryGateStep(svc memoryServiceAdapter) *MemoryGateStep {
 func (s *MemoryGateStep) Name() engine.StepName { return engine.StepMemoryGate }
 func (s *MemoryGateStep) CanPause() bool         { return false }
 
+// ShouldSkip returns true for chat intent — chat doesn't need writing memory retrieval.
+func (s *MemoryGateStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+}
+
 func (s *MemoryGateStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if s.svc == nil {
 		return nil // Memory service not available, skip
@@ -125,6 +130,11 @@ func NewMemoryExtractStep(svc memoryExtractAdapter) *MemoryExtractStep {
 
 func (s *MemoryExtractStep) Name() engine.StepName { return engine.StepMemoryExtract }
 func (s *MemoryExtractStep) CanPause() bool         { return false }
+
+// ShouldSkip returns true for chat intent — no writing patterns to extract from chat.
+func (s *MemoryExtractStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+}
 
 func (s *MemoryExtractStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if s.svc == nil {

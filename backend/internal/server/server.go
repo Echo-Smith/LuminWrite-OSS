@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +34,7 @@ type Server struct {
 	sseHub        *SSEHub
 	rateLimiter   *RateLimiter
 	llm           *tools.LLMClient
+	llmSvc        *services.LLMService
 	search        *tools.SearchClient
 	embedding     *tools.EmbeddingClient
 	profiles      *profile.Loader
@@ -126,6 +129,9 @@ func New(cfg *config.Config) *Server {
 	// If DB is available, load profiles from DB (seeds built-in if empty)
 	if dbAvail {
 		profileLoader.WithDB(db)
+		// Enable in-process L2 cache (LRU) for cross-goroutine profile caching
+		l2Backend := profile.NewLRUCacheBackend(128, 10*time.Minute)
+		profileLoader.WithL2Cache(profile.NewProfileL2Cache(l2Backend, 5*time.Minute))
 	}
 
 	// Create evaluation service
@@ -177,12 +183,16 @@ func New(cfg *config.Config) *Server {
 		memorySvc = memsvc.NewService(db, llm, embeddingClient)
 	}
 
+	// Create LLM service (dynamic client factory with DB-backed model configs)
+	llmSvc := services.NewLLMService(adminRepo, llm, cfg.DeepSeek.Timeout)
+
 	return &Server{
 		cfg:           cfg,
 		hub:           websocket.NewHub(),
 		sseHub:        NewSSEHub(),
 		rateLimiter:   rateLimiter,
 		llm:           llm,
+		llmSvc:        llmSvc,
 		search:        searchClient,
 		embedding:     embeddingClient,
 		profiles:      profileLoader,
@@ -227,6 +237,9 @@ func (s *Server) Router() http.Handler {
 		r.Get("/styles/{slug}", s.handleGetStyle)
 		r.Post("/styles/{slug}/publish", s.handlePublishStyle)
 
+		// Models (public — list active models for composer)
+		r.Get("/models", s.handleListActiveModels)
+
 		// Topics
 		r.Get("/topics", s.handleListTopics)
 		r.Post("/topics", s.handleCreateTopic)
@@ -263,10 +276,12 @@ func (s *Server) Router() http.Handler {
 		r.Get("/evaluation/sets", s.handleListEvalSets)
 		r.Post("/evaluation/sets", s.handleCreateEvalSet)
 		r.Get("/evaluation/sets/{id}", s.handleGetEvalSet)
+		r.Get("/evaluation/sets/{id}/export", s.handleExportEvalSet)
 		r.Post("/evaluation/sets/{id}/samples", s.handleAddEvalSamples)
 		r.Get("/evaluation/sets/{id}/samples", s.handleListEvalSamples)
 		r.Post("/evaluation/runs", s.handleCreateEvalRun)
 		r.Get("/evaluation/runs", s.handleListEvalRuns)
+		r.Get("/evaluation/runs/compare", s.handleCompareEvalRuns)
 		r.Get("/evaluation/runs/{id}", s.handleGetEvalRun)
 r.Get("/evaluation/runs/{id}/export/{format}", s.handleExportEvalRun)
 
@@ -275,6 +290,7 @@ r.Get("/evaluation/runs/{id}/export/{format}", s.handleExportEvalRun)
 
 		// SSE (Server-Sent Events)
 		r.Get("/sse/topics", s.handleSSETopics)
+		r.Get("/topics/stream", s.handleSSETopics) // alias per docs/03-api-specification.md
 		r.Get("/sse/stats", s.handleSSEStats)
 
 // Auth (JWT)
@@ -291,6 +307,12 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.Post("/auth/passkey/login/complete", s.handlePasskeyLoginComplete)
 		r.With(s.jwtAuthMiddleware).Get("/auth/passkey/list", s.handlePasskeyList)
 		r.With(s.jwtAuthMiddleware).Delete("/auth/passkey/{id}", s.handlePasskeyDelete)
+
+		// Sessions (user-facing, JWT-protected)
+		r.With(s.jwtAuthMiddleware).Get("/sessions", s.handleListUserSessions)
+		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}", s.handleGetUserSession)
+		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}", s.handleDeleteUserSession)
+		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 
 		// Admin (protected by admin token)
 		r.Route("/admin", func(r chi.Router) {
@@ -311,6 +333,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 			r.Post("/styles/{slug}/publish", s.handleAdminPublishStyle)
 			r.Post("/styles/{slug}/archive", s.handleAdminArchiveStyle)
 			r.Get("/styles/{slug}/versions", s.handleAdminListVersions)
+			r.Post("/styles/{slug}/versions/{version}/republish", s.handleAdminRepublishVersion)
 			r.Get("/styles/{slug}/versions/compare", s.handleAdminCompareVersions)
 
             // Rollout (Grayscale)
@@ -391,12 +414,24 @@ func (s *Server) Start(ctx context.Context) error {
 // ─── Handlers ────────────────────────────────────────────
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	imaConfigured := false
+	if s.search != nil && s.search.IMAClient() != nil {
+		imaConfigured = s.search.IMAClient().IsConfigured()
+	}
+
+	embeddingConfigured := false
+	if s.embedding != nil {
+		embeddingConfigured = s.embedding.IsConfigured()
+	}
+
 	response.OK(w, map[string]interface{}{
-		"status":            "ok",
-		"version":           "v2",
-		"llm_configured":    s.llm != nil,
-		"search_configured": s.search != nil && s.search.HasSources(),
-		"db_configured":     s.dbAvail,
+		"status":              "ok",
+		"version":             "v2",
+		"llm_configured":      s.llm != nil,
+		"search_configured":   s.search != nil && s.search.HasSources(),
+		"db_configured":       s.dbAvail,
+		"ima_configured":      imaConfigured,
+		"embedding_configured": embeddingConfigured,
 	})
 }
 
@@ -506,6 +541,15 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject duplicate feedback — once submitted, it cannot be changed
+	if s.traces != nil {
+		already, err := s.traces.HasFeedback(r.Context(), req.TraceID)
+		if err == nil && already {
+			response.Err(w, http.StatusConflict, "already_submitted", "feedback has already been submitted for this trace")
+			return
+		}
+	}
+
 	if s.traces != nil && len(req.Segments) > 0 {
 		s.traces.SaveFeedback(r.Context(), req.TraceID, req.Segments)
 	}
@@ -584,22 +628,24 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClientMessage(client *websocket.Client, userID, userRole string) func(*websocket.ClientMessage) {
 	return func(msg *websocket.ClientMessage) {
-		switch msg.Type {
-		case websocket.MsgAgentStart:
-			s.handleAgentStart(client, msg.Payload, userID, userRole)
-		case websocket.MsgAgentPause:
-			s.handleAgentControl(client, msg.Payload, "pause")
-		case websocket.MsgAgentResume:
-			s.handleAgentControl(client, msg.Payload, "resume")
-		case websocket.MsgAgentCancel:
-			s.handleAgentControl(client, msg.Payload, "cancel")
-		case websocket.MsgAgentConfirm:
-			s.handleAgentConfirm(client, msg.Payload)
-		case websocket.MsgSessionResume:
-			s.handleSessionResume(client, msg.Payload)
-		default:
-			slog.Warn("unknown message type", "type", msg.Type)
-		}
+	switch msg.Type {
+	case websocket.MsgAgentStart:
+		s.handleAgentStart(client, msg.Payload, userID, userRole)
+	case websocket.MsgAgentPause:
+		s.handleAgentControl(client, msg.Payload, "pause")
+	case websocket.MsgAgentResume:
+		s.handleAgentControl(client, msg.Payload, "resume")
+	case websocket.MsgAgentCancel:
+		s.handleAgentControl(client, msg.Payload, "cancel")
+	case websocket.MsgAgentConfirm:
+		s.handleAgentConfirm(client, msg.Payload)
+	case websocket.MsgAgentEdit:
+		s.handleAgentEdit(client, msg.Payload)
+	case websocket.MsgSessionResume:
+		s.handleSessionResume(client, msg.Payload)
+	default:
+		slog.Warn("unknown message type", "type", msg.Type)
+	}
 	}
 }
 
@@ -644,6 +690,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	// Register client with trace ID
 	s.hub.Register(traceID, client)
 
+	// Resolve LLM client: use dynamic service if available, fall back to static
+	var llmClient *tools.LLMClient
+	if s.llmSvc != nil {
+		llmClient = s.llmSvc.GetClient(context.Background(), p.Model)
+	} else {
+		llmClient = s.llm
+	}
+
 	// Create execution context
 	execCtx := engine.NewExecutionContext(traceID, userID, p.Message)
 	execCtx.StyleSlug = p.Style
@@ -681,21 +735,24 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	// Create steps
 	var engineSteps []engine.Step
 	engineSteps = append(engineSteps,
-		steps.NewIntentStep(s.llm),
+		steps.NewIntentStep(llmClient),
 	)
-	
+
+	// ChatStep: handles chat intent (skips itself for non-chat intents)
+	engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
+
 	// Memory gate: retrieve and gate memories after intent classification
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 		engineSteps = append(engineSteps, steps.NewMemoryGateStep(s.memorySvc))
 	}
 
 	engineSteps = append(engineSteps,
-		steps.NewQueryPlanStep(s.llm),
-		steps.NewSearchStep(s.llm, s.search),
+		steps.NewQueryPlanStep(llmClient),
+		steps.NewSearchStep(llmClient, s.search),
 		steps.NewRelevanceStepWithEmbedding(s.embedding),
 	)
 	if execCtx.Mode == "guided" {
-		engineSteps = append(engineSteps, steps.NewOutlineStep(s.llm))
+		engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
 	}
 
 	// Load style profile for WriteStep
@@ -707,9 +764,9 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	}
 
 	engineSteps = append(engineSteps,
-		steps.NewWriteStepWithProfile(s.llm, styleProfile),
-		s.newPostReviewStep(),
-		steps.NewAutoFixStep(s.llm),
+		steps.NewWriteStepWithProfile(llmClient, styleProfile),
+		s.newPostReviewStepWithLLM(llmClient, styleProfile),
+		steps.NewAutoFixStep(llmClient),
 	)
 
 	// Memory extract: extract patterns after article completion (async)
@@ -722,6 +779,25 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// Run in background
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("agent goroutine panicked",
+					"trace_id", traceID,
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+				// Push the error to the frontend so the UI can recover
+				emitter.Error("panic", fmt.Sprintf("内部错误: %v", r), execCtx.CurrentStep)
+				execCtx.Status = engine.StatusFailed
+				if s.traces != nil {
+					s.traces.FailTrace(context.Background(), traceID, fmt.Sprintf("panic: %v", r))
+				}
+				if s.metrics != nil {
+					s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "panic")
+				}
+			}
+		}()
+
 		ctx := context.Background()
 		start := time.Now()
 		if err := eng.Run(ctx, execCtx); err != nil {
@@ -783,6 +859,100 @@ func (s *Server) handleAgentConfirm(client *websocket.Client, payload json.RawMe
 	}
 	execCtx := val.(*engine.ExecutionContext)
 	execCtx.ConfirmOutline(p.Data)
+}
+
+// handleAgentEdit handles an agent.edit message from the client.
+// It allows the user to edit the article text (or a segment) while the agent
+// is paused or after completion. The edited text replaces the corresponding
+// content in the execution context.
+func (s *Server) handleAgentEdit(client *websocket.Client, payload json.RawMessage) {
+	var p websocket.AgentEditPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		slog.Warn("failed to parse agent.edit payload", "error", err)
+		client.SendDirect(&websocket.ServerMessage{
+			Type: websocket.MsgAgentError,
+			Payload: map[string]interface{}{
+				"code":    "bad_payload",
+				"message": "invalid agent.edit payload",
+			},
+		})
+		return
+	}
+
+	val, ok := s.sessions.Load(p.TraceID)
+	if !ok {
+		client.SendDirect(&websocket.ServerMessage{
+			Type: websocket.MsgAgentError,
+			Payload: map[string]interface{}{
+				"code":      "session_not_found",
+				"trace_id":   p.TraceID,
+				"message":   "session not found or expired",
+			},
+		})
+		return
+	}
+
+	execCtx := val.(*engine.ExecutionContext)
+
+	switch p.Field {
+	case "article":
+		// Replace the entire article text
+		oldArticle := execCtx.Article
+		execCtx.Article = p.Value
+		slog.Info("article edited by user",
+			"trace_id", p.TraceID,
+			"old_length", len([]rune(oldArticle)),
+			"new_length", len([]rune(p.Value)),
+			"reason", p.Reason)
+
+	case "title":
+		// Replace the first heading line in the article
+		lines := strings.SplitN(execCtx.Article, "\n", 2)
+		if len(lines) > 0 {
+			lines[0] = "## " + p.Value
+			if len(lines) > 1 {
+				execCtx.Article = strings.Join(lines, "\n")
+			} else {
+				execCtx.Article = lines[0]
+			}
+			slog.Info("title edited by user", "trace_id", p.TraceID, "new_title", p.Value)
+		}
+
+	case "paragraph":
+		// Replace a specific paragraph by index
+		paragraphs := strings.Split(execCtx.Article, "\n\n")
+		if p.Index >= 0 && p.Index < len(paragraphs) {
+			oldPara := paragraphs[p.Index]
+			paragraphs[p.Index] = p.Value
+			execCtx.Article = strings.Join(paragraphs, "\n\n")
+			slog.Info("paragraph edited by user",
+				"trace_id", p.TraceID,
+				"index", p.Index,
+				"old_length", len([]rune(oldPara)),
+				"new_length", len([]rune(p.Value)))
+		}
+
+	default:
+		client.SendDirect(&websocket.ServerMessage{
+			Type: websocket.MsgAgentError,
+			Payload: map[string]interface{}{
+				"code":    "invalid_field",
+				"message": "field must be 'article', 'title', or 'paragraph'",
+			},
+		})
+		return
+	}
+
+	// Notify the client that the edit was applied
+	client.SendDirect(&websocket.ServerMessage{
+		Type: websocket.MsgAgentEdited,
+		Payload: map[string]interface{}{
+			"trace_id": p.TraceID,
+			"field":    p.Field,
+			"index":    p.Index,
+			"success":  true,
+		},
+	})
 }
 
 // handleSessionResume handles a session.resume message from a reconnecting client.
@@ -938,4 +1108,53 @@ func (s *Server) newPostReviewStep() engine.Step {
 		return steps.NewPostReviewStepWithSensitiveCheck(s.llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc})
 	}
 	return steps.NewPostReviewStep(s.llm)
+}
+
+// newPostReviewStepWithLLM creates a PostReviewStep with a specific LLM client and style profile.
+func (s *Server) newPostReviewStepWithLLM(llm *tools.LLMClient, p *profile.StyleProfile) engine.Step {
+	if s.sensitiveSvc != nil {
+		return steps.NewPostReviewStepWithProfile(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p)
+	}
+	return steps.NewPostReviewStep(llm)
+}
+
+// handleListActiveModels returns active model configs for the composer (public endpoint).
+func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) {
+	if s.adminRepo == nil {
+		response.OK(w, map[string]interface{}{"models": []interface{}{}})
+		return
+	}
+
+	configs, err := s.adminRepo.ListModelConfigs(r.Context())
+	if err != nil {
+		slog.Warn("failed to list model configs", "error", err)
+		response.OK(w, map[string]interface{}{"models": []interface{}{}})
+		return
+	}
+
+	// Filter to active only and return minimal info
+	type modelInfo struct {
+		ID          string `json:"id"`
+		ModelName   string `json:"model_name"`
+		DisplayName string `json:"display_name"`
+		Provider    string `json:"provider"`
+		IsDefault   bool   `json:"is_default"`
+	}
+
+	var models []modelInfo
+	for _, c := range configs {
+		if c.IsActive {
+			models = append(models, modelInfo{
+				ID:          c.ID,
+				ModelName:   c.ModelName,
+				DisplayName: c.DisplayName,
+				Provider:    c.Provider,
+				IsDefault:   c.IsDefault,
+			})
+		}
+	}
+	if models == nil {
+		models = []modelInfo{}
+	}
+	response.OK(w, map[string]interface{}{"models": models})
 }

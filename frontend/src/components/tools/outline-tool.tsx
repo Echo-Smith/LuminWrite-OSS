@@ -1,8 +1,9 @@
 /**
  * 引导模式提纲编辑器 — 消息流中的可交互卡片
+ * 支持：编辑标题/论点、删除论点、新增论点、拖拽排序
  */
-import { useState, useEffect } from "react";
-import { Check, RefreshCw, GripVertical, Clock } from "lucide-react";
+import { useState, useEffect, useRef, type DragEvent } from "react";
+import { Check, RefreshCw, GripVertical, Clock, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +64,7 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
   const timeStr = `${minutes}:${seconds.toString().padStart(2, "0")}`;
   const isUrgent = remainingSeconds <= 60 && remainingSeconds > 0;
 
+  // ── 编辑操作 ──
   const handleTitleChange = (value: string) => {
     setData((prev) => ({ ...prev, title: value }));
   };
@@ -74,6 +76,65 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
     }));
   };
 
+  const handleDeletePoint = (index: number) => {
+    setData((prev) => ({
+      ...prev,
+      outline: prev.outline.filter((_, i) => i !== index),
+    }));
+  };
+
+  const handleAddPoint = () => {
+    setData((prev) => ({
+      ...prev,
+      outline: [...prev.outline, { point: "", type: "argument" as const }],
+    }));
+  };
+
+  // ── 拖拽排序 ──
+  const dragIndex = useRef<number | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+
+  const handleDragStart = (e: DragEvent, index: number) => {
+    dragIndex.current = index;
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setOverIndex(null);
+  };
+
+  const handleDrop = (e: DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    const srcIndex = dragIndex.current;
+    if (srcIndex === null || srcIndex === dropIndex) {
+      dragIndex.current = null;
+      setOverIndex(null);
+      return;
+    }
+
+    setData((prev) => {
+      const items = [...prev.outline];
+      const [moved] = items.splice(srcIndex, 1);
+      items.splice(dropIndex, 0, moved);
+      return { ...prev, outline: items };
+    });
+
+    dragIndex.current = null;
+    setOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    dragIndex.current = null;
+    setOverIndex(null);
+  };
+
+  // ── 提交操作 ──
   const handleConfirm = () => {
     confirmOutline(data);
   };
@@ -92,16 +153,16 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
 
   const typeColor = (type: OutlineItem["type"]) => {
     switch (type) {
-      case "opening": return "bg-green-100 text-green-700";
-      case "conclusion": return "bg-purple-100 text-purple-700";
-      default: return "bg-blue-100 text-blue-700";
+      case "opening": return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+      case "conclusion": return "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400";
+      default: return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400";
     }
   };
 
   return (
-    <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+    <div className="rounded-lg border border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/10 p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-blue-900">
+        <h3 className="text-sm font-medium text-blue-900 dark:text-blue-300">
           引导模式 — 请确认或修改提纲
         </h3>
         <div className="flex items-center gap-3">
@@ -129,29 +190,59 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
         <Input
           value={data.title}
           onChange={(e) => handleTitleChange(e.target.value)}
-          className="bg-white"
+          className="bg-white dark:bg-background"
         />
       </div>
 
-      {/* 提纲列表 */}
+      {/* 提纲列表 — 可拖拽排序 */}
       <div className="space-y-2">
         {data.outline.map((item, i) => (
-          <div key={i} className="flex items-start gap-2">
-            <div className="flex items-center gap-1 shrink-0 pt-1.5">
-              <GripVertical className="h-3 w-3 text-muted-foreground/40" />
-              <span className="text-xs text-muted-foreground">{i + 1}.</span>
+          <div
+            key={i}
+            draggable
+            onDragStart={(e) => handleDragStart(e, i)}
+            onDragOver={(e) => handleDragOver(e, i)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, i)}
+            onDragEnd={handleDragEnd}
+            className={cn(
+              "flex items-start gap-2 rounded-md transition-all",
+              overIndex === i && "ring-2 ring-blue-300 dark:ring-blue-700 bg-blue-50 dark:bg-blue-900/20",
+              "hover:bg-white/60 dark:hover:bg-accent/30"
+            )}
+          >
+            <div className="flex items-center gap-1 shrink-0 pt-1.5 cursor-grab active:cursor-grabbing">
+              <GripVertical className="h-3.5 w-3.5 text-muted-foreground/40" />
+              <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
             </div>
-            <Badge className={cn("shrink-0", typeColor(item.type))}>
+            <Badge className={cn("shrink-0 mt-1.5", typeColor(item.type))}>
               {typeLabel(item.type)}
             </Badge>
             <Input
               value={item.point}
               onChange={(e) => handlePointChange(i, e.target.value)}
-              className="bg-white"
+              className="bg-white dark:bg-background"
             />
+            {/* 删除按钮 */}
+            <button
+              onClick={() => handleDeletePoint(i)}
+              className="shrink-0 mt-1.5 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-ui"
+              title="删除此论点"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         ))}
       </div>
+
+      {/* 新增论点按钮 */}
+      <button
+        onClick={handleAddPoint}
+        className="flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-ui py-1"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        新增分论点
+      </button>
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2 pt-1">

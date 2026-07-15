@@ -2,25 +2,24 @@
  * 消息渲染 — Assistant 消息（含 Agent Steps + 流式文章 + 反馈）
  *
  * 一条 assistant 消息包含多个 parts:
- *   tool-call parts → AgentStepCard (ChainOfThought 手风琴)
+ *   tool-call parts → CompactStepTimeline (绿点时间线，默认折叠)
  *   text parts      → MarkdownContent (流式文章)
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
-import { useRef, useEffect, useState } from "react";
-import { PenLine, Pause, Copy, Check, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { PenLine, Pause, Copy, Check, RefreshCw, ChevronRight } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ChatMessage, ToolCallPart, TextPart, DataPart } from "@/stores/agent-store";
 import type { WriteMode } from "@/lib/types";
 import { useAgentStore } from "@/stores/agent-store";
 import { MarkdownContent } from "./markdown-content";
-import { AgentStepCard } from "@/components/tools/agent-step-card";
 import { OutlineTool } from "@/components/tools/outline-tool";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { STEP_LABELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
+import { TypingDots, StreamingCursor, PulseIndicator } from "@/components/animation";
 
 interface AssistantMessageProps {
   message: ChatMessage;
@@ -57,20 +56,20 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
   const hasContent = message.parts.length > 0;
 
   return (
-    <div className="flex gap-3 px-4 py-3">
+    <div className="flex gap-3 px-4 py-3 anim-fade-up">
       <Avatar className="h-8 w-8 shrink-0">
         <AvatarFallback className={cn(
-          "bg-blue-100 text-blue-600",
-          isRunning && "ring-2 ring-blue-400 ring-offset-1"
+          "bg-muted text-foreground",
+          isRunning && "ring-2 ring-primary/40 ring-offset-1"
         )}>
           <PenLine className="h-4 w-4" />
         </AvatarFallback>
       </Avatar>
 
       <div className="flex-1 min-w-0 space-y-2">
-        {/* Agent Steps 手风琴组 */}
+        {/* Agent 步骤流程（紧凑时间线，默认折叠） */}
         {toolCallParts.length > 0 && (
-          <AgentStepsAccordion parts={toolCallParts} isRunning={isRunning} />
+          <CompactStepTimeline parts={toolCallParts} isRunning={isRunning} />
         )}
 
         {/* text 之前的 data parts（如 outline） */}
@@ -82,21 +81,21 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
 
         {/* 流式文章输出 */}
         {textParts.length > 0 && (
-          <div className="rounded-lg bg-muted/30 p-4">
+          <div className="codex-card p-4">
             {textParts.map((part, i) => (
               <div key={i}>
                 <MarkdownContent content={part.text} />
                 {part.streaming && !isPaused && (
-                  <span className="inline-block h-4 w-0.5 animate-pulse bg-blue-500 ml-0.5 align-text-bottom" />
+                  <StreamingCursor active className="ml-0.5" />
                 )}
               </div>
             ))}
             {/* 暂停状态提示 */}
             {isPaused && isRunning && (
-              <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 border border-amber-200 px-3 py-2">
+              <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 px-3 py-2 anim-fade-in">
                 <Pause className="h-4 w-4 text-amber-600" />
-                <span className="text-sm text-amber-700 font-medium">已暂停</span>
-                <span className="text-xs text-amber-600">— 点击下方播放按钮继续</span>
+                <span className="text-sm text-amber-700 dark:text-amber-400 font-medium">已暂停</span>
+                <span className="text-xs text-amber-600 dark:text-amber-500">— 点击下方播放按钮继续</span>
               </div>
             )}
             {/* 消息操作按钮 */}
@@ -115,13 +114,8 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
 
         {/* 等待提示 */}
         {!hasContent && isRunning && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-            <span className="flex gap-1">
-              <span className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/40" style={{ animationDelay: "0ms" }} />
-              <span className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/40" style={{ animationDelay: "150ms" }} />
-              <span className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/40" style={{ animationDelay: "300ms" }} />
-            </span>
-            <span>正在思考中...</span>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-2 anim-fade-in">
+            <TypingDots label="正在思考中" />
           </div>
         )}
       </div>
@@ -130,55 +124,93 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
 }
 
 /**
- * Agent Steps 手风琴组 — 将连续的 tool-call parts 分组到可折叠容器中
+ * 紧凑步骤时间线 — 绿点流程，默认折叠，运行中仅展示当前进行步骤
  */
-function AgentStepsAccordion({ parts, isRunning }: { parts: ToolCallPart[]; isRunning: boolean }) {
+function CompactStepTimeline({ parts, isRunning }: { parts: ToolCallPart[]; isRunning: boolean }) {
   const runningCount = parts.filter((p) => p.status === "running").length;
   const completedCount = parts.filter((p) => p.status === "complete").length;
   const currentStep = parts.find((p) => p.status === "running");
+  const [open, setOpen] = useState(false);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // 自动滚动到正在运行的步骤
+  // 运行中时自动展开，完成后自动折叠
   useEffect(() => {
-    if (scrollRef.current && isRunning) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (isRunning && runningCount > 0) {
+      setOpen(true);
+    } else if (!isRunning) {
+      setOpen(false);
     }
-  }, [parts, isRunning]);
+  }, [isRunning, runningCount]);
 
   return (
-    <Collapsible defaultOpen={isRunning}>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
-        <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors py-1">
+        <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-ui py-1 group">
           <div className="flex items-center gap-1.5">
             {isRunning && runningCount > 0 ? (
-              <span className="flex h-5 w-5 items-center justify-center">
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-400 border-t-transparent" />
-              </span>
+              <PulseIndicator status="running" size="sm" />
             ) : (
-              <span className="flex h-5 w-5 items-center justify-center text-green-600">✓</span>
+              <PulseIndicator status="complete" size="sm" />
             )}
             <span className="font-medium">
               {isRunning && currentStep
                 ? `正在执行：${STEP_LABELS[currentStep.toolName] ?? currentStep.toolName}`
-                : `Agent 步骤 (${completedCount}/${parts.length})`}
+                : `Agent 流程 (${completedCount}/${parts.length})`}
             </span>
           </div>
           {isRunning && (
-            <Badge variant="outline" className="text-blue-600 border-blue-300">
+            <Badge variant="outline" className="text-primary border-primary/30">
               {runningCount} 运行中
             </Badge>
           )}
+          <ChevronRight
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-ui",
+              open && "rotate-90"
+            )}
+          />
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div
-          ref={scrollRef}
-          className="space-y-1.5 pt-1 max-h-[400px] overflow-y-auto scrollbar-thin"
-        >
-          {parts.map((part, i) => (
-            <AgentStepCard key={i} part={part} defaultOpen={part.status === "running"} />
-          ))}
+        <div className="relative space-y-1.5 pt-2 pl-1">
+          {parts.map((part, i) => {
+            const isCurrent = part.status === "running";
+            const isDone = part.status === "complete";
+            const isErr = part.status === "error";
+            return (
+              <div key={i} className="relative flex items-center gap-2.5">
+                {/* 时间线竖线 */}
+                {i < parts.length - 1 && (
+                  <div className={cn(
+                    "absolute left-[5px] top-4 bottom-[-6px] w-px",
+                    isDone ? "bg-emerald-300/50 dark:bg-emerald-700/40" : "bg-border"
+                  )} />
+                )}
+                {/* 状态圆点 */}
+                <PulseIndicator
+                  status={isDone ? "complete" : isCurrent ? "running" : isErr ? "error" : "idle"}
+                  size="sm"
+                  ring={isCurrent}
+                />
+                {/* 标签 */}
+                <span className={cn(
+                  "text-xs",
+                  isCurrent ? "text-primary font-medium" : isDone ? "text-muted-foreground" : "text-muted-foreground/60"
+                )}>
+                  {STEP_LABELS[part.toolName] ?? part.toolName}
+                </span>
+                {/* 耗时 */}
+                {part.durationMs != null && (
+                  <span className="text-xs text-muted-foreground/60 font-mono-sm ml-auto">
+                    {(part.durationMs / 1000).toFixed(1)}s
+                  </span>
+                )}
+                {/* 错误提示 */}
+                {part.error && (
+                  <span className="text-xs text-red-600 truncate">{part.error}</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -206,9 +238,10 @@ function DataPartRenderer({
 
     case "feedback": {
       // Use text parts article, or fall back to data.article
-      const feedbackArticle = article || (part.data as { article?: string })?.article || "";
+      const feedbackData = part.data as { article?: string; has_feedback?: boolean };
+      const feedbackArticle = article || feedbackData?.article || "";
       if (traceId && feedbackArticle) {
-        return <FeedbackBar traceId={traceId} article={feedbackArticle} />;
+        return <FeedbackBar traceId={traceId} article={feedbackArticle} hasFeedback={feedbackData?.has_feedback} />;
       }
       return null;
     }
@@ -237,7 +270,7 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
   };
 
   return (
-    <div className="rounded-lg border p-4 space-y-3">
+    <div className="codex-card p-4 space-y-3 anim-fade-scale">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-medium">质量评分</h4>
         {passed !== undefined && (
@@ -247,17 +280,17 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {Object.entries(scores).map(([dim, score]) => (
-          <div key={dim} className="flex items-center gap-2 text-xs">
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+        {Object.entries(scores).map(([dim, score], i) => (
+          <div key={dim} className="flex items-center gap-2 text-xs anim-fade-up" style={{ animationDelay: `${i * 40}ms` }}>
             <span className="text-muted-foreground shrink-0">
               {scoreLabels[dim] ?? dim}
             </span>
             <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
               <div
                 className={cn(
-                  "h-full rounded-full transition-all",
-                  score >= 0.8 ? "bg-green-500" : score >= 0.6 ? "bg-amber-500" : "bg-red-500"
+                  "h-full rounded-full transition-ui",
+                  score >= 0.8 ? "bg-emerald-500" : score >= 0.6 ? "bg-amber-500" : "bg-red-500"
                 )}
                 style={{ width: `${score * 100}%` }}
               />
@@ -316,15 +349,15 @@ function MessageActions({ text }: { text: string }) {
   };
 
   return (
-    <div className="mt-3 flex items-center gap-1 border-t pt-2">
+    <div className="mt-3 flex items-center gap-1 border-t pt-2 anim-fade-in">
       <button
         onClick={handleCopy}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
       >
         {copied ? (
           <>
-            <Check className="h-3.5 w-3.5 text-green-600" />
-            <span className="text-green-600">已复制</span>
+            <Check className="h-3.5 w-3.5 text-emerald-600" />
+            <span className="text-emerald-600">已复制</span>
           </>
         ) : (
           <>
@@ -335,7 +368,7 @@ function MessageActions({ text }: { text: string }) {
       </button>
       <button
         onClick={handleRegenerate}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
       >
         <RefreshCw className="h-3.5 w-3.5" />
         <span>重写</span>

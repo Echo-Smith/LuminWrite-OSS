@@ -21,6 +21,7 @@ type ModelConfig struct {
 	ModelName    string                 `json:"model_name"`
 	DisplayName  string                 `json:"display_name"`
 	BaseURL      string                 `json:"base_url"`
+	APIKeyID     *string                `json:"api_key_id,omitempty"`
 	MaxTokens    int                    `json:"max_tokens"`
 	Temperature  float64                `json:"temperature"`
 	IsDefault    bool                   `json:"is_default"`
@@ -39,7 +40,7 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       max_tokens, temperature, is_default, is_active,
+		       api_key_id::text, max_tokens, temperature, is_default, is_active,
 		       capabilities, metadata, created_at, updated_at
 		FROM model_configs
 		ORDER BY provider, is_default DESC, model_name
@@ -54,7 +55,7 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 		var c ModelConfig
 		var capJSON, metaJSON []byte
 		if err := rows.Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-			&c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+			&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
 			&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			continue
 		}
@@ -79,11 +80,11 @@ func (r *AdminRepo) GetModelConfig(ctx context.Context, id string) (*ModelConfig
 	var capJSON, metaJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       max_tokens, temperature, is_default, is_active,
+		       api_key_id::text, max_tokens, temperature, is_default, is_active,
 		       capabilities, metadata, created_at, updated_at
 		FROM model_configs WHERE id = $1
 	`, id).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -119,17 +120,22 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 
 	var result ModelConfig
 	var rCapJSON, rMetaJSON []byte
+	var apiKeyID interface{}
+	if c.APIKeyID != nil && *c.APIKeyID != "" {
+		apiKeyID = *c.APIKeyID
+	}
+
 	err := r.db.QueryRowContext(ctx, `
-		INSERT INTO model_configs (provider, model_name, display_name, base_url, max_tokens, temperature,
+		INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_id, max_tokens, temperature,
 			is_default, is_active, capabilities, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id::text, provider, model_name, display_name, base_url,
-		          max_tokens, temperature, is_default, is_active,
+		          api_key_id::text, max_tokens, temperature, is_default, is_active,
 		          capabilities, metadata, created_at, updated_at
-	`, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, c.MaxTokens, c.Temperature,
+	`, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, c.MaxTokens, c.Temperature,
 		c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
+		&result.APIKeyID, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
 		&rCapJSON, &rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -164,19 +170,24 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 
 	var result ModelConfig
 	var rCapJSON, rMetaJSON []byte
+	var apiKeyID interface{}
+	if c.APIKeyID != nil && *c.APIKeyID != "" {
+		apiKeyID = *c.APIKeyID
+	}
+
 	err := r.db.QueryRowContext(ctx, `
 		UPDATE model_configs SET
 			provider = $2, model_name = $3, display_name = $4, base_url = $5,
-			max_tokens = $6, temperature = $7, is_default = $8, is_active = $9,
-			capabilities = $10, metadata = $11, updated_at = NOW()
+			api_key_id = $6, max_tokens = $7, temperature = $8, is_default = $9, is_active = $10,
+			capabilities = $11, metadata = $12, updated_at = NOW()
 		WHERE id = $1
 		RETURNING id::text, provider, model_name, display_name, base_url,
-		          max_tokens, temperature, is_default, is_active,
+		          api_key_id::text, max_tokens, temperature, is_default, is_active,
 		          capabilities, metadata, created_at, updated_at
-	`, id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, c.MaxTokens, c.Temperature,
+	`, id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, c.MaxTokens, c.Temperature,
 		c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
+		&result.APIKeyID, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
 		&rCapJSON, &rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -197,6 +208,103 @@ func (r *AdminRepo) DeleteModelConfig(ctx context.Context, id string) error {
 	}
 	_, err := r.db.ExecContext(ctx, `DELETE FROM model_configs WHERE id = $1`, id)
 	return err
+}
+
+// GetDefaultModelConfig returns the default active model config.
+func (r *AdminRepo) GetDefaultModelConfig(ctx context.Context) (*ModelConfig, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	var c ModelConfig
+	var capJSON, metaJSON []byte
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id::text, provider, model_name, display_name, base_url,
+		       api_key_id::text, max_tokens, temperature, is_default, is_active,
+		       capabilities, metadata, created_at, updated_at
+		FROM model_configs
+		WHERE is_default = TRUE AND is_active = TRUE
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
+		&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if len(capJSON) > 0 {
+		json.Unmarshal(capJSON, &c.Capabilities)
+	}
+	if len(metaJSON) > 0 {
+		json.Unmarshal(metaJSON, &c.Metadata)
+	}
+	return &c, nil
+}
+
+// GetModelConfigByName retrieves a model config by model_name.
+func (r *AdminRepo) GetModelConfigByName(ctx context.Context, modelName string) (*ModelConfig, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	var c ModelConfig
+	var capJSON, metaJSON []byte
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id::text, provider, model_name, display_name, base_url,
+		       api_key_id::text, max_tokens, temperature, is_default, is_active,
+		       capabilities, metadata, created_at, updated_at
+		FROM model_configs
+		WHERE model_name = $1 AND is_active = TRUE
+		LIMIT 1
+	`, modelName).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
+		&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if len(capJSON) > 0 {
+		json.Unmarshal(capJSON, &c.Capabilities)
+	}
+	if len(metaJSON) > 0 {
+		json.Unmarshal(metaJSON, &c.Metadata)
+	}
+	return &c, nil
+}
+
+// GetAPIKeyByID retrieves an API key by ID with the actual (decrypted) key value.
+func (r *AdminRepo) GetAPIKeyByID(ctx context.Context, id string) (*APIKey, string, error) {
+	if r.db == nil {
+		return nil, "", fmt.Errorf("database not available")
+	}
+
+	var k APIKey
+	var metaJSON []byte
+	var keyValue string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id::text, name, provider, key_value, base_url, is_active,
+		       last_used_at, last_check, last_status, last_error,
+		       metadata, created_at, updated_at
+		FROM api_keys WHERE id = $1
+	`, id).Scan(&k.ID, &k.Name, &k.Provider, &keyValue, &k.BaseURL, &k.IsActive,
+		&k.LastUsedAt, &k.LastCheck, &k.LastStatus, &k.LastError,
+		&metaJSON, &k.CreatedAt, &k.UpdatedAt)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(metaJSON) > 0 {
+		json.Unmarshal(metaJSON, &k.Metadata)
+	}
+
+	// Decrypt if encryption key is set
+	if len(r.encKey) > 0 && keyValue != "" {
+		decrypted, err := crypto.Decrypt(keyValue, r.encKey)
+		if err == nil {
+			keyValue = decrypted
+		}
+	}
+
+	k.KeyValue = maskKey(keyValue)
+	return &k, keyValue, nil
 }
 
 // ─── API Keys ────────────────────────────────────────────
@@ -375,6 +483,13 @@ func (r *AdminRepo) GetAPIKeyValue(ctx context.Context, provider string) (string
 	`, provider).Scan(&keyValue, &baseURL)
 	if err != nil {
 		return "", "", err
+	}
+
+	// Decrypt if encryption key is set
+	if len(r.encKey) > 0 && keyValue != "" {
+		if decrypted, err := crypto.Decrypt(keyValue, r.encKey); err == nil {
+			keyValue = decrypted
+		}
 	}
 
 	// Update last_used_at

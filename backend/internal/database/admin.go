@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // AdminRepo handles admin-specific database operations.
@@ -439,7 +440,7 @@ func (r *AdminRepo) SaveProfile(ctx context.Context, rec *StyleProfileRecord) er
 			updated_at = NOW()
 	`,
 		uuid.New().String(), rec.Slug, rec.Name, rec.Description, rec.Version, rec.Status,
-		string(configJSON), rec.RolloutType, rec.WhitelistUIDs, rec.RolloutPercent,
+		string(configJSON), rec.RolloutType, pq.Array(rec.WhitelistUIDs), rec.RolloutPercent,
 	)
 	return err
 }
@@ -471,7 +472,7 @@ func (r *AdminRepo) ListProfiles(ctx context.Context) ([]*StyleProfileRecord, er
 			publishedBy   *string
 		)
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.Version, &p.Status,
-			&configJSON, &p.RolloutType, &whitelistUIDs, &p.RolloutPercent,
+			&configJSON, &p.RolloutType, pq.Array(&whitelistUIDs), &p.RolloutPercent,
 			&p.PublishedAt, &publishedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
@@ -506,7 +507,7 @@ func (r *AdminRepo) GetProfile(ctx context.Context, slug string) (*StyleProfileR
 		FROM style_profiles WHERE slug = $1
 	`, slug).Scan(
 		&p.ID, &p.Slug, &p.Name, &p.Description, &p.Version, &p.Status,
-		&configJSON, &p.RolloutType, &whitelistUIDs, &p.RolloutPercent,
+		&configJSON, &p.RolloutType, pq.Array(&whitelistUIDs), &p.RolloutPercent,
 		&p.PublishedAt, &publishedBy, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {

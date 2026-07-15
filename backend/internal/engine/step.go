@@ -15,6 +15,14 @@ type Step interface {
 	Execute(ctx context.Context, execCtx *ExecutionContext, emitter EventEmitter) error
 }
 
+// Skipper is an optional interface that steps can implement to indicate
+// whether they should be skipped for the current execution context.
+// The engine checks this before calling Execute; if ShouldSkip returns true,
+// the step is silently skipped (no step.start/step.complete events emitted).
+type Skipper interface {
+	ShouldSkip(execCtx *ExecutionContext) bool
+}
+
 // EventEmitter is the interface for emitting events to the WebSocket client.
 type EventEmitter interface {
 	// StepStart emits a step.start event.

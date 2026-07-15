@@ -1,9 +1,12 @@
 /**
  * 模式选择器 — auto / writing / guided / polish
+ * 使用 Popover 替代 Select，无 ✅ 选中标记，仅 hover 高亮
  */
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Zap, PenLine, ListTree, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Zap, PenLine, ListTree, Sparkles, ChevronDown } from "lucide-react";
 import type { WriteMode } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 interface ModePickerProps {
   value: WriteMode;
@@ -18,21 +21,41 @@ const MODE_OPTIONS: { value: WriteMode; label: string; icon: typeof Zap; descrip
 ];
 
 export function ModePicker({ value, onChange }: ModePickerProps) {
+  const [open, setOpen] = useState(false);
+  const selected = MODE_OPTIONS.find((opt) => opt.value === value);
+
   return (
-    <Select value={value} onValueChange={(v) => onChange(v as WriteMode)}>
-      <SelectTrigger className="h-8 w-[130px] text-sm">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+        >
+          {selected && <selected.icon className="h-3.5 w-3.5" />}
+          <span>{selected?.label ?? "选择模式"}</span>
+          <ChevronDown className="h-3 w-3 opacity-50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-1">
         {MODE_OPTIONS.map((opt) => (
-          <SelectItem key={opt.value} value={opt.value}>
-            <div className="flex items-center gap-2">
-              <opt.icon className="h-3.5 w-3.5 text-muted-foreground" />
-              <span>{opt.label}</span>
+          <button
+            key={opt.value}
+            onClick={() => {
+              onChange(opt.value);
+              setOpen(false);
+            }}
+            className={cn(
+              "flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
+              opt.value === value && "bg-accent/50"
+            )}
+          >
+            <opt.icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium">{opt.label}</div>
+              <div className="text-xs text-muted-foreground">{opt.description}</div>
             </div>
-          </SelectItem>
+          </button>
         ))}
-      </SelectContent>
-    </Select>
+      </PopoverContent>
+    </Popover>
   );
 }

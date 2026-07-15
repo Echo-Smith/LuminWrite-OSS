@@ -8,10 +8,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useAgentStore } from "@/stores/agent-store";
-import { STEP_LABELS } from "@/lib/constants";
 import type { ToolCallPart } from "@/stores/agent-store";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "@/components/assistant-ui/markdown-content";
+import { StaggerItem } from "@/components/animation";
+import { AgentStepCard } from "@/components/tools/agent-step-card";
 
 interface DetailPanelProps {
   onClose?: () => void;
@@ -39,14 +40,14 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   const articleText = textParts.map((p) => p.text).join("");
 
   return (
-    <div className="flex h-full w-80 flex-col border-l bg-background">
-      {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b">
+    <div className="flex h-full w-80 flex-col border-l bg-surface anim-slide-left">
+      {/* 头部 — 高度与主 header 一致，无分割线 */}
+      <div className="flex h-12 shrink-0 items-center justify-between px-4">
         <h3 className="text-sm font-medium">详情面板</h3>
         {onClose && (
           <button
             onClick={onClose}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-ui"
           >
             <ChevronRight className="h-4 w-4" />
             收起
@@ -115,7 +116,7 @@ function ArticlePreview({ article }: { article: string }) {
 }
 
 /**
- * 流程时间线
+ * 流程时间线 — 使用完整的 AgentStepCard 展示详细信息
  */
 function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
   if (parts.length === 0) {
@@ -127,11 +128,15 @@ function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
   }
 
   const totalDuration = parts.reduce((sum, p) => sum + (p.durationMs ?? 0), 0);
+  const runningCount = parts.filter((p) => p.status === "running").length;
+  const completedCount = parts.filter((p) => p.status === "complete").length;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">总耗时</span>
+        <span className="text-muted-foreground">
+          {runningCount > 0 ? `${completedCount}/${parts.length} 步骤完成` : `${parts.length} 步骤`}
+        </span>
         <span className="font-medium tabular-nums">
           {(totalDuration / 1000).toFixed(1)}s
         </span>
@@ -139,48 +144,11 @@ function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
 
       <Separator />
 
-      <div className="relative space-y-3">
+      <div className="space-y-2">
         {parts.map((part, i) => (
-          <div key={i} className="relative flex gap-3">
-            {/* 时间线竖线 */}
-            {i < parts.length - 1 && (
-              <div className="absolute left-2 top-6 bottom-[-12px] w-px bg-border" />
-            )}
-
-            {/* 状态圆点 */}
-            <div
-              className={cn(
-                "relative z-10 mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2",
-                part.status === "complete" && "border-green-500 bg-green-500",
-                part.status === "running" && "border-blue-500 bg-blue-500 animate-pulse",
-                part.status === "error" && "border-red-500 bg-red-500"
-              )}
-            >
-              {part.status === "complete" && (
-                <span className="text-white text-[8px]">✓</span>
-              )}
-            </div>
-
-            {/* 内容 */}
-            <div className="flex-1 min-w-0 pb-1">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">
-                  {STEP_LABELS[part.toolName] ?? part.toolName}
-                </span>
-                {part.durationMs && (
-                  <span className="text-xs text-muted-foreground tabular-nums">
-                    {(part.durationMs / 1000).toFixed(1)}s
-                  </span>
-                )}
-              </div>
-              {part.status === "running" && (
-                <p className="text-xs text-blue-600 mt-0.5">执行中...</p>
-              )}
-              {part.error && (
-                <p className="text-xs text-red-600 mt-0.5">{part.error}</p>
-              )}
-            </div>
-          </div>
+          <StaggerItem key={i} index={i} interval={60} animation="fade-up">
+            <AgentStepCard part={part} defaultOpen={part.status === "running"} />
+          </StaggerItem>
         ))}
       </div>
     </div>
@@ -208,37 +176,36 @@ function SourcesList({ results }: { results: Array<Record<string, unknown>> }) {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">{results.length} 条素材</p>
+      <p className="text-xs text-muted-foreground font-mono-sm">{results.length} 条素材</p>
       {results.map((r, i) => (
-        <div
-          key={i}
-          className="rounded-lg border p-2.5 space-y-1 hover:bg-accent/50 transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-xs shrink-0">
-              {String(r.source ?? "web")}
-            </Badge>
-            {r.relevance != null && (
-              <Badge variant={(relevanceColor[String(r.relevance)] as "success" | "secondary" | "outline" | "destructive") ?? "outline"} className="text-xs">
-                {String(r.relevance)}
+        <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+          <div className="rounded-lg border p-2.5 space-y-1 hover:bg-accent/50 transition-ui ">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs shrink-0">
+                {String(r.source ?? "web")}
               </Badge>
+              {r.relevance != null && (
+                <Badge variant={(relevanceColor[String(r.relevance)] as "success" | "secondary" | "outline" | "destructive") ?? "outline"} className="text-xs">
+                  {String(r.relevance)}
+                </Badge>
+              )}
+            </div>
+            <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
+            {r.snippet != null && String(r.snippet) && (
+              <p className="text-xs text-muted-foreground line-clamp-2">{String(r.snippet)}</p>
+            )}
+            {r.url != null && String(r.url) && (
+              <a
+                href={String(r.url)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline"
+              >
+                查看原文 →
+              </a>
             )}
           </div>
-          <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
-          {r.snippet != null && String(r.snippet) && (
-            <p className="text-xs text-muted-foreground line-clamp-2">{String(r.snippet)}</p>
-          )}
-          {r.url != null && String(r.url) && (
-            <a
-              href={String(r.url)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-primary hover:underline"
-            >
-              查看原文 →
-            </a>
-          )}
-        </div>
+        </StaggerItem>
       ))}
     </div>
   );
