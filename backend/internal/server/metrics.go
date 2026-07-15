@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -151,7 +153,13 @@ type MetricsRegistry struct {
 
 	// Database metrics
 	DBQueriesTotal       *Counter
-	DBErrorsTotal        *Counter
+	DBErrorsTotal       *Counter
+
+	// Grayscale routing metrics
+	GrayscaleRequestsTotal  *Counter
+	GrayscaleNewVersionHits *Counter
+	GrayscaleFallbackHits   *Counter
+	GrayscaleErrors         *Counter
 
 	// All metrics for export
 	counters   []*Counter
@@ -179,7 +187,11 @@ func NewMetricsRegistry() *MetricsRegistry {
 		EvalRunsTotal:        NewCounter("evaluation_runs_total", "Total evaluation runs", "status"),
 		EvalRunsActive:       NewGauge("evaluation_runs_active", "Active evaluation runs"),
 		DBQueriesTotal:       NewCounter("db_queries_total", "Total database queries"),
-		DBErrorsTotal:        NewCounter("db_errors_total", "Total database errors"),
+		DBErrorsTotal:       NewCounter("db_errors_total", "Total database errors"),
+		GrayscaleRequestsTotal:  NewCounter("grayscale_requests_total", "Total grayscale routing decisions", "slug", "result"),
+		GrayscaleNewVersionHits: NewCounter("grayscale_new_version_hits_total", "Times new version was served", "slug"),
+		GrayscaleFallbackHits:   NewCounter("grayscale_fallback_hits_total", "Times fallback version was served", "slug"),
+		GrayscaleErrors:         NewCounter("grayscale_errors_total", "Grayscale routing errors", "slug", "type"),
 	}
 
 	r.counters = []*Counter{
@@ -193,6 +205,10 @@ func NewMetricsRegistry() *MetricsRegistry {
 		r.EvalRunsTotal,
 		r.DBQueriesTotal,
 		r.DBErrorsTotal,
+		r.GrayscaleRequestsTotal,
+		r.GrayscaleNewVersionHits,
+		r.GrayscaleFallbackHits,
+		r.GrayscaleErrors,
 	}
 
 	r.histograms = []*Histogram{
@@ -365,6 +381,8 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 }
 
 // statusCaptureWriter wraps http.ResponseWriter to capture the status code.
+// It also implements http.Hijacker and http.Flusher so that WebSocket
+// upgrade requests and streaming responses work transparently.
 type statusCaptureWriter struct {
 	http.ResponseWriter
 	status int
@@ -373,6 +391,31 @@ type statusCaptureWriter struct {
 func (w *statusCaptureWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack delegates to the underlying ResponseWriter so that WebSocket
+// connections can be upgraded through the metrics middleware.
+func (w *statusCaptureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("ResponseWriter does not implement http.Hijacker")
+	}
+	return hj.Hijack()
+}
+
+// Flush delegates to the underlying ResponseWriter if it implements http.Flusher.
+func (w *statusCaptureWriter) Flush() {
+	if fl, ok := w.ResponseWriter.(http.Flusher); ok {
+		fl.Flush()
+	}
+}
+
+// Push delegates to the underlying ResponseWriter if it implements http.Pusher.
+func (w *statusCaptureWriter) Push(target string, opts *http.PushOptions) error {
+	if ps, ok := w.ResponseWriter.(http.Pusher); ok {
+		return ps.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
 
 // normalizePath collapses path parameters for cardinality control.

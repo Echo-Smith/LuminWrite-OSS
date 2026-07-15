@@ -11,7 +11,7 @@ import { useAuthModal } from "@/stores/auth-modal-store";
 import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
-import { MemorySettings } from "@/pages/memory-settings";
+import { PersonalCenter } from "@/pages/personal-center";
 
 export function App() {
   const init = useAuthStore((s) => s.init);
@@ -55,10 +55,11 @@ export function App() {
             }
           />
           <Route
-            path="/settings/memory"
+            path="/profile"
             element={
               <ProtectedRoute>
-                <MemorySettings />
+                <WritingWorkspace />
+                <PersonalCenter />
               </ProtectedRoute>
             }
           />

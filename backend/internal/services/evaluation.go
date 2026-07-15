@@ -368,6 +368,70 @@ func (s *EvaluationService) GenerateImprovementSuggestions(ctx context.Context, 
 
 	breakdownJSON, _ := json.Marshal(agg.SegmentBreakdown)
 
+	// Compute low-score distribution from segment breakdown
+	lowScoreAnalysis := "暂无数据"
+	if agg.SegmentBreakdown != nil {
+		var parts []string
+		for segType, raw := range agg.SegmentBreakdown {
+			if segData, ok := raw.(map[string]interface{}); ok {
+				count, _ := segData["count"].(float64)
+				bad, _ := segData["bad"].(float64)
+				if count > 0 && bad > 0 {
+					ratio := bad / count
+					severity := "正常"
+					if ratio > 0.5 {
+						severity = "严重"
+					} else if ratio > 0.3 {
+						severity = "偏高"
+					}
+					parts = append(parts, fmt.Sprintf("- %s: 差评占比 %.1f%%（%d/%d）%s",
+						segType, ratio*100, int(bad), int(count), severity))
+				}
+			}
+		}
+		if len(parts) > 0 {
+			lowScoreAnalysis = strings.Join(parts, "\n")
+		}
+	}
+
+	// Compute adoption comparison
+	adoptionAnalysis := "暂无录用数据"
+	if agg.TotalFeedback > 0 {
+		adoptionRate := float64(agg.TotalAdopted) / float64(agg.TotalFeedback) * 100
+		adoptionAnalysis = fmt.Sprintf("录用率: %.1f%% (%d/%d)\n", adoptionRate, agg.TotalAdopted, agg.TotalFeedback)
+		if agg.TotalAdopted > 0 {
+			adoptionAnalysis += "已录用文章特征: 可参考高分段落分布\n"
+		}
+		if agg.TotalAdopted < agg.TotalFeedback {
+			adoptionAnalysis += fmt.Sprintf("未录用文章比例: %.1f%%\n", 100-adoptionRate)
+		}
+	}
+
+	// Style drift indicators from dimension scores
+	driftAnalysis := "暂无数据"
+	if len(agg.DimensionScores) > 0 {
+		// Find dimensions below 3.5 (out of 5)
+		var weakDims []string
+		var strongDims []string
+		for dim, score := range agg.DimensionScores {
+			if score < 3.5 {
+				weakDims = append(weakDims, fmt.Sprintf("%s (%.2f)", dim, score))
+			} else {
+				strongDims = append(strongDims, fmt.Sprintf("%s (%.2f)", dim, score))
+			}
+		}
+		var parts []string
+		if len(weakDims) > 0 {
+			parts = append(parts, "弱项维度: "+strings.Join(weakDims, ", "))
+		}
+		if len(strongDims) > 0 {
+			parts = append(parts, "强项维度: "+strings.Join(strongDims, ", "))
+		}
+		if len(parts) > 0 {
+			driftAnalysis = strings.Join(parts, "\n")
+		}
+	}
+
 	prompt := fmt.Sprintf(`你是一个写作系统优化顾问。请基于以下反馈聚合数据，为风格 Profile 迭代提供改进建议。
 
 ## 风格信息
@@ -383,14 +447,25 @@ func (s *EvaluationService) GenerateImprovementSuggestions(ctx context.Context, 
 ## 维度得分
 %s
 
+## 低分段落分布分析
+%s
+
+## 录用对比分析
+%s
+
+## 风格偏移指标
+%s
+
 ## 分段反馈明细
 %s
 
-请从以下方面给出具体、可操作的建议（200-400字）：
-1. 最突出的问题是什么
-2. 哪些维度需要优先改进
-3. 具体的 Profile 配置调整建议（如修辞、结构、字数等）
-4. 是否达到迭代条件（当前 %d 条反馈，阈值 30 条）`,
+请从以下方面给出具体、可操作的建议（300-500字）：
+1. **低分段落诊断**：哪些段落类型得分最低？用户反馈集中在哪些方面？
+2. **录用 vs 未录用对比**：被录用文章与未录用文章的主要差异是什么？
+3. **风格偏移分析**：是否存在"风格不像"的信号？用户反馈中哪些维度低于预期？
+4. **优先改进方向**：最需要优先解决的 2-3 个问题
+5. **具体 Profile 配置调整建议**（如修辞、结构、字数、标题规范等）
+6. **是否达到迭代条件**（当前 %d 条反馈，阈值 30 条）`,
 		agg.StyleSlug,
 		agg.ProfileVersion,
 		agg.TotalFeedback,
@@ -398,12 +473,15 @@ func (s *EvaluationService) GenerateImprovementSuggestions(ctx context.Context, 
 		agg.AvgRating,
 		agg.WeightedScore,
 		formatDimScores(agg.DimensionScores),
+		lowScoreAnalysis,
+		adoptionAnalysis,
+		driftAnalysis,
 		string(breakdownJSON),
 		agg.TotalFeedback,
 	)
 
 	messages := []tools.LLMMessage{
-		{Role: "system", Content: "你是一个专业的写作系统优化顾问。"},
+		{Role: "system", Content: "你是一个专业的写作系统优化顾问，擅长从用户反馈中发现模式并提出可操作的改进建议。"},
 		{Role: "user", Content: prompt},
 	}
 

@@ -12,7 +12,10 @@ export type AgentStepName =
   | "outline"
   | "write"
   | "post_review"
-  | "auto_fix";
+  | "auto_fix"
+  | "memory_gate"
+  | "memory_extract"
+  | "chat";
 
 export type AgentStepStatus = "running" | "complete" | "error" | "await_input";
 
@@ -71,6 +74,7 @@ export interface AgentStartPayload {
   message: string;
   style?: string;
   mode?: WriteMode;
+  model?: string;
   session_id?: string;
   user_materials?: string[];
   word_limit?: number;

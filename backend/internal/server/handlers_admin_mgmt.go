@@ -67,6 +67,10 @@ func (s *Server) handleAdminCreateModelConfig(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if s.llmSvc != nil {
+		s.llmSvc.InvalidateCache()
+	}
+
 	response.Created(w, created)
 }
 
@@ -91,6 +95,10 @@ func (s *Server) handleAdminUpdateModelConfig(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if s.llmSvc != nil {
+		s.llmSvc.InvalidateCache()
+	}
+
 	response.OK(w, updated)
 }
 
@@ -105,6 +113,10 @@ func (s *Server) handleAdminDeleteModelConfig(w http.ResponseWriter, r *http.Req
 	if err := s.adminRepo.DeleteModelConfig(r.Context(), id); err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to delete model config")
 		return
+	}
+
+	if s.llmSvc != nil {
+		s.llmSvc.InvalidateCache()
 	}
 
 	response.OK(w, map[string]interface{}{"message": "model config deleted"})
@@ -615,6 +627,8 @@ func (s *Server) cronCleanup(ctx context.Context, job *database.CronJob) error {
 }
 
 // cronIMASync syncs IMA knowledge base entries into the local pgvector store.
+// It fetches all documents from the IMA knowledge base API and upserts them
+// into the local knowledge_base table, then generates embeddings for any new entries.
 func (s *Server) cronIMASync(ctx context.Context, job *database.CronJob) error {
 	slog.Info("cron: ima_sync triggered", "job", job.Name)
 
@@ -627,12 +641,49 @@ func (s *Server) cronIMASync(ctx context.Context, job *database.CronJob) error {
 		slog.Warn("cron: ima_sync — IMA client not configured, skipping")
 		return nil
 	}
+	if !imaClient.IsConfigured() {
+		slog.Warn("cron: ima_sync — IMA client not fully configured (placeholder keys), skipping")
+		return nil
+	}
 
 	if s.kbRepo == nil {
 		return fmt.Errorf("knowledge base repo not available")
 	}
 
-	// Generate embeddings for KB entries that don't have one yet
+	// Step 1: Fetch all documents from IMA knowledge base
+	docs, err := imaClient.FetchDocuments(ctx, 50)
+	if err != nil {
+		slog.Warn("cron: ima_sync — failed to fetch documents from IMA", "error", err)
+		// Don't return error — still try to generate embeddings for existing entries
+	} else {
+		slog.Info("cron: ima_sync — fetched documents from IMA", "count", len(docs))
+
+		// Step 2: Upsert each document into the local knowledge_base table
+		newCount := 0
+		skipCount := 0
+		for _, doc := range docs {
+			// Use AddEntry which handles deduplication via content_hash
+			metadata := map[string]interface{}{
+				"source":   "ima",
+				"doc_id":   doc.DocID,
+				"category": doc.Category,
+				"url":      doc.URL,
+			}
+			entry, err := s.kbRepo.AddEntry(ctx, "ima", doc.DocID, doc.Title, doc.Content, metadata)
+			if err != nil {
+				slog.Debug("cron: ima_sync — failed to upsert doc", "doc_id", doc.DocID, "error", err)
+				skipCount++
+				continue
+			}
+			if entry != nil {
+				newCount++
+			}
+		}
+		slog.Info("cron: ima_sync — upsert completed",
+			"new_or_updated", newCount, "skipped", skipCount, "total_fetched", len(docs))
+	}
+
+	// Step 3: Generate embeddings for KB entries that don't have one yet
 	count, err := s.kbRepo.GenerateMissingEmbeddings(ctx, 25)
 	if err != nil {
 		slog.Warn("cron: ima_sync — embedding generation failed", "error", err)

@@ -11,6 +11,9 @@ import {
   PenLine,
   ShieldCheck,
   Wrench,
+  Database,
+  Sparkles,
+  MessageCircle,
   Check,
   X,
   Loader2,
@@ -20,6 +23,7 @@ import type { ToolCallPart } from "@/stores/agent-store";
 import { STEP_LABELS, STEP_DESCRIPTIONS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { PulseIndicator } from "@/components/animation";
 
 const ICON_MAP: Record<string, typeof Brain> = {
   Brain,
@@ -30,6 +34,9 @@ const ICON_MAP: Record<string, typeof Brain> = {
   PenLine,
   ShieldCheck,
   Wrench,
+  Database,
+  Sparkles,
+  MessageCircle,
 };
 
 const STEP_ICON_KEY: Record<string, string> = {
@@ -41,6 +48,9 @@ const STEP_ICON_KEY: Record<string, string> = {
   write: "PenLine",
   post_review: "ShieldCheck",
   auto_fix: "Wrench",
+  memory_gate: "Database",
+  memory_extract: "Sparkles",
+  chat: "MessageCircle",
 };
 
 interface AgentStepCardProps {
@@ -62,10 +72,11 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
   return (
     <div
       className={cn(
-        "rounded-lg border transition-colors",
-        isRunning && "border-blue-200 bg-blue-50/50",
-        isComplete && "border-green-200 bg-green-50/30",
-        isError && "border-red-200 bg-red-50/30"
+        "rounded-lg border transition-ui ",
+        isRunning && "border-primary/30 bg-primary/5",
+        isComplete && "border-emerald-200/50 bg-emerald-50/30 dark:bg-emerald-950/10",
+        isError && "border-red-200/50 bg-red-50/30 dark:bg-red-950/10",
+        !isRunning && !isComplete && !isError && "border-border bg-card"
       )}
     >
       {/* 头部 */}
@@ -75,14 +86,15 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
       >
         <div
           className={cn(
-            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
-            isRunning && "bg-blue-100 text-blue-600",
-            isComplete && "bg-green-100 text-green-600",
-            isError && "bg-red-100 text-red-600"
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-ui",
+            isRunning && "bg-muted text-foreground",
+            isComplete && "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400",
+            isError && "bg-red-100 text-red-600 dark:bg-red-950/40 dark:text-red-400",
+            !isRunning && !isComplete && !isError && "bg-muted text-muted-foreground"
           )}
         >
           {isRunning ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 anim-spin" />
           ) : isComplete ? (
             <Check className="h-4 w-4" />
           ) : isError ? (
@@ -96,7 +108,7 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">{label}</span>
             {part.durationMs && (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground font-mono-sm">
                 {(part.durationMs / 1000).toFixed(1)}s
               </span>
             )}
@@ -108,7 +120,7 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
 
         <ChevronRight
           className={cn(
-            "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+            "h-4 w-4 shrink-0 text-muted-foreground transition-ui",
             expanded && "rotate-90"
           )}
         />
@@ -116,7 +128,7 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
 
       {/* 展开内容 */}
       {expanded && (
-        <div className="border-t px-3 py-2">
+        <div className="border-t px-3 py-2 anim-fade-in">
           <StepResult part={part} />
         </div>
       )}
@@ -132,7 +144,7 @@ function StepResult({ part }: { part: ToolCallPart }) {
   if (!part.result) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-3 w-3 animate-spin" />
+        <PulseIndicator status="running" size="sm" ring={false} />
         <span>{STEP_DESCRIPTIONS[part.toolName] ?? "执行中..."}</span>
       </div>
     );

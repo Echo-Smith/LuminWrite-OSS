@@ -2,33 +2,30 @@
  * 左侧栏 — 会话列表 + 选题入口 + 用户区
  *
  * 支持折叠/展开（收起为窄图标条）
- * 游客显示「你好，游客」+ 注册按钮
- * 正式用户显示用户名 + 退出按钮
+ * 底部用户区点击弹出 Popover：个人中心 / 管理后台
  */
 import { useState } from "react";
-import { Plus, MessageSquare, Trash2, Compass, Settings, LogOut, UserPlus, Brain, PanelLeftClose, PanelLeftOpen, Pen } from "lucide-react";
+import {
+  Plus, MessageSquare, Trash2, Compass,
+  Settings, Sun, Moon, LogOut, UserPlus,
+  PanelLeftClose, PanelLeftOpen, Pen,
+  ChevronRight, User, AlertTriangle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
+import { useTheme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-
-// ─── 模型选项 ──────────────────────────────────────────────
-const MODEL_OPTIONS = [
-  { value: "deepseek-v4-flash", label: "DeepSeek Flash" },
-  { value: "deepseek-v4-pro", label: "DeepSeek Pro (思考)" },
-];
+import { StaggerItem } from "@/components/animation";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -43,13 +40,31 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const switchSession = useAgentStore((s) => s.switchSession);
   const deleteSession = useAgentStore((s) => s.deleteSession);
 
+  // 删除确认状态
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    // 调用后端 soft delete API
+    try {
+      await fetch(`/api/v2/sessions/${deleteTarget.id}`, { method: "DELETE" });
+    } catch {
+      // 即使 API 失败也本地删除
+    }
+    deleteSession(deleteTarget.id);
+    setDeleting(false);
+    setDeleteTarget(null);
+  };
+
   // 认证状态
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const openAuth = useAuthModal((s) => s.openAuth);
 
-  // 模型选择
-  const [model, setModel] = useState("deepseek-v4-flash");
+  // 主题
+  const { theme, toggle: toggleTheme } = useTheme();
 
   const isGuest = user?.role === "guest";
   const isAdmin = user?.role === "admin";
@@ -65,11 +80,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   // ─── 折叠态 ──────────────────────────────────────────────
   if (collapsed) {
     return (
-      <div className="flex h-full w-14 flex-col items-center border-r bg-muted/30 py-3 gap-3">
+      <div className="flex h-full w-14 flex-col items-center border-r bg-surface py-3 gap-2 anim-slide-right">
         {/* 展开按钮 */}
         <button
           onClick={onToggle}
-          className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-accent transition-colors"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
           title="展开侧栏"
         >
           <PanelLeftOpen className="h-4 w-4" />
@@ -78,10 +93,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* 新建 */}
         <button
           onClick={() => createSession()}
-          className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          className="group flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-transform-precise hover:scale-105 active:scale-95"
           title="新建写作"
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
         </button>
 
         <Separator className="w-8" />
@@ -89,85 +104,67 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* 导航图标 */}
         <button
           onClick={() => navigate("/topics")}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
           title="选题中心"
         >
           <Compass className="h-4 w-4" />
         </button>
-        <button
-          onClick={() => navigate("/settings/memory")}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          title="记忆管理"
-        >
-          <Brain className="h-4 w-4" />
-        </button>
-        {isAdmin && (
-          <button
-            onClick={() => navigate("/admin")}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-            title="管理后台"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-        )}
 
         {/* 占位 */}
         <div className="flex-1" />
 
-        {/* 底部用户头像 */}
-        <button
-          onClick={() => isGuest ? handleRegister() : undefined}
-          className="flex h-8 w-8 items-center justify-center"
-          title={isGuest ? "注册账号" : (user?.userId ?? "用户")}
-        >
-          <Avatar className="h-8 w-8">
-            <AvatarFallback className={cn(
-              "text-xs",
-              isGuest ? "bg-amber-100 text-amber-700" : "bg-muted"
-            )}>
-              {isGuest ? "客" : (user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
-            </AvatarFallback>
-          </Avatar>
-        </button>
+        {/* 底部用户头像 — 点击弹出面板 */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              className="flex h-9 w-9 items-center justify-center transition-transform-precise hover:scale-105"
+              title={isGuest ? "注册账号" : (user?.userId ?? "用户")}
+            >
+              <Avatar className="h-8 w-8">
+                <AvatarFallback className={cn(
+                  "text-xs font-medium",
+                  isGuest ? "bg-amber-100 text-amber-700" : "bg-muted text-foreground"
+                )}>
+                  {isGuest ? "客" : (user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
+                </AvatarFallback>
+              </Avatar>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent side="right" align="end" className="w-56">
+            <UserMenuContent
+              isGuest={isGuest}
+              isAdmin={isAdmin}
+              theme={theme}
+              onToggleTheme={toggleTheme}
+              onNavigate={(path) => navigate(path)}
+              onLogout={() => { logout(); navigate("/write", { replace: true }); }}
+              onRegister={handleRegister}
+            />
+          </PopoverContent>
+        </Popover>
       </div>
     );
   }
 
   // ─── 展开态 ──────────────────────────────────────────────
   return (
-    <div className="flex h-full w-64 flex-col border-r bg-muted/30">
+    <div className="flex h-full w-64 flex-col border-r bg-surface anim-slide-right">
       {/* 顶部品牌区 + 折叠按钮 */}
-      <div className="flex items-center gap-2 px-3 py-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary shrink-0">
-          <Pen className="h-4 w-4 text-primary-foreground" />
+      <div className="flex items-center gap-2.5 px-3 py-3.5">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-gradient shrink-0">
+          <Pen className="h-4 w-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-bold truncate">笔润智谈</h1>
-          <p className="text-xs text-muted-foreground">V2 写作平台</p>
+          <h1 className="text-sm font-bold tracking-tight">笔润智谈</h1>
+          <p className="text-[11px] text-muted-foreground font-mono-sm">V2 · writing agent</p>
         </div>
         <button
           onClick={onToggle}
-          className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-accent transition-colors shrink-0"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-ui shrink-0"
           title="收起侧栏"
         >
-          <PanelLeftClose className="h-4 w-4 text-muted-foreground" />
+          <PanelLeftClose className="h-4 w-4" />
         </button>
-      </div>
-
-      {/* P3: 模型选择器 */}
-      <div className="px-3 pb-2">
-        <Select value={model} onValueChange={setModel}>
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {MODEL_OPTIONS.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
       </div>
 
       <Separator />
@@ -175,15 +172,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* 新建写作 */}
       <div className="p-3">
         <Button
-          className="w-full justify-start gap-2"
+          className="w-full justify-start gap-2 group transition-transform-precise hover:scale-[1.02] active:scale-[0.98]"
           onClick={() => createSession()}
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
           新建写作
         </Button>
       </div>
 
-      {/* 导航入口 */}
+      {/* 导航入口（仅保留选题中心） */}
       <div className="px-3 pb-2 space-y-1">
         <Button
           variant="ghost"
@@ -194,114 +191,222 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Compass className="h-4 w-4" />
           选题中心
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => navigate("/settings/memory")}
-        >
-          <Brain className="h-4 w-4" />
-          记忆管理
-        </Button>
-        {isAdmin && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-2 text-muted-foreground"
-            onClick={() => navigate("/admin")}
-          >
-            <Settings className="h-4 w-4" />
-            管理后台
-          </Button>
-        )}
       </div>
 
       <Separator />
 
       {/* 会话列表 */}
       <ScrollArea className="flex-1">
-        <div className="p-2 space-y-1">
+        <div className="p-3 space-y-0.5">
           {sessions.length === 0 ? (
-            <div className="px-2 py-8 text-center text-xs text-muted-foreground">
-              暂无写作记录
+            <div className="px-3 py-10 text-center">
+              <p className="text-xs text-muted-foreground">暂无写作记录</p>
+              <p className="text-[11px] text-muted-foreground/60 mt-1">点击上方按钮开始创作</p>
             </div>
           ) : (
-            sessions.map((session) => (
-              <div
+            sessions.map((session, i) => (
+              <StaggerItem
                 key={session.id}
-                onClick={() => switchSession(session.id)}
+                index={i}
+                interval={30}
+                animation="slide-right"
+                as="div"
                 className={cn(
-                  "group flex items-center gap-2 rounded-lg px-3 py-2 cursor-pointer transition-colors",
+                  "group flex items-center gap-2 rounded-lg px-3 py-2 cursor-pointer transition-ui overflow-hidden min-w-0",
                   session.id === activeSessionId
-                    ? "bg-accent"
-                    : "hover:bg-accent/50"
+                    ? "bg-accent text-foreground"
+                    : "hover:bg-accent/50 text-muted-foreground"
                 )}
+                onClick={() => switchSession(session.id)}
               >
-                <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="flex-1 truncate text-sm">{session.title}</span>
+                <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+                <span className="flex-1 min-w-0 truncate text-sm">{session.title}</span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    deleteSession(session.id);
+                    setDeleteTarget({ id: session.id, title: session.title });
                   }}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-ui text-muted-foreground hover:text-destructive"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
-              </div>
+              </StaggerItem>
             ))
           )}
         </div>
       </ScrollArea>
 
-      <Separator />
-
-      {/* 底部用户区 */}
-      <div className="flex items-center gap-2 p-3">
-        <Avatar className="h-8 w-8">
-          <AvatarFallback className={cn(
-            "text-xs",
-            isGuest ? "bg-amber-100 text-amber-700" : "bg-muted"
-          )}>
-            {isGuest ? "客" : (user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
-          </AvatarFallback>
-        </Avatar>
-        <div className="flex-1 min-w-0">
-          {isGuest ? (
-            <>
-              <p className="text-sm font-medium truncate">你好，游客</p>
-              <p className="text-xs text-amber-600">试用模式 · 限 1 次写作</p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm font-medium truncate">{user?.userId ?? "用户"}</p>
-              <p className="text-xs text-muted-foreground">
-                {isAdmin ? "管理员" : "已登录"}
-              </p>
-            </>
-          )}
-        </div>
-
-        {isGuest ? (
-          <button
-            onClick={handleRegister}
-            className="text-primary hover:text-primary/80 transition-colors"
-            title="注册账号"
-          >
-            <UserPlus className="h-4 w-4" />
-          </button>
-        ) : (
-          user && (
-            <button
-              onClick={() => logout()}
-              className="text-muted-foreground hover:text-destructive transition-colors"
-              title="退出登录"
-            >
-              <LogOut className="h-4 w-4" />
+      {/* ── 底部用户区 — 点击弹出 Popover 面板 ── */}
+      <div className="border-t">
+        <Popover>
+          <PopoverTrigger asChild>
+            <button className="group flex w-full items-center gap-2.5 p-3 transition-ui hover:bg-accent/50">
+              <Avatar className="h-8 w-8 shrink-0">
+                <AvatarFallback className={cn(
+                  "text-xs font-medium",
+                  isGuest ? "bg-amber-100 text-amber-700" : "bg-muted text-foreground"
+                )}>
+                  {isGuest ? "客" : (user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0 text-left">
+                {isGuest ? (
+                  <>
+                    <p className="text-sm font-medium truncate">你好，游客</p>
+                    <p className="text-[11px] text-amber-600 font-mono-sm">trial · 1 attempt</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium truncate">{user?.userId ?? "用户"}</p>
+                    <p className="text-[11px] text-muted-foreground font-mono-sm">
+                      {isAdmin ? "admin" : "user"}
+                    </p>
+                  </>
+                )}
+              </div>
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-ui group-hover:translate-x-0.5" />
             </button>
-          )
-        )}
+          </PopoverTrigger>
+          <PopoverContent side="top" align="start" className="w-[232px]">
+            <UserMenuContent
+              isGuest={isGuest}
+              isAdmin={isAdmin}
+              theme={theme}
+              onToggleTheme={toggleTheme}
+              onNavigate={(path) => navigate(path)}
+              onLogout={() => { logout(); navigate("/write", { replace: true }); }}
+              onRegister={handleRegister}
+            />
+          </PopoverContent>
+        </Popover>
       </div>
+
+      {/* 删除确认对话框 */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              确认删除
+            </DialogTitle>
+            <DialogDescription>
+              确定要删除「{deleteTarget?.title}」吗？删除后将不再显示在历史记录中。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              取消
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleConfirmDelete} disabled={deleting}>
+              {deleting ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// 用户菜单面板内容 — 共用于折叠态和展开态
+// ════════════════════════════════════════════════════════════
+
+interface UserMenuContentProps {
+  isGuest: boolean;
+  isAdmin: boolean;
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
+  onNavigate: (path: string) => void;
+  onLogout: () => void;
+  onRegister: () => void;
+}
+
+function UserMenuContent({
+  isGuest,
+  isAdmin,
+  theme,
+  onToggleTheme,
+  onNavigate,
+  onLogout,
+  onRegister,
+}: UserMenuContentProps) {
+  return (
+    <div className="space-y-0.5">
+      {/* 个人中心 */}
+      <MenuRow
+        icon={User}
+        label="个人中心"
+        onClick={() => onNavigate("/profile")}
+      />
+
+      {/* 管理后台（仅管理员） */}
+      {isAdmin && (
+        <MenuRow
+          icon={Settings}
+          label="管理后台"
+          onClick={() => onNavigate("/admin")}
+        />
+      )}
+
+      <div className="h-px bg-border/60 my-1" />
+
+      {/* 深浅模式切换 */}
+      <MenuRow
+        icon={theme === "dark" ? Sun : Moon}
+        label={theme === "dark" ? "浅色模式" : "深色模式"}
+        onClick={onToggleTheme}
+      />
+
+      <div className="h-px bg-border/60 my-1" />
+
+      {/* 游客：注册 / 非游客：退出登录 */}
+      {isGuest ? (
+        <MenuRow
+          icon={UserPlus}
+          label="注册账号"
+          onClick={onRegister}
+        />
+      ) : (
+        <MenuRow
+          icon={LogOut}
+          label="退出登录"
+          onClick={onLogout}
+          destructive
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── 菜单行 ────────────────────────────────────────────────
+function MenuRow({
+  icon: Icon,
+  label,
+  onClick,
+  trailing,
+  destructive,
+}: {
+  icon: typeof User;
+  label: string;
+  onClick: () => void;
+  trailing?: string;
+  destructive?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-ui",
+        destructive
+          ? "text-destructive hover:bg-destructive/5"
+          : "text-foreground hover:bg-accent"
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      <span className="flex-1 text-left">{label}</span>
+      {trailing && (
+        <span className="text-[11px] text-muted-foreground font-mono-sm">{trailing}</span>
+      )}
+    </button>
   );
 }

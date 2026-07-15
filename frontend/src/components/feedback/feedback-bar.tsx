@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 interface FeedbackBarProps {
   traceId: string;
   article: string;
+  hasFeedback?: boolean;
 }
 
 // ─── 工具函数 ──────────────────────────────────────────────
@@ -109,7 +110,7 @@ function StarRating({
 
 // ─── 主组件 ────────────────────────────────────────────────
 
-export function FeedbackBar({ traceId, article }: FeedbackBarProps) {
+export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps) {
   const sendWS = useAgentStore((s) => s.sendWS);
 
   const { title, paragraphs } = useMemo(() => parseArticleSegments(article), [article]);
@@ -120,7 +121,7 @@ export function FeedbackBar({ traceId, article }: FeedbackBarProps) {
   const [overallRating, setOverallRating] = useState<FeedbackType | null>(null);
   const [comment, setComment] = useState("");
   const [expanded, setExpanded] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState(hasFeedback ?? false);
 
   const hasSegmentFeedback = titleRating > 0 || Object.values(paragraphRatings).some((v) => v > 0);
 

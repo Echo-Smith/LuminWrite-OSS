@@ -1,20 +1,27 @@
 /**
  * 增强写作 Composer — 风格/模式/素材 + 输入框 + 发送/暂停/取消
+ *
+ * 设计参考 assistant-ui / Claude Artifacts：
+ *   - 大圆角药丸形容器（--composer-radius: 24px）
+ *   - 聚焦时微妙阴影上浮
+ *   - 极简边框（border/60 透明度）
+ *   - 控件行与输入框整合在同一个容器内
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Pause, Play, Square, Paperclip, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, type LucideIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { Pause, Play, Square, Plus, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, PenLine, type LucideIcon } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
+import { ModelPicker } from "./model-picker";
 import { useAgentStore } from "@/stores/agent-store";
 import type { WriteMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { StaggerItem } from "@/components/animation";
 
 export function WritingComposer() {
   const [message, setMessage] = useState("");
   const [style, setStyle] = useState("yinyue");
   const [mode, setMode] = useState<WriteMode>("auto");
+  const [model, setModel] = useState("deepseek-v4-flash");
   const [materials, setMaterials] = useState<string[]>([]);
   const [showMaterials, setShowMaterials] = useState(false);
   const [materialInput, setMaterialInput] = useState("");
@@ -61,11 +68,12 @@ export function WritingComposer() {
       message: message.trim(),
       style,
       mode,
+      model,
       user_materials: materials.length > 0 ? materials : undefined,
     });
 
     setMessage("");
-  }, [message, style, mode, materials, isRunning, startWriting]);
+  }, [message, style, mode, model, materials, isRunning, startWriting]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -82,169 +90,183 @@ export function WritingComposer() {
   };
 
   return (
-    <div className="border-t bg-background">
+    <div className="px-4 pb-4 pt-2">
       {/* 暂停状态提示栏 */}
       {isPaused && (
-        <div className="flex items-center gap-2 bg-amber-50 border-b border-amber-200 px-3 py-1.5">
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/60 px-3 py-1.5 anim-fade-in">
           <Pause className="h-3.5 w-3.5 text-amber-600" />
-          <span className="text-xs text-amber-700 font-medium">写作已暂停</span>
-          <span className="text-xs text-amber-500">— 点击播放按钮继续生成</span>
-        </div>
-      )}
-
-      {/* 素材标签 */}
-      {materials.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pt-2">
-          {materials.map((mat, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
-            >
-              <Paperclip className="h-3 w-3 text-muted-foreground" />
-              <span className="max-w-[200px] truncate">{mat.slice(0, 50)}...</span>
-              <button
-                onClick={() => setMaterials(materials.filter((_, idx) => idx !== i))}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 素材输入展开区 */}
-      {showMaterials && (
-        <div className="px-3 pt-2">
-          <div className="flex gap-2">
-            <Textarea
-              value={materialInput}
-              onChange={(e) => setMaterialInput(e.target.value)}
-              placeholder="粘贴参考素材，回车添加..."
-              className="h-16 text-xs"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleAddMaterial();
-                }
-              }}
-            />
-            <Button size="sm" variant="outline" onClick={handleAddMaterial}>
-              添加
-            </Button>
-          </div>
+          <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">写作已暂停</span>
+          <span className="text-xs text-amber-500">— 点击播放按钮继续</span>
         </div>
       )}
 
       {/* Suggestion 快捷入口（仅空闲且无输入时显示） */}
       {!isRunning && !isPaused && !message.trim() && (
-        <div className="flex flex-wrap gap-1.5 px-3 pt-2">
-          <SuggestionButton
-            icon={TrendingUp}
-            label="基于热搜写评论"
-            onClick={() => setMessage("基于热搜写一篇评论")}
-          />
-          <SuggestionButton
-            icon={FileEdit}
-            label="写一篇议论文"
-            onClick={() => setMessage("写一篇关于人工智能与就业的议论文")}
-          />
-          <SuggestionButton
-            icon={Lightbulb}
-            label="帮我构思选题"
-            onClick={() => setMessage("帮我构思3个关于城市交通的选题")}
-          />
-          <SuggestionButton
-            icon={MessageCircle}
-            label="提炼核心观点"
-            onClick={() => setMessage("提炼以下文章的核心观点：\n\n")}
-          />
+        <div className="mb-2.5 flex flex-wrap gap-1.5">
+          {[
+            { icon: TrendingUp, label: "基于热搜写评论", text: "基于热搜写一篇评论" },
+            { icon: FileEdit, label: "写一篇议论文", text: "写一篇关于人工智能与就业的议论文" },
+            { icon: Lightbulb, label: "帮我构思选题", text: "帮我构思3个关于城市交通的选题" },
+            { icon: MessageCircle, label: "提炼核心观点", text: "提炼以下文章的核心观点：\n\n" },
+          ].map((s, i) => (
+            <StaggerItem key={i} index={i} interval={60} animation="fade-up">
+              <SuggestionButton icon={s.icon} label={s.label} onClick={() => setMessage(s.text)} />
+            </StaggerItem>
+          ))}
         </div>
       )}
 
-      {/* 控件行 */}
-      <div className="flex items-center gap-2 px-3 pt-2">
-        <StylePicker value={style} onChange={setStyle} />
-        <ModePicker value={mode} onChange={setMode} />
-        <Button
-          variant="ghost"
-          size="sm"
-          className={cn("gap-1.5", showMaterials && "bg-accent")}
-          onClick={() => setShowMaterials(!showMaterials)}
-        >
-          <Paperclip className="h-3.5 w-3.5" />
-          <span className="text-xs">素材</span>
-          {materials.length > 0 && (
-            <span className="rounded-full bg-primary px-1.5 text-xs text-primary-foreground">
-              {materials.length}
-            </span>
-          )}
-        </Button>
-      </div>
-
-      {/* 输入框 + 操作按钮 */}
-      <div className="flex items-end gap-2 p-3">
-        <Textarea
-          ref={textareaRef}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"
-          className="min-h-[40px] resize-none text-sm"
-          disabled={isRunning}
-          rows={1}
-        />
-
-        {isRunning && (
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={pauseWriting}
-            className="shrink-0"
-          >
-            <Pause className="h-4 w-4" />
-          </Button>
+      {/* ── Composer 药丸容器 ── */}
+      <div className="composer-shell overflow-hidden">
+        {/* 素材标签（在容器内顶部） */}
+        {materials.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-4 pt-3 anim-fade-in">
+            {materials.map((mat, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
+              >
+                <span className="max-w-[200px] truncate">{mat.slice(0, 50)}...</span>
+                <button
+                  onClick={() => setMaterials(materials.filter((_, idx) => idx !== i))}
+                  className="text-muted-foreground hover:text-foreground transition-ui"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
 
-        {isPaused && (
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={resumeWriting}
-            className="shrink-0"
-          >
-            <Play className="h-4 w-4" />
-          </Button>
+        {/* 素材输入展开区 */}
+        {showMaterials && (
+          <div className="px-4 pt-3 anim-fade-in">
+            <div className="flex gap-2">
+              <input
+                value={materialInput}
+                onChange={(e) => setMaterialInput(e.target.value)}
+                placeholder="粘贴参考素材，回车添加..."
+                className="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-xs outline-none transition-ui placeholder:text-muted-foreground focus:border-border"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleAddMaterial();
+                  }
+                }}
+              />
+              <button
+                onClick={handleAddMaterial}
+                className="rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent"
+              >
+                添加
+              </button>
+            </div>
+          </div>
         )}
 
-        {(isRunning || isPaused) && (
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={cancelWriting}
-            className="shrink-0 text-red-600 hover:text-red-700"
-          >
-            <Square className="h-4 w-4" />
-          </Button>
-        )}
+        {/* 主输入区 */}
+        <div className="flex items-end gap-2 px-4 pt-3">
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"
+            className="flex-1 min-h-[40px] max-h-[200px] resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:opacity-50"
+            disabled={isRunning}
+            rows={1}
+          />
+        </div>
 
-        {!isRunning && !isPaused && (
-          <Button
-            size="icon"
-            onClick={handleSend}
-            disabled={!message.trim()}
-            className="shrink-0"
+        {/* 底部控件行 — 无分割线 */}
+        <div className="flex items-center gap-2 px-4 py-2.5">
+          {/* 左侧：+ 素材按钮 */}
+          <button
+            className={cn(
+              "relative flex items-center justify-center h-7 w-7 rounded-full border border-border/60 text-muted-foreground transition-ui",
+              showMaterials
+                ? "bg-accent text-foreground border-transparent"
+                : "hover:bg-accent hover:text-foreground"
+            )}
+            onClick={() => setShowMaterials(!showMaterials)}
+            title="添加素材"
           >
-            <Send className="h-4 w-4" />
-          </Button>
-        )}
+            <Plus className="h-3.5 w-3.5" />
+            {materials.length > 0 && (
+              <span className="absolute -top-1 -right-1 rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground leading-4">
+                {materials.length}
+              </span>
+            )}
+          </button>
+
+          {/* 左侧：引导模式 */}
+          <ModePicker value={mode} onChange={setMode} />
+
+          {/* 左侧：风格选择（紧挨模式右侧） */}
+          <StylePicker value={style} onChange={setStyle} />
+
+          {/* 右侧弹性间距 */}
+          <div className="flex-1" />
+
+          {/* 右侧：模型选择 */}
+          <ModelPicker value={model} onChange={setModel} />
+
+          {/* 右侧：发送/暂停/取消按钮 — 笔头像黑色圆 */}
+          <div className="flex items-center gap-1.5">
+            {isRunning && (
+              <button
+                onClick={pauseWriting}
+                className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
+                title="暂停"
+              >
+                <Pause className="h-4 w-4" />
+              </button>
+            )}
+
+            {isPaused && (
+              <button
+                onClick={resumeWriting}
+                className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
+                title="继续"
+              >
+                <Play className="h-4 w-4" />
+              </button>
+            )}
+
+            {(isRunning || isPaused) && (
+              <button
+                onClick={cancelWriting}
+                className="flex items-center justify-center h-8 w-8 rounded-full border border-destructive/30 text-destructive transition-transform-precise hover:scale-105 active:scale-95 hover:bg-destructive/10"
+                title="停止"
+              >
+                <Square className="h-3.5 w-3.5" />
+              </button>
+            )}
+
+            {!isRunning && !isPaused && (
+              <button
+                onClick={handleSend}
+                disabled={!message.trim()}
+                className={cn(
+                  "flex items-center justify-center h-8 w-8 rounded-full transition-transform-precise",
+                  message.trim()
+                    ? "bg-foreground text-background hover:scale-105 active:scale-95"
+                    : "bg-muted text-muted-foreground cursor-not-allowed"
+                )}
+                title="发送"
+              >
+                <PenLine className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
 /**
- * Suggestion 快捷按钮
+ * Suggestion 快捷按钮 — 极简 pill 样式
  */
 function SuggestionButton({
   icon: Icon,
@@ -258,7 +280,7 @@ function SuggestionButton({
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 rounded-full border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1.5 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
     >
       <Icon className="h-3.5 w-3.5" />
       {label}

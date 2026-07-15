@@ -2,13 +2,25 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
+
+// isLikelyUUID checks if a string looks like a UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
+// Used to avoid PostgreSQL errors when a non-UUID user_id (e.g. "admin") is passed.
+func isLikelyUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	parts := strings.Split(s, "-")
+	return len(parts) == 5
+}
 
 // TraceRepo handles persistence of agent execution traces.
 type TraceRepo struct {
@@ -26,12 +38,19 @@ func (r *TraceRepo) CreateTrace(ctx context.Context, execCtx *engine.ExecutionCo
 		return nil
 	}
 
+	// Only set user_id for authenticated users with valid UUID (not "anonymous", "admin", etc.)
+	var userIDArg interface{}
+	if execCtx.UserID != "" && execCtx.UserID != "anonymous" && isLikelyUUID(execCtx.UserID) {
+		userIDArg = execCtx.UserID
+	}
+
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO agent_traces (trace_id, user_input, style_slug, mode, status, current_step, step_history, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		INSERT INTO agent_traces (trace_id, user_id, user_input, style_slug, mode, status, current_step, step_history, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (trace_id) DO NOTHING
 	`,
 		execCtx.TraceID,
+		userIDArg,
 		execCtx.UserInput,
 		execCtx.StyleSlug,
 		execCtx.Mode,
@@ -75,7 +94,10 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 		return nil
 	}
 
-	reviewJSON, _ := json.Marshal(execCtx.ReviewResult)
+	var reviewJSON []byte
+	if execCtx.ReviewResult != nil {
+		reviewJSON, _ = json.Marshal(execCtx.ReviewResult)
+	}
 	tokenJSON, _ := json.Marshal(map[string]int{
 		"total_tokens": execCtx.TotalTokens,
 	})
@@ -130,20 +152,30 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	var (
 		status      string
 		currentStep string
+		userInput   string
+		styleSlug   *string
+		mode        string
 		article     *string
 		stepHistory []byte
 		reviewJSON  []byte
 		tokenJSON   []byte
 		durationMs  *int64
+		errorMsg    *string
 		createdAt   time.Time
 		completedAt *time.Time
 	)
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT status, current_step, article, step_history, review_result, token_usage, duration_ms, created_at, completed_at
+		SELECT status, current_step, user_input, style_slug, mode,
+		       article, step_history, review_result, token_usage,
+		       duration_ms, error, created_at, completed_at
 		FROM agent_traces
 		WHERE trace_id = $1
-	`, traceID).Scan(&status, &currentStep, &article, &stepHistory, &reviewJSON, &tokenJSON, &durationMs, &createdAt, &completedAt)
+	`, traceID).Scan(
+		&status, &currentStep, &userInput, &styleSlug, &mode,
+		&article, &stepHistory, &reviewJSON, &tokenJSON,
+		&durationMs, &errorMsg, &createdAt, &completedAt,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +184,14 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		"trace_id":      traceID,
 		"status":        status,
 		"current_step":  currentStep,
+		"user_input":    userInput,
+		"mode":          mode,
 		"created_at":    createdAt,
 	}
 
+	if styleSlug != nil {
+		result["style_slug"] = *styleSlug
+	}
 	if article != nil {
 		result["article"] = *article
 	}
@@ -163,6 +200,9 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	}
 	if durationMs != nil {
 		result["duration_ms"] = *durationMs
+	}
+	if errorMsg != nil {
+		result["error"] = *errorMsg
 	}
 	if len(stepHistory) > 0 {
 		var history interface{}
@@ -180,10 +220,16 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		result["token_usage"] = tokens
 	}
 
+	// Check if user feedback has been submitted for this trace
+	var feedbackCount int
+	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_segments WHERE trace_id = $1`, traceID).Scan(&feedbackCount)
+	result["has_feedback"] = feedbackCount > 0
+
 	return result, nil
 }
 
 // ListTraces lists recent traces with pagination.
+// If userID is non-empty, results are filtered to that user.
 func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSize int) ([]map[string]interface{}, int, error) {
 	if r.db == nil {
 		return []map[string]interface{}{}, 0, nil
@@ -197,12 +243,34 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 	}
 	offset := (page - 1) * pageSize
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms
-		FROM agent_traces
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`, pageSize, offset)
+	var (
+		rows   *sql.Rows
+		err    error
+		countQ string
+		countArgs []interface{}
+	)
+
+	if userID != "" && userID != "anonymous" && isLikelyUUID(userID) {
+		rows, err = r.db.QueryContext(ctx, `
+			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms
+			FROM agent_traces
+			WHERE user_id = $1 AND user_deleted = FALSE
+			ORDER BY created_at DESC
+			LIMIT $2 OFFSET $3
+		`, userID, pageSize, offset)
+		countQ = `SELECT COUNT(*) FROM agent_traces WHERE user_id = $1 AND user_deleted = FALSE`
+		countArgs = []interface{}{userID}
+	} else {
+		rows, err = r.db.QueryContext(ctx, `
+			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms
+			FROM agent_traces
+			WHERE user_deleted = FALSE
+			ORDER BY created_at DESC
+			LIMIT $1 OFFSET $2
+		`, pageSize, offset)
+		countQ = `SELECT COUNT(*) FROM agent_traces WHERE user_deleted = FALSE`
+		countArgs = []interface{}{}
+	}
 	if err != nil {
 		return nil, 0, err
 	}
@@ -249,9 +317,34 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 
 	// Get total count
 	var total int
-	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_traces`).Scan(&total)
+	r.db.QueryRowContext(ctx, countQ, countArgs...).Scan(&total)
 
 	return traces, total, nil
+}
+
+// SoftDeleteTrace marks a trace as deleted by the user (admin still sees it).
+func (r *TraceRepo) SoftDeleteTrace(ctx context.Context, traceID, userID string) error {
+	if r.db == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE agent_traces SET user_deleted = TRUE
+		WHERE trace_id = $1 AND (user_id = $2 OR $2 = '')
+	`, traceID, userID)
+	return err
+}
+
+// HasFeedback checks if feedback has already been submitted for a trace.
+func (r *TraceRepo) HasFeedback(ctx context.Context, traceID string) (bool, error) {
+	if r.db == nil {
+		return false, nil
+	}
+	var count int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_segments WHERE trace_id = $1`, traceID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // SaveFeedback saves feedback segments for a trace.

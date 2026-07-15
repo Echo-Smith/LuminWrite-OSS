@@ -86,6 +86,7 @@ export interface WritingSession {
 interface AgentStore {
   sessions: WritingSession[];
   activeSessionId: string | null;
+  sessionsLoaded: boolean;
 
   // WebSocket 连接
   ws: WebSocket | null;
@@ -98,6 +99,8 @@ interface AgentStore {
   createSession: () => string;
   switchSession: (id: string) => void;
   deleteSession: (id: string) => void;
+  loadSessions: () => Promise<void>;
+  loadSessionDetail: (traceId: string) => Promise<void>;
 
   connectWS: () => void;
   sendWS: (type: string, payload: Record<string, unknown>) => void;
@@ -129,6 +132,7 @@ function genMsgId(): string {
 export const useAgentStore = create<AgentStore>((set, get) => ({
   sessions: [],
   activeSessionId: null,
+  sessionsLoaded: false,
   ws: null,
   wsConnected: false,
   streamingText: "",
@@ -155,6 +159,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   switchSession: (id) => {
     set({ activeSessionId: id });
+    // 延迟加载会话详情
+    const session = get().sessions.find((s) => s.id === id);
+    if (session?.traceId && session.messages.length === 0) {
+      get().loadSessionDetail(session.traceId);
+    }
   },
 
   deleteSession: (id) => {
@@ -167,6 +176,165 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     });
   },
 
+  // ─── 从数据库加载会话列表 ────────────────────────────────
+  loadSessions: async () => {
+    if (get().sessionsLoaded) return;
+
+    try {
+      const res = await fetch("/api/v2/sessions?page=1&page_size=50");
+      const json = await res.json();
+      if (!json.success || !json.data?.sessions) return;
+
+      const dbSessions = json.data.sessions as Array<{
+        trace_id: string;
+        status: string;
+        current_step: string;
+        user_input: string;
+        style_slug?: string;
+        mode: string;
+        created_at: string;
+        completed_at?: string;
+        duration_ms?: number;
+      }>;
+
+      // 将 DB 记录转换为 WritingSession（仅列表摘要，不加载完整消息）
+      const dbSessionsMapped: WritingSession[] = dbSessions.map((t) => ({
+        id: t.trace_id,
+        title: t.user_input?.slice(0, 30) || "历史会话",
+        messages: [], // 延迟加载，点击时通过 loadSessionDetail 获取
+        traceId: t.trace_id,
+        status: (t.status === "completed" ? "completed" :
+                t.status === "failed" ? "error" :
+                t.status === "running" ? "running" : "idle") as WritingSession["status"],
+        style: t.style_slug || "yinyue",
+        mode: t.mode || "auto",
+        createdAt: new Date(t.created_at).getTime(),
+        awaitInputAt: null,
+      }));
+
+      // 合并 DB 会话与本地已有会话（保留本地进行中的会话，避免丢失）
+      set((state) => {
+        const dbTraceIds = new Set(dbSessionsMapped.map((s) => s.traceId));
+        const localOnly = state.sessions.filter(
+          (s) => s.traceId && !dbTraceIds.has(s.traceId)
+        );
+        // 本地无 traceId 的临时会话也保留
+        const localTemp = state.sessions.filter((s) => !s.traceId);
+        return {
+          sessions: [...localTemp, ...localOnly, ...dbSessionsMapped],
+          sessionsLoaded: true,
+        };
+      });
+    } catch (e) {
+      console.error("Failed to load sessions from DB:", e);
+    }
+  },
+
+  // ─── 从数据库加载单个会话详情 ────────────────────────────
+  loadSessionDetail: async (traceId) => {
+    // 先检查是否已加载过消息
+    const existing = get().sessions.find((s) => s.traceId === traceId);
+    if (existing && existing.messages.length > 0) return;
+
+    try {
+      const res = await fetch(`/api/v2/sessions/${traceId}`);
+      const json = await res.json();
+      if (!json.success || !json.data) return;
+
+      const d = json.data as {
+        trace_id: string;
+        status: string;
+        user_input: string;
+        style_slug?: string;
+        mode: string;
+        article?: string;
+        step_history?: Array<{ step: string; status: string; startedAt?: string; completedAt?: string; durationMs?: number; result?: unknown; error?: string }>;
+        review?: unknown;
+        created_at: string;
+        completed_at?: string;
+        error?: string;
+        has_feedback?: boolean;
+      };
+
+      // 重建消息列表
+      const messages: ChatMessage[] = [];
+
+      // 用户消息
+      if (d.user_input) {
+        messages.push({
+          id: genMsgId(),
+          role: "user",
+          parts: [{ type: "text", text: d.user_input }],
+          createdAt: new Date(d.created_at).getTime(),
+        });
+      }
+
+      // 助手消息（从 step_history + article 重建）
+      const assistantParts: MessagePart[] = [];
+
+      // 从 step_history 重建 tool-call parts
+      if (d.step_history && Array.isArray(d.step_history)) {
+        for (const step of d.step_history) {
+          assistantParts.push({
+            type: "tool-call",
+            toolName: step.step as AgentStepName,
+            status: step.status === "running" ? "running" : "complete",
+            startedAt: step.startedAt ? new Date(step.startedAt).getTime() : undefined,
+            completedAt: step.completedAt ? new Date(step.completedAt).getTime() : undefined,
+            durationMs: step.durationMs,
+            result: step.result,
+            error: step.error,
+          });
+        }
+      }
+
+      // 文章内容
+      if (d.article) {
+        assistantParts.push({ type: "text", text: d.article });
+      }
+
+      // 评价结果
+      if (d.review) {
+        assistantParts.push({ type: "data", dataType: "review", data: d.review });
+        assistantParts.push({ type: "data", dataType: "feedback", data: { article: d.article, has_feedback: d.has_feedback } });
+      }
+
+      // 错误信息
+      if (d.error) {
+        assistantParts.push({ type: "text", text: `❌ 错误：${d.error}` });
+      }
+
+      if (assistantParts.length > 0) {
+        messages.push({
+          id: genMsgId(),
+          role: "assistant",
+          parts: assistantParts,
+          createdAt: new Date(d.created_at).getTime() + 100,
+          status: d.status === "failed" ? "error" : "complete",
+        });
+      }
+
+      // 更新对应会话
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.traceId === traceId
+            ? {
+                ...s,
+                messages,
+                status: (d.status === "completed" ? "completed" :
+                        d.status === "failed" ? "error" :
+                        d.status === "running" ? "running" : "idle") as WritingSession["status"],
+                style: d.style_slug || s.style,
+                mode: d.mode || s.mode,
+              }
+            : s
+        ),
+      }));
+    } catch (e) {
+      console.error("Failed to load session detail:", e);
+    }
+  },
+
   connectWS: () => {
     const { ws } = get();
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -174,11 +342,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     // Get auth token for WS authentication
     const token = useAuthStore.getState().token;
 
-    // In dev mode, connect directly to backend to avoid Vite WS proxy issues
-    const isDev = import.meta.env.DEV;
-    const baseUrl = isDev
-      ? `ws://localhost:8080/api/v2/ws/agent`
-      : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v2/ws/agent`;
+    // Use same-origin WebSocket URL so that the Vite dev proxy (ws: true)
+    // or the Nginx reverse proxy handles forwarding to the backend.
+    const baseUrl = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v2/ws/agent`;
     const wsUrl = token ? `${baseUrl}?token=${encodeURIComponent(token)}` : baseUrl;
     const socket = new WebSocket(wsUrl);
 
@@ -482,13 +648,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             }
             return part;
           });
-          // 添加 review data part
+          // 添加 review data part（仅写作模式有评分）
           if (review) {
             parts.push({ type: "data", dataType: "review" as const, data: result.review });
-          }
-          // 添加 feedback data part（触发 FeedbackBar 渲染）
-          if (article) {
-            parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
+            // 添加 feedback data part（触发 FeedbackBar 渲染）
+            // 仅当有评分时才显示文章评价，chat 模式不显示
+            if (article) {
+              parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
+            }
           }
           return { ...m, parts, status: "complete" as const };
         });
@@ -548,6 +715,19 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
         if (status === "not_found") {
           console.warn("Session resume failed:", p.message);
+          // Clear the stale trace ID and reset session status so user can start fresh
+          get()._updateActiveSession((s) => ({
+            ...s,
+            traceId: null,
+            status: "idle",
+          }));
+          // Stop any streaming indicator
+          get()._updateLastAssistantMessage((m) => ({
+            ...m,
+            parts: m.parts.map((part) =>
+              part.type === "text" && part.streaming ? { ...part, streaming: false } : part
+            ),
+          }));
           break;
         }
 

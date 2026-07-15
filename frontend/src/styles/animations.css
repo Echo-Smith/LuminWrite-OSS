@@ -1,0 +1,461 @@
+/**
+ * ─── 动画视觉体系 ─────────────────────────────────────────────
+ *
+ * 架构分层：
+ *   1. Tokens     — CSS 变量定义（duration / easing / delay / scale）
+ *   2. Keyframes  — 所有关键帧定义
+ *   3. Utilities  — Tailwind 友好的工具类（.anim-* 前缀）
+ *   4. Components — 复合动画类（.motion-* 前缀，用于特定场景）
+ *
+ * 设计哲学（参考 Codex / OpenAI 风格）：
+ *   - 动画应克制、精准，服务于内容而非抢夺注意力
+ *   - 优先使用 transform + opacity（GPU 加速）
+ *   - 尊重 prefers-reduced-motion
+ *   - 统一的缓动曲线，避免弹跳过度
+ */
+
+/* ════════════════════════════════════════════════════════════
+ * 1. ANIMATION TOKENS
+ * ════════════════════════════════════════════════════════════ */
+:root {
+  /* Durations */
+  --anim-duration-instant: 80ms;
+  --anim-duration-fast: 150ms;
+  --anim-duration-normal: 250ms;
+  --anim-duration-slow: 400ms;
+  --anim-duration-slower: 600ms;
+  --anim-duration-epic: 800ms;
+
+  /* Easings — 精心调校的缓动曲线 */
+  --anim-ease-linear: linear;
+  --anim-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --anim-ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --anim-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --anim-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --anim-ease-smooth: cubic-bezier(0.45, 0, 0.15, 1);
+  --anim-ease-precise: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Scale */
+  --anim-scale-enter: 0.96;
+  --anim-scale-exit: 1.04;
+  --anim-scale-hover: 1.02;
+
+  /* Blur */
+  --anim-blur-enter: 4px;
+
+  /* Delays — 用于 stagger 动画 */
+  --anim-delay-1: 50ms;
+  --anim-delay-2: 100ms;
+  --anim-delay-3: 150ms;
+  --anim-delay-4: 200ms;
+  --anim-delay-5: 250ms;
+  --anim-delay-6: 300ms;
+}
+
+/* ════════════════════════════════════════════════════════════
+ * 2. KEYFRAMES
+ * ════════════════════════════════════════════════════════════ */
+
+/* ── 淡入淡出 ── */
+@keyframes anim-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes anim-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* ── 淡入 + 上移（最常用） ── */
+@keyframes anim-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes anim-fade-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── 淡入 + 缩放 ── */
+@keyframes anim-fade-scale {
+  from {
+    opacity: 0;
+    transform: scale(var(--anim-scale-enter));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── 淡入 + 模糊清除（高级感） ── */
+@keyframes anim-fade-blur {
+  from {
+    opacity: 0;
+    filter: blur(var(--anim-blur-enter));
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+/* ── 从左滑入 ── */
+@keyframes anim-slide-right {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── 从右滑入 ── */
+@keyframes anim-slide-left {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── 高度展开（用于 collapsible / accordion） ── */
+@keyframes anim-expand-height {
+  from {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    max-height: var(--anim-expand-target, 500px);
+    transform: translateY(0);
+  }
+}
+
+/* ── 旋转 ── */
+@keyframes anim-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 脉冲（呼吸灯效果） ── */
+@keyframes anim-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(0.92);
+  }
+}
+
+/* ── 扩散脉冲（涟漪） ── */
+@keyframes anim-pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--anim-ring-color, rgba(16, 163, 127, 0.4));
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* ── 弹跳（打字指示器点） ── */
+@keyframes anim-bounce-dot {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+/* ── 光标闪烁 ── */
+@keyframes anim-cursor-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* ── 闪光扫过（skeleton loading） ── */
+@keyframes anim-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* ── 渐变流动（品牌渐变背景） ── */
+@keyframes anim-gradient-flow {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+/* ── 缩放弹入 ── */
+@keyframes anim-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 摇晃（错误提示） ── */
+@keyframes anim-shake {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-4px); }
+  40%      { transform: translateX(4px); }
+  60%      { transform: translateX(-3px); }
+  80%      { transform: translateX(3px); }
+}
+
+/* ── 进度条加载 ── */
+@keyframes anim-progress-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+/* ── 边框光泽（hover 高亮） ── */
+@keyframes anim-border-glow {
+  0%, 100% {
+    border-color: var(--anim-glow-from, transparent);
+  }
+  50% {
+    border-color: var(--anim-glow-to, rgba(16, 163, 127, 0.3));
+  }
+}
+
+/* ════════════════════════════════════════════════════════════
+ * 3. UTILITY CLASSES  (.anim-* 前缀)
+ * ════════════════════════════════════════════════════════════ */
+
+/* ── 基础入场动画 ── */
+.anim-fade-in {
+  animation: anim-fade-in var(--anim-duration-normal) var(--anim-ease-out) both;
+}
+.anim-fade-up {
+  animation: anim-fade-up var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.anim-fade-down {
+  animation: anim-fade-down var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.anim-fade-scale {
+  animation: anim-fade-scale var(--anim-duration-normal) var(--anim-ease-spring) both;
+}
+.anim-fade-out {
+  animation: anim-fade-out var(--anim-duration-fast) var(--anim-ease-in) both;
+}
+.anim-fade-blur {
+  animation: anim-fade-blur var(--anim-duration-slow) var(--anim-ease-precise) both;
+}
+.anim-slide-right {
+  animation: anim-slide-right var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.anim-slide-left {
+  animation: anim-slide-left var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.anim-pop-in {
+  animation: anim-pop-in var(--anim-duration-slow) var(--anim-ease-spring) both;
+}
+
+/* ── 速度修饰器 ── */
+.anim-fast    { animation-duration: var(--anim-duration-fast); }
+.anim-normal  { animation-duration: var(--anim-duration-normal); }
+.anim-slow    { animation-duration: var(--anim-duration-slow); }
+.anim-slower  { animation-duration: var(--anim-duration-slower); }
+
+/* ── 延迟修饰器（用于 stagger） ── */
+.anim-delay-1 { animation-delay: var(--anim-delay-1); }
+.anim-delay-2 { animation-delay: var(--anim-delay-2); }
+.anim-delay-3 { animation-delay: var(--anim-delay-3); }
+.anim-delay-4 { animation-delay: var(--anim-delay-4); }
+.anim-delay-5 { animation-delay: var(--anim-delay-5); }
+.anim-delay-6 { animation-delay: var(--anim-delay-6); }
+
+/* ── 持续动画 ── */
+.anim-spin {
+  animation: anim-spin 0.8s var(--anim-ease-linear) infinite;
+}
+.anim-pulse {
+  animation: anim-pulse 2s var(--anim-ease-in-out) infinite;
+}
+.anim-pulse-ring {
+  animation: anim-pulse-ring 2s var(--anim-ease-out) infinite;
+}
+.anim-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(var(--muted-foreground) / 0.08) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: anim-shimmer 2s var(--anim-ease-linear) infinite;
+}
+.anim-cursor-blink {
+  animation: anim-cursor-blink 1s steps(2) infinite;
+}
+.anim-gradient-flow {
+  background-size: 200% 200%;
+  animation: anim-gradient-flow 8s var(--anim-ease-smooth) infinite;
+}
+.anim-progress-indeterminate {
+  animation: anim-progress-indeterminate 1.5s var(--anim-ease-in-out) infinite;
+}
+.anim-shake {
+  animation: anim-shake 0.4s var(--anim-ease-in-out);
+}
+
+/* ── 过渡基础类（替代 Tailwind transition，统一缓动） ── */
+/* 精确过渡：仅 border-color + box-shadow + bg + color（参考 assistant-ui） */
+.transition-ui {
+  transition-property: border-color, box-shadow, background-color, color;
+  transition-duration: var(--anim-duration-fast);
+  transition-timing-function: var(--anim-ease-smooth);
+}
+.transition-precise {
+  transition-property: all;
+  transition-duration: var(--anim-duration-fast);
+  transition-timing-function: var(--anim-ease-precise);
+}
+/* transform + opacity 精确过渡（用于按钮缩放） */
+.transition-transform-precise {
+  transition-property: transform, opacity;
+  transition-duration: var(--anim-duration-fast);
+  transition-timing-function: var(--anim-ease-spring);
+}
+/* 兼容旧名称 */
+.transition-smooth {
+  transition-property: border-color, box-shadow, background-color, color;
+  transition-duration: var(--anim-duration-fast);
+  transition-timing-function: var(--anim-ease-smooth);
+}
+.transition-spring {
+  transition-property: transform, opacity;
+  transition-duration: var(--anim-duration-fast);
+  transition-timing-function: var(--anim-ease-spring);
+}
+
+/* ════════════════════════════════════════════════════════════
+ * 4. COMPONENT-LEVEL ANIMATIONS  (.motion-* 前缀)
+ * ════════════════════════════════════════════════════════════ */
+
+/* ── 打字指示器（三点跳动） ── */
+.motion-typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.motion-typing-dots > span {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground) / 0.5);
+  animation: anim-bounce-dot 1.2s var(--anim-ease-in-out) infinite;
+}
+.motion-typing-dots > span:nth-child(2) { animation-delay: 0.15s; }
+.motion-typing-dots > span:nth-child(3) { animation-delay: 0.3s; }
+
+/* ── Skeleton 闪光 ── */
+.motion-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: hsl(var(--muted) / 0.5);
+}
+.motion-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(var(--foreground) / 0.04) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: anim-shimmer 1.8s var(--anim-ease-linear) infinite;
+}
+
+/* ── 状态点（带涟漪） ── */
+.motion-status-dot {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.motion-status-dot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  animation: anim-pulse-ring 2s var(--anim-ease-out) infinite;
+}
+
+/* ── 卡片悬浮（极简：仅边框颜色变化，无阴影上浮） ── */
+.motion-card-hover {
+  transition:
+    border-color var(--anim-duration-fast) var(--anim-ease-smooth),
+    background-color var(--anim-duration-fast) var(--anim-ease-smooth);
+}
+.motion-card-hover:hover {
+  border-color: hsl(var(--border));
+}
+
+/* ── 内容流式出现（逐行） ── */
+.motion-stream-line {
+  opacity: 0;
+  animation: anim-fade-up var(--anim-duration-normal) var(--anim-ease-precise) forwards;
+}
+
+/* ════════════════════════════════════════════════════════════
+ * 5. REDUCED MOTION — 尊重无障碍偏好
+ * ════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

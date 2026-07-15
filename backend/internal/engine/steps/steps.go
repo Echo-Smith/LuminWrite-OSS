@@ -216,6 +216,23 @@ func NewQueryPlanStep(llm *tools.LLMClient) *QueryPlanStep {
 func (s *QueryPlanStep) Name() engine.StepName { return engine.StepQueryPlan }
 func (s *QueryPlanStep) CanPause() bool         { return false }
 
+// ShouldSkip returns true for intents that don't need search/query planning.
+// chat: conversational, no writing pipeline
+// polish: operates on existing text, no search
+// shorten: operates on existing text, no search
+// expand: operates on existing text, no search
+// extract_points: operates on existing text, no search
+func (s *QueryPlanStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	if execCtx.TaskIntent == nil {
+		return false
+	}
+	switch execCtx.TaskIntent.TaskMode {
+	case "chat", "polish", "shorten", "expand", "extract_points":
+		return true
+	}
+	return false
+}
+
 func (s *QueryPlanStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if execCtx.TaskIntent == nil {
 		return fmt.Errorf("task intent not set")
@@ -299,6 +316,19 @@ func NewSearchStep(llm *tools.LLMClient, search *tools.SearchClient) *SearchStep
 func (s *SearchStep) Name() engine.StepName { return engine.StepSearch }
 func (s *SearchStep) CanPause() bool         { return true }
 
+// ShouldSkip returns true for intents that don't need search.
+// Same set as QueryPlanStep — if no query plan was created, no search is needed.
+func (s *SearchStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	if execCtx.TaskIntent == nil {
+		return false
+	}
+	switch execCtx.TaskIntent.TaskMode {
+	case "chat", "polish", "shorten", "expand", "extract_points":
+		return true
+	}
+	return false
+}
+
 func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if len(execCtx.SearchPlan) == 0 {
 		execCtx.SearchResults = []engine.SearchResult{}
@@ -312,9 +342,12 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 
 	// Use real search client if available
 	if s.search != nil && s.search.HasSources() {
-		query := execCtx.WritingTask.PrimarySearchQuery
-		if query == "" && len(execCtx.WritingTask.SearchQueries) > 0 {
-			query = execCtx.WritingTask.SearchQueries[0]
+		query := ""
+		if execCtx.WritingTask != nil {
+			query = execCtx.WritingTask.PrimarySearchQuery
+			if query == "" && len(execCtx.WritingTask.SearchQueries) > 0 {
+				query = execCtx.WritingTask.SearchQueries[0]
+			}
 		}
 		if query == "" {
 			query = execCtx.UserInput
@@ -379,11 +412,10 @@ func (s *SearchStep) generateMockResults(ctx context.Context, topic string) []en
 		results = obj.Results
 	}
 
-	// Ensure source is set
+	// Ensure source is set — mark as LLM-generated, NOT real search
 	for i := range results {
-		if results[i].Source == "" {
-			results[i].Source = "web"
-		}
+		results[i].Source = "llm_generated"
+		results[i].IsMock = true
 	}
 
 	return results
@@ -404,6 +436,18 @@ func NewRelevanceStepWithEmbedding(emb *tools.EmbeddingClient) *RelevanceStep {
 
 func (s *RelevanceStep) Name() engine.StepName { return engine.StepRelevance }
 func (s *RelevanceStep) CanPause() bool         { return false }
+
+// ShouldSkip returns true for intents that don't produce search results.
+func (s *RelevanceStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	if execCtx.TaskIntent == nil {
+		return false
+	}
+	switch execCtx.TaskIntent.TaskMode {
+	case "chat", "polish", "shorten", "expand", "extract_points":
+		return true
+	}
+	return false
+}
 
 func (s *RelevanceStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if len(execCtx.SearchResults) == 0 {
@@ -685,6 +729,22 @@ func NewOutlineStep(llm *tools.LLMClient) *OutlineStep {
 func (s *OutlineStep) Name() engine.StepName { return engine.StepOutline }
 func (s *OutlineStep) CanPause() bool         { return true }
 
+// ShouldSkip returns true for intents that don't need an outline.
+// Also skips when WritingTask is nil (e.g. when QueryPlanStep was skipped).
+func (s *OutlineStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	if execCtx.TaskIntent == nil {
+		return false
+	}
+	switch execCtx.TaskIntent.TaskMode {
+	case "chat", "polish", "shorten", "expand", "extract_points":
+		return true
+	}
+	if execCtx.WritingTask == nil {
+		return true
+	}
+	return false
+}
+
 func (s *OutlineStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	// Only for guided mode
 	if execCtx.Mode != "guided" {
@@ -815,9 +875,20 @@ func NewWriteStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *Wri
 func (s *WriteStep) Name() engine.StepName { return engine.StepWrite }
 func (s *WriteStep) CanPause() bool         { return true }
 
+// ShouldSkip returns true for chat intent — chat is handled by ChatStep.
+func (s *WriteStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+}
+
 func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if s.llm == nil {
 		return fmt.Errorf("LLM client not available")
+	}
+
+	// Determine task mode
+	taskMode := "writing"
+	if execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode != "" {
+		taskMode = execCtx.TaskIntent.TaskMode
 	}
 
 	// Build system prompt — use profile's system prompt if available
@@ -826,25 +897,31 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		systemPrompt = s.profile.SystemPrompt
 	}
 
-	// Build user prompt
+	// Build user prompt — differentiated by task mode
 	var promptBuilder strings.Builder
-	promptBuilder.WriteString("请写一篇文章。\n\n")
-	promptBuilder.WriteString(fmt.Sprintf("话题：%s\n\n", execCtx.WritingTask.Topic))
+	s.buildTaskPrompt(&promptBuilder, taskMode, execCtx)
 
-	if execCtx.TaskIntent != nil {
-		promptBuilder.WriteString(fmt.Sprintf("任务类型：%s\n", execCtx.TaskIntent.TaskMode))
-	}
-
-	// Add search results as context
-	if len(execCtx.SearchResults) > 0 {
-		promptBuilder.WriteString("\n参考素材：\n")
+	// Add search results as context (only for writing mode — other modes operate on existing text)
+	if taskMode == "writing" && len(execCtx.SearchResults) > 0 {
+		hasMockResults := false
+		for _, result := range execCtx.SearchResults {
+			if result.IsMock {
+				hasMockResults = true
+				break
+			}
+		}
+		if hasMockResults {
+			promptBuilder.WriteString("\n⚠️ 参考素材（注意：以下为 AI 生成的背景参考，非真实搜索结果，使用前请核实事实）：\n")
+		} else {
+			promptBuilder.WriteString("\n参考素材：\n")
+		}
 		for i, result := range execCtx.SearchResults {
 			promptBuilder.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, result.Title, result.Snippet))
 		}
 	}
 
-	// Add outline if available (guided mode)
-	if execCtx.Outline != nil {
+	// Add outline if available (guided mode, writing only)
+	if taskMode == "writing" && execCtx.Outline != nil {
 		promptBuilder.WriteString(fmt.Sprintf("\n标题：%s\n", execCtx.Outline.Title))
 		promptBuilder.WriteString("提纲：\n")
 		for i, item := range execCtx.Outline.Outline {
@@ -852,18 +929,11 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		}
 	}
 
-	// Add word limit — prefer profile's word range, fall back to execCtx.WordLimit
-	if s.profile != nil && s.profile.WordRange.Max > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", s.profile.WordRange.Min, s.profile.WordRange.Max))
-		if s.profile.WordRange.HardLimit {
-			promptBuilder.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
-		}
-	} else if execCtx.WordLimit > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n字数要求：约%d字\n", execCtx.WordLimit))
-	}
+	// Add word limit — use length_profiles per task type if available, fall back to word_range
+	s.appendWordLimit(&promptBuilder, taskMode, execCtx)
 
-	// Add structure requirements from profile
-	if s.profile != nil && s.profile.Structure.Type != "" {
+	// Add structure requirements from profile (writing only)
+	if taskMode == "writing" && s.profile != nil && s.profile.Structure.Type != "" {
 		promptBuilder.WriteString(fmt.Sprintf("\n结构要求：%s", s.profile.Structure.Opening))
 		if s.profile.Structure.Body != "" {
 			promptBuilder.WriteString(fmt.Sprintf(" → %s", s.profile.Structure.Body))
@@ -877,28 +947,48 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		}
 	}
 
-	// Add rhetoric requirements from profile
-	if s.profile != nil && s.profile.Rhetoric.RequiredMetaphor {
-		promptBuilder.WriteString(fmt.Sprintf("\n修辞要求：%s\n", s.profile.Rhetoric.MetaphorDescription))
-	}
-	if s.profile != nil && s.profile.Rhetoric.RequiredParallelism {
-		promptBuilder.WriteString("要求使用排比修辞\n")
-	}
-	if s.profile != nil && s.profile.Rhetoric.RequiredRhetoricalQuestion {
-		promptBuilder.WriteString("要求使用设问修辞\n")
+	// Add rhetoric requirements from profile (writing only)
+	if taskMode == "writing" && s.profile != nil {
+		var rhetoricParts []string
+		if s.profile.Rhetoric.RequiredMetaphor && s.profile.Rhetoric.MetaphorDescription != "" {
+			rhetoricParts = append(rhetoricParts, "核心比喻: "+s.profile.Rhetoric.MetaphorDescription)
+		}
+		if s.profile.Rhetoric.RequiredParallelism {
+			rhetoricParts = append(rhetoricParts, "必须使用排比")
+		}
+		if s.profile.Rhetoric.RequiredRhetoricalQuestion {
+			rhetoricParts = append(rhetoricParts, "必须使用设问")
+		}
+		if len(rhetoricParts) > 0 {
+			promptBuilder.WriteString(fmt.Sprintf("\n修辞要求：%s\n", strings.Join(rhetoricParts, "；")))
+		}
 	}
 
 	// Add title guidelines from profile
 	if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n标题禁止：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
+		promptBuilder.WriteString(fmt.Sprintf("\n标题禁止模式（正则）：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
+	}
+	if s.profile != nil && s.profile.TitleGuidelines.Style != "" {
+		promptBuilder.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
+	}
+	if s.profile != nil && len(s.profile.TitleGuidelines.Examples) > 0 {
+		promptBuilder.WriteString(fmt.Sprintf("标题参考示例：%s\n", strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
 	}
 
 	// Add fact guard requirements from profile
 	if s.profile != nil && len(s.profile.FactGuard.ForbiddenResults) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n禁止使用以下表述：%s\n", strings.Join(s.profile.FactGuard.ForbiddenResults, ", ")))
+		promptBuilder.WriteString(fmt.Sprintf("\n事实红线——禁止使用以下表述（已完成事件不得用结果性动词）：%s\n", strings.Join(s.profile.FactGuard.ForbiddenResults, ", ")))
 	}
 	if s.profile != nil && len(s.profile.FactGuard.FutureTenseRequired) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("未来事件须使用以下表述：%s\n", strings.Join(s.profile.FactGuard.FutureTenseRequired, ", ")))
+		promptBuilder.WriteString(fmt.Sprintf("事实红线——未发生事件须使用以下时态标记：%s\n", strings.Join(s.profile.FactGuard.FutureTenseRequired, ", ")))
+	}
+	if s.profile != nil && s.profile.FactGuard.UserMaterialPriority {
+		promptBuilder.WriteString("事实红线——用户提供的素材优先于 AI 检索结果，如有冲突以用户素材为准\n")
+	}
+
+	// Add value orientation keywords from profile
+	if taskMode == "writing" && s.profile != nil && len(s.profile.ValueOrientation.Keywords) > 0 {
+		promptBuilder.WriteString(fmt.Sprintf("\n价值导向关键词（适当融入）：%s\n", strings.Join(s.profile.ValueOrientation.Keywords, ", ")))
 	}
 
 	// Add user materials if provided
@@ -941,11 +1031,122 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	return nil
 }
 
+// buildTaskPrompt constructs the core prompt instruction differentiated by task mode.
+func (s *WriteStep) buildTaskPrompt(b *strings.Builder, taskMode string, execCtx *engine.ExecutionContext) {
+	normalizedInput := execCtx.NormalizedInput
+	if normalizedInput == "" {
+		normalizedInput = execCtx.UserInput
+	}
+
+	switch taskMode {
+	case "polish":
+		b.WriteString("请对以下文章进行润色优化。保持原文的核心观点和结构不变，重点优化语言表达、修辞效果和行文流畅度。\n\n")
+		b.WriteString("原文：\n")
+		b.WriteString(normalizedInput)
+		b.WriteString("\n\n")
+		b.WriteString("润色要求：\n")
+		b.WriteString("1. 保持原文的核心论点和逻辑结构\n")
+		b.WriteString("2. 优化遣词造句，提升表达力\n")
+		b.WriteString("3. 补充必要的修辞手法（如适用风格 Profile 中的要求）\n")
+		b.WriteString("4. 修正语病、冗余和不流畅之处\n")
+		b.WriteString("5. 标题如有需要可微调，但不可改变主旨\n\n")
+
+	case "shorten":
+		b.WriteString("请将以下文章缩短到指定字数范围内。保持核心观点和关键论证完整，删除冗余表述和重复论证。\n\n")
+		b.WriteString("原文：\n")
+		b.WriteString(normalizedInput)
+		b.WriteString("\n\n")
+		b.WriteString("缩写要求：\n")
+		b.WriteString("1. 保留原文的核心论点和主要论据\n")
+		b.WriteString("2. 删除冗余表述、重复论证和过度展开\n")
+		b.WriteString("3. 保持文章的逻辑连贯性\n")
+		b.WriteString("4. 保持原文的风格和语气\n")
+		b.WriteString("5. 标题保持不变或微调\n\n")
+
+	case "expand":
+		b.WriteString("请将以下文章扩充到指定字数范围内。在不改变核心观点的前提下，增加论证深度、补充论据和细节。\n\n")
+		b.WriteString("原文：\n")
+		b.WriteString(normalizedInput)
+		b.WriteString("\n\n")
+		b.WriteString("扩写要求：\n")
+		b.WriteString("1. 保持原文的核心论点和结构框架\n")
+		b.WriteString("2. 增加论证深度，补充具体论据和案例\n")
+		b.WriteString("3. 丰富修辞手法，增强表达力\n")
+		b.WriteString("4. 保持原文的风格和语气\n")
+		b.WriteString("5. 扩充内容须与主题紧密相关，不可偏题\n\n")
+
+	case "extract_points":
+		b.WriteString("请从以下文章中提炼核心观点，以结构化的方式输出。\n\n")
+		b.WriteString("原文：\n")
+		b.WriteString(normalizedInput)
+		b.WriteString("\n\n")
+		b.WriteString("提取要求：\n")
+		b.WriteString("1. 提炼 3-5 个核心观点，按重要性排序\n")
+		b.WriteString("2. 每个观点用一句话概括，附简要说明\n")
+		b.WriteString("3. 保持原文的价值立场，不添加新观点\n")
+		b.WriteString("4. 输出格式：\n")
+		b.WriteString("## 核心观点\n\n")
+		b.WriteString("1. **观点一**：概括（说明）\n")
+		b.WriteString("2. **观点二**：概括（说明）\n")
+		b.WriteString("3. **观点三**：概括（说明）\n\n")
+
+	default: // writing
+		topic := execCtx.UserInput
+		if execCtx.WritingTask != nil && execCtx.WritingTask.Topic != "" {
+			topic = execCtx.WritingTask.Topic
+		}
+		b.WriteString("请写一篇文章。\n\n")
+		b.WriteString(fmt.Sprintf("话题：%s\n\n", topic))
+	}
+}
+
+// appendWordLimit adds word limit instructions, preferring length_profiles per task type.
+func (s *WriteStep) appendWordLimit(b *strings.Builder, taskMode string, execCtx *engine.ExecutionContext) {
+	// Try length_profiles first (per-task-type word ranges)
+	if s.profile != nil && s.profile.LengthProfiles != nil {
+		var key string
+		switch taskMode {
+		case "polish", "shorten", "expand":
+			// Use polish_short or polish_long based on current length
+			if execCtx.WordLimit > 0 && execCtx.WordLimit <= 600 {
+				key = "polish_short"
+			} else {
+				key = "polish_long"
+			}
+		case "writing":
+			key = "writing"
+		}
+
+		if wr, ok := s.profile.LengthProfiles[key]; ok && wr.Max > 0 {
+			b.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", wr.Min, wr.Max))
+			if wr.HardLimit {
+				b.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
+			}
+			return
+		}
+	}
+
+	// Fall back to profile's global word_range
+	if s.profile != nil && s.profile.WordRange.Max > 0 {
+		b.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", s.profile.WordRange.Min, s.profile.WordRange.Max))
+		if s.profile.WordRange.HardLimit {
+			b.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
+		}
+		return
+	}
+
+	// Fall back to execCtx.WordLimit
+	if execCtx.WordLimit > 0 {
+		b.WriteString(fmt.Sprintf("\n字数要求：约%d字\n", execCtx.WordLimit))
+	}
+}
+
 // ─── PostReviewStep ──────────────────────────────────────
 
 type PostReviewStep struct {
 	llm             *tools.LLMClient
 	sensitiveCheck  engine.SensitiveChecker
+	profile         *profile.StyleProfile
 }
 
 func NewPostReviewStep(llm *tools.LLMClient) *PostReviewStep {
@@ -957,8 +1158,19 @@ func NewPostReviewStepWithSensitiveCheck(llm *tools.LLMClient, sc engine.Sensiti
 	return &PostReviewStep{llm: llm, sensitiveCheck: sc}
 }
 
+// NewPostReviewStepWithProfile creates a PostReviewStep with a style profile for
+// fact_guard / title_guidelines enforcement.
+func NewPostReviewStepWithProfile(llm *tools.LLMClient, sc engine.SensitiveChecker, p *profile.StyleProfile) *PostReviewStep {
+	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p}
+}
+
 func (s *PostReviewStep) Name() engine.StepName { return engine.StepPostReview }
 func (s *PostReviewStep) CanPause() bool         { return false }
+
+// ShouldSkip returns true for chat intent — chat responses don't need review.
+func (s *PostReviewStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+}
 
 func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if s.llm == nil || execCtx.Article == "" {
@@ -976,6 +1188,51 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		return err
 	}
 
+	// Build review prompt — inject profile-specific rules if available
+	var profileRules strings.Builder
+	if s.profile != nil {
+		// Title guidelines
+		if len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
+			profileRules.WriteString(fmt.Sprintf("\n标题禁止模式（正则，必须检查标题是否匹配）：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
+		}
+		if s.profile.TitleGuidelines.Length.Max > 0 {
+			profileRules.WriteString(fmt.Sprintf("标题字数限制：%d-%d字\n", s.profile.TitleGuidelines.Length.Min, s.profile.TitleGuidelines.Length.Max))
+		}
+
+		// Fact guard
+		if len(s.profile.FactGuard.ForbiddenResults) > 0 {
+			profileRules.WriteString(fmt.Sprintf("事实红线——以下表述禁止出现在文章中（已完成事件不得用结果性动词）：%s\n", strings.Join(s.profile.FactGuard.ForbiddenResults, ", ")))
+		}
+		if len(s.profile.FactGuard.FutureTenseRequired) > 0 {
+			profileRules.WriteString(fmt.Sprintf("事实红线——未发生事件须使用以下时态标记：%s\n", strings.Join(s.profile.FactGuard.FutureTenseRequired, ", ")))
+		}
+
+		// Rhetoric requirements
+		var rhetoricParts []string
+		if s.profile.Rhetoric.RequiredMetaphor {
+			rhetoricParts = append(rhetoricParts, "核心比喻")
+		}
+		if s.profile.Rhetoric.RequiredParallelism {
+			rhetoricParts = append(rhetoricParts, "排比")
+		}
+		if s.profile.Rhetoric.RequiredRhetoricalQuestion {
+			rhetoricParts = append(rhetoricParts, "设问")
+		}
+		if len(rhetoricParts) > 0 {
+			profileRules.WriteString(fmt.Sprintf("修辞要求——必须包含：%s\n", strings.Join(rhetoricParts, "、")))
+		}
+
+		// Word range
+		if s.profile.WordRange.Max > 0 {
+			profileRules.WriteString(fmt.Sprintf("字数范围：%d-%d字\n", s.profile.WordRange.Min, s.profile.WordRange.Max))
+		}
+
+		// Structure
+		if s.profile.Structure.Type != "" {
+			profileRules.WriteString(fmt.Sprintf("结构类型：%s（%s → %s → %s）\n", s.profile.Structure.Type, s.profile.Structure.Opening, s.profile.Structure.Body, s.profile.Structure.Conclusion))
+		}
+	}
+
 	systemMsg := "你是文章质量评审员。对文章进行多维度评分和问题检测。只返回 JSON。"
 	userMsg := fmt.Sprintf(`请评审以下文章：
 
@@ -983,12 +1240,13 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 评审维度：factuality（事实准确性）、structure（结构合规）、style（风格符合）、rhetoric（修辞运用）、length（篇幅控制）、title_quality（标题质量）、safety（内容安全）
 
+%s
 返回格式：
 {
   "scores": {"factuality": 0.9, "structure": 0.85, ...},
   "issues": [{"severity": "high", "type": "fact", "message": "..."}],
   "passed": true
-}`, execCtx.Article)
+}`, execCtx.Article, profileRules.String())
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
@@ -1084,6 +1342,109 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		}
 	}
 
+	// Rule-based checks using profile rules (deterministic, independent of LLM)
+
+	// 1. Check title forbidden_patterns (regex)
+	if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
+		// Extract title from article (first ## or # line)
+		articleTitle := ""
+		for _, line := range strings.Split(execCtx.Article, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
+				articleTitle = strings.TrimPrefix(strings.TrimPrefix(trimmed, "## "), "# ")
+				articleTitle = strings.TrimSpace(articleTitle)
+				break
+			}
+		}
+		if articleTitle != "" {
+			for _, pattern := range s.profile.TitleGuidelines.ForbiddenPatterns {
+				if re, err := regexp.Compile(pattern); err == nil && re.MatchString(articleTitle) {
+					review.Issues = append(review.Issues, engine.ReviewIssue{
+						Severity: "high",
+						Type:     "title_forbidden",
+						Message:  fmt.Sprintf("标题「%s」匹配禁止模式「%s」", articleTitle, pattern),
+					})
+					review.Passed = false
+					if score, ok := review.Scores["title_quality"]; ok {
+						review.Scores["title_quality"] = score * 0.3
+					} else {
+						review.Scores["title_quality"] = 0.3
+					}
+					slog.Warn("title forbidden pattern matched",
+						"trace_id", execCtx.TraceID,
+						"title", articleTitle, "pattern", pattern)
+				}
+			}
+		}
+	}
+
+	// 2. Check title length compliance
+	if s.profile != nil && s.profile.TitleGuidelines.Length.Max > 0 {
+		articleTitle := ""
+		for _, line := range strings.Split(execCtx.Article, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
+				articleTitle = strings.TrimPrefix(strings.TrimPrefix(trimmed, "## "), "# ")
+				articleTitle = strings.TrimSpace(articleTitle)
+				break
+			}
+		}
+		if articleTitle != "" {
+			titleLen := len([]rune(articleTitle))
+			minLen := s.profile.TitleGuidelines.Length.Min
+			maxLen := s.profile.TitleGuidelines.Length.Max
+			if titleLen < minLen || titleLen > maxLen {
+				review.Issues = append(review.Issues, engine.ReviewIssue{
+					Severity: "medium",
+					Type:     "title_length",
+					Message:  fmt.Sprintf("标题长度 %d 字，要求 %d-%d 字", titleLen, minLen, maxLen),
+				})
+			}
+		}
+	}
+
+	// 3. Check fact_guard forbidden_results (string matching)
+	if s.profile != nil && len(s.profile.FactGuard.ForbiddenResults) > 0 {
+		articleLower := strings.ToLower(execCtx.Article)
+		for _, forbidden := range s.profile.FactGuard.ForbiddenResults {
+			if strings.Contains(articleLower, strings.ToLower(forbidden)) {
+				review.Issues = append(review.Issues, engine.ReviewIssue{
+					Severity: "high",
+					Type:     "fact_guard",
+					Message:  fmt.Sprintf("文章包含禁止表述「%s」（事实红线：已完成事件不得用结果性动词）", forbidden),
+				})
+				review.Passed = false
+				if score, ok := review.Scores["factuality"]; ok {
+					review.Scores["factuality"] = score * 0.5
+				} else {
+					review.Scores["factuality"] = 0.5
+				}
+				slog.Warn("fact guard forbidden result detected",
+					"trace_id", execCtx.TraceID,
+					"forbidden_phrase", forbidden)
+			}
+		}
+	}
+
+	// 4. Check word count compliance
+	if s.profile != nil && s.profile.WordRange.Max > 0 {
+		wordCount := len([]rune(execCtx.Article))
+		minWords := s.profile.WordRange.Min
+		maxWords := s.profile.WordRange.Max
+		if wordCount < minWords || wordCount > maxWords {
+			severity := "medium"
+			if s.profile.WordRange.HardLimit {
+				severity = "high"
+				review.Passed = false
+			}
+			review.Issues = append(review.Issues, engine.ReviewIssue{
+				Severity: severity,
+				Type:     "length",
+				Message:  fmt.Sprintf("字数 %d，要求 %d-%d 字", wordCount, minWords, maxWords),
+			})
+		}
+	}
+
 	execCtx.ReviewResult = &review
 	return nil
 }
@@ -1100,6 +1461,11 @@ func NewAutoFixStep(llm *tools.LLMClient) *AutoFixStep {
 
 func (s *AutoFixStep) Name() engine.StepName { return engine.StepAutoFix }
 func (s *AutoFixStep) CanPause() bool         { return false }
+
+// ShouldSkip returns true for chat intent — chat responses don't need auto-fix.
+func (s *AutoFixStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+}
 
 func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if execCtx.ReviewResult == nil || execCtx.ReviewResult.Passed {

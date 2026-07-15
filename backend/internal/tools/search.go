@@ -41,7 +41,8 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		c.zhihu = NewZhihuClient(zhihuBaseURL, zhihuAccessSecret, zhihuTimeout)
 	}
 
-	if imaClientID != "" && imaAPIKey != "" {
+	if imaClientID != "" && imaAPIKey != "" && imaKBID != "" &&
+		!isPlaceholderKey(imaClientID) && !isPlaceholderKey(imaAPIKey) && !isPlaceholderKey(imaKBID) {
 		c.ima = NewIMAClient(imaBaseURL, imaClientID, imaAPIKey, imaKBID, imaTimeout)
 	}
 
@@ -452,6 +453,24 @@ type IMAClient struct {
 	client   *http.Client
 }
 
+// IsConfigured returns true if all required fields are set and look like real values
+// (not placeholder strings like "your-ima-api-key").
+func (c *IMAClient) IsConfigured() bool {
+	if c == nil {
+		return false
+	}
+	if c.clientID == "" || c.apiKey == "" || c.kbID == "" {
+		return false
+	}
+	// Reject common placeholder values
+	for _, v := range []string{c.clientID, c.apiKey, c.kbID} {
+		if isPlaceholderKey(v) {
+			return false
+		}
+	}
+	return true
+}
+
 func NewIMAClient(baseURL, clientID, apiKey, kbID string, timeout time.Duration) *IMAClient {
 	return &IMAClient{
 		baseURL:  strings.TrimSuffix(baseURL, "/"),
@@ -533,6 +552,130 @@ func (c *IMAClient) Search(ctx context.Context, query string, limit int) ([]engi
 
 	slog.Debug("ima search done", "query", query, "count", len(results))
 	return results, nil
+}
+
+// IMADocument represents a single document fetched from IMA knowledge base.
+type IMADocument struct {
+	DocID    string
+	Title    string
+	Content  string
+	URL      string
+	Category string
+}
+
+// FetchDocuments pulls documents from the IMA knowledge base in batch.
+// It uses the IMA openapi list_documents endpoint to retrieve all documents
+// in the knowledge base, paginating through results.
+// This is used by the cron sync job to pull incremental content into pgvector.
+func (c *IMAClient) FetchDocuments(ctx context.Context, pageSize int) ([]IMADocument, error) {
+	if c == nil || !c.IsConfigured() {
+		return nil, fmt.Errorf("IMA client not configured")
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+
+	var allDocs []IMADocument
+	page := 1
+
+	for {
+		// IMA openapi: list documents in a knowledge base
+		body := map[string]interface{}{
+			"knowledge_base_id": c.kbID,
+			"page":              page,
+			"page_size":         pageSize,
+		}
+
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+
+		url := c.baseURL + "/openapi/wiki/v1/list_documents"
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("ima-openapi-clientid", c.clientID)
+		req.Header.Set("ima-openapi-apikey", c.apiKey)
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("IMA list_documents request failed: %w", err)
+		}
+
+		var result struct {
+			Code int `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				Total    int `json:"total"`
+				Page     int `json:"page"`
+				PageSize int `json:"page_size"`
+				List []struct {
+					DocID    string `json:"doc_id"`
+					Title    string `json:"title"`
+					Content  string `json:"content"`
+					URL      string `json:"url"`
+					Category string `json:"category"`
+				} `json:"list"`
+			} `json:"data"`
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode IMA response: %w", err)
+		}
+
+		if result.Code != 0 {
+			return nil, fmt.Errorf("IMA API error code %d: %s", result.Code, result.Msg)
+		}
+
+		for _, item := range result.Data.List {
+			doc := IMADocument{
+				DocID:    item.DocID,
+				Title:    item.Title,
+				Content:  item.Content,
+				URL:      item.URL,
+				Category: item.Category,
+			}
+			if doc.Title == "" {
+				doc.Title = "无标题"
+			}
+			allDocs = append(allDocs, doc)
+		}
+
+		// Check if we've fetched all pages
+		fetched := page * pageSize
+		if fetched >= result.Data.Total || len(result.Data.List) == 0 {
+			break
+		}
+		page++
+
+		// Safety: don't fetch more than 20 pages (1000 docs)
+		if page > 20 {
+			break
+		}
+	}
+
+	slog.Info("ima fetch documents completed", "total", len(allDocs))
+	return allDocs, nil
+}
+
+// isPlaceholderKey checks if the given string is a common placeholder value
+// that indicates the key was not actually configured.
+func isPlaceholderKey(s string) bool {
+	switch s {
+	case "", "your-ima-client-id", "your-ima-api-key", "your-ima-kb-id",
+		"your-dashscope-api-key", "your-deepseek-api-key":
+		return true
+	}
+	// Also check for strings that start with "your-" or "placeholder"
+	if strings.HasPrefix(s, "your-") || strings.HasPrefix(s, "placeholder") {
+		return true
+	}
+	return false
 }
 
 // ─── Helpers ─────────────────────────────────────────────

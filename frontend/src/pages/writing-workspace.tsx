@@ -14,6 +14,7 @@ import { WritingComposer } from "@/components/composer/writing-composer";
 import { Button } from "@/components/ui/button";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAgentWebSocket } from "@/hooks/use-agent-websocket";
+import { PulseIndicator } from "@/components/animation";
 
 export function WritingWorkspace() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -24,6 +25,12 @@ export function WritingWorkspace() {
 
   const sessions = useAgentStore((s) => s.sessions);
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
+  const loadSessions = useAgentStore((s) => s.loadSessions);
+
+  // 从数据库加载历史会话列表
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
 
   // 有活跃会话且开始写作时自动显示右侧面板
   const session = sessions.find((s) => s.id === activeSessionId);
@@ -41,13 +48,13 @@ export function WritingWorkspace() {
       {/* 中央区域 */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* 顶部工具栏 */}
-        <header className="flex items-center justify-between border-b px-4 py-2.5">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b bg-surface/50 backdrop-blur-sm px-4">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-medium">
               {session?.title ?? "写作工作台"}
             </h2>
             {session && (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground font-mono-sm">
                 · {session.style} · {session.mode}
               </span>
             )}
@@ -56,9 +63,15 @@ export function WritingWorkspace() {
           <div className="flex items-center gap-2">
             {/* WS 连接状态指示 */}
             {!connected && (
-              <span className="flex items-center gap-1 text-xs text-amber-600">
-                <WifiOff className="h-3.5 w-3.5" />
+              <span className="flex items-center gap-1.5 text-xs text-amber-600 anim-fade-in">
+                <PulseIndicator status="paused" size="sm" ring={false} />
                 重连中...
+              </span>
+            )}
+            {connected && session && isWriting && (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground anim-fade-in">
+                <PulseIndicator status="running" size="sm" />
+                <span className="font-mono-sm">live</span>
               </span>
             )}
 

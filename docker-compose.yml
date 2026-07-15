@@ -57,7 +57,7 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
       interval: 10s
       timeout: 3s
       retries: 5

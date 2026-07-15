@@ -17,6 +17,7 @@ import {
   registerPasskey,
 } from "@/lib/passkey";
 import { useAuthStore } from "@/stores/auth-store";
+import { FadeIn } from "@/components/animation";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -137,18 +138,24 @@ export function LoginPage() {
   const defaultTab = passkeySupported && platformAuthAvailable ? "passkey" : "apikey";
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      <Card className="w-[420px] shadow-xl">
+    <div className="relative flex h-screen items-center justify-center overflow-hidden">
+      {/* 背景层 */}
+      <div className="absolute inset-0 bg-dot-pattern opacity-50" />
+      <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-primary/5" />
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-primary/10 rounded-full blur-[120px] opacity-30" />
+
+      <FadeIn direction="scale" className="relative z-10">
+      <Card className="w-[420px] shadow-xl border-border/60">
         <CardHeader className="space-y-3 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary">
-            <span className="text-lg font-bold text-primary-foreground">笔</span>
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-brand-gradient shadow-md">
+            <span className="text-lg font-bold text-white">笔</span>
           </div>
-          <CardTitle className="text-xl">笔润智谈 · 登录</CardTitle>
+          <CardTitle className="text-xl tracking-tight">笔润智谈 · 登录</CardTitle>
           <p className="text-sm text-muted-foreground">选择适合你的登录方式</p>
         </CardHeader>
         <CardContent>
           {error && (
-            <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+            <div className="mb-4 rounded-lg bg-destructive/5 border border-destructive/20 px-3 py-2 text-sm text-destructive anim-shake">
               {error}
             </div>
           )}
@@ -166,13 +173,13 @@ export function LoginPage() {
             {/* Passkey 登录 */}
             <TabsContent value="passkey" className="space-y-3 pt-4">
               {!passkeySupported ? (
-                <div className="rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-700">
+                <div className="rounded-lg bg-amber-50 dark:bg-amber-950/20 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
                   当前浏览器不支持 Passkey / WebAuthn。
                   请使用 Chrome 67+、Safari 14+、Edge 87+ 或 Firefox 122+。
                 </div>
               ) : (
                 <>
-                  <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-600">
+                  <div className="rounded-lg bg-primary/5 px-3 py-2 text-xs text-primary">
                     <Fingerprint className="inline h-3.5 w-3.5 mr-1" />
                     {platformAuthAvailable
                       ? "检测到设备支持生物识别，点击下方按钮使用 Touch ID / Face ID / Windows Hello 登录。"
@@ -330,6 +337,7 @@ export function LoginPage() {
           </Tabs>
         </CardContent>
       </Card>
+      </FadeIn>
     </div>
   );
 }

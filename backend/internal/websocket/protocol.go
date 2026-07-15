@@ -27,6 +27,7 @@ const (
 	MsgAgentCompleted    = "agent.completed"
 	MsgAgentError        = "agent.error"
 	MsgAgentCancelled    = "agent.cancelled"
+	MsgAgentEdited       = "agent.edited"
 	MsgSessionResumed    = "session.resumed"
 	MsgMemoryUsed        = "memory.used"
 	MsgMemoryDismiss     = "memory.dismiss"
@@ -49,6 +50,7 @@ type AgentStartPayload struct {
 	Message      string   `json:"message"`
 	Style        string   `json:"style,omitempty"`
 	Mode         string   `json:"mode,omitempty"`
+	Model        string   `json:"model,omitempty"`
 	SessionID    string   `json:"session_id,omitempty"`
 	UserMaterials []string `json:"user_materials,omitempty"`
 	WordLimit    int      `json:"word_limit,omitempty"`
@@ -64,6 +66,16 @@ type AgentConfirmPayload struct {
 	TraceID string                 `json:"trace_id"`
 	Step    string                 `json:"step"`
 	Data    map[string]interface{} `json:"data,omitempty"`
+}
+
+// AgentEditPayload is the payload for agent.edit — allows the user to edit
+// the article text (or a segment) while the agent is paused or after completion.
+type AgentEditPayload struct {
+	TraceID string `json:"trace_id"`
+	Field   string `json:"field"`           // "article" | "title" | "paragraph"
+	Index   int    `json:"index,omitempty"` // for paragraph edits
+	Value   string `json:"value"`
+	Reason  string `json:"reason,omitempty"` // why the user edited
 }
 
 // AgentCreatedPayload

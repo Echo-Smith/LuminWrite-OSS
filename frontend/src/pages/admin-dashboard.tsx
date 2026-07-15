@@ -63,7 +63,7 @@ export function AdminDashboard() {
               onClick={() => setActivePage(item.key)}
               className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
                 activePage === item.key
-                  ? "bg-primary/10 text-primary font-medium"
+                  ? "bg-muted text-foreground font-medium"
                   : "text-muted-foreground hover:bg-accent"
               }`}
             >

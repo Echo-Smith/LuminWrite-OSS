@@ -12,6 +12,9 @@ export const STEP_LABELS: Record<AgentStepName, string> = {
   write: "文章生成",
   post_review: "写后自检",
   auto_fix: "自动修正",
+  memory_gate: "记忆检索",
+  memory_extract: "记忆提取",
+  chat: "对话回复",
 };
 
 export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
@@ -23,6 +26,9 @@ export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   write: "按风格Profile生成文章，流式输出",
   post_review: "质量评分、敏感检查、篇幅校验",
   auto_fix: "自动修正低严重度问题",
+  memory_gate: "检索用户写作偏好，注入上下文",
+  memory_extract: "从写作结果中提取用户偏好模式",
+  chat: "对话式回复，无需写作流程",
 };
 
 export const STEP_ICONS: Record<AgentStepName, string> = {
@@ -34,4 +40,7 @@ export const STEP_ICONS: Record<AgentStepName, string> = {
   write: "PenLine",
   post_review: "ShieldCheck",
   auto_fix: "Wrench",
+  memory_gate: "Database",
+  memory_extract: "Sparkles",
+  chat: "MessageCircle",
 };
