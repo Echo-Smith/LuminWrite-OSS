@@ -69,13 +69,13 @@ func (s *ChatStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext
 		{Role: "user", Content: promptBuilder.String()},
 	}
 
-	// Stream the response
-	fullText, tokens, err := s.llm.ChatStream(ctx, messages, func(delta string) {
+	// Stream the response (non-thinking mode for fast conversational replies)
+	fullText, tokens, err := s.llm.ChatStreamWithReasoning(ctx, messages, func(delta string) {
 		emitter.StreamDelta(delta)
 		if err := execCtx.CheckPause(ctx, emitter, engine.StepChat); err != nil {
 			return
 		}
-	})
+	}, nil, tools.WithThinking(false))
 	if err != nil {
 		return fmt.Errorf("chat response generation failed: %w", err)
 	}
