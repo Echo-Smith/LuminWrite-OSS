@@ -12,6 +12,13 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
+// ─── Admin User ID ───────────────────────────────────────
+
+// AdminUserID is the fixed UUID for the config-based admin account.
+// It is seeded into the users table by migration 019 so that admin
+// traces are properly associated and all UUID-based queries work.
+const AdminUserID = "00000000-0000-0000-0000-000000000001"
+
 // ─── Auth Handlers ──────────────────────────────────────
 
 // handleLogin authenticates a user and returns a JWT token.
@@ -144,7 +151,7 @@ func (s *Server) issueToken(w http.ResponseWriter, userID, role string) {
 func (s *Server) authenticateAPIKey(apiKey string) (userID, role string, ok bool) {
 	// Check admin token first
 	if apiKey == s.cfg.Admin.Token && s.cfg.Admin.Token != "" {
-		return "admin", "admin", true
+		return AdminUserID, "admin", true
 	}
 
 	if s.adminRepo == nil {
@@ -168,7 +175,7 @@ func (s *Server) authenticateAPIKey(apiKey string) (userID, role string, ok bool
 func (s *Server) authenticatePassword(username, password string) (userID, role string, ok bool) {
 	// Check admin credentials from config
 	if username == "admin" && password == s.cfg.Admin.Token {
-		return "admin", "admin", true
+		return AdminUserID, "admin", true
 	}
 
 	if s.adminRepo == nil || s.adminRepo.DB() == nil {

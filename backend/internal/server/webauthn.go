@@ -831,7 +831,7 @@ func (s *passkeyChallengeStore) cleanup() {
 
 // handlePasskeyRegisterBegin starts the passkey registration flow.
 // POST /api/v2/auth/passkey/register/begin
-// Body: {"name": "My MacBook", "user_id": "admin"}  (user_id optional, defaults to authenticated user)
+// Body: {"name": "My MacBook", "user_id": "<admin-uuid>"}  (user_id optional, defaults to authenticated user)
 func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	if s.webauthn == nil {
 		response.Err(w, http.StatusServiceUnavailable, "unavailable", "WebAuthn not configured")
@@ -853,7 +853,7 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if req.UserID == "" {
-		req.UserID = "admin"
+		req.UserID = AdminUserID
 	}
 	if req.UserName == "" {
 		req.UserName = req.UserID
@@ -954,7 +954,7 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 
 // handlePasskeyLoginBegin starts the passkey authentication flow.
 // POST /api/v2/auth/passkey/login/begin
-// Body: {} or {"user_id": "admin"} (optional, for username-less flow omit user_id)
+// Body: {} or {"user_id": "<admin-uuid>"} (optional, for username-less flow omit user_id)
 func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 	if s.webauthn == nil {
 		response.Err(w, http.StatusServiceUnavailable, "unavailable", "WebAuthn not configured")
@@ -1079,7 +1079,7 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 
 	// Determine role
 	role := "user"
-	if userID == "admin" {
+	if userID == AdminUserID {
 		role = "admin"
 	}
 
@@ -1103,7 +1103,7 @@ func (s *Server) handlePasskeyList(w http.ResponseWriter, r *http.Request) {
 		userID = user.Sub
 	}
 	if userID == "" {
-		userID = "admin"
+		userID = AdminUserID
 	}
 
 	rows, err := s.adminRepo.DB().QueryContext(r.Context(), `

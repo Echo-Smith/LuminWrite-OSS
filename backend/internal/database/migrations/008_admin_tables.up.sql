@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS model_configs (
     id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     provider     VARCHAR(64)  NOT NULL,              -- deepseek | openai | qwen | claude
-    model_name   VARCHAR(128) NOT NULL,              -- e.g. deepseek-chat, gpt-4o
+    model_name   VARCHAR(128) NOT NULL,              -- e.g. deepseek-v4-flash, gpt-4o
     display_name VARCHAR(128) NOT NULL DEFAULT '',
     base_url     TEXT         NOT NULL DEFAULT '',
     max_tokens   INT          NOT NULL DEFAULT 8192,
@@ -89,9 +89,9 @@ CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run_at) WHER
 -- Default model configs
 INSERT INTO model_configs (provider, model_name, display_name, base_url, max_tokens, temperature, is_default, is_active, capabilities)
 VALUES
-    ('deepseek', 'deepseek-chat', 'DeepSeek Chat', 'https://api.deepseek.com/v1', 8192, 0.7, TRUE, TRUE,
-     '{"stream": true, "thinking": false, "vision": false}'),
-    ('deepseek', 'deepseek-reasoner', 'DeepSeek Reasoner (R1)', 'https://api.deepseek.com/v1', 16384, 0.0, FALSE, TRUE,
+    ('deepseek', 'deepseek-v4-flash', 'DeepSeek V4 Flash', 'https://api.deepseek.com', 8192, 0.7, TRUE, TRUE,
+     '{"stream": true, "thinking": true, "vision": false}'),
+    ('deepseek', 'deepseek-v4-pro', 'DeepSeek V4 Pro', 'https://api.deepseek.com', 16384, 0.0, FALSE, TRUE,
      '{"stream": true, "thinking": true, "vision": false}'),
     ('qwen', 'qwen-plus', '通义千问 Plus', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 8192, 0.7, FALSE, FALSE,
      '{"stream": true, "thinking": false, "vision": false}'),
