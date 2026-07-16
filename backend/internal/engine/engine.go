@@ -133,6 +133,7 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 
 	e.emitter.Completed(
 		execCtx.Article,
+		execCtx.ArticleTitle,
 		execCtx.ReviewResult,
 		map[string]interface{}{
 			"total_tokens": execCtx.TotalTokens,
@@ -196,8 +197,12 @@ func getStepResult(step StepName, execCtx *ExecutionContext) interface{} {
 	case StepPostReview:
 		return execCtx.ReviewResult
 	case StepAutoFix:
+		// "fixed" = true only if AutoFix actually applied a fix (article was modified)
+		// "skipped" = true if AutoFix was skipped (review passed or no fixable issues)
+		// "review_passed" = current review status after AutoFix
 		return map[string]interface{}{
-			"fixed": execCtx.ReviewResult != nil && execCtx.ReviewResult.Passed,
+			"fixed":         execCtx.ReviewResult != nil && execCtx.ReviewResult.Passed,
+			"review_passed": execCtx.ReviewResult != nil && execCtx.ReviewResult.Passed,
 		}
 	case StepChat:
 		return map[string]interface{}{

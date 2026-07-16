@@ -17,11 +17,12 @@ import (
 
 // SearchClient manages multi-source search with concurrent execution.
 type SearchClient struct {
-	tavily  *TavilyClient
-	zhihu   *ZhihuClient
-	ima     *IMAClient
-	tencent *TencentNewsClient
-	weibo   *WeiboClient
+	tavily   *TavilyClient
+	zhihu    *ZhihuClient
+	ima      *IMAClient
+	tencent  *TencentNewsClient
+	weibo    *WeiboClient
+	extraHot *ExtraHotClient
 }
 
 // NewSearchClient creates a new search client.
@@ -30,6 +31,7 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	imaBaseURL, imaClientID, imaAPIKey, imaKBID string, imaTimeout time.Duration,
 	tencentEnabled bool, tencentBaseURL string, tencentTimeout time.Duration,
 	weiboEnabled bool, weiboBaseURL string, weiboTimeout time.Duration,
+	extraHotEnabled bool, extraHotBaseURL string, extraHotTimeout time.Duration,
 ) *SearchClient {
 	c := &SearchClient{}
 
@@ -54,12 +56,16 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		c.weibo = NewWeiboClient(weiboBaseURL, weiboTimeout)
 	}
 
+	if extraHotEnabled {
+		c.extraHot = NewExtraHotClient(extraHotBaseURL, extraHotTimeout)
+	}
+
 	return c
 }
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.weibo != nil
+	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.weibo != nil || c.extraHot != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -193,6 +199,11 @@ func (c *SearchClient) activeSources() []string {
 	return sources
 }
 
+// ActiveSources returns the list of configured search source names (public).
+func (c *SearchClient) ActiveSources() []string {
+	return c.activeSources()
+}
+
 // FetchHotTopics fetches hot topics from all configured sources (Tencent, Weibo).
 func (c *SearchClient) FetchHotTopics(ctx context.Context, limit int) []map[string]interface{} {
 	if limit <= 0 {
@@ -235,10 +246,25 @@ func (c *SearchClient) FetchHotTopics(ctx context.Context, limit int) []map[stri
 		}()
 	}
 
+	if c.extraHot != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			topics, err := c.extraHot.FetchHotTopics(ctx, limit)
+			if err != nil {
+				slog.Warn("extra hot topics fetch failed", "error", err)
+				return
+			}
+			mu.Lock()
+			results = append(results, topics...)
+			mu.Unlock()
+		}()
+	}
+
 	wg.Wait()
 
-	if len(results) > limit {
-		results = results[:limit]
+	if len(results) > limit*10 {
+		results = results[:limit*10]
 	}
 
 	return results

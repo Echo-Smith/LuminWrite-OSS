@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // isLikelyUUID checks if a string looks like a UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
-// Used to avoid PostgreSQL errors when a non-UUID user_id (e.g. "admin") is passed.
+// Used to avoid PostgreSQL errors when a non-UUID user_id is passed.
 func isLikelyUUID(s string) bool {
 	if len(s) != 36 {
 		return false
@@ -38,7 +39,7 @@ func (r *TraceRepo) CreateTrace(ctx context.Context, execCtx *engine.ExecutionCo
 		return nil
 	}
 
-	// Only set user_id for authenticated users with valid UUID (not "anonymous", "admin", etc.)
+	// Only set user_id for authenticated users with valid UUID (not "anonymous", etc.)
 	var userIDArg interface{}
 	if execCtx.UserID != "" && execCtx.UserID != "anonymous" && isLikelyUUID(execCtx.UserID) {
 		userIDArg = execCtx.UserID
@@ -107,14 +108,15 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE agent_traces
 		SET status = $1, current_step = $2, step_history = $3,
-		    article = $4, review_result = $5, token_usage = $6,
-		    duration_ms = $7, completed_at = NOW()
-		WHERE trace_id = $8
+		    article = $4, article_title = $5, review_result = $6, token_usage = $7,
+		    duration_ms = $8, completed_at = NOW()
+		WHERE trace_id = $9
 	`,
 		string(execCtx.Status),
 		string(execCtx.CurrentStep),
 		stepHistoryJSON,
 		execCtx.Article,
+		execCtx.ArticleTitle,
 		reviewJSON,
 		tokenJSON,
 		durationMs,
@@ -156,6 +158,7 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		styleSlug   *string
 		mode        string
 		article     *string
+		articleTitle *string
 		stepHistory []byte
 		reviewJSON  []byte
 		tokenJSON   []byte
@@ -167,13 +170,13 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT status, current_step, user_input, style_slug, mode,
-		       article, step_history, review_result, token_usage,
+		       article, article_title, step_history, review_result, token_usage,
 		       duration_ms, error, created_at, completed_at
 		FROM agent_traces
 		WHERE trace_id = $1
 	`, traceID).Scan(
 		&status, &currentStep, &userInput, &styleSlug, &mode,
-		&article, &stepHistory, &reviewJSON, &tokenJSON,
+		&article, &articleTitle, &stepHistory, &reviewJSON, &tokenJSON,
 		&durationMs, &errorMsg, &createdAt, &completedAt,
 	)
 	if err != nil {
@@ -194,6 +197,9 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	}
 	if article != nil {
 		result["article"] = *article
+	}
+	if articleTitle != nil && *articleTitle != "" {
+		result["article_title"] = *articleTitle
 	}
 	if completedAt != nil {
 		result["completed_at"] = *completedAt
@@ -375,6 +381,67 @@ func (r *TraceRepo) SaveFeedback(ctx context.Context, traceID string, segments [
 	return nil
 }
 
+// GetFeedbackByTrace retrieves feedback segments for a trace as FeedbackInfo.
+func (r *TraceRepo) GetFeedbackByTrace(ctx context.Context, traceID string) ([]memory.FeedbackInfo, error) {
+	if r.db == nil {
+		return nil, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT segment_type, rating, comment
+		FROM feedback_segments
+		WHERE trace_id = $1
+		ORDER BY created_at ASC
+	`, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var feedback []memory.FeedbackInfo
+	for rows.Next() {
+		var fb memory.FeedbackInfo
+		if err := rows.Scan(&fb.SegmentType, &fb.Rating, &fb.Comment); err != nil {
+			continue
+		}
+		feedback = append(feedback, fb)
+	}
+	return feedback, nil
+}
+
+// GetTraceUserID retrieves the user_id for a given trace.
+func (r *TraceRepo) GetTraceUserID(ctx context.Context, traceID string) (string, error) {
+	if r.db == nil {
+		return "", nil
+	}
+	var userID sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT user_id::text FROM agent_traces WHERE trace_id = $1
+	`, traceID).Scan(&userID)
+	if err != nil {
+		return "", err
+	}
+	if !userID.Valid || userID.String == "" {
+		return "", fmt.Errorf("user_id not found for trace %s", traceID)
+	}
+	return userID.String, nil
+}
+
+// IsTraceAdopted checks if a trace has been adopted by workbuddy.
+func (r *TraceRepo) IsTraceAdopted(ctx context.Context, traceID string) (bool, error) {
+	if r.db == nil {
+		return false, nil
+	}
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workbuddy_adoptions WHERE trace_id = $1 AND status = 'adopted'
+	`, traceID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // CreateTopic saves a user-submitted topic.
 func (r *TraceRepo) CreateTopic(ctx context.Context, title, description, sourceUID string) (string, error) {
 	if r.db == nil {
@@ -410,12 +477,16 @@ func (r *TraceRepo) ListTopics(ctx context.Context, source string, page, pageSiz
 	query := `
 		SELECT id::text, title, description, source, platform, hot_rank, fetched_at, created_at
 		FROM topics
+		WHERE status = 'active'
 	`
 	args := []interface{}{}
 	argIdx := 1
 
-	if source != "" {
-		query += fmt.Sprintf(" WHERE source = $%d", argIdx)
+	if source == "hot" {
+		// "hot" means all non-user topics (tencent, weibo, baidu, zhihu, etc.)
+		query += fmt.Sprintf(" AND source != 'user'")
+	} else if source != "" {
+		query += fmt.Sprintf(" AND source = $%d", argIdx)
 		args = append(args, source)
 		argIdx++
 	}
@@ -470,13 +541,120 @@ func (r *TraceRepo) ListTopics(ctx context.Context, source string, page, pageSiz
 
 	// Get total count
 	total := 0
-	countQuery := "SELECT COUNT(*) FROM topics"
-	if source != "" {
-		countQuery += " WHERE source = $1"
+	countQuery := "SELECT COUNT(*) FROM topics WHERE status = 'active'"
+	if source == "hot" {
+		countQuery += " AND source != 'user'"
+		r.db.QueryRowContext(ctx, countQuery).Scan(&total)
+	} else if source != "" {
+		countQuery += " AND source = $1"
 		r.db.QueryRowContext(ctx, countQuery, source).Scan(&total)
 	} else {
 		r.db.QueryRowContext(ctx, countQuery).Scan(&total)
 	}
 
 	return topics, total, nil
+}
+
+// DeleteTopic deletes a topic by ID (soft delete: sets status to 'deleted').
+// Only user-created topics can be hard-deleted; hot topics are soft-deleted.
+func (r *TraceRepo) DeleteTopic(ctx context.Context, id string) error {
+	if r.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM topics WHERE id = $1 AND source = 'user'
+	`, id)
+	if err != nil {
+		return err
+	}
+	// Also remove from favorites
+	_, _ = r.db.ExecContext(ctx, `DELETE FROM topic_favorites WHERE topic_id = $1`, id)
+	return nil
+}
+
+// UpdateTopic updates the title and description of a user-created topic.
+// Only source='user' topics can be edited.
+func (r *TraceRepo) UpdateTopic(ctx context.Context, id, title, description string) error {
+	if r.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE topics
+		SET title = $2, description = $3
+		WHERE id = $1 AND source = 'user'
+	`, id, title, description)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("topic not found or not editable")
+	}
+	return nil
+}
+
+// UpsertHotTopics batch-inserts hot topics fetched from external sources.
+// It upserts by (title, platform) — if a topic with the same title+platform exists,
+// it updates hot_rank, description, raw_data and fetched_at.
+// Returns the number of rows inserted/updated.
+func (r *TraceRepo) UpsertHotTopics(ctx context.Context, topics []map[string]interface{}) (int, error) {
+	if r.db == nil {
+		return 0, fmt.Errorf("database not available")
+	}
+	if len(topics) == 0 {
+		return 0, nil
+	}
+
+	count := 0
+	for _, t := range topics {
+		title, _ := t["title"].(string)
+		if title == "" {
+			continue
+		}
+		description, _ := t["description"].(string)
+		source, _ := t["source"].(string)
+		if source == "" {
+			source = "hotlist"
+		}
+		platform, _ := t["platform"].(string)
+		if platform == "" {
+			platform = "unknown"
+		}
+		hotRank := 0
+		if r, ok := t["hot_rank"].(int); ok {
+			hotRank = r
+		} else if r, ok := t["hot_rank"].(float64); ok {
+			hotRank = int(r)
+		}
+
+		rawData, _ := json.Marshal(t)
+
+		_, err := r.db.ExecContext(ctx, `
+			INSERT INTO topics (title, description, source, platform, hot_rank, raw_data, fetched_at, status, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'active', NOW())
+			ON CONFLICT (title, platform) DO UPDATE SET
+				hot_rank = EXCLUDED.hot_rank,
+				description = EXCLUDED.description,
+				raw_data = EXCLUDED.raw_data,
+				fetched_at = NOW(),
+				status = 'active'
+		`, title, description, source, platform, hotRank, rawData)
+		if err != nil {
+			slog.Warn("failed to upsert hot topic", "title", title, "error", err)
+			continue
+		}
+		count++
+	}
+
+	// Deactivate old hot topics not refreshed in the last 3 hours
+	_, _ = r.db.ExecContext(ctx, `
+		UPDATE topics
+		SET status = 'inactive'
+		WHERE source IN ('tencent', 'weibo', 'hotlist')
+		  AND fetched_at < NOW() - INTERVAL '3 hours'
+		  AND status = 'active'
+	`)
+
+	slog.Info("hot topics upserted", "count", count, "total_fetched", len(topics))
+	return count, nil
 }
