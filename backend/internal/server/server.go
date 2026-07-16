@@ -764,7 +764,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	}
 
 	engineSteps = append(engineSteps,
-		steps.NewWriteStepWithProfile(llmClient, styleProfile),
+		steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
 		s.newPostReviewStepWithLLM(llmClient, styleProfile),
 		steps.NewAutoFixStep(llmClient),
 	)

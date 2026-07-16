@@ -186,7 +186,7 @@ type Tool interface {
 
 | Tool | 用途 | 对应 V1 |
 |---|---|---|
-| `DeepSeekClient` | LLM 调用（flash/pro + thinking 模式） | `aiClient.js` |
+| `DeepSeekClient` | LLM 调用（flash/pro + thinking 模式 + tool calls + JSON mode） | `aiClient.js` |
 | `ZhihuClient` | 知乎站内/全网搜索 | `zhihuClient.js` |
 | `IMAClient` | IMA 知识库检索 | `imaClient.js` |
 | `TavilyClient` | 通用联网搜索 | `webSearchService.js` (Tavily 部分) |
@@ -195,6 +195,47 @@ type Tool interface {
 | `DashscopeEmbedding` | 通义 text-embedding-v3 | V2 新增 |
 | `JiaozhenClient` | 较真事实核查 | `jiaozhenService.js` |
 | `SensitiveCheck` | 敏感词检测 | `sensitiveCheckService.js` |
+
+### 2.x DeepSeek V4 分级思考策略 (P0)
+
+基于 DeepSeek V4 统一模型（flash / pro）的思考模式能力，Agent Engine 按步骤选择不同的思考策略：
+
+| 步骤 | 思考模式 | reasoning_effort | 说明 |
+|---|---|---|---|
+| IntentStep | `disabled` | — | 快速意图分类，无需推理 |
+| OutlineStep | `enabled` | `high` | 提纲需要结构化推理 |
+| WriteStep (writing) | `enabled` | `high` | 深度写作推理 |
+| WriteStep (polish/shorten/expand) | `disabled` | — | 机械文本操作，快速响应 |
+| PostReviewStep | `enabled` | `high` | 多维度质量评审需要推理 |
+| AutoFixStep | `disabled` | — | 机械修正，无需推理 |
+| ChatStep | `disabled` | — | 对话快速响应 |
+
+### 2.x 思维链可视化 (P1)
+
+- `reasoning_content` 通过 WebSocket `agent.reasoning` 事件实时推送到前端
+- 前端 `agent-store.ts` 将推理内容存入 `ReasoningPart`，可折叠展示
+- 写作模式下用户可看到模型的思考过程，增强透明度
+
+### 2.x strict JSON 模式 (P1)
+
+- `IntentStep` 和 `PostReviewStep` 使用 `response_format: { type: "json_object" }`
+- 确保模型输出严格 JSON，减少解析失败率
+- 注意：JSON mode 与 tools 不兼容，不可同时使用
+
+### 2.x Agent Loop + Tool Calls (P2)
+
+- `WriteStep` 在写作模式下支持自适应 Agent Loop
+- 当搜索结果 ≥ 3 条时，模型可通过 tool calls 自主请求更多上下文
+- 定义了两个工具：`search_web`（搜索更多）和 `get_topic_context`（获取已有结果详情）
+- Agent Loop 最多 5 轮迭代，超出后直接流式输出最终结果
+- `ChatWithTools` 方法处理完整的 tool call → execute → re-request 循环
+
+### 2.x 1M 上下文 + 全文素材 (P2)
+
+- V4 模型支持 1M input tokens + 384K output tokens
+- 搜索结果数量从 9 提升到 20，充分利用大上下文窗口
+- `max_tokens` 默认值从 8192 提升到 16384（flash）/ 32768（pro）
+- 用户素材全文注入，无需截断
 
 ## 3. 数据流
 
