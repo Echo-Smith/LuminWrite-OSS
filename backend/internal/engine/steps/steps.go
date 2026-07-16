@@ -13,6 +13,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // ─── IntentStep ──────────────────────────────────────────
@@ -157,7 +158,7 @@ func (s *IntentStep) classifyWithLLM(ctx context.Context, message, fallback stri
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0))
+	}, tools.WithTemperature(0), tools.WithThinking(false), tools.WithJSONResponse())
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +354,8 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 			query = execCtx.UserInput
 		}
 
-		results := s.search.Search(ctx, query, 9)
+		// P2: Increased from 9 to 20 results to leverage 1M context window
+		results := s.search.Search(ctx, query, 20)
 		execCtx.SearchResults = results
 		return nil
 	}
@@ -378,7 +380,7 @@ func (s *SearchStep) generateMockResults(ctx context.Context, topic string) []en
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0.3))
+	}, tools.WithTemperature(0.3), tools.WithThinking(false))
 	if err != nil {
 		return []engine.SearchResult{}
 	}
@@ -831,7 +833,7 @@ func (s *OutlineStep) generateOutline(ctx context.Context, execCtx *engine.Execu
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(temperature))
+	}, tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
 	}
@@ -861,6 +863,7 @@ func getString(m map[string]interface{}, key string) string {
 type WriteStep struct {
 	llm     *tools.LLMClient
 	profile *profile.StyleProfile
+	search  *tools.SearchClient // optional, enables agent loop with tool calls
 }
 
 func NewWriteStep(llm *tools.LLMClient) *WriteStep {
@@ -870,6 +873,11 @@ func NewWriteStep(llm *tools.LLMClient) *WriteStep {
 // NewWriteStepWithProfile creates a WriteStep with a style profile.
 func NewWriteStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *WriteStep {
 	return &WriteStep{llm: llm, profile: p}
+}
+
+// NewWriteStepWithSearch creates a WriteStep with a search client for agent loop support.
+func NewWriteStepWithSearch(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient) *WriteStep {
+	return &WriteStep{llm: llm, profile: p, search: search}
 }
 
 func (s *WriteStep) Name() engine.StepName { return engine.StepWrite }
@@ -897,6 +905,11 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		systemPrompt = s.profile.SystemPrompt
 	}
 
+	// In guided mode, append a clarification that the title is provided and must not be changed
+	if execCtx.Outline != nil && execCtx.Outline.Title != "" {
+		systemPrompt += "\n\n【重要】本次为引导模式写作，文章标题已由用户确认，必须原样使用提供的标题，不得自行创作或修改。核心比喻和修辞手法仅用于正文，不影响标题。"
+	}
+
 	// Build user prompt — differentiated by task mode
 	var promptBuilder strings.Builder
 	s.buildTaskPrompt(&promptBuilder, taskMode, execCtx)
@@ -921,19 +934,33 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	}
 
 	// Add outline if available (guided mode, writing only)
+	// In guided mode, the outline defines the article structure — it takes precedence over profile structure
+	hasOutlineTitle := execCtx.Outline != nil && execCtx.Outline.Title != ""
 	if taskMode == "writing" && execCtx.Outline != nil {
-		promptBuilder.WriteString(fmt.Sprintf("\n标题：%s\n", execCtx.Outline.Title))
-		promptBuilder.WriteString("提纲：\n")
-		for i, item := range execCtx.Outline.Outline {
-			promptBuilder.WriteString(fmt.Sprintf("%d. %s (%s)\n", i+1, item.Point, item.Type))
+		promptBuilder.WriteString(fmt.Sprintf("\n【标题（必须原样使用，不得修改）】：%s\n", execCtx.Outline.Title))
+		promptBuilder.WriteString("【写作提纲（必须严格按照以下提纲展开，每个要点对应一个段落，不得增删或更改要点顺序）】：\n")
+		typeLabels := map[string]string{
+			"opening":    "开头",
+			"argument":   "分论点",
+			"conclusion": "结尾",
 		}
+		for i, item := range execCtx.Outline.Outline {
+			label := typeLabels[item.Type]
+			if label == "" {
+				label = item.Type
+			}
+			promptBuilder.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, label, item.Point))
+		}
+		promptBuilder.WriteString("\n")
 	}
 
 	// Add word limit — use length_profiles per task type if available, fall back to word_range
 	s.appendWordLimit(&promptBuilder, taskMode, execCtx)
 
 	// Add structure requirements from profile (writing only)
-	if taskMode == "writing" && s.profile != nil && s.profile.Structure.Type != "" {
+	// SKIP in guided mode — outline already defines the structure,
+	// profile's argument pattern (e.g. 首在-重在-贵在) would conflict with outline points
+	if taskMode == "writing" && s.profile != nil && s.profile.Structure.Type != "" && !hasOutlineTitle {
 		promptBuilder.WriteString(fmt.Sprintf("\n结构要求：%s", s.profile.Structure.Opening))
 		if s.profile.Structure.Body != "" {
 			promptBuilder.WriteString(fmt.Sprintf(" → %s", s.profile.Structure.Body))
@@ -948,16 +975,17 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	}
 
 	// Add rhetoric requirements from profile (writing only)
+	// Clarify that rhetoric applies to body content, not the title
 	if taskMode == "writing" && s.profile != nil {
 		var rhetoricParts []string
 		if s.profile.Rhetoric.RequiredMetaphor && s.profile.Rhetoric.MetaphorDescription != "" {
-			rhetoricParts = append(rhetoricParts, "核心比喻: "+s.profile.Rhetoric.MetaphorDescription)
+			rhetoricParts = append(rhetoricParts, "正文核心比喻: "+s.profile.Rhetoric.MetaphorDescription+"（仅用于正文，不影响标题）")
 		}
 		if s.profile.Rhetoric.RequiredParallelism {
-			rhetoricParts = append(rhetoricParts, "必须使用排比")
+			rhetoricParts = append(rhetoricParts, "正文必须使用排比")
 		}
 		if s.profile.Rhetoric.RequiredRhetoricalQuestion {
-			rhetoricParts = append(rhetoricParts, "必须使用设问")
+			rhetoricParts = append(rhetoricParts, "正文必须使用设问")
 		}
 		if len(rhetoricParts) > 0 {
 			promptBuilder.WriteString(fmt.Sprintf("\n修辞要求：%s\n", strings.Join(rhetoricParts, "；")))
@@ -965,14 +993,18 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	}
 
 	// Add title guidelines from profile
-	if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n标题禁止模式（正则）：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
-	}
-	if s.profile != nil && s.profile.TitleGuidelines.Style != "" {
-		promptBuilder.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
-	}
-	if s.profile != nil && len(s.profile.TitleGuidelines.Examples) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("标题参考示例：%s\n", strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
+	// SKIP in guided mode — title is already determined by the outline,
+	// showing style requirements/examples would mislead the LLM into creating its own title
+	if !hasOutlineTitle {
+		if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
+			promptBuilder.WriteString(fmt.Sprintf("\n标题禁止模式（正则）：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
+		}
+		if s.profile != nil && s.profile.TitleGuidelines.Style != "" {
+			promptBuilder.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
+		}
+		if s.profile != nil && len(s.profile.TitleGuidelines.Examples) > 0 {
+			promptBuilder.WriteString(fmt.Sprintf("标题参考示例：%s\n", strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
+		}
 	}
 
 	// Add fact guard requirements from profile
@@ -1000,8 +1032,27 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		promptBuilder.WriteString("（用户素材优先级高于 AI 检索结果）\n")
 	}
 
+	// Inject user memory preferences (from MemoryGateStep)
+	if execCtx.MemoryContext != nil {
+		if memCtx, ok := execCtx.MemoryContext.(*memory.MemoryContext); ok {
+			if memStr := FormatMemoryForPrompt(memCtx); memStr != "" {
+				promptBuilder.WriteString(memStr)
+			}
+		}
+	}
+
 	// Add output format requirements
-	if s.profile != nil && s.profile.OutputFormat.UseMarkdown {
+	// For writing mode: use JSON title prefix + Markdown body
+	// For other modes (polish/shorten/expand): plain Markdown (title already in source text)
+	useJSONTitle := taskMode == "writing" && (s.profile == nil || s.profile.OutputFormat.UseMarkdown)
+	if useJSONTitle {
+		// When outline title is provided (guided mode), force using it
+		if execCtx.Outline != nil && execCtx.Outline.Title != "" {
+			promptBuilder.WriteString(fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行，title 必须与上方【标题】完全一致），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"%s\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", articleSeparator, execCtx.Outline.Title, articleSeparator))
+		} else {
+			promptBuilder.WriteString(fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"文章标题\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", articleSeparator, articleSeparator))
+		}
+	} else if s.profile != nil && s.profile.OutputFormat.UseMarkdown {
 		promptBuilder.WriteString(fmt.Sprintf("\n输出格式：Markdown，标题以 %s 开头\n", s.profile.OutputFormat.TitlePrefix))
 	}
 
@@ -1011,22 +1062,173 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		{Role: "user", Content: promptBuilder.String()},
 	}
 
-	fullText, tokens, err := s.llm.ChatStream(ctx, messages, func(delta string) {
-		emitter.StreamDelta(delta)
+	// Determine thinking strategy by task mode:
+	//   writing → thinking enabled (deep reasoning for article composition)
+	//   polish/shorten/expand/extract_points → thinking disabled (mechanical text ops)
+	var streamOpts []tools.ChatOption
+	if taskMode == "writing" {
+		streamOpts = []tools.ChatOption{
+			tools.WithThinking(true),
+			tools.WithReasoningEffort("high"),
+		}
+	} else {
+		streamOpts = []tools.ChatOption{
+			tools.WithThinking(false),
+		}
+	}
+
+	// State machine for JSON title prefix extraction
+	var titleBuf strings.Builder
+	var bodyBuf strings.Builder // tracks only the body text sent to user (excludes JSON prefix)
+	titleCharCount := 0
+	titleResolved := false
+
+	// streamBody is a helper that sends delta to user AND accumulates into bodyBuf
+	streamBody := func(text string) {
+		bodyBuf.WriteString(text)
+		emitter.StreamDelta(text)
+	}
+
+	// onReasoning forwards thinking content to the frontend for visualization
+	onReasoning := func(delta string) {
+		emitter.ReasoningDelta(delta)
+	}
+
+	// The streaming callback handles JSON title prefix extraction and body streaming.
+	// It's shared between the normal streaming path and the agent loop's final stream.
+	streamCallback := func(delta string) {
+		if !titleResolved && useJSONTitle {
+			// Still collecting JSON title prefix
+			titleBuf.WriteString(delta)
+			titleCharCount += len([]rune(delta))
+			buf := titleBuf.String()
+
+			// Try to find the separator
+			sepIdx := strings.Index(buf, articleSeparator)
+			if sepIdx >= 0 {
+				// Separator found — parse JSON title from everything before it
+				jsonPart := strings.TrimSpace(buf[:sepIdx])
+				var title string
+				if t, ok := parseTitleJSON(jsonPart); ok {
+					title = t
+				} else {
+					// JSON parse failed — try regex fallback on the prefix
+					title = extractTitleFromMarkdown(jsonPart)
+				}
+				if title != "" {
+					execCtx.ArticleTitle = title
+					emitter.ArticleTitle(title)
+				}
+
+				// Content after separator becomes the start of the streamed body
+				after := strings.TrimLeft(buf[sepIdx+len(articleSeparator):], "\n\r ")
+				// Strip duplicate ## title heading if LLM repeated it
+				after = stripLeadingTitleHeading(after, title)
+				if after != "" {
+					streamBody(after)
+				}
+				titleResolved = true
+				titleBuf.Reset()
+				return
+			}
+
+			// No separator found yet — check character limit for fallback
+			if titleCharCount > titleCollectCharLimit {
+				// LLM didn't follow the format — switch to fallback mode
+				// Try to extract title from what we've collected
+				title := extractTitleFromMarkdown(buf)
+				if title != "" {
+					execCtx.ArticleTitle = title
+					emitter.ArticleTitle(title)
+				}
+				// Output collected content as body (filter out JSON lines)
+				bodyPart := filterJSONLines(buf)
+				bodyPart = stripLeadingTitleHeading(bodyPart, title)
+				if bodyPart != "" {
+					streamBody(bodyPart)
+				}
+				titleResolved = true
+				titleBuf.Reset()
+				return
+			}
+			// Still collecting, don't forward to user
+			return
+		}
+
+		// Normal streaming (title already resolved or non-writing mode)
+		streamBody(delta)
+
 		// Check pause between stream chunks
 		if err := execCtx.CheckPause(ctx, emitter, engine.StepWrite); err != nil {
-			return // stream will continue, but pause was handled
+			return
 		}
-	})
+	}
+
+	// P2: Use agent loop (tool calls + thinking) when conditions are met.
+	// The model can autonomously search for more context before writing.
+	useAgentLoop := ShouldUseAgentLoop(execCtx, s.search)
+
+	var fullText string
+	var tokens int
+	var err error
+
+	if useAgentLoop {
+		slog.Info("using agent loop for writing",
+			"trace_id", execCtx.TraceID,
+			"search_results", len(execCtx.SearchResults))
+
+		toolExecutor := WritingToolExecutor(s.search, execCtx.SearchResults)
+		fullText, tokens, err = s.llm.ChatWithTools(
+			ctx, messages, streamCallback, onReasoning,
+			WritingTools(), toolExecutor, streamOpts...,
+		)
+	} else {
+		fullText, tokens, err = s.llm.ChatStreamWithReasoning(
+			ctx, messages, streamCallback, onReasoning, streamOpts...,
+		)
+	}
+
 	if err != nil {
 		return fmt.Errorf("article generation failed: %w", err)
 	}
 
-	execCtx.Article = fullText
+	// Determine the final article body text
+	articleBody := bodyBuf.String()
+	if !useJSONTitle {
+		// Non-writing modes: fullText IS the body (no JSON prefix)
+		articleBody = fullText
+	}
+
+	// Post-stream: if title still not resolved (e.g. very short output), try final fallback
+	if !titleResolved && useJSONTitle {
+		title := extractTitleFromMarkdown(fullText)
+		if title != "" {
+			execCtx.ArticleTitle = title
+			emitter.ArticleTitle(title)
+		}
+		// If still not resolved, the body is the filtered fullText
+		if articleBody == "" {
+			articleBody = filterJSONLines(fullText)
+		}
+	}
+
+	// For guided mode: always force the outline title, overriding whatever LLM generated
+	if execCtx.Outline != nil && execCtx.Outline.Title != "" {
+		if execCtx.ArticleTitle != execCtx.Outline.Title {
+			slog.Info("overriding LLM title with outline title",
+				"trace_id", execCtx.TraceID,
+				"llm_title", execCtx.ArticleTitle,
+				"outline_title", execCtx.Outline.Title)
+			execCtx.ArticleTitle = execCtx.Outline.Title
+			emitter.ArticleTitle(execCtx.Outline.Title)
+		}
+	}
+
+	execCtx.Article = articleBody
 	execCtx.TotalTokens += tokens
 
-	// Emit stream done
-	emitter.StreamDone(fullText)
+	// Emit stream done with the clean body text (no JSON prefix)
+	emitter.StreamDone(articleBody)
 
 	return nil
 }
@@ -1233,6 +1435,15 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		}
 	}
 
+	// Inject user feedback memories (Tier 3) as additional review criteria
+	if execCtx.MemoryContext != nil {
+		if memCtx, ok := execCtx.MemoryContext.(*memory.MemoryContext); ok {
+			if guardStr := FormatReviewGuardForPrompt(memCtx); guardStr != "" {
+				profileRules.WriteString(guardStr)
+			}
+		}
+	}
+
 	systemMsg := "你是文章质量评审员。对文章进行多维度评分和问题检测。只返回 JSON。"
 	userMsg := fmt.Sprintf(`请评审以下文章：
 
@@ -1251,7 +1462,7 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0))
+	}, tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
 		// If review fails, pass by default
 		execCtx.ReviewResult = &engine.ReviewResult{
@@ -1344,62 +1555,45 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 	// Rule-based checks using profile rules (deterministic, independent of LLM)
 
+	// Resolve article title: prefer structured ArticleTitle, fall back to Markdown extraction
+	articleTitle := execCtx.ArticleTitle
+	if articleTitle == "" {
+		articleTitle = extractTitleFromMarkdown(execCtx.Article)
+	}
+
 	// 1. Check title forbidden_patterns (regex)
-	if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-		// Extract title from article (first ## or # line)
-		articleTitle := ""
-		for _, line := range strings.Split(execCtx.Article, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
-				articleTitle = strings.TrimPrefix(strings.TrimPrefix(trimmed, "## "), "# ")
-				articleTitle = strings.TrimSpace(articleTitle)
-				break
-			}
-		}
-		if articleTitle != "" {
-			for _, pattern := range s.profile.TitleGuidelines.ForbiddenPatterns {
-				if re, err := regexp.Compile(pattern); err == nil && re.MatchString(articleTitle) {
-					review.Issues = append(review.Issues, engine.ReviewIssue{
-						Severity: "high",
-						Type:     "title_forbidden",
-						Message:  fmt.Sprintf("标题「%s」匹配禁止模式「%s」", articleTitle, pattern),
-					})
-					review.Passed = false
-					if score, ok := review.Scores["title_quality"]; ok {
-						review.Scores["title_quality"] = score * 0.3
-					} else {
-						review.Scores["title_quality"] = 0.3
-					}
-					slog.Warn("title forbidden pattern matched",
-						"trace_id", execCtx.TraceID,
-						"title", articleTitle, "pattern", pattern)
+	if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 && articleTitle != "" {
+		for _, pattern := range s.profile.TitleGuidelines.ForbiddenPatterns {
+			if re, err := regexp.Compile(pattern); err == nil && re.MatchString(articleTitle) {
+				review.Issues = append(review.Issues, engine.ReviewIssue{
+					Severity: "high",
+					Type:     "title_forbidden",
+					Message:  fmt.Sprintf("标题「%s」匹配禁止模式「%s」", articleTitle, pattern),
+				})
+				review.Passed = false
+				if score, ok := review.Scores["title_quality"]; ok {
+					review.Scores["title_quality"] = score * 0.3
+				} else {
+					review.Scores["title_quality"] = 0.3
 				}
+				slog.Warn("title forbidden pattern matched",
+					"trace_id", execCtx.TraceID,
+					"title", articleTitle, "pattern", pattern)
 			}
 		}
 	}
 
 	// 2. Check title length compliance
-	if s.profile != nil && s.profile.TitleGuidelines.Length.Max > 0 {
-		articleTitle := ""
-		for _, line := range strings.Split(execCtx.Article, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
-				articleTitle = strings.TrimPrefix(strings.TrimPrefix(trimmed, "## "), "# ")
-				articleTitle = strings.TrimSpace(articleTitle)
-				break
-			}
-		}
-		if articleTitle != "" {
-			titleLen := len([]rune(articleTitle))
-			minLen := s.profile.TitleGuidelines.Length.Min
-			maxLen := s.profile.TitleGuidelines.Length.Max
-			if titleLen < minLen || titleLen > maxLen {
-				review.Issues = append(review.Issues, engine.ReviewIssue{
-					Severity: "medium",
-					Type:     "title_length",
-					Message:  fmt.Sprintf("标题长度 %d 字，要求 %d-%d 字", titleLen, minLen, maxLen),
-				})
-			}
+	if s.profile != nil && s.profile.TitleGuidelines.Length.Max > 0 && articleTitle != "" {
+		titleLen := len([]rune(articleTitle))
+		minLen := s.profile.TitleGuidelines.Length.Min
+		maxLen := s.profile.TitleGuidelines.Length.Max
+		if titleLen < minLen || titleLen > maxLen {
+			review.Issues = append(review.Issues, engine.ReviewIssue{
+				Severity: "medium",
+				Type:     "title_length",
+				Message:  fmt.Sprintf("标题长度 %d 字，要求 %d-%d 字", titleLen, minLen, maxLen),
+			})
 		}
 	}
 
@@ -1472,12 +1666,19 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		return nil
 	}
 
-	// Filter fixable issues (low and medium severity — not high)
+	// Filter fixable issues
+	// Fixable types: fact_guard, length, title_length, structure, style, rhetoric
+	// Non-fixable types: sensitive_word (requires manual content removal), title_forbidden (hard rule)
+	nonFixableTypes := map[string]bool{
+		"sensitive_word":   true,
+		"title_forbidden":  true,
+	}
 	var fixableIssues []engine.ReviewIssue
 	for _, issue := range execCtx.ReviewResult.Issues {
-		if issue.Severity == "low" || issue.Severity == "medium" {
-			fixableIssues = append(fixableIssues, issue)
+		if nonFixableTypes[issue.Type] {
+			continue
 		}
+		fixableIssues = append(fixableIssues, issue)
 	}
 
 	if len(fixableIssues) == 0 {
@@ -1511,7 +1712,31 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		lowDimsStr = strings.Join(lowDims, ", ")
 	}
 
-	systemMsg := "你是文章修正助手。根据问题列表和评分结果修正文章。只输出修正后的完整文章（Markdown格式），不要解释。"
+	// Build fix-specific instructions based on issue types
+	var fixInstructions strings.Builder
+	fixInstructions.WriteString("修正要求：\n")
+	fixInstructions.WriteString("1. 针对每个问题进行精确修正\n")
+	fixInstructions.WriteString("2. 保持原文的整体结构和风格\n")
+	fixInstructions.WriteString("3. 不要添加或删除段落\n")
+	fixInstructions.WriteString("4. 只修正有问题的部分，保持正确部分不变\n")
+	fixInstructions.WriteString("5. 输出完整的修正后文章（不要输出标题，只输出正文）\n")
+
+	// Add specific instructions for fact_guard issues
+	for _, issue := range fixableIssues {
+		if issue.Type == "fact_guard" {
+			fixInstructions.WriteString("6. 事实红线问题：将违规表述替换为中性描述（如「获得」「参与」等非结果性动词），不得改变事实本身\n")
+			break
+		}
+	}
+	// Add specific instructions for length issues
+	for _, issue := range fixableIssues {
+		if issue.Type == "length" {
+			fixInstructions.WriteString("7. 篇幅问题：通过删减冗余表述、合并重复论证来调整字数到要求范围内，不得删除核心论点\n")
+			break
+		}
+	}
+
+	systemMsg := "你是文章修正助手。根据问题列表和评分结果修正文章。只输出修正后的完整文章正文（Markdown格式，不要输出标题），不要解释。"
 	userMsg := fmt.Sprintf(`原文：
 %s
 
@@ -1521,28 +1746,35 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 低分维度：
 %s
 
-修正要求：
-1. 针对每个问题进行精确修正
-2. 保持原文的整体结构和风格
-3. 不要添加或删除段落
-4. 只修正有问题的部分，保持正确部分不变
-5. 输出完整的修正后文章`, execCtx.Article, issueList, lowDimsStr)
+%s`, execCtx.Article, issueList, lowDimsStr, fixInstructions.String())
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0.3))
+	}, tools.WithTemperature(0.3), tools.WithThinking(false))
 	if err != nil {
 		return nil // Auto-fix failure is non-fatal
 	}
 
 	if resp != "" {
-		execCtx.Article = resp
-		// Mark as passed after fix
-		execCtx.ReviewResult.Passed = true
+		// Strip any leading title heading from the fixed article (title is stored separately)
+		fixedArticle := stripLeadingTitleHeading(resp, execCtx.ArticleTitle)
+		// Also filter out any JSON prefix lines that might have been included
+		fixedArticle = filterJSONLines(fixedArticle)
+		fixedArticle = strings.TrimSpace(fixedArticle)
 
-		// Emit the fixed article
-		emitter.StreamDone(resp)
+		if fixedArticle != "" {
+			execCtx.Article = fixedArticle
+			// Mark as passed after fix
+			execCtx.ReviewResult.Passed = true
+
+			slog.Info("auto-fix applied",
+				"trace_id", execCtx.TraceID,
+				"issues_fixed", len(fixableIssues))
+
+			// Emit the fixed article
+			emitter.StreamDone(fixedArticle)
+		}
 	}
 
 	return nil
