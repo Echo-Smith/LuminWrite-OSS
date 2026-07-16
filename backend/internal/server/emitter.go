@@ -52,6 +52,26 @@ func (e *WSEmitter) StreamDelta(delta string) {
 	})
 }
 
+func (e *WSEmitter) ReasoningDelta(delta string) {
+	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
+		Type: websocket.MsgAgentReasoning,
+		Payload: websocket.ReasoningPayload{
+			TraceID: e.traceID,
+			Delta:   delta,
+		},
+	})
+}
+
+func (e *WSEmitter) ArticleTitle(title string) {
+	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
+		Type: websocket.MsgAgentArticleTitle,
+		Payload: websocket.ArticleTitlePayload{
+			TraceID: e.traceID,
+			Title:   title,
+		},
+	})
+}
+
 func (e *WSEmitter) StreamDone(fullText string) {
 	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
 		Type: websocket.MsgAgentStreamDone,
@@ -115,14 +135,15 @@ func (e *WSEmitter) Error(code, message string, step engine.StepName) {
 	})
 }
 
-func (e *WSEmitter) Completed(article string, review interface{}, tokenUsage interface{}) {
+func (e *WSEmitter) Completed(article string, articleTitle string, review interface{}, tokenUsage interface{}) {
 	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
 		Type: websocket.MsgAgentCompleted,
 		Payload: websocket.CompletedPayload{
-			TraceID:    e.traceID,
-			Article:    article,
-			Review:     review,
-			TokenUsage: tokenUsage,
+			TraceID:      e.traceID,
+			Article:      article,
+			ArticleTitle: articleTitle,
+			Review:       review,
+			TokenUsage:   tokenUsage,
 		},
 	})
 }

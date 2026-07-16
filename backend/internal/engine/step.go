@@ -34,6 +34,13 @@ type EventEmitter interface {
 	// StreamDelta emits a stream delta.
 	StreamDelta(delta string)
 
+	// ReasoningDelta emits a reasoning (thinking) delta from the model.
+	// This is used to visualize the model's chain-of-thought during writing.
+	ReasoningDelta(delta string)
+
+	// ArticleTitle emits the resolved article title.
+	ArticleTitle(title string)
+
 	// StreamDone emits stream.done.
 	StreamDone(fullText string)
 
@@ -50,7 +57,7 @@ type EventEmitter interface {
 	Error(code, message string, step StepName)
 
 	// Completed emits the final completed event.
-	Completed(article string, review interface{}, tokenUsage interface{})
+	Completed(article string, articleTitle string, review interface{}, tokenUsage interface{})
 
 	// Cancelled emits a cancelled event.
 	Cancelled()

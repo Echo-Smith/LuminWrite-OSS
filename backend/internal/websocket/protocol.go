@@ -20,7 +20,9 @@ const (
 	MsgAgentStepStart    = "agent.step.start"
 	MsgAgentStepComplete = "agent.step.complete"
 	MsgAgentStream       = "agent.stream"
+	MsgAgentReasoning    = "agent.reasoning"
 	MsgAgentStreamDone   = "agent.stream.done"
+	MsgAgentArticleTitle = "agent.article_title"
 	MsgAgentPaused       = "agent.paused"
 	MsgAgentResumed      = "agent.resumed"
 	MsgAgentAwaitInput   = "agent.await_input"
@@ -106,6 +108,20 @@ type StreamPayload struct {
 	Delta   string `json:"delta"`
 }
 
+// ReasoningPayload carries a reasoning (thinking) delta to the client.
+// Sent during thinking-mode streaming to visualize the model's chain-of-thought.
+type ReasoningPayload struct {
+	TraceID string `json:"trace_id"`
+	Delta   string `json:"delta"`
+}
+
+// ArticleTitlePayload carries the extracted article title to the client.
+// Sent once after the title is resolved from the LLM's JSON prefix (or fallback).
+type ArticleTitlePayload struct {
+	TraceID string `json:"trace_id"`
+	Title   string `json:"title"`
+}
+
 // StreamDonePayload
 type StreamDonePayload struct {
 	TraceID  string `json:"trace_id"`
@@ -124,10 +140,11 @@ type AwaitInputPayload struct {
 
 // CompletedPayload
 type CompletedPayload struct {
-	TraceID    string      `json:"trace_id"`
-	Article    string      `json:"article"`
-	Review     interface{} `json:"review"`
-	TokenUsage interface{} `json:"token_usage"`
+	TraceID      string      `json:"trace_id"`
+	Article      string      `json:"article"`
+	ArticleTitle string      `json:"article_title,omitempty"`
+	Review       interface{} `json:"review"`
+	TokenUsage   interface{} `json:"token_usage"`
 }
 
 // ErrorPayload
@@ -163,13 +180,14 @@ type SessionResumePayload struct {
 
 // SessionResumedPayload is the server response to a session.resume.
 type SessionResumedPayload struct {
-	TraceID   string      `json:"trace_id"`
-	Status    string      `json:"status"`              // running | paused | completed | error | not_found
-	Step      string      `json:"step,omitempty"`      // current running step
-	Article   string      `json:"article,omitempty"`   // partial article text
-	Style     string      `json:"style,omitempty"`
-	Mode      string      `json:"mode,omitempty"`
-	Outline   interface{} `json:"outline,omitempty"`   // current outline if awaiting input
-	Review    interface{} `json:"review,omitempty"`    // review result if completed
-	Message   string      `json:"message,omitempty"`   // error message if applicable
+	TraceID      string      `json:"trace_id"`
+	Status       string      `json:"status"`                        // running | paused | completed | error | not_found
+	Step         string      `json:"step,omitempty"`                // current running step
+	Article      string      `json:"article,omitempty"`             // partial article text
+	ArticleTitle string      `json:"article_title,omitempty"`       // extracted article title
+	Style        string      `json:"style,omitempty"`
+	Mode         string      `json:"mode,omitempty"`
+	Outline      interface{} `json:"outline,omitempty"`             // current outline if awaiting input
+	Review       interface{} `json:"review,omitempty"`              // review result if completed
+	Message      string      `json:"message,omitempty"`             // error message if applicable
 }
