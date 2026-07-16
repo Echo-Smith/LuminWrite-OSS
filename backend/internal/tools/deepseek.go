@@ -24,18 +24,42 @@ type LLMClient struct {
 
 // LLMMessage represents a single message in the conversation.
 type LLMMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"` // thinking mode: must be preserved for tool-call turns
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string `json:"tool_call_id,omitempty"`
+}
+
+// ToolCall represents a function tool call returned by the model.
+type ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction holds the function name and arguments for a tool call.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // LLMRequest is the request body for the chat completions API.
 type LLMRequest struct {
-	Model       string       `json:"model"`
-	Messages    []LLMMessage `json:"messages"`
-	Stream      bool         `json:"stream"`
-	Temperature float64      `json:"temperature"`
-	MaxTokens   int          `json:"max_tokens"`
-	Thinking    *Thinking    `json:"thinking,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []LLMMessage    `json:"messages"`
+	Stream          bool            `json:"stream"`
+	Temperature     float64         `json:"temperature,omitempty"`
+	MaxTokens       int             `json:"max_tokens"`
+	Thinking        *Thinking       `json:"thinking,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
+	Tools           []ToolDef       `json:"tools,omitempty"`
+	ResponseFormat  *ResponseFormat `json:"response_format,omitempty"`
+}
+
+// ResponseFormat controls the output format of the model.
+type ResponseFormat struct {
+	Type string `json:"type"` // "json_object"
 }
 
 // Thinking controls the thinking mode for V4 models.
@@ -46,31 +70,51 @@ type Thinking struct {
 // LLMResponse is the response from the chat completions API.
 type LLMResponse struct {
 	Choices []struct {
-		Message      LLMMessage `json:"message"`
-		FinishReason string     `json:"finish_reason"`
+		Message         LLMMessage `json:"message"`
+		FinishReason    string     `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens          int `json:"prompt_tokens"`
+		CompletionTokens      int `json:"completion_tokens"`
+		TotalTokens           int `json:"total_tokens"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage"`
+}
+
+// ToolDef defines a tool that the model can call.
+type ToolDef struct {
+	Type     string         `json:"type"` // always "function"
+	Function ToolDefFunction `json:"function"`
+}
+
+// ToolDefFunction holds the function definition for a tool.
+type ToolDefFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 // StreamDelta is a single chunk from the streaming API.
 type StreamDelta struct {
-	Content string `json:"content"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content"`
 }
 
 // StreamChunk represents a single SSE chunk from the streaming API.
 type StreamChunk struct {
 	Choices []struct {
-		Delta      StreamDelta `json:"delta"`
-		FinishReason string    `json:"finish_reason"`
+		Delta        StreamDelta `json:"delta"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens          int `json:"prompt_tokens"`
+		CompletionTokens      int `json:"completion_tokens"`
+		TotalTokens           int `json:"total_tokens"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage,omitempty"`
 }
 
@@ -114,9 +158,17 @@ func (c *LLMClient) Chat(ctx context.Context, messages []LLMMessage, opts ...Cha
 	return resp.Choices[0].Message.Content, &resp, nil
 }
 
-// ChatStream calls the LLM API with streaming and calls onDelta for each chunk.
+// ChatStream calls the LLM API with streaming and calls onDelta for each content chunk.
+// When thinking mode is active, onReasoning is called for reasoning_content chunks
+// (before the final content).
 // Returns the full text and total token count.
 func (c *LLMClient) ChatStream(ctx context.Context, messages []LLMMessage, onDelta func(string), opts ...ChatOption) (string, int, error) {
+	return c.ChatStreamWithReasoning(ctx, messages, onDelta, nil, opts...)
+}
+
+// ChatStreamWithReasoning is like ChatStream but also accepts an onReasoning callback
+// for thinking-mode reasoning_content chunks.
+func (c *LLMClient) ChatStreamWithReasoning(ctx context.Context, messages []LLMMessage, onDelta func(string), onReasoning func(string), opts ...ChatOption) (string, int, error) {
 	req := c.buildRequest(messages, true, opts...)
 
 	resp, err := c.doStreamRequest(ctx, req)
@@ -126,6 +178,7 @@ func (c *LLMClient) ChatStream(ctx context.Context, messages []LLMMessage, onDel
 	defer resp.Close()
 
 	var fullText strings.Builder
+	var reasoningText strings.Builder
 	totalTokens := 0
 
 	buf := make([]byte, 0, 4096)
@@ -158,6 +211,12 @@ func (c *LLMClient) ChatStream(ctx context.Context, messages []LLMMessage, onDel
 				}
 
 				for _, choice := range chunk.Choices {
+					if choice.Delta.ReasoningContent != "" {
+						reasoningText.WriteString(choice.Delta.ReasoningContent)
+						if onReasoning != nil {
+							onReasoning(choice.Delta.ReasoningContent)
+						}
+					}
 					if choice.Delta.Content != "" {
 						fullText.WriteString(choice.Delta.Content)
 						if onDelta != nil {
@@ -184,6 +243,7 @@ done:
 	slog.Debug("LLM stream completed",
 		"model", req.Model,
 		"content_length", fullText.Len(),
+		"reasoning_length", reasoningText.Len(),
 		"total_tokens", totalTokens,
 	)
 
@@ -208,9 +268,130 @@ func WithThinking(enabled bool) ChatOption {
 	return func(r *LLMRequest) {
 		if enabled {
 			r.Thinking = &Thinking{Type: "enabled"}
-			r.Temperature = 0
+			r.Temperature = 0 // thinking mode ignores temperature
+		} else {
+			r.Thinking = &Thinking{Type: "disabled"}
 		}
 	}
+}
+
+// WithReasoningEffort sets the reasoning effort level (thinking mode only).
+// Valid values: "high" (default), "max".
+func WithReasoningEffort(effort string) ChatOption {
+	return func(r *LLMRequest) {
+		r.ReasoningEffort = effort
+	}
+}
+
+// WithTools adds tool definitions to the request.
+func WithTools(tools []ToolDef) ChatOption {
+	return func(r *LLMRequest) {
+		r.Tools = tools
+	}
+}
+
+// WithJSONResponse forces the model to return valid JSON.
+func WithJSONResponse() ChatOption {
+	return func(r *LLMRequest) {
+		r.ResponseFormat = &ResponseFormat{Type: "json_object"}
+	}
+}
+
+// ToolExecutor is a function that executes a tool call and returns the result.
+// The agent loop uses this to resolve tool calls returned by the model.
+// NOTE: JSON mode (response_format: json_object) is incompatible with tools;
+// the DeepSeek API will reject requests containing both. Do not combine them.
+type ToolExecutor func(name string, arguments string) (string, error)
+
+// ChatWithTools performs an agent loop: it sends the request with tools,
+// and if the model returns tool_calls, it executes them via the executor,
+// appends the results to the conversation, and re-requests until the model
+// produces a final content response (no more tool_calls).
+//
+// When thinking mode is active, reasoning_content from each turn is passed
+// to onReasoning. The final content turn is streamed via onDelta.
+//
+// maxIterations limits the number of tool-call rounds (default 5).
+func (c *LLMClient) ChatWithTools(
+	ctx context.Context,
+	messages []LLMMessage,
+	onDelta func(string),
+	onReasoning func(string),
+	tools []ToolDef,
+	executor ToolExecutor,
+	opts ...ChatOption,
+) (string, int, error) {
+	const maxIterations = 5
+	totalTokens := 0
+
+	// Work on a copy of messages so we can append tool call/result turns
+	conversation := make([]LLMMessage, len(messages))
+	copy(conversation, messages)
+
+	// Build tool-enabled opts (without streaming — tool rounds are non-streamed)
+	toolOpts := append([]ChatOption{}, opts...)
+	toolOpts = append(toolOpts, WithTools(tools))
+
+	for iter := 0; iter < maxIterations; iter++ {
+		// Non-streaming request for tool-call rounds
+		resp, llmResp, err := c.Chat(ctx, conversation, toolOpts...)
+		if err != nil {
+			return "", totalTokens, fmt.Errorf("agent loop iteration %d failed: %w", iter, err)
+		}
+		if llmResp != nil {
+			totalTokens += llmResp.Usage.TotalTokens
+		}
+
+		// Check if the model wants to call tools
+		var lastMessage LLMMessage
+		if len(llmResp.Choices) > 0 {
+			lastMessage = llmResp.Choices[0].Message
+		} else {
+			lastMessage = LLMMessage{Role: "assistant", Content: resp}
+		}
+
+		if len(lastMessage.ToolCalls) == 0 {
+			// No tool calls — this is the final answer.
+			// If we've done at least one tool round, stream the final answer.
+			if onDelta != nil && resp != "" {
+				onDelta(resp)
+			}
+			return resp, totalTokens, nil
+		}
+
+		// Append the assistant's tool-call message to the conversation
+		// (must preserve reasoning_content for thinking mode + tool calls)
+		conversation = append(conversation, lastMessage)
+
+		// Execute each tool call and append the results
+		for _, tc := range lastMessage.ToolCalls {
+			slog.Debug("agent loop: executing tool",
+				"iteration", iter,
+				"tool", tc.Function.Name,
+				"arguments", tc.Function.Arguments)
+
+			result := ""
+			if executor != nil {
+				result, err = executor(tc.Function.Name, tc.Function.Arguments)
+				if err != nil {
+					result = fmt.Sprintf("Error: %v", err)
+				}
+			} else {
+				result = "Tool executor not available"
+			}
+
+			conversation = append(conversation, LLMMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
+
+	// Exhausted iterations — do a final streaming request without tools
+	slog.Warn("agent loop: max iterations reached, doing final stream", "iterations", maxIterations)
+	finalOpts := append([]ChatOption{}, opts...)
+	return c.ChatStreamWithReasoning(ctx, conversation, onDelta, onReasoning, finalOpts...)
 }
 
 func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...ChatOption) *LLMRequest {
@@ -341,6 +522,31 @@ func ExtractJSONObject(text string) string {
 	// Find the JSON object
 	start := strings.Index(raw, "{")
 	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return ""
+	}
+
+	return raw[start : end+1]
+}
+
+// ExtractJSONArray extracts a JSON array from a text that may contain markdown fences.
+func ExtractJSONArray(text string) string {
+	raw := strings.TrimSpace(text)
+
+	// Try to extract from markdown code fence
+	if idx := strings.Index(raw, "```"); idx >= 0 {
+		rest := raw[idx+3:]
+		if strings.HasPrefix(rest, "json") {
+			rest = rest[4:]
+		}
+		if end := strings.Index(rest, "```"); end >= 0 {
+			raw = strings.TrimSpace(rest[:end])
+		}
+	}
+
+	// Find the JSON array
+	start := strings.Index(raw, "[")
+	end := strings.LastIndex(raw, "]")
 	if start < 0 || end <= start {
 		return ""
 	}
