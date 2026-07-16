@@ -68,6 +68,8 @@ func Migrate(db *DB) error {
 		"021_topic_favorites_trends",
 		"022_topic_unique_title_platform",
 		"023_topic_recommendations",
+		"024_update_model_names",
+		"025_v4_context_window",
 	}
 
 	for _, name := range migrations {
