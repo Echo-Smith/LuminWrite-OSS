@@ -27,9 +27,11 @@ type Config struct {
 	Tavily    TavilyConfig
 	Tencent   TencentConfig
 Weibo     WeiboConfig
+ExtraHot  ExtraHotConfig
 WebAuthn  WebAuthnConfig
 Jiaozhen  JiaozhenConfig
 Log       LogConfig
+HotTopics HotTopicsConfig
 }
 
 type WebAuthnConfig struct {
@@ -133,6 +135,16 @@ type WeiboConfig struct {
 	Timeout time.Duration
 }
 
+type ExtraHotConfig struct {
+	Enabled bool
+	BaseURL string
+	Timeout time.Duration
+}
+
+type HotTopicsConfig struct {
+	FetchInterval time.Duration
+}
+
 type LogConfig struct {
 	Level  string
 	Format string
@@ -215,6 +227,11 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			BaseURL: getEnv("WEIBO_BASE_URL", "https://weibo.com/ajax"),
 			Timeout: getEnvDuration("WEIBO_TIMEOUT", 15*time.Second),
 		},
+		ExtraHot: ExtraHotConfig{
+			Enabled: getEnvBool("EXTRA_HOT_ENABLED", true),
+			BaseURL: getEnv("EXTRA_HOT_BASE_URL", "https://api.vvhan.com/api/hotlist"),
+			Timeout: getEnvDuration("EXTRA_HOT_TIMEOUT", 15*time.Second),
+		},
 WebAuthn: WebAuthnConfig{
 RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),
 RPName:   getEnv("WEBAUTHN_RP_NAME", "笔润智谈"),
@@ -231,6 +248,9 @@ MaxClaims:   getEnvInt("JIAOZHEN_MAX_CLAIMS", 2),
 		Log: LogConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),
+		},
+		HotTopics: HotTopicsConfig{
+			FetchInterval: getEnvDuration("HOT_TOPICS_FETCH_INTERVAL", 10*time.Minute),
 		},
 	}
 }

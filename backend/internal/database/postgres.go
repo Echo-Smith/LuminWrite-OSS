@@ -62,6 +62,12 @@ func Migrate(db *DB) error {
 		"015_user_memories",
 		"016_user_session_delete",
 		"017_model_api_key",
+		"018_evaluation_seed_supplement",
+		"019_admin_user_uuid",
+		"020_article_title",
+		"021_topic_favorites_trends",
+		"022_topic_unique_title_platform",
+		"023_topic_recommendations",
 	}
 
 	for _, name := range migrations {
