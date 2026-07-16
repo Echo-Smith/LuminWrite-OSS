@@ -82,6 +82,12 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
         {/* 流式文章输出 */}
         {textParts.length > 0 && (
           <div className="codex-card p-4">
+            {/* 文章标题（结构化提取，先于正文显示） */}
+            {message.articleTitle && (
+              <h2 className="text-xl font-bold text-foreground mb-3 leading-tight">
+                {message.articleTitle}
+              </h2>
+            )}
             {textParts.map((part, i) => (
               <div key={i}>
                 <MarkdownContent content={part.text} />
@@ -100,7 +106,7 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
             )}
             {/* 消息操作按钮 */}
             {!isRunning && textParts.some((p) => p.text.trim()) && (
-              <MessageActions text={textParts.map((t) => t.text).join("")} />
+              <MessageActions text={textParts.map((t) => t.text).join("")} title={message.articleTitle} />
             )}
           </div>
         )}
@@ -325,11 +331,13 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
 /**
  * 消息操作按钮 — Copy / Regenerate
  */
-function MessageActions({ text }: { text: string }) {
+function MessageActions({ text, title }: { text: string; title?: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(text);
+    // 组合标题 + 正文，生成干净的纯文本
+    const fullText = title ? `${title}\n\n${text}` : text;
+    navigator.clipboard.writeText(fullText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -230,6 +230,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: () => {
     clearStorage();
     set({ token: null, user: null, expiresAt: null });
+    // 清理选题缓存，避免下一个用户看到上一个用户的数据
+    import("@/stores/topic-cache-store").then((m) => m.useTopicCacheStore.getState().clearCache());
   },
 
   refreshToken: async () => {

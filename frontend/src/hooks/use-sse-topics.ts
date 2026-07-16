@@ -4,6 +4,11 @@
  * 连接 GET /api/v2/sse/topics，接收新选题推送，
  * 支持断线自动重连（指数退避）。
  *
+ * 设计要点：
+ * - 回调通过 ref 持有，connect 函数永远稳定（空依赖），
+ *   回调变化不会导致 SSE 重连。
+ * - 支持 onNewTopic（新增）和 onUpdateTopic（更新）两个回调。
+ *
  * 文档来源: docs/03-api-specification.md — SSE API
  */
 import { useEffect, useRef, useCallback, useState } from "react";
@@ -12,12 +17,21 @@ import type { Topic } from "@/lib/types";
 const MAX_RECONNECT_DELAY = 30_000;
 const BASE_RECONNECT_DELAY = 2_000;
 
-export function useSSETopics(onNewTopic?: (topic: Topic) => void) {
+export function useSSETopics(
+  onNewTopic?: (topic: Topic) => void,
+  onUpdateTopic?: (topic: Topic) => void,
+) {
   const [connected, setConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<{ event: string; data: unknown } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectAttempt = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── 用 ref 持有最新回调，使 connect 永不重建 ──
+  const cbRef = useRef({ onNewTopic, onUpdateTopic });
+  useEffect(() => {
+    cbRef.current = { onNewTopic, onUpdateTopic };
+  }, [onNewTopic, onUpdateTopic]);
 
   const connect = useCallback(() => {
     // 清理旧连接
@@ -49,7 +63,7 @@ export function useSSETopics(onNewTopic?: (topic: Topic) => void) {
 
       const delay = Math.min(
         BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempt.current),
-        MAX_RECONNECT_DELAY
+        MAX_RECONNECT_DELAY,
       );
 
       reconnectTimer.current = setTimeout(() => {
@@ -68,15 +82,12 @@ export function useSSETopics(onNewTopic?: (topic: Topic) => void) {
     });
 
     // 监听初始选题批量推送
+    // 注意：初始数据由 fetchTopics 负责，这里只记录事件不推送，
+    // 避免与 fetchTopics 竞态导致重复或错位。
     es.addEventListener("topics:initial", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         setLastEvent({ event: "topics:initial", data });
-        if (Array.isArray(data)) {
-          for (const topic of data) {
-            onNewTopic?.(topic as Topic);
-          }
-        }
       } catch { /* ignore */ }
     });
 
@@ -85,15 +96,16 @@ export function useSSETopics(onNewTopic?: (topic: Topic) => void) {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         setLastEvent({ event: "topic:new", data });
-        onNewTopic?.(data as Topic);
+        cbRef.current.onNewTopic?.(data as Topic);
       } catch { /* ignore */ }
     });
 
-    // 监听选题更新
+    // 监听选题更新（如 hot_rank 变化）
     es.addEventListener("topic:update", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         setLastEvent({ event: "topic:update", data });
+        cbRef.current.onUpdateTopic?.(data as Topic);
       } catch { /* ignore */ }
     });
 
@@ -104,7 +116,7 @@ export function useSSETopics(onNewTopic?: (topic: Topic) => void) {
         setLastEvent({ event: "heartbeat", data });
       } catch { /* ignore */ }
     });
-  }, [onNewTopic]);
+  }, []); // ← 空依赖：connect 永远稳定
 
   // 自动连接 & 清理
   useEffect(() => {
