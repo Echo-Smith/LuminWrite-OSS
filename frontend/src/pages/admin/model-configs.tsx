@@ -58,7 +58,7 @@ const KEY_PROVIDERS = [
 ];
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
-  deepseek: "https://api.deepseek.com/v1",
+  deepseek: "https://api.deepseek.com",
   openai: "https://api.openai.com/v1",
   qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   claude: "https://api.anthropic.com/v1",
@@ -286,7 +286,7 @@ export function ModelConfigsPage() {
                   <Input
                     value={form.model_name}
                     onChange={(e) => setForm({ ...form, model_name: e.target.value })}
-                    placeholder="deepseek-chat"
+                    placeholder="deepseek-v4-flash"
                   />
                 </div>
                 <div>
@@ -294,7 +294,7 @@ export function ModelConfigsPage() {
                   <Input
                     value={form.display_name}
                     onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-                    placeholder="DeepSeek Chat"
+                    placeholder="DeepSeek V4 Flash"
                   />
                 </div>
                 <div className="col-span-2">

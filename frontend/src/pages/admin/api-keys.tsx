@@ -144,7 +144,7 @@ export function APIKeysPage() {
               </div>
               <div>
                 <Label>Base URL (可选)</Label>
-                <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.deepseek.com/v1" />
+                <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.deepseek.com" />
               </div>
             </div>
             <div className="flex items-center gap-2 mt-4">
