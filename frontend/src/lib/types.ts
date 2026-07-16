@@ -46,7 +46,9 @@ export type WSServerMessageType =
   | "agent.step.start"
   | "agent.step.complete"
   | "agent.stream"
+  | "agent.reasoning"
   | "agent.stream.done"
+  | "agent.article_title"
   | "agent.paused"
   | "agent.resumed"
   | "agent.await_input"
@@ -117,10 +119,50 @@ export interface Topic {
   id: string;
   title: string;
   description: string;
-  source: "system" | "user" | "hotlist";
+  /** 选题来源："user"=用户自定义；"tencent"/"weibo"/"baidu"/"bilibili"等=各平台热搜；"hotlist"=聚合热搜；"system"=系统 */
+  source: string;
   platform: string;
   hot_rank: number;
   fetched_at: string;
+  favorited_at?: string;
+  recommendation_reason?: string;
+}
+
+export interface WritingAngle {
+  angle: string;
+  style: string;
+  word_count: number;
+  rationale: string;
+}
+
+export interface RelatedArticle {
+  trace_id: string;
+  user_id: string;
+  style_slug: string;
+  mode: string;
+  status: string;
+  article_title: string;
+  article_preview: string;
+  created_at: string;
+  completed_at: string;
+}
+
+export interface TopicDetail {
+  topic: Topic;
+  writing_angles: WritingAngle[];
+  related_articles: RelatedArticle[];
+  favorited: boolean;
+}
+
+export interface PlatformStat {
+  platform: string;
+  count: number;
+}
+
+export interface TrendPoint {
+  timestamp: string;
+  hot_rank: number | null;
+  platform: string;
 }
 
 // ─── 提纲数据 ────────────────────────────────────────────
