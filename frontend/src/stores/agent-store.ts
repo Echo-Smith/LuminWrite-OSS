@@ -65,6 +65,7 @@ export interface ChatMessage {
   parts: MessagePart[];
   createdAt: number;
   status?: "running" | "complete" | "error";
+  articleTitle?: string;
 }
 
 // ─── 会话模型 ────────────────────────────────────────────
@@ -167,6 +168,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
 
   deleteSession: (id) => {
+    // 先从本地 state 移除（即时反馈）
+    const session = get().sessions.find((s) => s.id === id);
     set((state) => {
       const remaining = state.sessions.filter((s) => s.id !== id);
       return {
@@ -174,6 +177,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         activeSessionId: state.activeSessionId === id ? remaining[0]?.id ?? null : state.activeSessionId,
       };
     });
+    // 如果有 traceId，调后端 soft-delete（否则刷新后会重新出现）
+    if (session?.traceId) {
+      const token = useAuthStore.getState().token;
+      fetch(`/api/v2/sessions/${session.traceId}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      }).catch((e) => console.error("Failed to delete session on server:", e));
+    }
   },
 
   // ─── 从数据库加载会话列表 ────────────────────────────────
@@ -241,20 +252,21 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       const json = await res.json();
       if (!json.success || !json.data) return;
 
-      const d = json.data as {
-        trace_id: string;
-        status: string;
-        user_input: string;
-        style_slug?: string;
-        mode: string;
-        article?: string;
-        step_history?: Array<{ step: string; status: string; startedAt?: string; completedAt?: string; durationMs?: number; result?: unknown; error?: string }>;
-        review?: unknown;
-        created_at: string;
-        completed_at?: string;
-        error?: string;
-        has_feedback?: boolean;
-      };
+const d = json.data as {
+trace_id: string;
+status: string;
+user_input: string;
+style_slug?: string;
+mode: string;
+article?: string;
+article_title?: string;
+step_history?: Array<{ step: string; status: string; startedAt?: string; completedAt?: string; durationMs?: number; result?: unknown; error?: string }>;
+review?: unknown;
+created_at: string;
+completed_at?: string;
+error?: string;
+has_feedback?: boolean;
+};
 
       // 重建消息列表
       const messages: ChatMessage[] = [];
@@ -304,15 +316,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         assistantParts.push({ type: "text", text: `❌ 错误：${d.error}` });
       }
 
-      if (assistantParts.length > 0) {
-        messages.push({
-          id: genMsgId(),
-          role: "assistant",
-          parts: assistantParts,
-          createdAt: new Date(d.created_at).getTime() + 100,
-          status: d.status === "failed" ? "error" : "complete",
-        });
-      }
+if (assistantParts.length > 0) {
+messages.push({
+id: genMsgId(),
+role: "assistant",
+parts: assistantParts,
+createdAt: new Date(d.created_at).getTime() + 100,
+status: d.status === "failed" ? "error" : "complete",
+articleTitle: d.article_title,
+});
+}
 
       // 更新对应会话
       set((state) => ({
@@ -582,6 +595,31 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         break;
       }
 
+      case "agent.reasoning": {
+        const delta = p.delta as string;
+        // 更新最后一条 assistant 消息的 reasoning part
+        get()._updateLastAssistantMessage((m) => {
+          const parts = [...m.parts];
+          // 查找最后一个 reasoning part
+          let lastReasoningIdx = -1;
+          for (let i = parts.length - 1; i >= 0; i--) {
+            if (parts[i].type === "reasoning") {
+              lastReasoningIdx = i;
+              break;
+            }
+          }
+          if (lastReasoningIdx >= 0) {
+            const reasoningPart = parts[lastReasoningIdx] as ReasoningPart;
+            parts[lastReasoningIdx] = { ...reasoningPart, text: reasoningPart.text + delta };
+          } else {
+            // 创建新的 reasoning part
+            parts.push({ type: "reasoning", text: delta });
+          }
+          return { ...m, parts };
+        });
+        break;
+      }
+
       case "agent.stream.done": {
         const fullText = p.full_text as string | undefined;
         get()._updateLastAssistantMessage((m) => ({
@@ -593,6 +631,17 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             return part;
           }),
         }));
+        break;
+      }
+
+      case "agent.article_title": {
+        const title = p.title as string;
+        if (title) {
+          get()._updateLastAssistantMessage((m) => ({
+            ...m,
+            articleTitle: title,
+          }));
+        }
         break;
       }
 
@@ -636,6 +685,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
       case "agent.completed": {
         const article = p.article as string;
+        const articleTitle = p.article_title as string | undefined;
         const review = p.review;
         const tokenUsage = p.token_usage;
         const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"] };
@@ -657,7 +707,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
             }
           }
-          return { ...m, parts, status: "complete" as const };
+          return { ...m, parts, status: "complete" as const, articleTitle: articleTitle || m.articleTitle };
         });
 
         get()._updateActiveSession((s) => ({ ...s, status: "completed" }));
@@ -740,8 +790,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
         // If there's a partial article, restore it as a text part
         if (article) {
+          const articleTitle = p.article_title as string | undefined;
           get()._updateLastAssistantMessage((m) => ({
             ...m,
+            articleTitle: articleTitle || m.articleTitle,
             parts: [
               ...m.parts.filter((part) => part.type !== "text"),
               { type: "text", text: article, streaming: status === "running" },
