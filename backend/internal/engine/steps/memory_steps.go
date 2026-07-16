@@ -33,9 +33,11 @@ func NewMemoryGateStep(svc memoryServiceAdapter) *MemoryGateStep {
 func (s *MemoryGateStep) Name() engine.StepName { return engine.StepMemoryGate }
 func (s *MemoryGateStep) CanPause() bool         { return false }
 
-// ShouldSkip returns true for chat intent — chat doesn't need writing memory retrieval.
+// ShouldSkip returns true only when the memory service is nil.
+// Memory retrieval runs for ALL intents (including chat) so that
+// ChatStep, WriteStep, and PostReviewStep can all consume MemoryContext.
 func (s *MemoryGateStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
-	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+	return false
 }
 
 func (s *MemoryGateStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {

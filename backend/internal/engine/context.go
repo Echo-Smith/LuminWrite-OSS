@@ -114,7 +114,8 @@ type ExecutionContext struct {
 	SearchPlan    []SearchPlanEntry `json:"search_plan,omitempty"`
 	SearchResults []SearchResult  `json:"search_results,omitempty"`
 	Outline       *OutlineData    `json:"outline,omitempty"`
-	Article       string         `json:"article,omitempty"`
+	Article       string          `json:"article,omitempty"`
+	ArticleTitle  string          `json:"article_title,omitempty"`
 	ReviewResult  *ReviewResult  `json:"review_result,omitempty"`
 
 	// Memory context (populated by MemoryGateStep)

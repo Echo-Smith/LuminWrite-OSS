@@ -493,6 +493,8 @@ func (s *Server) executeCronJob(job *database.CronJob) error {
 	switch job.TaskType {
 	case "topic_fetch":
 		return s.cronTopicFetch(ctx, job)
+	case "topic_trend_record":
+		return s.cronRecordTopicTrends(ctx)
 	case "feedback_aggregate":
 		return s.cronFeedbackAggregate(ctx, job)
 	case "cleanup":

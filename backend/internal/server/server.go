@@ -24,6 +24,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
@@ -78,6 +79,7 @@ func New(cfg *config.Config) *Server {
 		cfg.IMA.BaseURL, cfg.IMA.ClientID, cfg.IMA.APIKey, cfg.IMA.KBID, cfg.IMA.Timeout,
 		cfg.Tencent.Enabled, cfg.Tencent.BaseURL, cfg.Tencent.Timeout,
 		cfg.Weibo.Enabled, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
+		cfg.ExtraHot.Enabled, cfg.ExtraHot.BaseURL, cfg.ExtraHot.Timeout,
 	)
 	if !searchClient.HasSources() {
 		slog.Warn("no search sources configured")
@@ -243,6 +245,17 @@ func (s *Server) Router() http.Handler {
 		// Topics
 		r.Get("/topics", s.handleListTopics)
 		r.Post("/topics", s.handleCreateTopic)
+		r.Post("/topics/hot", s.handleFetchHotTopics)
+		r.Delete("/topics/{id}", s.handleDeleteTopic)
+r.Put("/topics/{id}", s.handleUpdateTopic)
+		r.Get("/topics/recommend", s.handleTopicRecommend)
+		r.Get("/topics/favorites", s.handleListFavoriteTopics)
+		r.Get("/topics/platforms", s.handlePlatformStats)
+		r.Get("/topics/platforms/{platform}", s.handleListTopicsByPlatform)
+		r.Get("/topics/{id}/detail", s.handleTopicDetail)
+		r.Get("/topics/{id}/trend", s.handleTopicTrend)
+		r.With(s.jwtAuthMiddleware).Post("/topics/{id}/favorite", s.handleFavoriteTopic)
+		r.With(s.jwtAuthMiddleware).Delete("/topics/{id}/favorite", s.handleUnfavoriteTopic)
 
 	// Feedback
 	r.Post("/feedback", s.handleFeedback)
@@ -382,6 +395,38 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 	return r
 }
 
+// ─── Hot Topics Auto-Fetch ──────────────────────────────
+
+// autoFetchHotTopics periodically fetches hot topics from external sources.
+func (s *Server) autoFetchHotTopics(ctx context.Context, interval time.Duration) {
+	if s.search == nil || s.traces == nil {
+		slog.Info("hot topics auto-fetch skipped: search or db not configured")
+		return
+	}
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+
+	// Fetch immediately on startup
+	if err := s.cronFetchHotTopics(ctx); err != nil {
+		slog.Warn("hot topics auto-fetch failed on startup", "error", err)
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.cronFetchHotTopics(ctx); err != nil {
+				slog.Warn("hot topics auto-fetch failed", "error", err)
+			}
+		}
+	}
+}
+
 // Start starts the HTTP server.
 func (s *Server) Start(ctx context.Context) error {
 	srv := &http.Server{
@@ -401,6 +446,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start SSE topic push background task
 	go s.PushTopicsFromDB(ctx, 30*time.Second)
+
+	// Start hot topics auto-fetch (every 10 minutes)
+	go s.autoFetchHotTopics(ctx, s.cfg.HotTopics.FetchInterval)
 
 	// Start cron scheduler
 	if s.cronScheduler != nil {
@@ -554,8 +602,68 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		s.traces.SaveFeedback(r.Context(), req.TraceID, req.Segments)
 	}
 
+	// Trigger memory extraction from feedback (async, non-blocking)
+	if s.memorySvc != nil && s.memorySvc.IsAvailable() && s.traces != nil {
+		go s.triggerFeedbackMemoryExtraction(req.TraceID)
+	}
+
 	slog.Info("feedback received", "trace_id", req.TraceID, "segments", len(req.Segments))
 	response.OK(w, map[string]interface{}{"received": true})
+}
+
+// triggerFeedbackMemoryExtraction retrieves feedback + adoption signals and triggers memory extraction.
+func (s *Server) triggerFeedbackMemoryExtraction(traceID string) {
+	ctx := context.Background()
+
+	// Get user ID from trace
+	userID, err := s.traces.GetTraceUserID(ctx, traceID)
+	if err != nil || userID == "" {
+		slog.Debug("memory: skip feedback extraction, user not found", "trace_id", traceID, "error", err)
+		return
+	}
+
+	// Check rollout
+	if !s.memorySvc.IsEnabledForUser(userID) {
+		return
+	}
+
+	// Get feedback segments
+	feedback, err := s.traces.GetFeedbackByTrace(ctx, traceID)
+	if err != nil {
+		slog.Warn("memory: failed to get feedback for extraction", "error", err, "trace_id", traceID)
+		return
+	}
+	if len(feedback) == 0 {
+		return
+	}
+
+	// Check workbuddy adoption for quality signal
+	isAdopted, _ := s.traces.IsTraceAdopted(ctx, traceID)
+	completedAt := time.Now()
+	signals := memory.CollectSignals(isAdopted, feedback, completedAt)
+
+	// Build extract session — reuse article from DB trace
+	trace, err := s.traces.GetTrace(ctx, traceID)
+	if err != nil {
+		slog.Warn("memory: failed to get trace for extraction", "error", err, "trace_id", traceID)
+		return
+	}
+	article, _ := trace["article"].(string)
+	styleSlug, _ := trace["style_slug"].(string)
+	mode, _ := trace["mode"].(string)
+
+	session := memory.ExtractSession{
+		UserID:    userID,
+		TraceID:   traceID,
+		Article:   article,
+		StyleSlug: styleSlug,
+		Mode:      mode,
+		Feedback:  feedback,
+		Signals:   signals,
+	}
+
+	s.memorySvc.Extract(ctx, session)
+	slog.Info("memory: feedback-triggered extraction started", "trace_id", traceID, "feedback_count", len(feedback))
 }
 
 // ─── WebSocket Handler ───────────────────────────────────
@@ -710,6 +818,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	}
 	execCtx.UserMaterials = p.UserMaterials
 	execCtx.WordLimit = p.WordLimit
+	execCtx.SessionID = traceID // SessionID 用于记忆 dismiss 追踪
 
 	// Store session
 	s.sessions.Store(traceID, execCtx)
@@ -738,13 +847,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		steps.NewIntentStep(llmClient),
 	)
 
-	// ChatStep: handles chat intent (skips itself for non-chat intents)
-	engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
-
 	// Memory gate: retrieve and gate memories after intent classification
+	// Must run BEFORE ChatStep and WriteStep so they can consume MemoryContext
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 		engineSteps = append(engineSteps, steps.NewMemoryGateStep(s.memorySvc))
 	}
+
+	// ChatStep: handles chat intent (skips itself for non-chat intents)
+	engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
 
 	engineSteps = append(engineSteps,
 		steps.NewQueryPlanStep(llmClient),
@@ -1017,12 +1127,13 @@ func (s *Server) handleSessionResume(client *websocket.Client, payload json.RawM
 
 	// Build the response payload
 	respPayload := websocket.SessionResumedPayload{
-		TraceID: traceID,
-		Status:  status,
-		Step:    currentStep,
-		Article: execCtx.Article,
-		Style:   execCtx.StyleSlug,
-		Mode:    execCtx.Mode,
+		TraceID:      traceID,
+		Status:       status,
+		Step:         currentStep,
+		Article:      execCtx.Article,
+		ArticleTitle: execCtx.ArticleTitle,
+		Style:        execCtx.StyleSlug,
+		Mode:         execCtx.Mode,
 	}
 
 	// Include outline if awaiting input (paused state)
