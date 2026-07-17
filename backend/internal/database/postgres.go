@@ -70,6 +70,7 @@ func Migrate(db *DB) error {
 		"023_topic_recommendations",
 		"024_update_model_names",
 		"025_v4_context_window",
+		"026_model_api_key_inline",
 	}
 
 	for _, name := range migrations {

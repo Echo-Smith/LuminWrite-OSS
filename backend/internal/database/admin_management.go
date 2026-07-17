@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,21 +16,26 @@ import (
 // ─── Model Configs ───────────────────────────────────────
 
 // ModelConfig represents a model configuration row.
+// APIKeyEncrypted is stored encrypted in DB, never returned in JSON.
+// Use HasAPIKey (computed) to indicate whether a key is configured.
 type ModelConfig struct {
-	ID           string                 `json:"id"`
-	Provider     string                 `json:"provider"`
-	ModelName    string                 `json:"model_name"`
-	DisplayName  string                 `json:"display_name"`
-	BaseURL      string                 `json:"base_url"`
-	APIKeyID     *string                `json:"api_key_id,omitempty"`
-	MaxTokens    int                    `json:"max_tokens"`
-	Temperature  float64                `json:"temperature"`
-	IsDefault    bool                   `json:"is_default"`
-	IsActive     bool                   `json:"is_active"`
-	Capabilities map[string]interface{} `json:"capabilities"`
-	Metadata     map[string]interface{} `json:"metadata"`
-	CreatedAt    time.Time              `json:"created_at"`
-	UpdatedAt    time.Time              `json:"updated_at"`
+	ID              string                 `json:"id"`
+	Provider        string                 `json:"provider"`
+	ModelName       string                 `json:"model_name"`
+	DisplayName     string                 `json:"display_name"`
+	BaseURL         string                 `json:"base_url"`
+	APIKeyID        *string                `json:"api_key_id,omitempty"` // legacy, deprecated
+	APIKeyEncrypted string                 `json:"-"`                     // encrypted in DB, never serialized
+	APIKeyPlain     string                 `json:"api_key,omitempty"`     // write-only: set by admin, encrypted before storage
+	HasAPIKey       bool                   `json:"has_api_key"`           // read-only: true if api_key_encrypted is non-empty
+	MaxTokens       int                    `json:"max_tokens"`
+	Temperature     float64                `json:"temperature"`
+	IsDefault       bool                   `json:"is_default"`
+	IsActive        bool                   `json:"is_active"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	Metadata        map[string]interface{} `json:"metadata"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
 // ListModelConfigs returns all model configs.
@@ -40,7 +46,7 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, max_tokens, temperature, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
 		       capabilities, metadata, created_at, updated_at
 		FROM model_configs
 		ORDER BY provider, is_default DESC, model_name
@@ -55,10 +61,12 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 		var c ModelConfig
 		var capJSON, metaJSON []byte
 		if err := rows.Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-			&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+			&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
 			&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			continue
 		}
+		c.HasAPIKey = c.APIKeyEncrypted != ""
+		c.APIKeyEncrypted = "" // never expose encrypted value
 		if len(capJSON) > 0 {
 			json.Unmarshal(capJSON, &c.Capabilities)
 		}
@@ -80,15 +88,17 @@ func (r *AdminRepo) GetModelConfig(ctx context.Context, id string) (*ModelConfig
 	var capJSON, metaJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, max_tokens, temperature, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
 		       capabilities, metadata, created_at, updated_at
 		FROM model_configs WHERE id = $1
 	`, id).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	c.HasAPIKey = c.APIKeyEncrypted != ""
+	c.APIKeyEncrypted = "" // never expose
 	if len(capJSON) > 0 {
 		json.Unmarshal(capJSON, &c.Capabilities)
 	}
@@ -99,6 +109,7 @@ func (r *AdminRepo) GetModelConfig(ctx context.Context, id string) (*ModelConfig
 }
 
 // CreateModelConfig inserts a new model config.
+// If c.APIKeyPlain is non-empty, it is encrypted and stored in api_key_encrypted.
 func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*ModelConfig, error) {
 	if r.db == nil {
 		return nil, fmt.Errorf("database not available")
@@ -111,6 +122,20 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 	metaJSON, _ := json.Marshal(c.Metadata)
 	if c.Metadata == nil {
 		metaJSON = []byte("{}")
+	}
+
+	// Encrypt API key if provided
+	storedAPIKey := ""
+	if c.APIKeyPlain != "" {
+		if len(r.encKey) > 0 {
+			encrypted, err := crypto.Encrypt(c.APIKeyPlain, r.encKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt API key: %w", err)
+			}
+			storedAPIKey = encrypted
+		} else {
+			storedAPIKey = c.APIKeyPlain // no encryption key configured
+		}
 	}
 
 	// If this is default, unset other defaults for same provider
@@ -126,20 +151,23 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 	}
 
 	err := r.db.QueryRowContext(ctx, `
-		INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_id, max_tokens, temperature,
-			is_default, is_active, capabilities, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_id, api_key_encrypted,
+			max_tokens, temperature, is_default, is_active, capabilities, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id::text, provider, model_name, display_name, base_url,
-		          api_key_id::text, max_tokens, temperature, is_default, is_active,
+		          api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
 		          capabilities, metadata, created_at, updated_at
-	`, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, c.MaxTokens, c.Temperature,
-		c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)).Scan(
+	`, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, storedAPIKey,
+		c.MaxTokens, c.Temperature, c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.APIKeyID, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
+		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
 		&rCapJSON, &rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	result.HasAPIKey = result.APIKeyEncrypted != ""
+	result.APIKeyEncrypted = ""
+	result.APIKeyPlain = ""
 	if len(rCapJSON) > 0 {
 		json.Unmarshal(rCapJSON, &result.Capabilities)
 	}
@@ -150,6 +178,7 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 }
 
 // UpdateModelConfig updates a model config.
+// If c.APIKeyPlain is non-empty, it is encrypted and stored. If empty, existing key is preserved.
 func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelConfig) (*ModelConfig, error) {
 	if r.db == nil {
 		return nil, fmt.Errorf("database not available")
@@ -175,23 +204,59 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 		apiKeyID = *c.APIKeyID
 	}
 
-	err := r.db.QueryRowContext(ctx, `
-		UPDATE model_configs SET
-			provider = $2, model_name = $3, display_name = $4, base_url = $5,
-			api_key_id = $6, max_tokens = $7, temperature = $8, is_default = $9, is_active = $10,
-			capabilities = $11, metadata = $12, updated_at = NOW()
-		WHERE id = $1
-		RETURNING id::text, provider, model_name, display_name, base_url,
-		          api_key_id::text, max_tokens, temperature, is_default, is_active,
-		          capabilities, metadata, created_at, updated_at
-	`, id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, c.MaxTokens, c.Temperature,
-		c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)).Scan(
+	var query string
+	var args []interface{}
+
+	if c.APIKeyPlain != "" {
+		// Encrypt new key
+		storedAPIKey := c.APIKeyPlain
+		if len(r.encKey) > 0 {
+			encrypted, err := crypto.Encrypt(c.APIKeyPlain, r.encKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt API key: %w", err)
+			}
+			storedAPIKey = encrypted
+		}
+		query = `
+			UPDATE model_configs SET
+				provider = $2, model_name = $3, display_name = $4, base_url = $5,
+				api_key_id = $6, api_key_encrypted = $7, max_tokens = $8, temperature = $9,
+				is_default = $10, is_active = $11, capabilities = $12, metadata = $13, updated_at = NOW()
+			WHERE id = $1
+			RETURNING id::text, provider, model_name, display_name, base_url,
+			          api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
+			          capabilities, metadata, created_at, updated_at
+		`
+		args = []interface{}{id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL,
+			apiKeyID, storedAPIKey, c.MaxTokens, c.Temperature,
+			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)}
+	} else {
+		// Keep existing api_key_encrypted
+		query = `
+			UPDATE model_configs SET
+				provider = $2, model_name = $3, display_name = $4, base_url = $5,
+				api_key_id = $6, max_tokens = $7, temperature = $8,
+				is_default = $9, is_active = $10, capabilities = $11, metadata = $12, updated_at = NOW()
+			WHERE id = $1
+			RETURNING id::text, provider, model_name, display_name, base_url,
+			          api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
+			          capabilities, metadata, created_at, updated_at
+		`
+		args = []interface{}{id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL,
+			apiKeyID, c.MaxTokens, c.Temperature,
+			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)}
+	}
+
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.APIKeyID, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
+		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
 		&rCapJSON, &rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	result.HasAPIKey = result.APIKeyEncrypted != ""
+	result.APIKeyEncrypted = ""
+	result.APIKeyPlain = ""
 	if len(rCapJSON) > 0 {
 		json.Unmarshal(rCapJSON, &result.Capabilities)
 	}
@@ -220,18 +285,19 @@ func (r *AdminRepo) GetDefaultModelConfig(ctx context.Context) (*ModelConfig, er
 	var capJSON, metaJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, max_tokens, temperature, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
 		       capabilities, metadata, created_at, updated_at
 		FROM model_configs
 		WHERE is_default = TRUE AND is_active = TRUE
 		ORDER BY updated_at DESC
 		LIMIT 1
 	`).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	c.HasAPIKey = c.APIKeyEncrypted != ""
 	if len(capJSON) > 0 {
 		json.Unmarshal(capJSON, &c.Capabilities)
 	}
@@ -251,17 +317,18 @@ func (r *AdminRepo) GetModelConfigByName(ctx context.Context, modelName string) 
 	var capJSON, metaJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, max_tokens, temperature, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
 		       capabilities, metadata, created_at, updated_at
 		FROM model_configs
 		WHERE model_name = $1 AND is_active = TRUE
 		LIMIT 1
 	`, modelName).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	c.HasAPIKey = c.APIKeyEncrypted != ""
 	if len(capJSON) > 0 {
 		json.Unmarshal(capJSON, &c.Capabilities)
 	}
@@ -269,6 +336,20 @@ func (r *AdminRepo) GetModelConfigByName(ctx context.Context, modelName string) 
 		json.Unmarshal(metaJSON, &c.Metadata)
 	}
 	return &c, nil
+}
+
+// DecryptModelAPIKey returns the decrypted API key for a model config.
+// If encryption is not configured, returns the raw value.
+func (r *AdminRepo) DecryptModelAPIKey(encryptedKey string) string {
+	if encryptedKey == "" {
+		return ""
+	}
+	if len(r.encKey) > 0 {
+		if decrypted, err := crypto.Decrypt(encryptedKey, r.encKey); err == nil {
+			return decrypted
+		}
+	}
+	return encryptedKey // not encrypted
 }
 
 // GetAPIKeyByID retrieves an API key by ID with the actual (decrypted) key value.
@@ -314,6 +395,7 @@ type APIKey struct {
 	ID          string                 `json:"id"`
 	Name        string                 `json:"name"`
 	Provider    string                 `json:"provider"`
+	Category    string                 `json:"category"` // "llm" or "mcp"
 	KeyValue    string                 `json:"key_value,omitempty"` // masked in list responses
 	BaseURL     string                 `json:"base_url"`
 	IsActive    bool                   `json:"is_active"`
@@ -327,18 +409,32 @@ type APIKey struct {
 }
 
 // ListAPIKeys returns all API keys (with masked key values).
-func (r *AdminRepo) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
+// If category is non-empty, filters by category (e.g. "mcp", "llm").
+func (r *AdminRepo) ListAPIKeys(ctx context.Context, category string) ([]*APIKey, error) {
 	if r.db == nil {
 		return []*APIKey{}, nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id::text, name, provider, base_url, is_active,
-		       last_used_at, last_check, last_status, last_error,
-		       metadata, created_at, updated_at
-		FROM api_keys
-		ORDER BY provider, created_at DESC
-	`)
+	var rows *sql.Rows
+	var err error
+	if category != "" {
+		rows, err = r.db.QueryContext(ctx, `
+			SELECT id::text, name, provider, category, base_url, is_active,
+			       last_used_at, last_check, last_status, last_error,
+			       metadata, created_at, updated_at
+			FROM api_keys
+			WHERE category = $1
+			ORDER BY provider, created_at DESC
+		`, category)
+	} else {
+		rows, err = r.db.QueryContext(ctx, `
+			SELECT id::text, name, provider, category, base_url, is_active,
+			       last_used_at, last_check, last_status, last_error,
+			       metadata, created_at, updated_at
+			FROM api_keys
+			ORDER BY provider, created_at DESC
+		`)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +444,7 @@ func (r *AdminRepo) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 	for rows.Next() {
 		var k APIKey
 		var metaJSON []byte
-		if err := rows.Scan(&k.ID, &k.Name, &k.Provider, &k.BaseURL, &k.IsActive,
+		if err := rows.Scan(&k.ID, &k.Name, &k.Provider, &k.Category, &k.BaseURL, &k.IsActive,
 			&k.LastUsedAt, &k.LastCheck, &k.LastStatus, &k.LastError,
 			&metaJSON, &k.CreatedAt, &k.UpdatedAt); err != nil {
 			continue
@@ -363,9 +459,14 @@ func (r *AdminRepo) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 }
 
 // CreateAPIKey inserts a new API key.
+// Category defaults to "mcp" if empty.
 func (r *AdminRepo) CreateAPIKey(ctx context.Context, k *APIKey) (*APIKey, error) {
 	if r.db == nil {
 		return nil, fmt.Errorf("database not available")
+	}
+
+	if k.Category == "" {
+		k.Category = "mcp"
 	}
 
 	metaJSON, _ := json.Marshal(k.Metadata)
@@ -389,13 +490,13 @@ func (r *AdminRepo) CreateAPIKey(ctx context.Context, k *APIKey) (*APIKey, error
 	var result APIKey
 	var rMetaJSON []byte
 	err := r.db.QueryRowContext(ctx, `
-		INSERT INTO api_keys (name, provider, key_value, key_hash, base_url, is_active, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id::text, name, provider, base_url, is_active,
+		INSERT INTO api_keys (name, provider, key_value, key_hash, base_url, is_active, metadata, category)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id::text, name, provider, category, base_url, is_active,
 		          last_used_at, last_check, last_status, last_error,
 		          metadata, created_at, updated_at
-	`, k.Name, k.Provider, storedKey, keyHash, k.BaseURL, k.IsActive, string(metaJSON)).Scan(
-		&result.ID, &result.Name, &result.Provider, &result.BaseURL, &result.IsActive,
+	`, k.Name, k.Provider, storedKey, keyHash, k.BaseURL, k.IsActive, string(metaJSON), k.Category).Scan(
+		&result.ID, &result.Name, &result.Provider, &result.Category, &result.BaseURL, &result.IsActive,
 		&result.LastUsedAt, &result.LastCheck, &result.LastStatus, &result.LastError,
 		&rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
@@ -414,6 +515,10 @@ func (r *AdminRepo) UpdateAPIKey(ctx context.Context, id string, k *APIKey) (*AP
 		return nil, fmt.Errorf("database not available")
 	}
 
+	if k.Category == "" {
+		k.Category = "mcp"
+	}
+
 	metaJSON, _ := json.Marshal(k.Metadata)
 	if k.Metadata == nil {
 		metaJSON = []byte("{}")
@@ -425,29 +530,29 @@ func (r *AdminRepo) UpdateAPIKey(ctx context.Context, id string, k *APIKey) (*AP
 	if k.KeyValue != "" {
 		query = `
 			UPDATE api_keys SET name = $2, provider = $3, key_value = $4, base_url = $5,
-				is_active = $6, metadata = $7, updated_at = NOW()
+				is_active = $6, metadata = $7, category = $8, updated_at = NOW()
 			WHERE id = $1
-			RETURNING id::text, name, provider, base_url, is_active,
+			RETURNING id::text, name, provider, category, base_url, is_active,
 			          last_used_at, last_check, last_status, last_error,
 			          metadata, created_at, updated_at
 		`
-		args = []interface{}{id, k.Name, k.Provider, k.KeyValue, k.BaseURL, k.IsActive, string(metaJSON)}
+		args = []interface{}{id, k.Name, k.Provider, k.KeyValue, k.BaseURL, k.IsActive, string(metaJSON), k.Category}
 	} else {
 		query = `
 			UPDATE api_keys SET name = $2, provider = $3, base_url = $4,
-				is_active = $5, metadata = $6, updated_at = NOW()
+				is_active = $5, metadata = $6, category = $7, updated_at = NOW()
 			WHERE id = $1
-			RETURNING id::text, name, provider, base_url, is_active,
+			RETURNING id::text, name, provider, category, base_url, is_active,
 			          last_used_at, last_check, last_status, last_error,
 			          metadata, created_at, updated_at
 		`
-		args = []interface{}{id, k.Name, k.Provider, k.BaseURL, k.IsActive, string(metaJSON)}
+		args = []interface{}{id, k.Name, k.Provider, k.BaseURL, k.IsActive, string(metaJSON), k.Category}
 	}
 
 	var result APIKey
 	var rMetaJSON []byte
 	err := r.db.QueryRowContext(ctx, query, args...).Scan(
-		&result.ID, &result.Name, &result.Provider, &result.BaseURL, &result.IsActive,
+		&result.ID, &result.Name, &result.Provider, &result.Category, &result.BaseURL, &result.IsActive,
 		&result.LastUsedAt, &result.LastCheck, &result.LastStatus, &result.LastError,
 		&rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {

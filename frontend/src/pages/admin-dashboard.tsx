@@ -35,7 +35,7 @@ const NAV_ITEMS: { key: AdminPage; label: string; icon: string }[] = [
   { key: "styles", label: "风格管理", icon: "✍️" },
   { key: "traces", label: "Trace 历史", icon: "📋" },
   { key: "models", label: "模型配置", icon: "🤖" },
-  { key: "keys", label: "API 密钥", icon: "🔑" },
+  { key: "keys", label: "MCP 服务密钥", icon: "🔑" },
   { key: "cron", label: "定时任务", icon: "⏰" },
   { key: "evaluation", label: "评测面板", icon: "📝" },
   { key: "feedback", label: "反馈分析", icon: "💬" },
