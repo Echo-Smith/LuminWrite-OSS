@@ -1,5 +1,7 @@
 /**
- * API 密钥管理 — Admin Dashboard
+ * MCP 服务密钥管理 — Admin Dashboard
+ * 管理 MCP / 第三方服务（如搜索）的 API 密钥
+ * LLM 密钥已内聚到「模型配置」页面，此处不再管理
  */
 import { useState, useEffect, useCallback, type ReactElement } from "react";
 import { Plus, Trash2, Pencil, Key, Zap, Loader2, CheckCircle, XCircle } from "lucide-react";
@@ -15,6 +17,7 @@ interface APIKey {
   id: string;
   name: string;
   provider: string;
+  category: string;
   key_value?: string;
   base_url: string;
   is_active: boolean;
@@ -25,13 +28,12 @@ interface APIKey {
   created_at: string;
 }
 
-const PROVIDERS = [
-  { value: "deepseek", label: "DeepSeek" },
+// Only MCP/service providers — LLM keys are managed in model configs
+const MCP_PROVIDERS = [
   { value: "tavily", label: "Tavily Search" },
   { value: "zhihu", label: "知乎" },
   { value: "ima", label: "IMA" },
-  { value: "dashscope", label: "DashScope" },
-  { value: "openai", label: "OpenAI" },
+  { value: "dashscope", label: "DashScope (Embedding)" },
 ];
 
 const STATUS_ICONS: Record<string, ReactElement> = {
@@ -49,7 +51,7 @@ export function APIKeysPage() {
   const [testing, setTesting] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
-    provider: "deepseek",
+    provider: "tavily",
     key_value: "",
     base_url: "",
     is_active: true,
@@ -58,7 +60,7 @@ export function APIKeysPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/v2/admin/api-keys");
+      const res = await fetch("/api/v2/admin/api-keys?category=mcp");
       const json = await res.json();
       if (json.success) setKeys(json.data?.keys ?? []);
     } finally {
@@ -74,7 +76,7 @@ export function APIKeysPage() {
     try {
       const url = editing ? `/api/v2/admin/api-keys/${editing.id}` : "/api/v2/admin/api-keys";
       const method = editing ? "PUT" : "POST";
-      const body: Record<string, unknown> = { ...form };
+      const body: Record<string, unknown> = { ...form, category: "mcp" };
       if (editing && !form.key_value) delete body.key_value;
       await fetch(url, {
         method,
@@ -83,7 +85,7 @@ export function APIKeysPage() {
       });
       setShowAdd(false);
       setEditing(null);
-      setForm({ name: "", provider: "deepseek", key_value: "", base_url: "", is_active: true });
+      setForm({ name: "", provider: "tavily", key_value: "", base_url: "", is_active: true });
       await load();
     } finally {
       setSaving(false);
@@ -114,7 +116,12 @@ export function APIKeysPage() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">API 密钥</h2>
+        <div>
+          <h2 className="text-xl font-semibold">MCP 服务密钥</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            管理搜索、知识库等 MCP 服务的 API 密钥。LLM 密钥请在「模型配置」中管理。
+          </p>
+        </div>
         <Button size="sm" onClick={() => { setShowAdd(!showAdd); setEditing(null); }}>
           <Plus className="h-4 w-4 mr-2" /> 添加密钥
         </Button>
@@ -127,14 +134,14 @@ export function APIKeysPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>名称</Label>
-                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="DeepSeek 主密钥" />
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Tavily 搜索密钥" />
               </div>
               <div>
-                <Label>供应商</Label>
+                <Label>服务</Label>
                 <Select value={form.provider} onValueChange={(v) => setForm({ ...form, provider: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {PROVIDERS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
+                    {MCP_PROVIDERS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -144,7 +151,7 @@ export function APIKeysPage() {
               </div>
               <div>
                 <Label>Base URL (可选)</Label>
-                <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.deepseek.com" />
+                <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.tavily.com" />
               </div>
             </div>
             <div className="flex items-center gap-2 mt-4">
@@ -167,7 +174,7 @@ export function APIKeysPage() {
           <thead>
             <tr className="border-b bg-muted/50">
               <th className="text-left p-3 text-sm font-medium">名称</th>
-              <th className="text-left p-3 text-sm font-medium">供应商</th>
+              <th className="text-left p-3 text-sm font-medium">服务</th>
               <th className="text-left p-3 text-sm font-medium">密钥</th>
               <th className="text-left p-3 text-sm font-medium">状态</th>
               <th className="text-left p-3 text-sm font-medium">最后检查</th>
@@ -178,7 +185,7 @@ export function APIKeysPage() {
             {loading ? (
               <tr><td colSpan={6} className="p-8 text-center"><Loader2 className="h-4 w-4 animate-spin mx-auto" /></td></tr>
             ) : keys.length === 0 ? (
-              <tr><td colSpan={6} className="p-8 text-center text-muted-foreground text-sm">暂无 API 密钥</td></tr>
+              <tr><td colSpan={6} className="p-8 text-center text-muted-foreground text-sm">暂无 MCP 服务密钥</td></tr>
             ) : (
               keys.map((k) => (
                 <tr key={k.id} className="border-b last:border-0 hover:bg-accent/30">
@@ -186,7 +193,7 @@ export function APIKeysPage() {
                     <Key className="h-3.5 w-3.5 text-muted-foreground" />
                     {k.name}
                   </td>
-                  <td className="p-3 text-sm">{PROVIDERS.find((p) => p.value === k.provider)?.label ?? k.provider}</td>
+                  <td className="p-3 text-sm">{MCP_PROVIDERS.find((p) => p.value === k.provider)?.label ?? k.provider}</td>
                   <td className="p-3 text-sm font-mono text-muted-foreground">{k.key_value || "****"}</td>
                   <td className="p-3">
                     <div className="flex items-center gap-2">

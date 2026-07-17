@@ -122,6 +122,87 @@ func (s *Server) handleAdminDeleteModelConfig(w http.ResponseWriter, r *http.Req
 	response.OK(w, map[string]interface{}{"message": "model config deleted"})
 }
 
+// handleAdminDiscoverModels fetches available models from a provider's API.
+// Request: { "base_url": "https://api.deepseek.com/v1", "api_key": "sk-..." }
+// Response: { "models": [{"id": "deepseek-chat", "owned_by": "deepseek"}, ...] }
+func (s *Server) handleAdminDiscoverModels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+
+	if req.APIKey == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "api_key is required")
+		return
+	}
+
+	if req.BaseURL == "" {
+		req.BaseURL = "https://api.deepseek.com/v1"
+	}
+
+	// OpenAI-compatible: GET {base_url}/models
+	url := strings.TrimSuffix(req.BaseURL, "/") + "/models"
+	httpReq, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to create request")
+		return
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+	httpReq.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		slog.Warn("discover models: request failed", "base_url", req.BaseURL, "error", err)
+		response.Err(w, http.StatusBadGateway, "upstream_error", fmt.Sprintf("failed to connect to %s: %v", req.BaseURL, err))
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("discover models: upstream returned error", "status", resp.StatusCode, "body", string(body))
+		response.Err(w, http.StatusBadGateway, "upstream_error",
+			fmt.Sprintf("provider returned status %d: %s", resp.StatusCode, string(body)))
+		return
+	}
+
+	// Parse OpenAI-compatible response: { "data": [{"id": "...", "owned_by": "..."}, ...] }
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		response.Err(w, http.StatusInternalServerError, "parse_error", "failed to parse response from provider")
+		return
+	}
+
+	type discoveredModel struct {
+		ID      string `json:"id"`
+		OwnedBy string `json:"owned_by"`
+	}
+
+	models := make([]discoveredModel, 0, len(result.Data))
+	for _, m := range result.Data {
+		if m.ID != "" {
+			models = append(models, discoveredModel{ID: m.ID, OwnedBy: m.OwnedBy})
+		}
+	}
+
+	response.OK(w, map[string]interface{}{
+		"models":   models,
+		"base_url": req.BaseURL,
+		"total":    len(models),
+	})
+}
+
 // ─── Admin: API Keys ─────────────────────────────────────
 
 func (s *Server) handleAdminListAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +211,13 @@ func (s *Server) handleAdminListAPIKeys(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	keys, err := s.adminRepo.ListAPIKeys(r.Context())
+	// Default to 'mcp' category for the API keys page (LLM keys are now managed in model configs)
+	category := r.URL.Query().Get("category")
+	if category == "" {
+		category = "mcp"
+	}
+
+	keys, err := s.adminRepo.ListAPIKeys(r.Context(), category)
 	if err != nil {
 		slog.Warn("failed to list api keys", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list api keys")
@@ -216,7 +303,7 @@ func (s *Server) handleAdminTestAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get the key details
-	keys, err := s.adminRepo.ListAPIKeys(r.Context())
+	keys, err := s.adminRepo.ListAPIKeys(r.Context(), "")
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to get api key")
 		return

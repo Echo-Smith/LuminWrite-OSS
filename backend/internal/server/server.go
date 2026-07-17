@@ -364,6 +364,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             // Model Configs
             r.Get("/models", s.handleAdminListModelConfigs)
             r.Post("/models", s.handleAdminCreateModelConfig)
+            r.Post("/models/discover", s.handleAdminDiscoverModels)
             r.Put("/models/{id}", s.handleAdminUpdateModelConfig)
             r.Delete("/models/{id}", s.handleAdminDeleteModelConfig)
 
@@ -1250,6 +1251,7 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 		DisplayName string `json:"display_name"`
 		Provider    string `json:"provider"`
 		IsDefault   bool   `json:"is_default"`
+		HasAPIKey   bool   `json:"has_api_key"`
 	}
 
 	var models []modelInfo
@@ -1261,6 +1263,7 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 				DisplayName: c.DisplayName,
 				Provider:    c.Provider,
 				IsDefault:   c.IsDefault,
+				HasAPIKey:   c.HasAPIKey,
 			})
 		}
 	}

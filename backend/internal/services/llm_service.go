@@ -88,23 +88,24 @@ func (s *LLMService) GetClient(ctx context.Context, modelName string) *tools.LLM
 		}
 	}
 
-	// Resolve API key
-	apiKey := ""
-	if cfg.APIKeyID != nil && *cfg.APIKeyID != "" {
+	// Resolve API key from inline encrypted field
+	apiKey := s.adminRepo.DecryptModelAPIKey(cfg.APIKeyEncrypted)
+
+	// If no inline key, try legacy api_key_id lookup (backward compat)
+	if apiKey == "" && cfg.APIKeyID != nil && *cfg.APIKeyID != "" {
 		_, key, err := s.adminRepo.GetAPIKeyByID(ctx, *cfg.APIKeyID)
 		if err != nil {
-			slog.Warn("LLMService: failed to get API key by ID, trying provider", "api_key_id", *cfg.APIKeyID, "error", err)
+			slog.Warn("LLMService: failed to get API key by ID", "api_key_id", *cfg.APIKeyID, "error", err)
 		} else {
 			apiKey = key
 		}
 	}
 
-	// If no API key from linked api_key_id, try by provider
+	// If still no API key, try by provider (legacy api_keys table)
 	if apiKey == "" && cfg.Provider != "" {
 		key, baseURL, err := s.adminRepo.GetAPIKeyValue(ctx, cfg.Provider)
 		if err == nil {
 			apiKey = key
-			// If model config has no base_url, use the one from API key
 			if cfg.BaseURL == "" {
 				cfg.BaseURL = baseURL
 			}
@@ -165,6 +166,8 @@ func defaultBaseURLForProvider(provider string) string {
 		return "https://api.openai.com/v1"
 	case "qwen":
 		return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	case "kimi":
+		return "https://api.moonshot.cn/v1"
 	case "claude":
 		return "https://api.anthropic.com/v1"
 	default:
