@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -11,35 +12,69 @@ import (
 )
 
 // JiaozhenClient wraps the Tencent News "较真" fact-checking CLI tool.
+// It uses the `tencent-news-cli jiaozhen --query=<claim>` command.
 // It is optional — if not configured or if the CLI fails, it degrades gracefully.
 type JiaozhenClient struct {
-	enabled      bool
-	cliPath      string
-	commandArgs  []string
-	apiKey       string
-	timeout      time.Duration
-	maxClaims    int
+	enabled   bool
+	cliPath   string
+	apiKey    string
+	timeout   time.Duration
+	maxClaims int
 }
 
 // NewJiaozhenClient creates a new JiaozhenClient.
-func NewJiaozhenClient(enabled bool, cliPath string, commandArgs []string, apiKey string, timeout time.Duration, maxClaims int) *JiaozhenClient {
+// cliPath can be empty — the client will auto-detect the CLI on PATH or in ~/.tencent-news-cli/bin/.
+func NewJiaozhenClient(enabled bool, cliPath string, _ []string, apiKey string, timeout time.Duration, maxClaims int) *JiaozhenClient {
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		timeout = 30 * time.Second
 	}
 	if maxClaims <= 0 || maxClaims > 5 {
 		maxClaims = 2
 	}
-	if len(commandArgs) == 0 {
-		commandArgs = []string{"jiaozhen"}
+
+	// Auto-detect CLI path if not specified
+	if cliPath == "" {
+		cliPath = detectTencentNewsCLI()
 	}
-	return &JiaozhenClient{
-		enabled:     enabled,
-		cliPath:     cliPath,
-		commandArgs: commandArgs,
-		apiKey:      apiKey,
-		timeout:     timeout,
-		maxClaims:   maxClaims,
+
+	c := &JiaozhenClient{
+		enabled:   enabled,
+		cliPath:   cliPath,
+		apiKey:    apiKey,
+		timeout:   timeout,
+		maxClaims: maxClaims,
 	}
+
+	if enabled && cliPath != "" {
+		slog.Info("jiaozhen client initialized", "cli_path", cliPath, "timeout", timeout)
+	} else if enabled {
+		slog.Warn("jiaozhen enabled but tencent-news-cli not found", "hint", "install via: curl -fsSL https://mat1.gtimg.com/qqcdn/qqnews/cli/hub/tencent-news/setup.sh | sh")
+	}
+
+	return c
+}
+
+// detectTencentNewsCLI tries to find the tencent-news-cli binary.
+// Order: PATH → ~/.tencent-news-cli/bin/tencent-news-cli
+func detectTencentNewsCLI() string {
+	// Try PATH
+	if path, err := exec.LookPath("tencent-news-cli"); err == nil {
+		// Verify it works
+		if err := exec.Command(path, "version").Run(); err == nil {
+			return path
+		}
+	}
+
+	// Try default install location
+	home := getHomeDir()
+	if home != "" {
+		defaultPath := home + "/.tencent-news-cli/bin/tencent-news-cli"
+		if exec.Command(defaultPath, "version").Run() == nil {
+			return defaultPath
+		}
+	}
+
+	return ""
 }
 
 // IsConfigured returns true if the client is enabled and the CLI path is set.
@@ -50,7 +85,7 @@ func (c *JiaozhenClient) IsConfigured() bool {
 // JiaozhenResult holds the result of a fact check.
 type JiaozhenResult struct {
 	Claim   string `json:"claim"`
-	Status  string `json:"status"`   // ok | skipped | error
+	Status  string `json:"status"` // ok | skipped | error
 	Source  string `json:"source,omitempty"`
 	Content string `json:"content,omitempty"`
 	Error   string `json:"error,omitempty"`
@@ -91,26 +126,58 @@ func compactClaim(s string) string {
 }
 
 // CheckClaim runs the jiaozhen CLI tool to fact-check a single claim.
+// Uses: tencent-news-cli jiaozhen --query=<claim> --caller=jiaozhen-factcheck
+// Only checks claims that match candidate patterns (rumors, health claims, etc.).
 func (c *JiaozhenClient) CheckClaim(ctx context.Context, claim string) *JiaozhenResult {
 	normalizedClaim := compactClaim(claim)
 
 	if !c.enabled {
 		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "disabled"}
 	}
+	if c.cliPath == "" {
+		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "cli_not_found"}
+	}
 	if !IsJiaozhenCandidate(normalizedClaim) {
 		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "not_candidate"}
 	}
 
-	// Run CLI tool
-	args := append([]string{}, c.commandArgs...)
-	args = append(args, normalizedClaim)
+	return c.checkClaimDirect(ctx, claim, normalizedClaim)
+}
+
+// CheckClaimDirect runs the jiaozhen CLI tool to fact-check a claim without
+// the candidate filter. This is used for article fact-checking where claims
+// are factual statements (e.g., "教育部发布AI教育行动计划") rather than
+// rumor-style questions.
+func (c *JiaozhenClient) CheckClaimDirect(ctx context.Context, claim string) *JiaozhenResult {
+	normalizedClaim := compactClaim(claim)
+
+	if !c.enabled {
+		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "disabled"}
+	}
+	if c.cliPath == "" {
+		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "cli_not_found"}
+	}
+
+	return c.checkClaimDirect(ctx, claim, normalizedClaim)
+}
+
+// checkClaimDirect is the internal implementation that runs the CLI command.
+func (c *JiaozhenClient) checkClaimDirect(ctx context.Context, claim, normalizedClaim string) *JiaozhenResult {
+
+	// Build command: tencent-news-cli jiaozhen --query=<claim> --caller=jiaozhen-factcheck
+	args := []string{
+		"jiaozhen",
+		"--query=" + normalizedClaim,
+		"--caller=jiaozhen-factcheck",
+	}
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctxWithTimeout, c.cliPath, args...)
 
-	// Set environment
+	// Inherit parent environment so the CLI can find its config file
+	cmd.Env = os.Environ()
 	if c.apiKey != "" {
 		cmd.Env = append(cmd.Env,
 			fmt.Sprintf("TENCENT_NEWS_API_KEY=%s", c.apiKey),
@@ -121,7 +188,11 @@ func (c *JiaozhenClient) CheckClaim(ctx context.Context, claim string) *Jiaozhen
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		slog.Debug("jiaozhen CLI failed", "claim", normalizedClaim, "error", err)
+		slog.Warn("jiaozhen CLI failed",
+			"claim", normalizedClaim,
+			"error", err,
+			"output", string(output),
+			"cli_path", c.cliPath)
 		return &JiaozhenResult{
 			Claim:  claim,
 			Status: "error",
@@ -179,4 +250,15 @@ func (c *JiaozhenClient) CheckClaims(ctx context.Context, claims []string) []*Ji
 
 	slog.Debug("jiaozhen fact check completed", "total_claims", len(claims), "candidates", len(candidates), "results", len(results))
 	return results
+}
+
+// getHomeDir returns the user's home directory.
+func getHomeDir() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
 }

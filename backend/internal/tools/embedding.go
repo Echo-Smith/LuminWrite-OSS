@@ -12,28 +12,37 @@ import (
 	"time"
 )
 
-// EmbeddingClient is a client for the Dashscope (Alibaba Cloud) embedding API.
+// EmbeddingClient is a client for any OpenAI-compatible embedding API.
+// Supports DashScope (阿里云百炼), SiliconFlow, Ollama, and other providers
+// that implement the /v1/embeddings endpoint.
 type EmbeddingClient struct {
 	apiKey     string
 	model      string
 	dimension  int
-	baseURL    string
+	baseURL    string // e.g. "https://xxx.maas.aliyuncs.com/compatible-mode/v1"
 	httpClient *http.Client
 }
 
 // NewEmbeddingClient creates a new EmbeddingClient.
-func NewEmbeddingClient(apiKey, model string, dimension int) *EmbeddingClient {
+// baseURL should be the OpenAI-compatible API root (without /embeddings suffix).
+// Example: "https://llm-xxx.maas.aliyuncs.com/compatible-mode/v1"
+func NewEmbeddingClient(apiKey, baseURL, model string, dimension int) *EmbeddingClient {
 	if model == "" {
 		model = "text-embedding-v3"
 	}
 	if dimension <= 0 {
 		dimension = 1024
 	}
+	// Trim trailing slash to ensure clean URL construction
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	}
 	return &EmbeddingClient{
 		apiKey:     apiKey,
 		model:      model,
 		dimension:  dimension,
-		baseURL:    "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding",
+		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -57,29 +66,27 @@ func (c *EmbeddingClient) IsConfigured() bool {
 	return true
 }
 
-// EmbeddingRequest is the request body for the Dashscope embedding API.
-type EmbeddingRequest struct {
+// embeddingRequest is the OpenAI-compatible embedding request body.
+type embeddingRequest struct {
 	Model      string   `json:"model"`
-	Input      struct {
-		Contents []string `json:"contents"`
-	} `json:"input"`
-	Parameters struct {
-		Dimension int `json:"dimension"`
-	} `json:"parameters"`
+	Input      []string `json:"input"`
+	Dimensions int      `json:"dimensions,omitempty"`
 }
 
-// EmbeddingResponse is the response from the Dashscope embedding API.
-type EmbeddingResponse struct {
-	Output struct {
-		Embeddings []struct {
-			Index     int       `json:"index"`
-			Embedding []float64 `json:"embedding"`
-		} `json:"embeddings"`
-	} `json:"output"`
+// embeddingData represents a single embedding in the response.
+type embeddingData struct {
+	Index     int       `json:"index"`
+	Embedding []float64 `json:"embedding"`
+}
+
+// embeddingResponse is the OpenAI-compatible embedding response.
+type embeddingResponse struct {
+	Data []embeddingData `json:"data"`
 	Usage struct {
-		TotalTokens int `json:"total_tokens"`
+		PromptTokens int `json:"prompt_tokens"`
+		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
-	RequestID string `json:"request_id"`
+	Model string `json:"model"`
 }
 
 // Embed generates embeddings for the given texts.
@@ -92,7 +99,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		return nil, 0, nil
 	}
 
-	// Dashscope supports batch embedding (up to 25 texts per request)
+	// OpenAI-compatible APIs typically support batch embedding (up to 64 texts per request)
 	const batchSize = 25
 	var allEmbeddings [][]float64
 	totalTokens := 0
@@ -104,17 +111,21 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		}
 		batch := texts[start:end]
 
-		reqBody := EmbeddingRequest{}
-		reqBody.Model = c.model
-		reqBody.Input.Contents = batch
-		reqBody.Parameters.Dimension = c.dimension
+		reqBody := embeddingRequest{
+			Model:      c.model,
+			Input:      batch,
+			Dimensions: c.dimension,
+		}
 
 		data, err := json.Marshal(reqBody)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to marshal embedding request: %w", err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(data))
+		// Construct the embeddings endpoint URL
+		embedURL := c.baseURL + "/embeddings"
+
+		req, err := http.NewRequestWithContext(ctx, "POST", embedURL, bytes.NewReader(data))
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to create embedding request: %w", err)
 		}
@@ -137,12 +148,14 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 			return nil, 0, fmt.Errorf("embedding API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
-		var embResp EmbeddingResponse
+		var embResp embeddingResponse
 		if err := json.Unmarshal(body, &embResp); err != nil {
 			return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
 		}
 
-		for _, emb := range embResp.Output.Embeddings {
+		// Sort by index to ensure correct ordering (API may return out of order)
+		// Actually, OpenAI-compatible APIs return in order, but let's be safe
+		for _, emb := range embResp.Data {
 			allEmbeddings = append(allEmbeddings, emb.Embedding)
 		}
 		totalTokens += embResp.Usage.TotalTokens
@@ -153,6 +166,8 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		"embeddings", len(allEmbeddings),
 		"dimension", c.dimension,
 		"tokens", totalTokens,
+		"model", c.model,
+		"base_url", c.baseURL,
 	)
 
 	return allEmbeddings, totalTokens, nil

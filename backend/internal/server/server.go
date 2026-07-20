@@ -14,7 +14,9 @@ import (
 
 	ws "github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/mcp"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
@@ -55,6 +57,8 @@ type Server struct {
 	sensitiveSvc  *services.SensitiveCheckService
 	jiaozhen      *tools.JiaozhenClient
 	memorySvc     *memsvc.Service
+	mcpRegistry   *mcp.Registry
+	toolRegistry  *engine.ToolRegistry
 }
 
 // New creates a new Server.
@@ -80,15 +84,26 @@ func New(cfg *config.Config) *Server {
 		cfg.Tencent.Enabled, cfg.Tencent.BaseURL, cfg.Tencent.Timeout,
 		cfg.Weibo.Enabled, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
 		cfg.ExtraHot.Enabled, cfg.ExtraHot.BaseURL, cfg.ExtraHot.Timeout,
+		cfg.Bing.Enabled, cfg.Bing.BaseURL, cfg.Bing.Timeout,
+		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
 	)
 	if !searchClient.HasSources() {
 		slog.Warn("no search sources configured")
 	}
 
-	// Create embedding client (Dashscope)
-	embeddingClient := tools.NewEmbeddingClient(cfg.Dashscope.APIKey, cfg.Dashscope.Model, cfg.Dashscope.Dimension)
+	// Create embedding client (OpenAI-compatible — supports DashScope MaaS, SiliconFlow, Ollama, etc.)
+	embeddingClient := tools.NewEmbeddingClient(
+		cfg.Dashscope.APIKey,
+		cfg.Dashscope.BaseURL,
+		cfg.Dashscope.Model,
+		cfg.Dashscope.Dimension,
+	)
 	if embeddingClient.IsConfigured() {
-		slog.Info("embedding client configured", "model", cfg.Dashscope.Model, "dimension", cfg.Dashscope.Dimension)
+		slog.Info("embedding client configured",
+			"model", cfg.Dashscope.Model,
+			"dimension", cfg.Dashscope.Dimension,
+			"base_url", cfg.Dashscope.BaseURL,
+		)
 	} else {
 		slog.Warn("DASHSCOPE_API_KEY not set, semantic search will use text fallback")
 	}
@@ -176,7 +191,11 @@ func New(cfg *config.Config) *Server {
 			cfg.Jiaozhen.Timeout,
 			cfg.Jiaozhen.MaxClaims,
 		)
-		slog.Info("jiaozhen fact-checking enabled", "cli_path", cfg.Jiaozhen.CLIPath)
+		if jiaozhenClient.IsConfigured() {
+			slog.Info("jiaozhen fact-checking enabled")
+		} else {
+			slog.Warn("jiaozhen enabled but CLI not found — install tencent-news-cli")
+		}
 	}
 
 	// Create memory service (optional, requires DB + LLM + Embedding)
@@ -187,6 +206,23 @@ func New(cfg *config.Config) *Server {
 
 	// Create LLM service (dynamic client factory with DB-backed model configs)
 	llmSvc := services.NewLLMService(adminRepo, llm, cfg.DeepSeek.Timeout)
+
+	// Initialize MCP registry — connect to configured MCP servers
+	mcpRegistry := mcp.NewRegistry()
+	for _, mcpCfg := range cfg.MCPServers {
+		_ = mcpRegistry.Connect(context.Background(), mcp.MCPClientConfig{
+			Name:      mcpCfg.Name,
+			Transport: mcpCfg.Transport,
+			Command:   mcpCfg.Command,
+			Args:      mcpCfg.Args,
+			Env:       mcpCfg.Env,
+			URL:       mcpCfg.URL,
+		})
+	}
+
+	// Initialize ToolRegistry — unified registry for all tools
+	// (Steps + Built-in tools + MCP tools)
+	toolRegistry := engine.NewToolRegistry()
 
 	return &Server{
 		cfg:           cfg,
@@ -213,6 +249,8 @@ func New(cfg *config.Config) *Server {
 		sensitiveSvc:  sensitiveSvc,
 		jiaozhen:      jiaozhenClient,
 		memorySvc:     memorySvc,
+		mcpRegistry:   mcpRegistry,
+		toolRegistry:  toolRegistry,
 	}
 }
 
@@ -848,20 +886,37 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		steps.NewIntentStep(llmClient),
 	)
 
-	// Memory gate: retrieve and gate memories after intent classification
-	// Must run BEFORE ChatStep and WriteStep so they can consume MemoryContext
+	// ── Parallel Group: Memory retrieval ∥ Search chain ──
+	// After IntentStep, these two branches have no data dependency:
+	//   Branch A (MemoryGateStep) → writes execCtx.MemoryContext
+	//   Branch B (QueryPlan → Search → Relevance → Compress) → writes execCtx.SearchPlan/SearchResults/CompressedContext
+	// Non-overlapping fields → safe concurrent execution.
+	// For chat intent: Branch B steps all self-skip, so only Branch A runs.
+	// For writing intent: both branches run concurrently, saving ~2-5s latency.
+	searchBranch := []engine.Step{
+		steps.NewQueryPlanStep(llmClient),
+		steps.NewSearchStep(llmClient, s.search),
+		steps.NewRelevanceStepWithEmbedding(s.embedding),
+		steps.NewCompressStep(llmClient),
+	}
+
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		engineSteps = append(engineSteps, steps.NewMemoryGateStep(s.memorySvc))
+		memoryBranch := []engine.Step{
+			steps.NewMemoryGateStep(s.memorySvc),
+		}
+		engineSteps = append(engineSteps, engine.NewParallelGroup(
+			"parallel_pre_write",
+			memoryBranch,
+			searchBranch,
+		))
+	} else {
+		// No memory service — just run the search chain sequentially
+		engineSteps = append(engineSteps, searchBranch...)
 	}
 
 	// ChatStep: handles chat intent (skips itself for non-chat intents)
 	engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
 
-	engineSteps = append(engineSteps,
-		steps.NewQueryPlanStep(llmClient),
-		steps.NewSearchStep(llmClient, s.search),
-		steps.NewRelevanceStepWithEmbedding(s.embedding),
-	)
 	if execCtx.Mode == "guided" {
 		engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
 	}
@@ -874,11 +929,11 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 	}
 
-	engineSteps = append(engineSteps,
-		steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
-		s.newPostReviewStepWithLLM(llmClient, styleProfile),
-		steps.NewAutoFixStep(llmClient),
-	)
+ engineSteps = append(engineSteps,
+ steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+ s.newPostReviewStepWithLLM(llmClient, styleProfile),
+ steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+ )
 
 	// Memory extract: extract patterns after article completion (async)
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
@@ -886,7 +941,21 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	}
 
 	// Create and run engine
-	eng := engine.NewAgentEngine(emitter, engineSteps)
+	// Mode selection: "unified" uses LLM-driven ReAct loop, "pipeline" uses fixed steps
+	var agentRunner interface {
+		Run(context.Context, *engine.ExecutionContext) error
+	}
+
+	if s.cfg.Agent.Mode == "unified" {
+		// Build tool registry with all steps + built-in tools + MCP tools
+		registry := s.buildToolRegistry(llmClient, styleProfile, execCtx)
+
+		agentRunner = agent.NewUnifiedAgent(registry, llmClient, emitter)
+		slog.Info("using unified agent (ReAct loop)", "trace_id", traceID)
+	} else {
+		agentRunner = engine.NewAgentEngine(emitter, engineSteps)
+		slog.Info("using fixed pipeline engine", "trace_id", traceID)
+	}
 
 	// Run in background
 	go func() {
@@ -911,7 +980,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 		ctx := context.Background()
 		start := time.Now()
-		if err := eng.Run(ctx, execCtx); err != nil {
+		if err := agentRunner.Run(ctx, execCtx); err != nil {
 			slog.Error("agent execution failed", "trace_id", traceID, "error", err)
 			if s.traces != nil {
 				s.traces.FailTrace(ctx, traceID, err.Error())
@@ -1225,9 +1294,101 @@ func (s *Server) newPostReviewStep() engine.Step {
 // newPostReviewStepWithLLM creates a PostReviewStep with a specific LLM client and style profile.
 func (s *Server) newPostReviewStepWithLLM(llm *tools.LLMClient, p *profile.StyleProfile) engine.Step {
 	if s.sensitiveSvc != nil {
-		return steps.NewPostReviewStepWithProfile(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p)
+		return steps.NewPostReviewStepWithSearchAndJiaozhen(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p, s.search, s.jiaozhen)
 	}
-	return steps.NewPostReviewStep(llm)
+	return steps.NewPostReviewStepWithSearchAndJiaozhen(llm, nil, p, s.search, s.jiaozhen)
+}
+
+// buildToolRegistry builds a ToolRegistry containing all pipeline steps as tools,
+// built-in function tools, and MCP tools (if MCP servers are configured).
+// This is used by the UnifiedAgent to give the LLM planner access to all capabilities.
+func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *profile.StyleProfile, execCtx *engine.ExecutionContext) *engine.ToolRegistry {
+	registry := engine.NewToolRegistry()
+
+	// ── Macro Tools: pipeline steps wrapped as AgentTool ──
+	registry.Register(engine.NewStepTool(
+		steps.NewIntentStep(llmClient),
+		"意图分类：分析用户输入，判定为 writing/polish/chat/shorten/expand/extract_points",
+		false,
+	))
+
+	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+		registry.Register(engine.NewStepTool(
+			steps.NewMemoryGateStep(s.memorySvc),
+			"记忆门控：检索用户写作偏好记忆，注入到执行上下文",
+			false,
+		))
+	}
+
+	registry.Register(engine.NewStepTool(
+		steps.NewChatStep(llmClient),
+		"对话回复：处理 chat 意图，直接流式输出回复（非写作模式专用）",
+		true, // terminal — article is produced
+	))
+	registry.Register(engine.NewStepTool(
+		steps.NewQueryPlanStep(llmClient),
+		"检索规划：从用户输入提取话题和搜索查询（仅写作模式需要）",
+		false,
+	))
+	registry.Register(engine.NewStepTool(
+		steps.NewSearchStep(llmClient, s.search),
+		"多源搜索：并发执行知乎/IMA/Tavily/腾讯新闻/微博搜索，返回 20 条结果",
+		false,
+	))
+	registry.Register(engine.NewStepTool(
+		steps.NewRelevanceStepWithEmbedding(s.embedding),
+		"相关性过滤：对搜索结果评分和语义去重，保留高质量素材",
+		false,
+	))
+	registry.Register(engine.NewStepTool(
+		steps.NewCompressStep(llmClient),
+		"素材压缩：将搜索结果压缩为结构化研究简报，节省 prompt token",
+		false,
+	))
+
+	if execCtx.Mode == "guided" {
+		registry.Register(engine.NewStepTool(
+			steps.NewOutlineStep(llmClient),
+			"提纲生成：为引导模式生成文章提纲（标题+要点），等待用户确认",
+			false,
+		))
+	}
+
+	registry.Register(engine.NewStepTool(
+		steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+		"文章生成：按风格 Profile 生成文章，支持流式输出和 Agent Loop",
+		true, // terminal — article is produced
+	))
+	registry.Register(engine.NewStepTool(
+		s.newPostReviewStepWithLLM(llmClient, styleProfile),
+		"质量评审：多维度评分（事实/结构/风格/修辞/安全）+ 敏感词检查",
+		false,
+	))
+ registry.Register(engine.NewStepTool(
+ steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+ "自动修正：根据评审结果自动修正可修复的问题（含标题独立修正）",
+ false,
+ ))
+
+	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+		registry.Register(engine.NewStepTool(
+			steps.NewMemoryExtractStep(s.memorySvc),
+			"记忆提取：从文章和反馈中异步提取写作偏好模式",
+			false,
+		))
+	}
+
+	// ── MCP Tools: dynamically discovered from MCP servers ──
+	if s.mcpRegistry != nil {
+		s.mcpRegistry.RegisterTools(registry)
+	}
+
+	slog.Info("tool registry built",
+		"total_tools", len(registry.All()),
+		"mcp_servers", len(s.cfg.MCPServers),
+	)
+
+	return registry
 }
 
 // handleListActiveModels returns active model configs for the composer (public endpoint).

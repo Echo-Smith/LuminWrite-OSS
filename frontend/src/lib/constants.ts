@@ -15,6 +15,7 @@ export const STEP_LABELS: Record<AgentStepName, string> = {
   memory_gate: "记忆检索",
   memory_extract: "记忆提取",
   chat: "对话回复",
+  parallel_pre_write: "并行预处理",
 };
 
 export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
@@ -29,6 +30,7 @@ export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   memory_gate: "检索用户写作偏好，注入上下文",
   memory_extract: "从写作结果中提取用户偏好模式",
   chat: "对话式回复，无需写作流程",
+  parallel_pre_write: "记忆检索与多源检索并行执行",
 };
 
 export const STEP_ICONS: Record<AgentStepName, string> = {
@@ -43,4 +45,5 @@ export const STEP_ICONS: Record<AgentStepName, string> = {
   memory_gate: "Database",
   memory_extract: "Sparkles",
   chat: "MessageCircle",
+  parallel_pre_write: "Split",
 };

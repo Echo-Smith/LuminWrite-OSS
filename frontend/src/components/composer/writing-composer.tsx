@@ -40,19 +40,6 @@ export function WritingComposer() {
   const isRunning = sessionStatus === "running";
   const isPaused = sessionStatus === "paused";
 
-  // 从 URL 参数读取预填选题
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const topic = url.searchParams.get("topic") || url.pathname.split("/").pop();
-    if (topic && topic !== "write" && topic.length > 0) {
-      try {
-        setMessage(decodeURIComponent(topic));
-      } catch {
-        setMessage(topic);
-      }
-    }
-  }, []);
-
   // 自动调整 textarea 高度
   useEffect(() => {
     if (textareaRef.current) {

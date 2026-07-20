@@ -188,6 +188,11 @@ func getStepResult(step StepName, execCtx *ExecutionContext) interface{} {
 		return map[string]interface{}{
 			"count":   len(execCtx.SearchResults),
 		}
+	case StepCompress:
+		return map[string]interface{}{
+			"compressed":      execCtx.CompressedContext != "",
+			"context_length":  len(execCtx.CompressedContext),
+		}
 	case StepOutline:
 		return execCtx.Outline
 	case StepWrite:

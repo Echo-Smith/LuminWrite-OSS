@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
@@ -905,6 +906,10 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		systemPrompt = s.profile.SystemPrompt
 	}
 
+	// Inject current time to help the model judge timelines (e.g. "published" vs "upcoming")
+	systemPrompt += fmt.Sprintf("\n\n当前日期：%s。写作时请确保引用的政策、文件、规划等的时间状态准确（已发布/即将发布/正在征求意见等）。",
+		time.Now().Format("2006年1月2日"))
+
 	// In guided mode, append a clarification that the title is provided and must not be changed
 	if execCtx.Outline != nil && execCtx.Outline.Title != "" {
 		systemPrompt += "\n\n【重要】本次为引导模式写作，文章标题已由用户确认，必须原样使用提供的标题，不得自行创作或修改。核心比喻和修辞手法仅用于正文，不影响标题。"
@@ -915,7 +920,13 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	s.buildTaskPrompt(&promptBuilder, taskMode, execCtx)
 
 	// Add search results as context (only for writing mode — other modes operate on existing text)
-	if taskMode == "writing" && len(execCtx.SearchResults) > 0 {
+	// If CompressStep produced a CompressedContext, use the structured brief instead
+	// of raw search snippets — saves ~60% prompt tokens and improves generation quality.
+	if taskMode == "writing" && execCtx.CompressedContext != "" {
+		promptBuilder.WriteString("\n参考素材（结构化研究简报）：\n")
+		promptBuilder.WriteString(execCtx.CompressedContext)
+		promptBuilder.WriteString("\n")
+	} else if taskMode == "writing" && len(execCtx.SearchResults) > 0 {
 		hasMockResults := false
 		for _, result := range execCtx.SearchResults {
 			if result.IsMock {
@@ -1090,8 +1101,26 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	}
 
 	// onReasoning forwards thinking content to the frontend for visualization
+	// and accumulates it into execCtx.ReasoningContent for persistence.
 	onReasoning := func(delta string) {
 		emitter.ReasoningDelta(delta)
+		execCtx.ReasoningContent += delta
+	}
+
+	// onStreamReset is called by the agent loop when an intermediate tool-call
+	// round produced content that was optimistically streamed to the user.
+	// It resets the title extraction state machine and tells the frontend to
+	// discard all streamed text, so the final answer round starts clean.
+	onStreamReset := func() {
+		slog.Info("agent loop stream reset — discarding intermediate content",
+			"trace_id", execCtx.TraceID,
+			"title_resolved", titleResolved,
+			"body_chars", bodyBuf.Len())
+		titleBuf.Reset()
+		bodyBuf.Reset()
+		titleCharCount = 0
+		titleResolved = false
+		emitter.StreamReset()
 	}
 
 	// The streaming callback handles JSON title prefix extraction and body streaming.
@@ -1179,7 +1208,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 
 		toolExecutor := WritingToolExecutor(s.search, execCtx.SearchResults)
 		fullText, tokens, err = s.llm.ChatWithTools(
-			ctx, messages, streamCallback, onReasoning,
+			ctx, messages, streamCallback, onReasoning, onStreamReset,
 			WritingTools(), toolExecutor, streamOpts...,
 		)
 	} else {
@@ -1346,9 +1375,11 @@ func (s *WriteStep) appendWordLimit(b *strings.Builder, taskMode string, execCtx
 // ─── PostReviewStep ──────────────────────────────────────
 
 type PostReviewStep struct {
-	llm             *tools.LLMClient
-	sensitiveCheck  engine.SensitiveChecker
-	profile         *profile.StyleProfile
+	llm            *tools.LLMClient
+	sensitiveCheck engine.SensitiveChecker
+	profile        *profile.StyleProfile
+	search         *tools.SearchClient  // optional, enables fact-checking via web search
+	jiaozhen       *tools.JiaozhenClient // optional, enables rumor fact-checking
 }
 
 func NewPostReviewStep(llm *tools.LLMClient) *PostReviewStep {
@@ -1364,6 +1395,18 @@ func NewPostReviewStepWithSensitiveCheck(llm *tools.LLMClient, sc engine.Sensiti
 // fact_guard / title_guidelines enforcement.
 func NewPostReviewStepWithProfile(llm *tools.LLMClient, sc engine.SensitiveChecker, p *profile.StyleProfile) *PostReviewStep {
 	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p}
+}
+
+// NewPostReviewStepWithSearch creates a PostReviewStep with search capability for
+// real-time fact-checking during the review.
+func NewPostReviewStepWithSearch(llm *tools.LLMClient, sc engine.SensitiveChecker, p *profile.StyleProfile, search *tools.SearchClient) *PostReviewStep {
+	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p, search: search}
+}
+
+// NewPostReviewStepWithSearchAndJiaozhen creates a PostReviewStep with both web search
+// and Jiaozhen fact-checking capabilities.
+func NewPostReviewStepWithSearchAndJiaozhen(llm *tools.LLMClient, sc engine.SensitiveChecker, p *profile.StyleProfile, search *tools.SearchClient, jiaozhen *tools.JiaozhenClient) *PostReviewStep {
+	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p, search: search, jiaozhen: jiaozhen}
 }
 
 func (s *PostReviewStep) Name() engine.StepName { return engine.StepPostReview }
@@ -1390,17 +1433,19 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		return err
 	}
 
-	// Build review prompt — inject profile-specific rules if available
+	// Determine task mode for fact-check gating
+	reviewTaskMode := "writing"
+	if execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode != "" {
+		reviewTaskMode = execCtx.TaskIntent.TaskMode
+	}
+
+	// Build review prompt — inject profile-specific rules if available.
+	// NOTE: Title guidelines are intentionally excluded here — they are handled
+	// by the independent reviewTitle() call which receives both title and body.
+	// Including title rules in the body-only review causes the LLM to falsely
+	// report "missing title" since it cannot see the title in the article body.
 	var profileRules strings.Builder
 	if s.profile != nil {
-		// Title guidelines
-		if len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-			profileRules.WriteString(fmt.Sprintf("\n标题禁止模式（正则，必须检查标题是否匹配）：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
-		}
-		if s.profile.TitleGuidelines.Length.Max > 0 {
-			profileRules.WriteString(fmt.Sprintf("标题字数限制：%d-%d字\n", s.profile.TitleGuidelines.Length.Min, s.profile.TitleGuidelines.Length.Max))
-		}
-
 		// Fact guard
 		if len(s.profile.FactGuard.ForbiddenResults) > 0 {
 			profileRules.WriteString(fmt.Sprintf("事实红线——以下表述禁止出现在文章中（已完成事件不得用结果性动词）：%s\n", strings.Join(s.profile.FactGuard.ForbiddenResults, ", ")))
@@ -1444,20 +1489,44 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		}
 	}
 
-	systemMsg := "你是文章质量评审员。对文章进行多维度评分和问题检测。只返回 JSON。"
-	userMsg := fmt.Sprintf(`请评审以下文章：
+	// ── 联网事实核查（可选）──
+	// 当搜索客户端可用时，从文章中提取关键事实声明，联网验证，
+	// 将验证结果作为额外上下文注入评审 prompt。
+	// 这解决了"模型不知道某政策/文件已发布"的问题。
+	var factCheckContext string
+	if s.search != nil && s.search.HasSources() && reviewTaskMode == "writing" {
+		factCheckContext = s.factCheckArticle(ctx, execCtx)
+	}
+
+	// 注入当前时间，帮助模型判断时间线（如"已发布"vs"即将发布"）
+	currentTime := time.Now().Format("2006年1月2日")
+	profileRules.WriteString(fmt.Sprintf("当前日期：%s（请据此判断文章中提及的政策、文件、规划等是已发布还是即将发布）\n", currentTime))
+
+	// 主评审：只评审正文维度（factuality/structure/style/rhetoric/length/safety）。
+	// title_quality 由独立的 reviewTitle 环节评审，这样 LLM 不会因看不到标题而误报"缺少标题"，
+	// 也不会把正文首句当作标题来评估。
+	systemMsg := "你是文章正文质量评审员。只评审正文，不评审标题（标题由独立环节评审）。只返回 JSON。"
+
+	// 构建评审 prompt，可选注入事实核查结果
+	factCheckSection := ""
+	if factCheckContext != "" {
+		factCheckSection = fmt.Sprintf("\n\n联网事实核查结果（仅供参考，请据此修正 factuality 评分）：\n%s\n", factCheckContext)
+	}
+
+	userMsg := fmt.Sprintf(`请评审以下文章正文：
 
 %s
 
-评审维度：factuality（事实准确性）、structure（结构合规）、style（风格符合）、rhetoric（修辞运用）、length（篇幅控制）、title_quality（标题质量）、safety（内容安全）
+评审维度：factuality（事实准确性）、structure（结构合规）、style（风格符合）、rhetoric（修辞运用）、length（篇幅控制）、safety（内容安全）
+注意：不要评审 title_quality，标题由独立环节评审；不要报告"缺少标题"。
 
-%s
+%s%s
 返回格式：
 {
-  "scores": {"factuality": 0.9, "structure": 0.85, ...},
+  "scores": {"factuality": 0.9, "structure": 0.85, "style": 0.8, "rhetoric": 0.85, "length": 0.9, "safety": 0.95},
   "issues": [{"severity": "high", "type": "fact", "message": "..."}],
   "passed": true
-}`, execCtx.Article, profileRules.String())
+}`, execCtx.Article, profileRules.String(), factCheckSection)
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
@@ -1498,6 +1567,36 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 	}
 	if review.Issues == nil {
 		review.Issues = []engine.ReviewIssue{}
+	}
+
+	// 独立标题评审：传入标题 + 正文，LLM 能同时看到两者，
+	// 评 title_quality（自身质量）+ title_relevance（与正文关联性），
+	// 并可选输出 suggested_title 供 AutoFixStep 使用。
+	if execCtx.ArticleTitle != "" {
+		titleReview, titleErr := s.reviewTitle(ctx, execCtx)
+		if titleErr == nil && titleReview != nil {
+			// 合并标题评分
+			for k, v := range titleReview.Scores {
+				review.Scores[k] = v
+			}
+			// 合并标题问题
+			review.Issues = append(review.Issues, titleReview.Issues...)
+			// 存储建议标题
+			if titleReview.SuggestedTitle != "" {
+				review.TitleSuggestion = titleReview.SuggestedTitle
+			}
+			// 标题有 high 级问题则整体不通过
+			for _, issue := range titleReview.Issues {
+				if issue.Severity == "high" {
+					review.Passed = false
+					break
+				}
+			}
+		} else if titleErr != nil {
+			slog.Warn("title review failed, falling back to rule-based title check only",
+				"trace_id", execCtx.TraceID,
+				"error", titleErr)
+		}
 	}
 
 	// Run sensitive word check on the article
@@ -1646,11 +1745,18 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 // ─── AutoFixStep ─────────────────────────────────────────
 
 type AutoFixStep struct {
-	llm *tools.LLMClient
+	llm     *tools.LLMClient
+	profile *profile.StyleProfile
 }
 
 func NewAutoFixStep(llm *tools.LLMClient) *AutoFixStep {
 	return &AutoFixStep{llm: llm}
+}
+
+// NewAutoFixStepWithProfile creates an AutoFixStep with a style profile for
+// title-guideline-aware title regeneration.
+func NewAutoFixStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *AutoFixStep {
+	return &AutoFixStep{llm: llm, profile: p}
 }
 
 func (s *AutoFixStep) Name() engine.StepName { return engine.StepAutoFix }
@@ -1666,22 +1772,28 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		return nil
 	}
 
-	// Filter fixable issues
-	// Fixable types: fact_guard, length, title_length, structure, style, rhetoric
-	// Non-fixable types: sensitive_word (requires manual content removal), title_forbidden (hard rule)
+	// Non-fixable types (hard rules, cannot be auto-corrected)
 	nonFixableTypes := map[string]bool{
-		"sensitive_word":   true,
-		"title_forbidden":  true,
+		"sensitive_word":  true,
+		"title_forbidden": true, // 禁止模式是硬规则，自动生成的新标题仍可能触碰
 	}
-	var fixableIssues []engine.ReviewIssue
+
+	// Separate issues into title-related and body-related.
+	// Title issues go through a dedicated title-regeneration branch;
+	// body issues go through the existing article-fix branch.
+	var titleIssues, bodyIssues []engine.ReviewIssue
 	for _, issue := range execCtx.ReviewResult.Issues {
 		if nonFixableTypes[issue.Type] {
 			continue
 		}
-		fixableIssues = append(fixableIssues, issue)
+		if isTitleIssue(issue.Type) {
+			titleIssues = append(titleIssues, issue)
+		} else {
+			bodyIssues = append(bodyIssues, issue)
+		}
 	}
 
-	if len(fixableIssues) == 0 {
+	if len(titleIssues) == 0 && len(bodyIssues) == 0 {
 		return nil
 	}
 
@@ -1694,16 +1806,197 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		return err
 	}
 
-	// Build issue list with severity and type context
+	fixedSomething := false
+
+	// ── Branch 1: Title fix ──
+	if len(titleIssues) > 0 && execCtx.ArticleTitle != "" {
+		newTitle, err := s.fixTitle(ctx, execCtx, titleIssues)
+		if err == nil && newTitle != "" && newTitle != execCtx.ArticleTitle {
+			// Validate new title against profile rules before applying
+			if s.isValidTitle(newTitle) {
+				slog.Info("auto-fix title applied",
+					"trace_id", execCtx.TraceID,
+					"old_title", execCtx.ArticleTitle,
+					"new_title", newTitle,
+					"title_issues", len(titleIssues))
+				execCtx.ArticleTitle = newTitle
+				emitter.ArticleTitle(newTitle)
+				fixedSomething = true
+			} else {
+				slog.Warn("auto-fix title rejected by validation",
+					"trace_id", execCtx.TraceID,
+					"proposed_title", newTitle)
+			}
+		} else if err != nil {
+			slog.Warn("auto-fix title failed",
+				"trace_id", execCtx.TraceID,
+				"error", err)
+		}
+	}
+
+	// ── Branch 2: Body fix ──
+	if len(bodyIssues) > 0 {
+		fixedArticle, err := s.fixBody(ctx, execCtx, bodyIssues)
+		if err == nil && fixedArticle != "" {
+			execCtx.Article = fixedArticle
+			fixedSomething = true
+			slog.Info("auto-fix body applied",
+				"trace_id", execCtx.TraceID,
+				"body_issues", len(bodyIssues))
+			emitter.StreamDone(fixedArticle)
+		} else if err != nil {
+			slog.Warn("auto-fix body failed",
+				"trace_id", execCtx.TraceID,
+				"error", err)
+		}
+	}
+
+	// Mark as passed if we fixed at least something
+	if fixedSomething {
+		execCtx.ReviewResult.Passed = true
+	}
+
+	return nil
+}
+
+// isTitleIssue returns true if the issue type is related to the article title.
+func isTitleIssue(issueType string) bool {
+	switch issueType {
+	case "title_length", "title_generic", "title_clickbait",
+		"title_relevance", "title_quality":
+		return true
+	}
+	return false
+}
+
+// isValidTitle checks whether a candidate title satisfies profile rules
+// (length range and forbidden patterns). Used to validate LLM-suggested titles.
+func (s *AutoFixStep) isValidTitle(title string) bool {
+	if title == "" {
+		return false
+	}
+	if s.profile == nil {
+		return true
+	}
+	// Check forbidden patterns
+	for _, pattern := range s.profile.TitleGuidelines.ForbiddenPatterns {
+		if re, err := regexp.Compile(pattern); err == nil && re.MatchString(title) {
+			return false
+		}
+	}
+	// Check length range
+	if s.profile.TitleGuidelines.Length.Max > 0 {
+		titleLen := len([]rune(title))
+		minLen := s.profile.TitleGuidelines.Length.Min
+		maxLen := s.profile.TitleGuidelines.Length.Max
+		if titleLen < minLen || titleLen > maxLen {
+			return false
+		}
+	}
+	return true
+}
+
+// fixTitle regenerates the article title.
+// It first tries ReviewResult.TitleSuggestion (from the title review LLM) —
+// if valid, uses it directly (saves an LLM call).
+// Otherwise, calls LLM to generate a new title that satisfies all constraints.
+func (s *AutoFixStep) fixTitle(ctx context.Context, execCtx *engine.ExecutionContext, issues []engine.ReviewIssue) (string, error) {
+	// Fast path: use the suggestion from title review if it passes validation
+	if execCtx.ReviewResult != nil && execCtx.ReviewResult.TitleSuggestion != "" {
+		suggested := strings.TrimSpace(execCtx.ReviewResult.TitleSuggestion)
+		if s.isValidTitle(suggested) {
+			slog.Info("auto-fix using title suggestion from review",
+				"trace_id", execCtx.TraceID,
+				"suggested", suggested)
+			return suggested, nil
+		}
+	}
+
+	// Build issue list
 	issueList := ""
-	for i, issue := range fixableIssues {
+	for i, issue := range issues {
 		issueList += fmt.Sprintf("%d. [%s/%s] %s\n", i+1, issue.Severity, issue.Type, issue.Message)
 	}
 
-	// Determine low-scoring dimensions for targeted fix
+	// Build title constraints
+	var constraints strings.Builder
+	if s.profile != nil {
+		if s.profile.TitleGuidelines.Length.Max > 0 {
+			constraints.WriteString(fmt.Sprintf("标题字数限制：%d-%d字\n",
+				s.profile.TitleGuidelines.Length.Min, s.profile.TitleGuidelines.Length.Max))
+		}
+		if s.profile.TitleGuidelines.Style != "" {
+			constraints.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
+		}
+		if len(s.profile.TitleGuidelines.Examples) > 0 {
+			constraints.WriteString(fmt.Sprintf("标题参考示例：%s\n",
+				strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
+		}
+		if len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
+			constraints.WriteString(fmt.Sprintf("标题禁止模式（正则）：%s\n",
+				strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
+		}
+	}
+
+	systemMsg := "你是文章标题修正助手。根据问题列表和正文重新生成一个标题。只输出新标题（纯文本，不要引号、不要 Markdown 标记），不要解释。"
+	userMsg := fmt.Sprintf(`原标题：%s
+
+文章正文：
+%s
+
+标题存在的问题：
+%s
+
+%s
+要求：生成一个新标题，必须满足上述所有约束，且能概括正文核心论点。只输出标题本身。`,
+		execCtx.ArticleTitle, execCtx.Article, issueList, constraints.String())
+
+	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+		{Role: "system", Content: systemMsg},
+		{Role: "user", Content: userMsg},
+	}, tools.WithTemperature(0.3), tools.WithThinking(false))
+	if err != nil {
+		return "", err
+	}
+
+	// Clean up the response: strip quotes, markdown markers, newlines
+	newTitle := strings.TrimSpace(resp)
+	// Strip ASCII quotes/backticks/hash and CJK quotes
+	newTitle = strings.Trim(newTitle, "\"'`#")
+	newTitle = strings.TrimFunc(newTitle, func(r rune) bool {
+		switch r {
+		case '\u300c', '\u300d': // 「」
+			return true
+		case '\u201c', '\u201d': // ""
+			return true
+		case '\u2018', '\u2019': // ''
+			return true
+		}
+		return false
+	})
+	// Take only the first line (in case LLM added explanation)
+	if idx := strings.Index(newTitle, "\n"); idx > 0 {
+		newTitle = strings.TrimSpace(newTitle[:idx])
+	}
+	return newTitle, nil
+}
+
+// fixBody fixes article body issues using the existing approach.
+func (s *AutoFixStep) fixBody(ctx context.Context, execCtx *engine.ExecutionContext, issues []engine.ReviewIssue) (string, error) {
+	// Build issue list with severity and type context
+	issueList := ""
+	for i, issue := range issues {
+		issueList += fmt.Sprintf("%d. [%s/%s] %s\n", i+1, issue.Severity, issue.Type, issue.Message)
+	}
+
+	// Determine low-scoring dimensions for targeted fix (body dimensions only)
+	bodyScoreDims := map[string]bool{
+		"factuality": true, "structure": true, "style": true,
+		"rhetoric": true, "length": true, "safety": true,
+	}
 	var lowDims []string
 	for dim, score := range execCtx.ReviewResult.Scores {
-		if score < 0.7 {
+		if score < 0.7 && bodyScoreDims[dim] {
 			lowDims = append(lowDims, fmt.Sprintf("%s (%.1f)", dim, score))
 		}
 	}
@@ -1722,14 +2015,14 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 	fixInstructions.WriteString("5. 输出完整的修正后文章（不要输出标题，只输出正文）\n")
 
 	// Add specific instructions for fact_guard issues
-	for _, issue := range fixableIssues {
+	for _, issue := range issues {
 		if issue.Type == "fact_guard" {
 			fixInstructions.WriteString("6. 事实红线问题：将违规表述替换为中性描述（如「获得」「参与」等非结果性动词），不得改变事实本身\n")
 			break
 		}
 	}
 	// Add specific instructions for length issues
-	for _, issue := range fixableIssues {
+	for _, issue := range issues {
 		if issue.Type == "length" {
 			fixInstructions.WriteString("7. 篇幅问题：通过删减冗余表述、合并重复论证来调整字数到要求范围内，不得删除核心论点\n")
 			break
@@ -1753,32 +2046,255 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0.3), tools.WithThinking(false))
 	if err != nil {
-		return nil // Auto-fix failure is non-fatal
+		return "", err
 	}
 
-	if resp != "" {
-		// Strip any leading title heading from the fixed article (title is stored separately)
-		fixedArticle := stripLeadingTitleHeading(resp, execCtx.ArticleTitle)
-		// Also filter out any JSON prefix lines that might have been included
-		fixedArticle = filterJSONLines(fixedArticle)
-		fixedArticle = strings.TrimSpace(fixedArticle)
-
-		if fixedArticle != "" {
-			execCtx.Article = fixedArticle
-			// Mark as passed after fix
-			execCtx.ReviewResult.Passed = true
-
-			slog.Info("auto-fix applied",
-				"trace_id", execCtx.TraceID,
-				"issues_fixed", len(fixableIssues))
-
-			// Emit the fixed article
-			emitter.StreamDone(fixedArticle)
-		}
+	if resp == "" {
+		return "", nil
 	}
 
-	return nil
+	// Strip any leading title heading from the fixed article (title is stored separately)
+	fixedArticle := stripLeadingTitleHeading(resp, execCtx.ArticleTitle)
+	// Also filter out any JSON prefix lines that might have been included
+	fixedArticle = filterJSONLines(fixedArticle)
+	fixedArticle = strings.TrimSpace(fixedArticle)
+
+	return fixedArticle, nil
 }
 
 // time import to avoid unused warning
 var _ = time.Now
+
+// ─── 独立标题评审 ────────────────────────────────────────
+
+// titleReviewResult 是标题评审 LLM 返回的结构。
+type titleReviewResult struct {
+	Scores         map[string]float64   `json:"scores"`
+	Issues         []engine.ReviewIssue `json:"issues"`
+	SuggestedTitle string               `json:"suggested_title,omitempty"`
+}
+
+// reviewTitle 对文章标题进行独立评审。
+// 传入标题 + 正文，LLM 能同时看到两者，评：
+//  1. title_quality：标题自身质量（字数合规、不笼统、非标题党、有信息量）
+//  2. title_relevance：标题与正文核心论点的关联性（是否概括主题、是否一致、是否过度拔高）
+//
+// 并可选输出 suggested_title 供 AutoFixStep 直接使用（省一次 LLM 调用）。
+func (s *PostReviewStep) reviewTitle(ctx context.Context, execCtx *engine.ExecutionContext) (*titleReviewResult, error) {
+	if execCtx.ArticleTitle == "" {
+		return nil, nil
+	}
+
+	// 构建标题专属规则
+	var titleRules strings.Builder
+	if s.profile != nil {
+		if s.profile.TitleGuidelines.Length.Max > 0 {
+			titleRules.WriteString(fmt.Sprintf("标题字数限制：%d-%d字\n",
+				s.profile.TitleGuidelines.Length.Min, s.profile.TitleGuidelines.Length.Max))
+		}
+		if s.profile.TitleGuidelines.Style != "" {
+			titleRules.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
+		}
+		if len(s.profile.TitleGuidelines.Examples) > 0 {
+			titleRules.WriteString(fmt.Sprintf("标题参考示例：%s\n",
+				strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
+		}
+		if len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
+			titleRules.WriteString(fmt.Sprintf("标题禁止模式（正则，标题不得匹配）：%s\n",
+				strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
+		}
+	}
+
+	systemMsg := "你是文章标题质量评审员。只返回 JSON，不要解释。"
+	userMsg := fmt.Sprintf(`请评审以下文章标题：
+
+标题：%s
+
+文章正文：
+%s
+
+%s
+评审维度：
+1. title_quality：标题自身质量（字数是否合规、是否笼统、是否含标题党用词、是否有信息量）
+2. title_relevance：标题与正文核心论点的关联性（标题是否概括了正文主题、是否与正文一致、是否过度拔高或偏离正文论点）
+
+issue type 约定：title_length（字数不合规）、title_generic（过于笼统）、title_clickbait（标题党）、title_relevance（与正文关联性弱）、title_quality（综合质量低）
+
+返回格式：
+{
+  "scores": {"title_quality": 0.85, "title_relevance": 0.8},
+  "issues": [{"severity": "medium", "type": "title_generic", "message": "标题过于笼统，缺少具体信息"}],
+  "suggested_title": "建议的新标题（如标题无问题可留空字符串）"
+}`, execCtx.ArticleTitle, execCtx.Article, titleRules.String())
+
+	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+		{Role: "system", Content: systemMsg},
+		{Role: "user", Content: userMsg},
+	}, tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	if err != nil {
+		return nil, err
+	}
+
+	jsonStr := tools.ExtractJSONObject(resp)
+	if jsonStr == "" {
+		return nil, fmt.Errorf("no JSON in title review response")
+	}
+
+	var tr titleReviewResult
+	if err := json.Unmarshal([]byte(jsonStr), &tr); err != nil {
+		return nil, err
+	}
+	if tr.Scores == nil {
+		tr.Scores = map[string]float64{}
+	}
+	if tr.Issues == nil {
+		tr.Issues = []engine.ReviewIssue{}
+	}
+	return &tr, nil
+}
+
+// factCheckArticle extracts verifiable factual claims from the article,
+// searches the web for each, and returns a structured context string
+// for the review LLM. This addresses the problem where the model reports
+// "not yet published" for policies/documents that have actually been released.
+//
+// Strategy:
+//  1. Ask LLM to extract 2-4 key verifiable claims (policies, data, events)
+//  2. Search the web for each claim concurrently
+//  3. If Jiaozhen client is available, also run rumor fact-checking on candidate claims
+//  4. Format results as structured context
+func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.ExecutionContext) string {
+	// Step 1: Extract verifiable claims via LLM
+	extractSys := "你是事实核查助手。从文章中提取可验证的关键事实声明（如政策名称、数据统计、事件时间等）。只返回 JSON。"
+	extractUser := fmt.Sprintf(`从以下文章中提取 2-4 个最关键的可验证事实声明（如政策/文件名称及发布状态、关键数据、重要事件等）。
+
+文章：
+%s
+
+当前日期：%s
+
+返回格式：
+{
+  "claims": [
+    {"claim": "事实声明", "query": "用于搜索验证的关键词"}
+  ]
+}`, execCtx.Article, time.Now().Format("2006年1月2日"))
+
+	extractResp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+		{Role: "system", Content: extractSys},
+		{Role: "user", Content: extractUser},
+	}, tools.WithTemperature(0), tools.WithThinking(false), tools.WithJSONResponse())
+	if err != nil {
+		slog.Warn("fact-check: claim extraction failed", "error", err, "trace_id", execCtx.TraceID)
+		return ""
+	}
+
+	jsonStr := tools.ExtractJSONObject(extractResp)
+	if jsonStr == "" {
+		return ""
+	}
+
+	var extracted struct {
+		Claims []struct {
+			Claim string `json:"claim"`
+			Query string `json:"query"`
+		} `json:"claims"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &extracted); err != nil {
+		return ""
+	}
+
+	if len(extracted.Claims) == 0 {
+		return ""
+	}
+
+	slog.Info("fact-check: extracted claims",
+		"trace_id", execCtx.TraceID,
+		"count", len(extracted.Claims))
+
+	// Step 2: Search for each claim concurrently (web search)
+	type claimResult struct {
+		Claim     string
+		Query     string
+		Results   []engine.SearchResult
+		Jiaozhen  *tools.JiaozhenResult
+	}
+
+	var (
+		mu      sync.Mutex
+		results []claimResult
+		wg      sync.WaitGroup
+	)
+
+	for _, c := range extracted.Claims {
+		if c.Query == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(claim, query string) {
+			defer wg.Done()
+
+			// Web search
+			sr := s.search.Search(ctx, query, 3)
+
+			// Jiaozhen fact-check (if configured, skip candidate filter for article claims)
+			var jr *tools.JiaozhenResult
+			if s.jiaozhen != nil && s.jiaozhen.IsConfigured() {
+				jr = s.jiaozhen.CheckClaimDirect(ctx, claim)
+				if jr.Status != "ok" {
+					jr = nil // skip non-successful results
+				}
+			}
+
+			mu.Lock()
+			results = append(results, claimResult{
+				Claim:    claim,
+				Query:    query,
+				Results:  sr,
+				Jiaozhen: jr,
+			})
+			mu.Unlock()
+		}(c.Claim, c.Query)
+	}
+	wg.Wait()
+
+	if len(results) == 0 {
+		return ""
+	}
+
+	// Step 3: Format results
+	var sb strings.Builder
+	jiaozhenCount := 0
+	for i, r := range results {
+		sb.WriteString(fmt.Sprintf("### 事实声明 %d：%s\n", i+1, r.Claim))
+		sb.WriteString(fmt.Sprintf("搜索关键词：%s\n", r.Query))
+
+		// Web search results
+		if len(r.Results) == 0 {
+			sb.WriteString("搜索结果：无匹配结果\n")
+		} else {
+			sb.WriteString("搜索结果：\n")
+			for j, sr := range r.Results {
+				sb.WriteString(fmt.Sprintf("  %d. [%s] %s\n     %s\n", j+1, sr.Source, sr.Title, sr.Snippet))
+				if j >= 2 {
+					break
+				}
+			}
+		}
+
+		// Jiaozhen fact-check result
+		if r.Jiaozhen != nil {
+			sb.WriteString(fmt.Sprintf("较真查证结果：\n%s\n", r.Jiaozhen.Content))
+			jiaozhenCount++
+		}
+
+		sb.WriteString("\n")
+	}
+
+	slog.Info("fact-check: completed",
+		"trace_id", execCtx.TraceID,
+		"claims_checked", len(results),
+		"jiaozhen_checked", jiaozhenCount)
+
+	return sb.String()
+}

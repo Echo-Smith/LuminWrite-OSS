@@ -22,11 +22,15 @@ import { RecommendationStrip } from "@/components/topic/recommendation-strip";
 import { TopicCard } from "@/components/topic/topic-card";
 import { TopicEditDialog } from "@/components/topic/topic-edit-dialog";
 import { TopicDetailDialog } from "@/components/topic/topic-detail-dialog";
+import { useAgentStore } from "@/stores/agent-store";
+import { buildWritingMessage } from "@/stores/topic-draft-store";
 import type { Topic, WritingAngle } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function TopicCenter() {
   const navigate = useNavigate();
+  const createSession = useAgentStore((s) => s.createSession);
+  const startWriting = useAgentStore((s) => s.startWriting);
   const [hotExpanded, setHotExpanded] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editTopic, setEditTopic] = useState<Topic | null>(null);
@@ -38,11 +42,35 @@ export function TopicCenter() {
     await t.deleteTopic(topicId);
   };
 
+  // 直接在选题中心完成全部操作：建会话 + 开始写作 + 跳转
+  // 不依赖 WritingWorkspace mount 时消费 draft，避免时机问题
   const handleStartWriting = (topic: Topic, angle?: WritingAngle) => {
-    const params = new URLSearchParams();
-    params.set("topic", topic.title);
-    if (angle?.style) params.set("style", angle.style);
-    navigate(`/write?${params.toString()}`);
+    // 1. 新建会话
+    createSession();
+
+    // 2. 组装写作指令
+    const message = buildWritingMessage({
+      topic,
+      angle,
+      recommendationReason: topic.recommendation_reason,
+    });
+
+    const angleStyle = angle?.style;
+    const wordLimit = angle?.word_count;
+
+    // 3. 跳转到写作页
+    navigate("/write");
+
+    // 4. 延迟开始写作，确保 navigate 后 WritingWorkspace 已 mount 并准备好 WS
+    setTimeout(() => {
+      startWriting({
+        message,
+        style: angleStyle || "yinyue",
+        mode: "writing",
+        user_materials: topic.description ? [topic.description] : undefined,
+        word_limit: wordLimit && wordLimit > 0 ? wordLimit : undefined,
+      });
+    }, 200);
   };
 
   return (

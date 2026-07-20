@@ -109,8 +109,8 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 		UPDATE agent_traces
 		SET status = $1, current_step = $2, step_history = $3,
 		    article = $4, article_title = $5, review_result = $6, token_usage = $7,
-		    duration_ms = $8, completed_at = NOW()
-		WHERE trace_id = $9
+		    duration_ms = $8, reasoning_content = $9, completed_at = NOW()
+		WHERE trace_id = $10
 	`,
 		string(execCtx.Status),
 		string(execCtx.CurrentStep),
@@ -120,6 +120,7 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 		reviewJSON,
 		tokenJSON,
 		durationMs,
+		execCtx.ReasoningContent,
 		execCtx.TraceID,
 	)
 	if err != nil {
@@ -166,18 +167,19 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		errorMsg    *string
 		createdAt   time.Time
 		completedAt *time.Time
+		reasoningContent *string
 	)
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT status, current_step, user_input, style_slug, mode,
 		       article, article_title, step_history, review_result, token_usage,
-		       duration_ms, error, created_at, completed_at
+		       duration_ms, error, created_at, completed_at, reasoning_content
 		FROM agent_traces
 		WHERE trace_id = $1
 	`, traceID).Scan(
 		&status, &currentStep, &userInput, &styleSlug, &mode,
 		&article, &articleTitle, &stepHistory, &reviewJSON, &tokenJSON,
-		&durationMs, &errorMsg, &createdAt, &completedAt,
+		&durationMs, &errorMsg, &createdAt, &completedAt, &reasoningContent,
 	)
 	if err != nil {
 		return nil, err
@@ -224,6 +226,9 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		var tokens interface{}
 		json.Unmarshal(tokenJSON, &tokens)
 		result["token_usage"] = tokens
+	}
+	if reasoningContent != nil && *reasoningContent != "" {
+		result["reasoning_content"] = *reasoningContent
 	}
 
 	// Check if user feedback has been submitted for this trace

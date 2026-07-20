@@ -3,15 +3,16 @@
  *
  * 一条 assistant 消息包含多个 parts:
  *   tool-call parts → CompactStepTimeline (绿点时间线，默认折叠)
+ *   reasoning parts → ThinkingPanel (可折叠思考过程)
  *   text parts      → MarkdownContent (流式文章)
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { PenLine, Pause, Copy, Check, RefreshCw, ChevronRight } from "lucide-react";
+import { PenLine, Pause, Copy, Check, RefreshCw, ChevronRight, Brain } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import type { ChatMessage, ToolCallPart, TextPart, DataPart } from "@/stores/agent-store";
+import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart } from "@/stores/agent-store";
 import type { WriteMode } from "@/lib/types";
 import { useAgentStore } from "@/stores/agent-store";
 import { MarkdownContent } from "./markdown-content";
@@ -38,8 +39,11 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
   const toolCallParts = message.parts.filter(
     (p): p is ToolCallPart => p.type === "tool-call"
   );
+  const reasoningParts = message.parts.filter(
+    (p): p is ReasoningPart => p.type === "reasoning"
+  );
   const otherParts = message.parts.filter(
-    (p) => p.type !== "tool-call"
+    (p) => p.type !== "tool-call" && p.type !== "reasoning"
   );
 
   // 找到第一个 text part 的位置（用于在 text 之前显示 tool-calls）
@@ -70,6 +74,11 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
         {/* Agent 步骤流程（紧凑时间线，默认折叠） */}
         {toolCallParts.length > 0 && (
           <CompactStepTimeline parts={toolCallParts} isRunning={isRunning} />
+        )}
+
+        {/* 思考过程（可折叠） */}
+        {reasoningParts.length > 0 && (
+          <ThinkingPanel parts={reasoningParts} isRunning={isRunning} />
         )}
 
         {/* text 之前的 data parts（如 outline） */}
@@ -224,6 +233,66 @@ function CompactStepTimeline({ parts, isRunning }: { parts: ToolCallPart[]; isRu
 }
 
 /**
+ * 思考过程面板 — 可折叠的 reasoning 内容区块
+ *
+ * 运行中默认展开（实时展示思考流），完成后默认折叠。
+ * 点击标题可手动切换展开/折叠状态。
+ */
+function ThinkingPanel({ parts, isRunning }: { parts: ReasoningPart[]; isRunning: boolean }) {
+  const fullText = parts.map((p) => p.text).join("");
+  const [open, setOpen] = useState(false);
+  const [userToggled, setUserToggled] = useState(false);
+
+  // 运行中自动展开，完成后自动折叠（除非用户手动操作过）
+  useEffect(() => {
+    if (isRunning && !userToggled) {
+      setOpen(true);
+    } else if (!isRunning && !userToggled) {
+      setOpen(false);
+    }
+  }, [isRunning, userToggled]);
+
+  const handleToggle = (next: boolean) => {
+    setUserToggled(true);
+    setOpen(next);
+  };
+
+  if (!fullText.trim()) return null;
+
+  return (
+    <Collapsible open={open} onOpenChange={handleToggle}>
+      <CollapsibleTrigger asChild>
+        <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-ui py-1 group">
+          <Brain className={cn(
+            "h-3.5 w-3.5 transition-colors",
+            isRunning ? "text-primary animate-pulse" : "text-muted-foreground"
+          )} />
+          <span className="font-medium">
+            {isRunning ? "思考中..." : "思考过程"}
+          </span>
+          {isRunning && (
+            <Badge variant="outline" className="text-primary border-primary/30 animate-pulse">
+              live
+            </Badge>
+          )}
+          <ChevronRight
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-ui",
+              open && "rotate-90"
+            )}
+          />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-1.5 rounded-lg border border-primary/20 bg-primary/5 dark:bg-primary/10 p-3 max-h-64 overflow-y-auto">
+          <MarkdownContent content={fullText} />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/**
  * Data Part 渲染器
  */
 function DataPartRenderer({
@@ -247,7 +316,9 @@ function DataPartRenderer({
       const feedbackData = part.data as { article?: string; has_feedback?: boolean };
       const feedbackArticle = article || feedbackData?.article || "";
       if (traceId && feedbackArticle) {
-        return <FeedbackBar traceId={traceId} article={feedbackArticle} hasFeedback={feedbackData?.has_feedback} />;
+        // key by traceId so the component remounts when switching sessions,
+        // resetting submitted state from the server-side has_feedback flag.
+        return <FeedbackBar key={traceId} traceId={traceId} article={feedbackArticle} hasFeedback={feedbackData?.has_feedback} />;
       }
       return null;
     }

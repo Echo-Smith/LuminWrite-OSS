@@ -338,17 +338,18 @@ func (r *AdminRepo) GetTraceDetail(ctx context.Context, traceID string) (map[str
 		errorMsg    *string
 		createdAt   time.Time
 		completedAt *time.Time
+		reasoningContent *string
 	)
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT status, current_step, user_input, style_slug, mode,
 		       article, step_history, review_result, token_usage,
-		       duration_ms, error, created_at, completed_at
+		       duration_ms, error, created_at, completed_at, reasoning_content
 		FROM agent_traces WHERE trace_id = $1
 	`, traceID).Scan(
 		&status, &currentStep, &userInput, &styleSlug, &mode,
 		&article, &stepHistory, &reviewJSON, &tokenJSON,
-		&durationMs, &errorMsg, &createdAt, &completedAt,
+		&durationMs, &errorMsg, &createdAt, &completedAt, &reasoningContent,
 	)
 	if err != nil {
 		return nil, err
@@ -393,6 +394,9 @@ func (r *AdminRepo) GetTraceDetail(ctx context.Context, traceID string) (map[str
 		var tokens interface{}
 		json.Unmarshal(tokenJSON, &tokens)
 		result["token_usage"] = tokens
+	}
+	if reasoningContent != nil && *reasoningContent != "" {
+		result["reasoning_content"] = *reasoningContent
 	}
 
 	return result, nil

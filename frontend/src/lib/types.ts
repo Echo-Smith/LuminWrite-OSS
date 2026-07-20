@@ -15,7 +15,8 @@ export type AgentStepName =
   | "auto_fix"
   | "memory_gate"
   | "memory_extract"
-  | "chat";
+  | "chat"
+  | "parallel_pre_write";
 
 export type AgentStepStatus = "running" | "complete" | "error" | "await_input";
 
@@ -46,6 +47,7 @@ export type WSServerMessageType =
   | "agent.step.start"
   | "agent.step.complete"
   | "agent.stream"
+  | "agent.stream.reset"
   | "agent.reasoning"
   | "agent.stream.done"
   | "agent.article_title"
@@ -94,6 +96,8 @@ export interface ReviewResult {
   scores: Record<string, number>;
   issues: ReviewIssue[];
   passed: boolean;
+  /** 标题独立评审给出的建议标题（供自动修正使用） */
+  title_suggestion?: string;
 }
 
 export interface AgentResult {

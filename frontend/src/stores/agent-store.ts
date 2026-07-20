@@ -114,6 +114,7 @@ interface AgentStore {
 
   handleServerMessage: (msg: WSServerMessage) => void;
   resumeSession: (traceId: string) => void;
+  markFeedbackSubmitted: (traceId: string) => void;
 
   // 内部 helpers
   _getActiveSession: () => WritingSession | null;
@@ -262,6 +263,7 @@ article?: string;
 article_title?: string;
 step_history?: Array<{ step: string; status: string; startedAt?: string; completedAt?: string; durationMs?: number; result?: unknown; error?: string }>;
 review?: unknown;
+reasoning_content?: string;
 created_at: string;
 completed_at?: string;
 error?: string;
@@ -298,6 +300,11 @@ has_feedback?: boolean;
             error: step.error,
           });
         }
+      }
+
+      // 思考过程（从数据库恢复）
+      if (d.reasoning_content) {
+        assistantParts.push({ type: "reasoning", text: d.reasoning_content });
       }
 
       // 文章内容
@@ -595,6 +602,21 @@ articleTitle: d.article_title,
         break;
       }
 
+      case "agent.stream.reset": {
+        // 后端检测到中间 tool-call 轮次产生了被乐观推送的 content，
+        // 通知前端丢弃所有已流式输出的 text part 内容。
+        set({ streamingText: "" });
+        get()._updateLastAssistantMessage((m) => {
+          const parts = [...m.parts];
+          // 移除所有 streaming text parts
+          const filtered = parts.filter(
+            (part) => !(part.type === "text" && (part as TextPart).streaming)
+          );
+          return { ...m, parts: filtered };
+        });
+        break;
+      }
+
       case "agent.reasoning": {
         const delta = p.delta as string;
         // 更新最后一条 assistant 消息的 reasoning part
@@ -843,6 +865,28 @@ articleTitle: d.article_title,
 
   resumeSession: (traceId) => {
     get().sendWS("session.resume", { trace_id: traceId });
+  },
+
+  markFeedbackSubmitted: (traceId) => {
+    // Update the feedback data part's has_feedback flag for the session
+    // matching this traceId, so switching sessions preserves the "thank you" state.
+    set((state) => ({
+      sessions: state.sessions.map((s) => {
+        if (s.traceId !== traceId) return s;
+        const messages = s.messages.map((m) => {
+          if (m.role !== "assistant") return m;
+          const parts = m.parts.map((part) => {
+            if (part.type === "data" && part.dataType === "feedback") {
+              const data = part.data as { article?: string; has_feedback?: boolean };
+              return { ...part, data: { ...data, has_feedback: true } };
+            }
+            return part;
+          });
+          return { ...m, parts };
+        });
+        return { ...s, messages };
+      }),
+    }));
   },
 
   _getActiveSession: () => {

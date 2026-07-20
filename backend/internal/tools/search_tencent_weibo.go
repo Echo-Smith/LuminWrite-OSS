@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,96 +47,56 @@ func (c *TencentNewsClient) Search(ctx context.Context, query string, limit int)
 		limit = 3
 	}
 
-	// Use the QQ News search API
-	url := fmt.Sprintf("%s/searchQQNews?key=%s&num=%d", c.baseURL, encodeQuery(query), limit)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; LuminBuddy/1.0)")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		return nil, err
+	// Try multiple Tencent News search endpoints (the original /searchQQNews has been deprecated)
+	endpoints := []string{
+		// New Tencent News search API
+		fmt.Sprintf("%s/api/v2/search?q=%s&num=%d", c.baseURL, encodeQuery(query), limit),
+		// i.news.qq.com search endpoint
+		fmt.Sprintf("https://i.news.qq.com/trpc.qqnews_web.kv_rpc.kv_rpc/list?query=%s&num=%d", encodeQuery(query), limit),
+		// Sogou news search as fallback (aggregates Tencent news)
+		fmt.Sprintf("https://news.sogou.com/news?query=%s", encodeQuery(query)),
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tencent news API returned status %d", resp.StatusCode)
-	}
-
-	// Parse response — QQ News returns varied formats, try common ones
-	var data struct {
-		Code int `json:"code"`
-		Data struct {
-			NewsList []struct {
-				Title   string `json:"title"`
-				Summary string `json:"summary"`
-				URL     string `json:"url"`
-				Source  string `json:"source"`
-			} `json:"newslist"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &data); err != nil {
-		// Try alternative format
-		var altData struct {
-			Response struct {
-				NewsList []struct {
-					Title   string `json:"title"`
-					Summary string `json:"abstract"`
-					URL     string `json:"url"`
-					Source  string `json:"source"`
-				} `json:"newslist"`
-			} `json:"response"`
-		}
-		if err2 := json.Unmarshal(body, &altData); err2 != nil {
-			return nil, fmt.Errorf("failed to parse tencent news response: %w", err)
-		}
-		for _, item := range altData.Response.NewsList {
-			data.Data.NewsList = append(data.Data.NewsList, struct {
-				Title   string `json:"title"`
-				Summary string `json:"summary"`
-				URL     string `json:"url"`
-				Source  string `json:"source"`
-			}{
-				Title:   item.Title,
-				Summary: item.Summary,
-				URL:     item.URL,
-				Source:  item.Source,
-			})
-		}
-	}
-
-	results := make([]engine.SearchResult, 0, limit)
-	for _, item := range data.Data.NewsList {
-		if item.Title == "" {
+	for _, searchURL := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+		if err != nil {
 			continue
 		}
-		snippet := item.Title
-		if item.Summary != "" {
-			snippet += "：" + cleanHTML(item.Summary)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "application/json, text/html, */*")
+		req.Header.Set("Referer", "https://news.qq.com/")
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			slog.Debug("tencent search endpoint failed", "url", searchURL, "error", err)
+			continue
 		}
-		results = append(results, engine.SearchResult{
-			Title:   cleanHTML(item.Title),
-			Snippet: snippet,
-			URL:     item.URL,
-			Source:  "tencent",
-		})
-		if len(results) >= limit {
-			break
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			slog.Debug("tencent search endpoint returned non-200", "url", searchURL, "status", resp.StatusCode)
+			continue
+		}
+
+		// Try JSON format first
+		results := parseTencentSearchJSON(body, limit)
+		if len(results) > 0 {
+			return results, nil
+		}
+
+		// Try HTML format (Sogou fallback)
+		results = parseSogouNewsHTML(body, limit)
+		if len(results) > 0 {
+			return results, nil
 		}
 	}
 
-	slog.Debug("tencent news search done", "query", query, "count", len(results))
-	return results, nil
+	return nil, fmt.Errorf("all tencent news search endpoints failed")
 }
 
 // FetchHotTopics fetches the current hot news list from Tencent News.
@@ -309,8 +270,11 @@ func (c *WeiboClient) Search(ctx context.Context, query string, limit int) ([]en
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; LuminBuddy/1.0)")
-	req.Header.Set("Accept", "application/json")
+	// Weibo requires proper browser headers to avoid 403
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Referer", "https://weibo.com/search?q="+encodeQuery(query))
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -521,4 +485,131 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ─── Tencent Search Parsers ──────────────────────────────
+
+// parseTencentSearchJSON parses JSON responses from Tencent News search APIs.
+func parseTencentSearchJSON(body []byte, limit int) []engine.SearchResult {
+	// Try standard format
+	var data struct {
+		Code int `json:"code"`
+		Data struct {
+			NewsList []struct {
+				Title   string `json:"title"`
+				Summary string `json:"summary"`
+				URL     string `json:"url"`
+				Source  string `json:"source"`
+			} `json:"newslist"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err == nil && len(data.Data.NewsList) > 0 {
+		results := make([]engine.SearchResult, 0, limit)
+		for _, item := range data.Data.NewsList {
+			if item.Title == "" {
+				continue
+			}
+			snippet := item.Title
+			if item.Summary != "" {
+				snippet += "：" + cleanHTML(item.Summary)
+			}
+			results = append(results, engine.SearchResult{
+				Title:   cleanHTML(item.Title),
+				Snippet: snippet,
+				URL:     item.URL,
+				Source:  "tencent",
+			})
+			if len(results) >= limit {
+				break
+			}
+		}
+		return results
+	}
+
+	// Try alternative format (response wrapper)
+	var altData struct {
+		Response struct {
+			NewsList []struct {
+				Title   string `json:"title"`
+				Summary string `json:"abstract"`
+				URL     string `json:"url"`
+				Source  string `json:"source"`
+			} `json:"newslist"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(body, &altData); err == nil && len(altData.Response.NewsList) > 0 {
+		results := make([]engine.SearchResult, 0, limit)
+		for _, item := range altData.Response.NewsList {
+			if item.Title == "" {
+				continue
+			}
+			snippet := item.Title
+			if item.Summary != "" {
+				snippet += "：" + cleanHTML(item.Summary)
+			}
+			results = append(results, engine.SearchResult{
+				Title:   cleanHTML(item.Title),
+				Snippet: snippet,
+				URL:     item.URL,
+				Source:  "tencent",
+			})
+			if len(results) >= limit {
+				break
+			}
+		}
+		return results
+	}
+
+	return nil
+}
+
+// parseSogouNewsHTML parses Sogou News search results from HTML.
+// Sogou News aggregates content from multiple Chinese news sources including Tencent.
+func parseSogouNewsHTML(body []byte, limit int) []engine.SearchResult {
+	html := string(body)
+
+	// Sogou News results are in <div class="vrwrap"> or <div class="news-item">
+	// Each has an <h3> with <a href="...">title</a> and a <p class="txt-info">snippet</p>
+	blockRe := regexp.MustCompile(`(?s)<div[^>]*class="vrwrap"[^>]*>(.*?)</div>`)
+	blocks := blockRe.FindAllStringSubmatch(html, -1)
+
+	results := make([]engine.SearchResult, 0, limit)
+	for _, block := range blocks {
+		if len(results) >= limit {
+			break
+		}
+		content := block[1]
+
+		// Extract title and URL
+		titleRe := regexp.MustCompile(`(?s)<h3[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+		titleMatch := titleRe.FindStringSubmatch(content)
+		if titleMatch == nil {
+			continue
+		}
+		resultURL := titleMatch[1]
+		title := cleanHTML(decodeHTMLEntities(titleMatch[2]))
+		if title == "" {
+			continue
+		}
+
+		// Extract snippet
+		snippetRe := regexp.MustCompile(`(?s)<p[^>]*class="[^"]*txt-info[^"]*"[^>]*>(.*?)</p>`)
+		snippetMatch := snippetRe.FindStringSubmatch(content)
+		snippet := ""
+		if snippetMatch != nil {
+			snippet = cleanHTML(decodeHTMLEntities(snippetMatch[1]))
+		}
+		if snippet == "" {
+			snippet = title
+		}
+
+		results = append(results, engine.SearchResult{
+			Title:   title,
+			Snippet: snippet,
+			URL:     resultURL,
+			Source:  "tencent", // Sogou aggregates Tencent news
+		})
+	}
+
+	return results
 }

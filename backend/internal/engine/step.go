@@ -34,6 +34,12 @@ type EventEmitter interface {
 	// StreamDelta emits a stream delta.
 	StreamDelta(delta string)
 
+	// StreamReset emits a stream.reset event, instructing the client to
+	// discard all text content streamed so far in the current step.
+	// Used by the agent loop when an intermediate tool-call round
+	// erroneously produced content that was optimistically streamed.
+	StreamReset()
+
 	// ReasoningDelta emits a reasoning (thinking) delta from the model.
 	// This is used to visualize the model's chain-of-thought during writing.
 	ReasoningDelta(delta string)
