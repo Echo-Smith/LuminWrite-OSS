@@ -33,10 +33,14 @@ func NewMemoryGateStep(svc memoryServiceAdapter) *MemoryGateStep {
 func (s *MemoryGateStep) Name() engine.StepName { return engine.StepMemoryGate }
 func (s *MemoryGateStep) CanPause() bool         { return false }
 
-// ShouldSkip returns true only when the memory service is nil.
+// ShouldSkip returns true for anonymous/guest users or when the memory service is nil.
 // Memory retrieval runs for ALL intents (including chat) so that
 // ChatStep, WriteStep, and PostReviewStep can all consume MemoryContext.
+// Guest users ("anonymous") don't have valid UUIDs, so skip to avoid DB errors.
 func (s *MemoryGateStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	if execCtx.UserID == "" || execCtx.UserID == "anonymous" {
+		return true
+	}
 	return false
 }
 
@@ -133,8 +137,12 @@ func NewMemoryExtractStep(svc memoryExtractAdapter) *MemoryExtractStep {
 func (s *MemoryExtractStep) Name() engine.StepName { return engine.StepMemoryExtract }
 func (s *MemoryExtractStep) CanPause() bool         { return false }
 
-// ShouldSkip returns true for chat intent — no writing patterns to extract from chat.
+// ShouldSkip returns true for chat intent or anonymous/guest users.
+// Guest users ("anonymous") don't have valid UUIDs, so skip to avoid DB errors.
 func (s *MemoryExtractStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
+	if execCtx.UserID == "" || execCtx.UserID == "anonymous" {
+		return true
+	}
 	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
 }
 

@@ -52,6 +52,15 @@ func (e *WSEmitter) StreamDelta(delta string) {
 	})
 }
 
+func (e *WSEmitter) StreamReset() {
+	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
+		Type: websocket.MsgAgentStreamReset,
+		Payload: websocket.StreamResetPayload{
+			TraceID: e.traceID,
+		},
+	})
+}
+
 func (e *WSEmitter) ReasoningDelta(delta string) {
 	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
 		Type: websocket.MsgAgentReasoning,

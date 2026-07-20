@@ -35,5 +35,8 @@ func (e *DashscopeEmbedder) Embed(ctx context.Context, text string) ([]float32, 
 
 // Dimension 返回向量维度
 func (e *DashscopeEmbedder) Dimension() int {
-	return 1024 // 通义 text-embedding-v3
+	if e.client == nil {
+		return 1024 // fallback default
+	}
+	return e.client.Dimension()
 }

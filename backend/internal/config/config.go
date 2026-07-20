@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,27 +27,30 @@ type Config struct {
 	Zhihu     ZhihuConfig
 	Tavily    TavilyConfig
 	Tencent   TencentConfig
-Weibo     WeiboConfig
-ExtraHot  ExtraHotConfig
-WebAuthn  WebAuthnConfig
-Jiaozhen  JiaozhenConfig
-Log       LogConfig
-HotTopics HotTopicsConfig
+	Weibo      WeiboConfig
+	ExtraHot   ExtraHotConfig
+	Bing       BingConfig
+	WebAuthn  WebAuthnConfig
+	Jiaozhen  JiaozhenConfig
+	Log       LogConfig
+	HotTopics HotTopicsConfig
+	Agent     AgentConfig
+	MCPServers []MCPServerConfig
 }
 
 type WebAuthnConfig struct {
-RPID     string
-RPName   string
-RPOrigin string
+	RPID     string
+	RPName   string
+	RPOrigin string
 }
 
 type JiaozhenConfig struct {
-Enabled     bool
-CLIPath     string
-CommandArgs []string
-APIKey      string
-Timeout     time.Duration
-MaxClaims   int
+	Enabled     bool
+	CLIPath     string
+	CommandArgs []string
+	APIKey      string
+	Timeout     time.Duration
+	MaxClaims   int
 }
 
 type ServerConfig struct {
@@ -98,6 +102,7 @@ type DeepSeekConfig struct {
 
 type DashscopeConfig struct {
 	APIKey    string
+	BaseURL   string // OpenAI-compatible base URL (e.g. https://xxx.maas.aliyuncs.com/compatible-mode/v1)
 	Model     string
 	Dimension int
 }
@@ -141,6 +146,12 @@ type ExtraHotConfig struct {
 	Timeout time.Duration
 }
 
+type BingConfig struct {
+	Enabled bool
+	BaseURL string
+	Timeout time.Duration
+}
+
 type HotTopicsConfig struct {
 	FetchInterval time.Duration
 }
@@ -148,6 +159,23 @@ type HotTopicsConfig struct {
 type LogConfig struct {
 	Level  string
 	Format string
+}
+
+// AgentConfig controls the agent execution mode.
+//   - "pipeline" (default): use the fixed []Step pipeline (AgentEngine)
+//   - "unified": use the LLM-driven ReAct loop (UnifiedAgent)
+type AgentConfig struct {
+	Mode string // "pipeline" | "unified"
+}
+
+// MCPServerConfig holds configuration for a single MCP server.
+type MCPServerConfig struct {
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"` // "stdio" | "sse"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	Env       []string `json:"env,omitempty"`
+	URL       string   `json:"url,omitempty"`
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -196,6 +224,7 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 },
 		Dashscope: DashscopeConfig{
 			APIKey:    getEnv("DASHSCOPE_API_KEY", ""),
+			BaseURL:   getEnv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 			Model:     getEnv("DASHSCOPE_MODEL", "text-embedding-v3"),
 			Dimension: getEnvInt("DASHSCOPE_DIMENSION", 1024),
 		},
@@ -232,17 +261,22 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			BaseURL: getEnv("EXTRA_HOT_BASE_URL", "https://api.vvhan.com/api/hotlist"),
 			Timeout: getEnvDuration("EXTRA_HOT_TIMEOUT", 15*time.Second),
 		},
+		Bing: BingConfig{
+			Enabled: getEnvBool("BING_ENABLED", true),
+			BaseURL: getEnv("BING_BASE_URL", "https://cn.bing.com"),
+			Timeout: getEnvDuration("BING_TIMEOUT", 15*time.Second),
+		},
 WebAuthn: WebAuthnConfig{
 RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),
 RPName:   getEnv("WEBAUTHN_RP_NAME", "笔润智谈"),
 RPOrigin: getEnv("WEBAUTHN_RP_ORIGIN", "http://localhost:5173"),
 },
 Jiaozhen: JiaozhenConfig{
-Enabled:     getEnvBool("JIAOZHEN_ENABLED", false),
-CLIPath:     getEnv("JIAOZHEN_CLI_PATH", ""),
+Enabled:     getEnvBool("JIAOZHEN_ENABLED", true),
+CLIPath:     getEnv("JIAOZHEN_CLI_PATH", getEnv("TENCENT_NEWS_CLI_PATH", "")),
 CommandArgs: splitArgs(getEnv("JIAOZHEN_COMMAND_ARGS", "jiaozhen")),
-APIKey:      getEnv("JIAOZHEN_API_KEY", ""),
-Timeout:     getEnvDuration("JIAOZHEN_TIMEOUT", 15*time.Second),
+APIKey:      getEnv("JIAOZHEN_API_KEY", getEnv("TENCENT_NEWS_API_KEY", "")),
+Timeout:     getEnvDuration("JIAOZHEN_TIMEOUT", 30*time.Second),
 MaxClaims:   getEnvInt("JIAOZHEN_MAX_CLAIMS", 2),
 },
 		Log: LogConfig{
@@ -252,6 +286,10 @@ MaxClaims:   getEnvInt("JIAOZHEN_MAX_CLAIMS", 2),
 		HotTopics: HotTopicsConfig{
 			FetchInterval: getEnvDuration("HOT_TOPICS_FETCH_INTERVAL", 10*time.Minute),
 		},
+		Agent: AgentConfig{
+			Mode: getEnv("AGENT_MODE", "pipeline"), // "pipeline" | "unified"
+		},
+		MCPServers: loadMCPServers(),
 	}
 }
 
@@ -270,6 +308,22 @@ func (c *Config) LogLevel() slog.Level {
 
 func (c *Config) ListenAddr() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
+}
+
+// loadMCPServers loads MCP server configurations from the MCP_SERVERS env var.
+// The env var should contain a JSON array of MCPServerConfig objects.
+// Example: [{"name":"fs","transport":"stdio","command":"npx","args":["-y","@anthropic/mcp-filesystem"]}]
+func loadMCPServers() []MCPServerConfig {
+	raw := os.Getenv("MCP_SERVERS")
+	if raw == "" {
+		return nil
+	}
+	var servers []MCPServerConfig
+	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
+		slog.Warn("failed to parse MCP_SERVERS env var", "error", err)
+		return nil
+	}
+	return servers
 }
 
 // Helper functions

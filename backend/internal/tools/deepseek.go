@@ -96,10 +96,21 @@ type ToolDefFunction struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+// StreamToolCallDelta represents a tool call delta in a streaming response.
+// The OpenAI-compatible API streams tool calls as fragments: the first delta
+// contains id/type/function.name, subsequent deltas append to function.arguments.
+type StreamToolCallDelta struct {
+	Index    int              `json:"index"`
+	ID       string           `json:"id,omitempty"`
+	Type     string           `json:"type,omitempty"`
+	Function ToolCallFunction `json:"function,omitempty"`
+}
+
 // StreamDelta is a single chunk from the streaming API.
 type StreamDelta struct {
-	Content          string `json:"content"`
-	ReasoningContent string `json:"reasoning_content"`
+	Content          string                `json:"content"`
+	ReasoningContent string                `json:"reasoning_content"`
+	ToolCalls        []StreamToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // StreamChunk represents a single SSE chunk from the streaming API.
@@ -308,8 +319,17 @@ type ToolExecutor func(name string, arguments string) (string, error)
 // appends the results to the conversation, and re-requests until the model
 // produces a final content response (no more tool_calls).
 //
-// When thinking mode is active, reasoning_content from each turn is passed
-// to onReasoning. The final content turn is streamed via onDelta.
+// All rounds use streaming — reasoning_content AND content are streamed in
+// real-time via onReasoning and onDelta respectively.
+//
+// Safety mechanism (optimistic streaming + automatic rollback):
+// Content is streamed to onDelta as soon as it arrives (for real-time UX in
+// the final answer round). If a tool-call delta arrives after content was
+// already streamed (meaning this is an intermediate round, not the final
+// answer), onReset is called so the caller can discard the already-streamed
+// content and reset its state machine. This handles the edge case where the
+// model produces both content and tool_calls in the same response — something
+// that API specs allow but thinking mode rarely triggers.
 //
 // maxIterations limits the number of tool-call rounds (default 5).
 func (c *LLMClient) ChatWithTools(
@@ -317,6 +337,7 @@ func (c *LLMClient) ChatWithTools(
 	messages []LLMMessage,
 	onDelta func(string),
 	onReasoning func(string),
+	onReset func(),
 	tools []ToolDef,
 	executor ToolExecutor,
 	opts ...ChatOption,
@@ -328,43 +349,33 @@ func (c *LLMClient) ChatWithTools(
 	conversation := make([]LLMMessage, len(messages))
 	copy(conversation, messages)
 
-	// Build tool-enabled opts (without streaming — tool rounds are non-streamed)
+	// Build tool-enabled opts
 	toolOpts := append([]ChatOption{}, opts...)
 	toolOpts = append(toolOpts, WithTools(tools))
 
 	for iter := 0; iter < maxIterations; iter++ {
-		// Non-streaming request for tool-call rounds
-		resp, llmResp, err := c.Chat(ctx, conversation, toolOpts...)
+		// Streaming request for all rounds.
+		// reasoning_content is streamed via onReasoning in real-time.
+		// content is streamed via onDelta in real-time (optimistic).
+		// If tool_calls appear after content, onReset is called to roll back.
+		assistantMsg, tokens, err := c.chatStreamRound(ctx, conversation, onDelta, onReasoning, onReset, toolOpts...)
 		if err != nil {
 			return "", totalTokens, fmt.Errorf("agent loop iteration %d failed: %w", iter, err)
 		}
-		if llmResp != nil {
-			totalTokens += llmResp.Usage.TotalTokens
-		}
+		totalTokens += tokens
 
-		// Check if the model wants to call tools
-		var lastMessage LLMMessage
-		if len(llmResp.Choices) > 0 {
-			lastMessage = llmResp.Choices[0].Message
-		} else {
-			lastMessage = LLMMessage{Role: "assistant", Content: resp}
-		}
-
-		if len(lastMessage.ToolCalls) == 0 {
+		if len(assistantMsg.ToolCalls) == 0 {
 			// No tool calls — this is the final answer.
-			// If we've done at least one tool round, stream the final answer.
-			if onDelta != nil && resp != "" {
-				onDelta(resp)
-			}
-			return resp, totalTokens, nil
+			// Content was already streamed in real-time via onDelta.
+			return assistantMsg.Content, totalTokens, nil
 		}
 
 		// Append the assistant's tool-call message to the conversation
 		// (must preserve reasoning_content for thinking mode + tool calls)
-		conversation = append(conversation, lastMessage)
+		conversation = append(conversation, assistantMsg)
 
 		// Execute each tool call and append the results
-		for _, tc := range lastMessage.ToolCalls {
+		for _, tc := range assistantMsg.ToolCalls {
 			slog.Debug("agent loop: executing tool",
 				"iteration", iter,
 				"tool", tc.Function.Name,
@@ -392,6 +403,178 @@ func (c *LLMClient) ChatWithTools(
 	slog.Warn("agent loop: max iterations reached, doing final stream", "iterations", maxIterations)
 	finalOpts := append([]ChatOption{}, opts...)
 	return c.ChatStreamWithReasoning(ctx, conversation, onDelta, onReasoning, finalOpts...)
+}
+
+// flushChunked sends content to the callback in rune-sized chunks,
+// simulating streaming output for buffered content.
+// Kept for backward compatibility but no longer used by ChatWithTools.
+
+// chatStreamRound performs a single streaming round with tool support.
+// It streams reasoning_content via onReasoning AND content via onDelta in
+// real-time, while also buffering both for the returned LLMMessage.
+// Tool calls are accumulated from stream deltas.
+//
+// Optimistic streaming + rollback: content is pushed to onDelta as soon as
+// it arrives. If a tool_call delta arrives after content was already pushed,
+// onReset is called so the caller can discard the streamed content and reset
+// its state. After onReset, no further content is pushed for this round.
+func (c *LLMClient) chatStreamRound(
+	ctx context.Context,
+	messages []LLMMessage,
+	onDelta func(string),
+	onReasoning func(string),
+	onReset func(),
+	opts ...ChatOption,
+) (LLMMessage, int, error) {
+	req := c.buildRequest(messages, true, opts...)
+
+	resp, err := c.doStreamRequest(ctx, req)
+	if err != nil {
+		return LLMMessage{}, 0, err
+	}
+	defer resp.Close()
+
+	var contentBuf strings.Builder
+	var reasoningBuf strings.Builder
+	totalTokens := 0
+
+	// Accumulate tool calls by index (OpenAI streams them as fragments)
+	toolCallMap := make(map[int]*ToolCall)
+
+	// Optimistic streaming state: track whether content has been pushed
+	// and whether tool calls have started arriving.
+	contentStreamed := false // true once we've pushed any content to onDelta
+	toolCallStarted := false  // true once the first tool_call delta arrives
+	resetCalled := false      // true after onReset has been invoked for this round
+
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 4096)
+	for {
+		n, err := resp.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			for {
+				idx := bytes.IndexByte(buf, '\n')
+				if idx < 0 {
+					break
+				}
+				line := string(buf[:idx])
+				buf = buf[idx+1:]
+
+				line = strings.TrimSpace(line)
+				if line == "" || !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				data := strings.TrimPrefix(line, "data: ")
+				if data == "[DONE]" {
+					goto done
+				}
+
+				var chunk StreamChunk
+				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+					continue
+				}
+
+				for _, choice := range chunk.Choices {
+					// Stream reasoning_content in real-time
+					if choice.Delta.ReasoningContent != "" {
+						reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+						if onReasoning != nil {
+							onReasoning(choice.Delta.ReasoningContent)
+						}
+					}
+					// Stream content in real-time AND buffer it for the returned message.
+					// Optimistic: push to onDelta immediately. If tool_calls arrive
+					// later in this same round, onReset will be called to roll back.
+					if choice.Delta.Content != "" {
+						contentBuf.WriteString(choice.Delta.Content)
+						if onDelta != nil && !toolCallStarted && !resetCalled {
+							onDelta(choice.Delta.Content)
+							contentStreamed = true
+						}
+					}
+					// Accumulate tool call deltas by index
+					for _, tcDelta := range choice.Delta.ToolCalls {
+						if !toolCallStarted {
+							toolCallStarted = true
+							// If content was already streamed, this is an intermediate
+							// round — invoke rollback so the caller can discard it.
+							if contentStreamed && onReset != nil && !resetCalled {
+								onReset()
+								resetCalled = true
+							}
+						}
+						tc, exists := toolCallMap[tcDelta.Index]
+						if !exists {
+							tc = &ToolCall{}
+							toolCallMap[tcDelta.Index] = tc
+						}
+						if tcDelta.ID != "" {
+							tc.ID = tcDelta.ID
+						}
+						if tcDelta.Type != "" {
+							tc.Type = tcDelta.Type
+						}
+						if tcDelta.Function.Name != "" {
+							tc.Function.Name = tcDelta.Function.Name
+						}
+						tc.Function.Arguments += tcDelta.Function.Arguments
+					}
+				}
+
+				if chunk.Usage != nil {
+					totalTokens = chunk.Usage.TotalTokens
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			slog.Error("stream read error", "error", err)
+			break
+		}
+	}
+
+done:
+	// Collect tool calls in index order
+	var toolCalls []ToolCall
+	for i := 0; i < len(toolCallMap); i++ {
+		if tc, ok := toolCallMap[i]; ok {
+			toolCalls = append(toolCalls, *tc)
+		}
+	}
+
+	slog.Debug("LLM stream round completed",
+		"model", req.Model,
+		"content_length", contentBuf.Len(),
+		"reasoning_length", reasoningBuf.Len(),
+		"tool_calls", len(toolCalls),
+		"content_streamed", contentStreamed,
+		"reset_called", resetCalled,
+		"total_tokens", totalTokens,
+	)
+
+	return LLMMessage{
+		Role:             "assistant",
+		Content:          contentBuf.String(),
+		ReasoningContent: reasoningBuf.String(),
+		ToolCalls:        toolCalls,
+	}, totalTokens, nil
+}
+
+// flushChunked sends content to the callback in rune-sized chunks,
+// simulating streaming output for buffered content.
+func flushChunked(onDelta func(string), content string) {
+	runes := []rune(content)
+	chunkSize := 80
+	for i := 0; i < len(runes); i += chunkSize {
+		end := i + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+		onDelta(string(runes[i:end]))
+	}
 }
 
 func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...ChatOption) *LLMRequest {

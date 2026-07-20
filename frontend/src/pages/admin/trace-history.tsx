@@ -78,6 +78,10 @@ const STEP_LABELS: Record<string, string> = {
   write: "文章生成",
   post_review: "写后自检",
   auto_fix: "自动修正",
+  memory_gate: "记忆检索",
+  memory_extract: "记忆提取",
+  chat: "对话回复",
+  parallel_pre_write: "并行预处理",
 };
 
 const STYLE_LABELS: Record<string, string> = {

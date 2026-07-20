@@ -9,14 +9,39 @@
  *
  * 文档来源: docs/07-feedback.md
  */
-import { useState, useMemo, useCallback } from "react";
-import { Star, ThumbsUp, ThumbsDown, Minus, Send, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { Star, ThumbsUp, ThumbsDown, Send, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useAgentStore } from "@/stores/agent-store";
 import type { FeedbackType, FeedbackSegment } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// ─── 无笑容微笔图标（嘴巴为 "-"） ─────────────────────
+
+function NeutralFaceIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {/* 脸部圆圈 */}
+      <circle cx="12" cy="12" r="10" />
+      {/* 左眼 */}
+      <line x1="9" y1="9" x2="9" y2="9.01" />
+      {/* 右眼 */}
+      <line x1="15" y1="9" x2="15" y2="9.01" />
+      {/* 嘴巴：一条横线（无笑容） */}
+      <line x1="9" y1="15" x2="15" y2="15" />
+    </svg>
+  );
+}
 
 interface FeedbackBarProps {
   traceId: string;
@@ -112,6 +137,7 @@ function StarRating({
 
 export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps) {
   const sendWS = useAgentStore((s) => s.sendWS);
+  const markFeedbackSubmitted = useAgentStore((s) => s.markFeedbackSubmitted);
 
   const { title, paragraphs } = useMemo(() => parseArticleSegments(article), [article]);
 
@@ -122,6 +148,11 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
   const [comment, setComment] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [submitted, setSubmitted] = useState(hasFeedback ?? false);
+
+  // 当 hasFeedback prop 变化时（如从数据库加载），同步本地状态
+  useEffect(() => {
+    setSubmitted(hasFeedback ?? false);
+  }, [hasFeedback, traceId]);
 
   const hasSegmentFeedback = titleRating > 0 || Object.values(paragraphRatings).some((v) => v > 0);
 
@@ -183,7 +214,8 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
     });
 
     setSubmitted(true);
-  }, [title, titleRating, paragraphs, paragraphRatings, overallRating, comment, article, traceId, sendWS]);
+    markFeedbackSubmitted(traceId);
+  }, [title, titleRating, paragraphs, paragraphRatings, overallRating, comment, article, traceId, sendWS, markFeedbackSubmitted]);
 
   // ─── 快捷整体评价（不展开分段） ──────────────────────────
   const handleQuickFeedback = (type: FeedbackType) => {
@@ -209,6 +241,7 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
         body: JSON.stringify({ trace_id: traceId, segments }),
       }).catch(() => {});
       setSubmitted(true);
+      markFeedbackSubmitted(traceId);
     }
   };
 
@@ -243,7 +276,7 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
             className={cn("h-7 gap-1 border-amber-300 text-amber-700 hover:bg-amber-50", overallRating === "suggestion" && "bg-amber-50")}
             onClick={() => handleQuickFeedback("suggestion")}
           >
-            <Minus className="h-3 w-3" />
+            <NeutralFaceIcon className="h-3 w-3" />
             一般
           </Button>
           <Button

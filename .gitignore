@@ -37,3 +37,8 @@ docker-compose.override.yml
 *.log
 logs/
 tmp/
+
+# ─── Skills (技能包) ───────────────────────────────────
+# Skill source files are tracked, but downloaded binaries are not
+skills/**/tencent-news-cli
+skills/**/*.zip

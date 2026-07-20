@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -17,12 +18,14 @@ import (
 
 // SearchClient manages multi-source search with concurrent execution.
 type SearchClient struct {
-	tavily   *TavilyClient
-	zhihu    *ZhihuClient
-	ima      *IMAClient
-	tencent  *TencentNewsClient
-	weibo    *WeiboClient
-	extraHot *ExtraHotClient
+	tavily      *TavilyClient
+	zhihu       *ZhihuClient
+	ima         *IMAClient
+	tencent     *TencentNewsClient
+	tencentCLI  *TencentNewsCLIClient
+	weibo       *WeiboClient
+	extraHot    *ExtraHotClient
+	bing        *BingClient
 }
 
 // NewSearchClient creates a new search client.
@@ -32,6 +35,8 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	tencentEnabled bool, tencentBaseURL string, tencentTimeout time.Duration,
 	weiboEnabled bool, weiboBaseURL string, weiboTimeout time.Duration,
 	extraHotEnabled bool, extraHotBaseURL string, extraHotTimeout time.Duration,
+	bingEnabled bool, bingBaseURL string, bingTimeout time.Duration,
+	tencentCLIPath string, tencentCLITimeout time.Duration,
 ) *SearchClient {
 	c := &SearchClient{}
 
@@ -52,6 +57,9 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		c.tencent = NewTencentNewsClient(tencentBaseURL, tencentTimeout)
 	}
 
+	// Always try to init the CLI client (auto-detects binary on PATH)
+	c.tencentCLI = NewTencentNewsCLIClient(tencentCLIPath, tencentCLITimeout)
+
 	if weiboEnabled {
 		c.weibo = NewWeiboClient(weiboBaseURL, weiboTimeout)
 	}
@@ -60,12 +68,16 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		c.extraHot = NewExtraHotClient(extraHotBaseURL, extraHotTimeout)
 	}
 
+	if bingEnabled {
+		c.bing = NewBingClient(bingBaseURL, bingTimeout)
+	}
+
 	return c
 }
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.weibo != nil || c.extraHot != nil
+	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -148,6 +160,22 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 		}()
 	}
 
+	// CLI-based news search (more reliable than HTTP scraping)
+	if c.tencentCLI != nil && c.tencentCLI.IsConfigured() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := c.tencentCLI.Search(ctx, query, maxPerSource)
+			if err != nil {
+				slog.Warn("tencent news CLI search failed", "error", err, "query", query)
+				return
+			}
+			mu.Lock()
+			results = append(results, r...)
+			mu.Unlock()
+		}()
+	}
+
 	if c.weibo != nil {
 		wg.Add(1)
 		go func() {
@@ -155,6 +183,21 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 			r, err := c.weibo.Search(ctx, query, maxPerSource)
 			if err != nil {
 				slog.Warn("weibo search failed", "error", err, "query", query)
+				return
+			}
+			mu.Lock()
+			results = append(results, r...)
+			mu.Unlock()
+		}()
+	}
+
+	if c.bing != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := c.bing.Search(ctx, query, maxPerSource)
+			if err != nil {
+				slog.Warn("bing search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -193,8 +236,14 @@ func (c *SearchClient) activeSources() []string {
 	if c.tencent != nil {
 		sources = append(sources, "tencent")
 	}
+	if c.tencentCLI != nil && c.tencentCLI.IsConfigured() {
+		sources = append(sources, "tencent-cli")
+	}
 	if c.weibo != nil {
 		sources = append(sources, "weibo")
+	}
+	if c.bing != nil {
+		sources = append(sources, "bing")
 	}
 	return sources
 }
@@ -387,21 +436,24 @@ func (c *ZhihuClient) Search(ctx context.Context, query string, limit int) ([]en
 }
 
 func (c *ZhihuClient) searchSite(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
-	url := fmt.Sprintf("%s/api/v1/content/zhihu_search?Query=%s&Count=%d",
-		c.baseURL, encodeQuery(query), limit)
-
-	return c.doZhihuSearch(ctx, url, "知乎搜索")
+	u := c.baseURL + "/api/v1/content/zhihu_search?" + url.Values{
+		"Query": {query},
+		"Count": {fmt.Sprintf("%d", limit)},
+	}.Encode()
+	return c.doZhihuSearch(ctx, u, "知乎搜索")
 }
 
 func (c *ZhihuClient) searchGlobal(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
-	url := fmt.Sprintf("%s/api/v1/content/global_search?Query=%s&Count=%d&SearchDB=all",
-		c.baseURL, encodeQuery(query), limit)
-
-	return c.doZhihuSearch(ctx, url, "知乎全网搜索")
+	u := c.baseURL + "/api/v1/content/global_search?" + url.Values{
+		"Query":     {query},
+		"Count":     {fmt.Sprintf("%d", limit)},
+		"SearchDB": {"all"},
+	}.Encode()
+	return c.doZhihuSearch(ctx, u, "知乎全网搜索")
 }
 
-func (c *ZhihuClient) doZhihuSearch(ctx context.Context, url, source string) ([]engine.SearchResult, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func (c *ZhihuClient) doZhihuSearch(ctx context.Context, searchURL, source string) ([]engine.SearchResult, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return nil, err
 	}

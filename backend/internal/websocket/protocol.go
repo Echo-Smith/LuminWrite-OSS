@@ -20,6 +20,7 @@ const (
 	MsgAgentStepStart    = "agent.step.start"
 	MsgAgentStepComplete = "agent.step.complete"
 	MsgAgentStream       = "agent.stream"
+	MsgAgentStreamReset  = "agent.stream.reset"
 	MsgAgentReasoning    = "agent.reasoning"
 	MsgAgentStreamDone   = "agent.stream.done"
 	MsgAgentArticleTitle = "agent.article_title"
@@ -106,6 +107,14 @@ type StepCompletePayload struct {
 type StreamPayload struct {
 	TraceID string `json:"trace_id"`
 	Delta   string `json:"delta"`
+}
+
+// StreamResetPayload instructs the client to discard all streamed text
+// content for the current step. Sent when the agent loop detects that
+// optimistically-streamed content belongs to an intermediate tool-call
+// round rather than the final answer.
+type StreamResetPayload struct {
+	TraceID string `json:"trace_id"`
 }
 
 // ReasoningPayload carries a reasoning (thinking) delta to the client.

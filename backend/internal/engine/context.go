@@ -28,10 +28,11 @@ const (
 	StepRelevance    StepName = "relevance"
 	StepOutline      StepName = "outline"
 	StepWrite        StepName = "write"
-	StepPostReview   StepName = "post_review"
-	StepAutoFix      StepName = "auto_fix"
+	StepPostReview    StepName = "post_review"
+	StepAutoFix       StepName = "auto_fix"
 	StepMemoryExtract StepName = "memory_extract"
-	StepChat         StepName = "chat"
+	StepChat          StepName = "chat"
+	StepCompress      StepName = "compress"
 )
 
 // StepRecord records the execution of a single step.
@@ -79,9 +80,10 @@ type ReviewIssue struct {
 
 // ReviewResult holds the post-write review results.
 type ReviewResult struct {
-	Scores map[string]float64 `json:"scores"`
-	Issues []ReviewIssue       `json:"issues"`
-	Passed bool                `json:"passed"`
+	Scores          map[string]float64 `json:"scores"`
+	Issues          []ReviewIssue       `json:"issues"`
+	Passed          bool                `json:"passed"`
+	TitleSuggestion string              `json:"title_suggestion,omitempty"` // 标题独立评审给出的建议标题（供 AutoFixStep 使用）
 }
 
 // OutlineItem is a single point in the outline.
@@ -114,12 +116,20 @@ type ExecutionContext struct {
 	SearchPlan    []SearchPlanEntry `json:"search_plan,omitempty"`
 	SearchResults []SearchResult  `json:"search_results,omitempty"`
 	Outline       *OutlineData    `json:"outline,omitempty"`
-	Article       string          `json:"article,omitempty"`
-	ArticleTitle  string          `json:"article_title,omitempty"`
-	ReviewResult  *ReviewResult  `json:"review_result,omitempty"`
+	Article        string          `json:"article,omitempty"`
+	ArticleTitle   string          `json:"article_title,omitempty"`
+	ReviewResult   *ReviewResult  `json:"review_result,omitempty"`
+	// ReasoningContent stores the model's chain-of-thought from thinking mode.
+	// Accumulated during the WriteStep and persisted to the trace for historical replay.
+	ReasoningContent string       `json:"reasoning_content,omitempty"`
 
 	// Memory context (populated by MemoryGateStep)
 	MemoryContext interface{}    `json:"memory_context,omitempty"`
+
+	// Compressed search context (populated by CompressStep)
+	// If set, WriteStep uses this structured brief instead of raw SearchResults,
+	// reducing prompt token consumption by ~60% and improving generation quality.
+	CompressedContext string `json:"compressed_context,omitempty"`
 
 	// Execution state
 	Status        ExecutionStatus `json:"status"`
