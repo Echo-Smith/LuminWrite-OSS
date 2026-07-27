@@ -3,8 +3,12 @@ package editorial
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -70,6 +74,35 @@ func setupTaskAtStatus(t *testing.T, store *Store, userID string, status TaskSta
 	task.Status = status
 	task.AssigneeType = assignee
 	return task
+}
+
+// countingExecutor wraps noOpExecutor with an atomic counter.
+// It returns a low-quality research brief on every call.
+type countingExecutor struct {
+	role  AgentRole
+	count int32
+}
+
+func (e *countingExecutor) Role() AgentRole { return e.role }
+func (e *countingExecutor) Execute(ctx context.Context, ac *AgentContext, task *Task) (*Artifact, error) {
+	n := atomic.AddInt32(&e.count, 1)
+	briefJSON, _ := json.Marshal(map[string]interface{}{
+		"summary": fmt.Sprintf("Low quality research attempt %d", n),
+		"sources": []map[string]string{
+			{"url": "https://a.com", "source": "A", "relevance": "low"},
+		},
+		"claims": []map[string]interface{}{
+			{"claim": "fact1", "status": "unknown"},
+		},
+		"gaps": []string{"gap1", "gap2", "gap3"},
+	})
+	return &Artifact{
+		ID:      uuid.NewString(),
+		TaskID:  task.ID,
+		Type:    ArtifactResearchBrief,
+		Content: string(briefJSON),
+		Status:  ArtifactStatusSubmitted,
+	}, nil
 }
 
 // ─── routeAfterResearch ────────────────────────────────────
@@ -277,6 +310,89 @@ func Test_RouteAfterResearch_LowQualityRetries(t *testing.T) {
 		if d.Status == DecisionStatusPending {
 			t.Error("should not create pending decision for low quality (should retry)")
 		}
+	}
+}
+
+// Test_RouteAfterResearch_LowQualityRetriesAndEscalates:
+// 研究质量持续不足 → 重试 maxAgentRetries 次后升级到人工决策
+func Test_RouteAfterResearch_LowQualityRetriesAndEscalates(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	userID := testUser(t, testDB)
+
+	emitter := &mockEmitter{}
+	orch := NewOrchestrator(store, emitter)
+
+	counter := &countingExecutor{role: RoleResearch}
+	orch.RegisterExecutor(counter)
+
+	task := setupTaskAtStatus(t, store, userID, StatusResearch)
+
+	// 初始低质量研究简报
+	briefJSON, _ := json.Marshal(map[string]interface{}{
+		"summary": "Low quality research initial",
+		"sources": []map[string]string{
+			{"url": "https://a.com", "source": "A", "relevance": "low"},
+		},
+		"claims": []map[string]interface{}{
+			{"claim": "fact1", "status": "unknown"},
+		},
+		"gaps": []string{"gap1", "gap2", "gap3"},
+	})
+
+	artifact := &Artifact{
+		ID:      "art-research-initial",
+		TaskID:  task.ID,
+		Type:    ArtifactResearchBrief,
+		Content: string(briefJSON),
+		Status:  ArtifactStatusSubmitted,
+	}
+
+	event, err := store.RecordAgentRunEvent(ctx, AgentRunEvent{
+		TaskID:    task.ID,
+		Type:      EventAgentRunCompleted,
+		AgentRole: RoleResearch,
+		Status:    "completed",
+	})
+	if err != nil {
+		t.Fatalf("RecordAgentRunEvent failed: %v", err)
+	}
+
+	// 启动重试链
+	orch.routeAfterResearch(ctx, task, artifact, event)
+
+	// 轮询等待升级决策出现（最多 5 秒）
+	var escalated bool
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		decisions, _ := store.ListDecisions(ctx, task.ID)
+		for _, d := range decisions {
+			if d.Status == DecisionStatusPending && d.Type == DecisionApproveTopic {
+				escalated = true
+				break
+			}
+		}
+		if escalated {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// 断言 1：最终升级到人工
+	if !escalated {
+		t.Fatal("expected escalation to human after max retries, but no pending DecisionApproveTopic found")
+	}
+
+	// 断言 2：executor 被调用了恰好 maxAgentRetries 次
+	execCount := atomic.LoadInt32(&counter.count)
+	if execCount != int32(maxAgentRetries) {
+		t.Errorf("expected executor to be called %d times, got %d", maxAgentRetries, execCount)
+	}
+
+	// 断言 3：retry 计数器已被 reset
+	remaining := orch.getRetryCount(task.ID, RoleResearch)
+	if remaining != 0 {
+		t.Errorf("expected retry count to be reset to 0 after escalation, got %d", remaining)
 	}
 }
 
