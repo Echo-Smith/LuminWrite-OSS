@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,17 +34,51 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 		"user_input", execCtx.UserInput,
 		"style", execCtx.StyleSlug,
 		"mode", execCtx.Mode,
+		"max_tokens", execCtx.MaxTokens,
 	)
 
 	for i, step := range e.steps {
-		// Check for cancellation before each step
+		// ── Exit check: cancellation ──
 		if execCtx.IsCancelled() {
 			e.emitter.Cancelled()
 			slog.Info("agent cancelled", "trace_id", execCtx.TraceID)
 			return fmt.Errorf("cancelled")
 		}
 
-		// Check if the step should be skipped (e.g. chat intent skips writing steps)
+		// ── Exit check: global context timeout ──
+		if ctx.Err() != nil {
+			e.emitter.Error("timeout", "执行超时（超过全局时间限制）", execCtx.CurrentStep)
+			execCtx.Status = StatusFailed
+			return ctx.Err()
+		}
+
+		// ── Exit check: token budget ──
+		if execCtx.CheckBudget() {
+			e.emitter.Error("budget_exceeded",
+				fmt.Sprintf("Token 预算已用尽（已用 %d / 上限 %d）", execCtx.TotalTokens, execCtx.MaxTokens),
+				execCtx.CurrentStep)
+			execCtx.Status = StatusFailed
+			return ErrBudgetExceeded
+		}
+
+		// ── Exit check: client disconnected ──
+		if execCtx.IsDisconnected() {
+			slog.Info("client disconnected, pausing agent", "trace_id", execCtx.TraceID, "step", step.Name())
+			execCtx.Status = StatusPaused
+			e.emitter.PausedWithReason(step.Name(), nil, "disconnect")
+			return nil
+		}
+
+		// ── Exit check: circuit breaker ──
+		if execCtx.MaxLLMFails > 0 && execCtx.ConsecutiveLLMFails >= execCtx.MaxLLMFails {
+			e.emitter.Error("circuit_breaker",
+				fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
+				execCtx.CurrentStep)
+			execCtx.Status = StatusFailed
+			return ErrCircuitBreaker
+		}
+
+		// Check if the step should be skipped
 		if skipper, ok := step.(Skipper); ok && skipper.ShouldSkip(execCtx) {
 			slog.Debug("step skipped",
 				"trace_id", execCtx.TraceID,
@@ -74,8 +110,19 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			"index", i,
 		)
 
+		// ── Per-step timeout ──
+		// If the step implements Timeouter, wrap its context with a deadline.
+		stepCtx := ctx
+		stepCancel := func() {} // no-op by default
+		if t, ok := step.(Timeouter); ok {
+			if d := t.Timeout(); d > 0 {
+				stepCtx, stepCancel = context.WithTimeout(ctx, d)
+			}
+		}
+
 		// Execute the step
-		err := step.Execute(ctx, execCtx, e.emitter)
+		err := step.Execute(stepCtx, execCtx, e.emitter)
+		stepCancel()
 
 		duration := time.Since(startTime)
 		durationMs := duration.Milliseconds()
@@ -88,7 +135,51 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 				return err
 			}
 
-			// Step failed
+			// Check if it was a client disconnect
+			if err == ErrClientDisconnected {
+				slog.Info("client disconnected during step", "trace_id", execCtx.TraceID, "step", stepName)
+				execCtx.Status = StatusPaused
+				e.emitter.PausedWithReason(stepName, nil, "disconnect")
+				return nil
+			}
+
+			// ── Graceful degradation for non-critical steps ──
+			isTimeout := errors.Is(err, context.DeadlineExceeded)
+			isCritical := true
+			if cs, ok := step.(CriticalStep); ok {
+				isCritical = cs.Critical()
+			}
+
+			if !isCritical && (isTimeout || isLLMError(err)) {
+				// Degraded: skip this step and continue
+				slog.Warn("non-critical step failed, degrading",
+					"trace_id", execCtx.TraceID,
+					"step", stepName,
+					"error", err,
+					"is_timeout", isTimeout,
+					"duration_ms", durationMs,
+				)
+				updateLastStepRecord(execCtx, stepName, "degraded", nil, durationMs, err.Error())
+				e.emitter.StepComplete(stepName, map[string]interface{}{
+					"degraded": true,
+					"error":    err.Error(),
+				}, durationMs)
+				continue
+			}
+
+			// ── Circuit breaker: record LLM failure ──
+			if isLLMError(err) {
+				if execCtx.RecordLLMFailure() {
+					e.emitter.Error("circuit_breaker",
+						fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
+						stepName)
+					execCtx.Status = StatusFailed
+					updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())
+					return ErrCircuitBreaker
+				}
+			}
+
+			// Step failed (critical step or non-LLM error)
 			e.emitter.Error("step_failed", err.Error(), stepName)
 			execCtx.Status = StatusFailed
 
@@ -104,6 +195,9 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			return err
 		}
 
+		// Step succeeded — reset circuit breaker
+		execCtx.RecordLLMSuccess()
+
 		// Step succeeded — get the result from execCtx based on step name
 		result := getStepResult(stepName, execCtx)
 		updateLastStepRecord(execCtx, stepName, "complete", result, durationMs, "")
@@ -115,6 +209,7 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			"trace_id", execCtx.TraceID,
 			"step", stepName,
 			"duration_ms", durationMs,
+			"total_tokens", execCtx.TotalTokens,
 		)
 
 		// Check pause after pausable steps
@@ -213,7 +308,34 @@ func getStepResult(step StepName, execCtx *ExecutionContext) interface{} {
 		return map[string]interface{}{
 			"article_length": len(execCtx.Article),
 		}
+	case StepShortTermMemory:
+		return map[string]interface{}{
+			"history_loaded": execCtx.ConversationHistory != nil,
+		}
+	case StepShortTermStore:
+		return map[string]interface{}{
+			"stored": true,
+		}
+	case StepWorkingMemory:
+		return map[string]interface{}{
+			"summarized": execCtx.WorkingSummary != nil,
+		}
 	default:
 		return nil
 	}
+}
+
+// isLLMError checks whether an error originated from an LLM API call.
+// Used by the circuit breaker and graceful degradation logic.
+func isLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "llm") ||
+		strings.Contains(msg, "api request failed") ||
+		strings.Contains(msg, "api returned status") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "deepseek") ||
+		strings.Contains(msg, "chat completions")
 }

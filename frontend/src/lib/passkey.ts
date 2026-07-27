@@ -168,6 +168,35 @@ export async function registerPasskey(options: {
   );
 }
 
+// ─── WebAuthn 错误翻译 ────────────────────────────────────
+
+/**
+ * 将浏览器 WebAuthn DOMException 转换为用户友好的中文提示
+ */
+export function getPasskeyErrorMessage(e: unknown): string {
+  if (e instanceof DOMException) {
+    switch (e.name) {
+      case "NotAllowedError":
+        // 用户取消 / 超时 / 未授权
+        return "Passkey 验证已取消或超时，请重试";
+      case "AbortError":
+        return "Passkey 验证被中断，请重试";
+      case "SecurityError":
+        return "当前环境不支持 Passkey，请确保使用 HTTPS 访问";
+      case "NotFoundError":
+        return "未找到已注册的 Passkey，请先注册或使用密码登录";
+      case "InvalidStateError":
+        return "设备未配置 Passkey，请先注册";
+      default:
+        return `Passkey 验证失败：${e.name}`;
+    }
+  }
+  if (e instanceof Error) {
+    return e.message || "Passkey 验证失败";
+  }
+  return "Passkey 验证失败";
+}
+
 // ─── Passkey 登录 ─────────────────────────────────────────
 
 export async function loginWithPasskey(options?: {

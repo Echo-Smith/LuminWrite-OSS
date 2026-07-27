@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
@@ -45,6 +46,8 @@ func NewCompressStep(llm *tools.LLMClient) *CompressStep {
 
 func (s *CompressStep) Name() engine.StepName { return engine.StepCompress }
 func (s *CompressStep) CanPause() bool         { return false }
+func (s *CompressStep) Timeout() time.Duration { return 60 * time.Second }
+func (s *CompressStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for intents that don't produce or need search results.
 // Same skip set as RelevanceStep — if there are no search results, no compression.

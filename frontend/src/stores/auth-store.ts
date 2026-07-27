@@ -16,6 +16,15 @@ export interface AuthUser {
   role: "guest" | "user" | "admin";
 }
 
+/**
+ * 结构化认证结果
+ * - ok=true: 操作成功
+ * - ok=false: 操作失败，code 为后端错误码，message 为可展示文案
+ */
+export type AuthResult =
+  | { ok: true }
+  | { ok: false; code: string; message: string };
+
 interface AuthState {
   token: string | null;
   user: AuthUser | null;
@@ -105,23 +114,23 @@ async function callRefreshAPI(currentToken: string): Promise<{
 }
 
 async function callLoginAPI(body: Record<string, unknown>): Promise<{
-  token: string;
-  user_id: string;
-  role: string;
-  expires_in: number;
-} | null> {
+  data: { token: string; user_id: string; role: string; expires_in: number };
+} | { error: { code: string; message: string } }> {
   try {
     const res = await fetch("/api/v2/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) return null;
     const json = await res.json();
-    if (!json.success || !json.data?.token) return null;
-    return json.data;
+    if (!res.ok || !json.success) {
+      const code = json.error?.code || "login_failed";
+      const message = json.error?.message || "登录失败，请重试";
+      return { error: { code, message } };
+    }
+    return { data: json.data };
   } catch {
-    return null;
+    return { error: { code: "network_error", message: "网络错误，请检查连接" } };
   }
 }
 
@@ -146,23 +155,23 @@ async function callGuestAPI(): Promise<{
 }
 
 async function callRegisterAPI(body: Record<string, unknown>): Promise<{
-  token: string;
-  user_id: string;
-  role: string;
-  expires_in: number;
-} | null> {
+  data: { token: string; user_id: string; role: string; expires_in: number };
+} | { error: { code: string; message: string } }> {
   try {
     const res = await fetch("/api/v2/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) return null;
     const json = await res.json();
-    if (!json.success || !json.data?.token) return null;
-    return json.data;
+    if (!res.ok || !json.success) {
+      const code = json.error?.code || "register_failed";
+      const message = json.error?.message || "注册失败，请重试";
+      return { error: { code, message } };
+    }
+    return { data: json.data };
   } catch {
-    return null;
+    return { error: { code: "network_error", message: "网络错误，请检查连接" } };
   }
 }
 
@@ -279,19 +288,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
 // ─── 静态方法：用于非组件场景 ─────────────────────────────
 
+/**
+ * 错误码 → 中文文案映射
+ * 后端返回英文 message 用于日志，前端统一映射为中文展示
+ */
+const ERROR_MESSAGES_ZH: Record<string, string> = {
+  invalid_credentials: "用户名或密码错误",
+  invalid_api_key: "API Key 无效",
+  username_taken: "用户名已被占用",
+  not_guest: "当前账号不是游客，无需升级",
+  not_found: "用户不存在",
+  weak_password: "密码至少 6 位",
+  bad_request: "请求参数有误",
+  network_error: "网络错误，请检查连接",
+};
+
+function localizeError(code: string, fallback: string): string {
+  return ERROR_MESSAGES_ZH[code] || fallback;
+}
+
 export const authStore = {
-  login: async (body: Record<string, unknown>): Promise<boolean> => {
+  login: async (body: Record<string, unknown>): Promise<AuthResult> => {
     const result = await callLoginAPI(body);
-    if (!result) return false;
-    useAuthStore.getState().login(result.token, result.user_id, result.role, result.expires_in);
-    return true;
+    if ("error" in result) {
+      return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
+    }
+    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.role, result.data.expires_in);
+    return { ok: true };
   },
 
-  register: async (body: Record<string, unknown>): Promise<boolean> => {
+  register: async (body: Record<string, unknown>): Promise<AuthResult> => {
     const result = await callRegisterAPI(body);
-    if (!result) return false;
-    useAuthStore.getState().login(result.token, result.user_id, result.role, result.expires_in);
-    return true;
+    if ("error" in result) {
+      return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
+    }
+    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.role, result.data.expires_in);
+    return { ok: true };
   },
 
   logout: () => useAuthStore.getState().logout(),

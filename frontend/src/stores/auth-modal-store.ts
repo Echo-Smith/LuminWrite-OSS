@@ -4,12 +4,14 @@
  */
 import { create } from "zustand";
 
+type AuthTab = "login" | "register";
+
 interface AuthModalState {
   open: boolean;
   guestToken?: string;
-  defaultTab?: "login" | "register" | "apikey" | "passkey";
+  defaultTab?: AuthTab;
 
-  openAuth: (opts?: { guestToken?: string; defaultTab?: AuthModalState["defaultTab"] }) => void;
+  openAuth: (opts?: { guestToken?: string; defaultTab?: AuthTab }) => void;
   closeAuth: () => void;
 }
 

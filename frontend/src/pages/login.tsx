@@ -15,6 +15,7 @@ import {
   isPlatformAuthenticatorAvailable,
   loginWithPasskey,
   registerPasskey,
+  getPasskeyErrorMessage,
 } from "@/lib/passkey";
 import { useAuthStore } from "@/stores/auth-store";
 import { FadeIn } from "@/components/animation";
@@ -58,11 +59,11 @@ export function LoginPage() {
     if (!apiKey.trim()) return;
     setLoading(true);
     setError("");
-    const ok = await authStore.login({ api_key: apiKey.trim() });
-    if (ok) {
+    const result = await authStore.login({ api_key: apiKey.trim() });
+    if (result.ok) {
       navigate(redirectTo, { replace: true });
     } else {
-      setError("API Key 无效，请检查后重试");
+      setError(result.message || "API Key 无效，请检查后重试");
     }
     setLoading(false);
   };
@@ -71,14 +72,14 @@ export function LoginPage() {
     if (!username.trim() || !password.trim()) return;
     setLoading(true);
     setError("");
-    const ok = await authStore.login({
+    const result = await authStore.login({
       username: username.trim(),
       password: password.trim(),
     });
-    if (ok) {
+    if (result.ok) {
       navigate(redirectTo, { replace: true });
     } else {
-      setError("用户名或密码错误");
+      setError(result.message || "用户名或密码错误");
     }
     setLoading(false);
   };
@@ -87,11 +88,11 @@ export function LoginPage() {
     const id = guestId.trim() || `guest-${Date.now()}`;
     setLoading(true);
     setError("");
-    const ok = await authStore.login({ user_id: id });
-    if (ok) {
+    const result = await authStore.login({ user_id: id });
+    if (result.ok) {
       navigate(redirectTo, { replace: true });
     } else {
-      setError("登录失败，请重试 — 请确认后端服务正在运行");
+      setError(result.message || "登录失败，请重试 — 请确认后端服务正在运行");
     }
     setLoading(false);
   };
@@ -110,8 +111,7 @@ export function LoginPage() {
       );
       navigate(redirectTo, { replace: true });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Passkey 登录失败";
-      setError(msg);
+      setError(getPasskeyErrorMessage(e));
     }
     setLoading(false);
   };
@@ -128,8 +128,7 @@ export function LoginPage() {
       setError("");
       alert(result.message || "Passkey 注册成功！现在可以使用 Passkey 登录了。");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Passkey 注册失败";
-      setError(msg);
+      setError(getPasskeyErrorMessage(e));
     }
     setLoading(false);
   };

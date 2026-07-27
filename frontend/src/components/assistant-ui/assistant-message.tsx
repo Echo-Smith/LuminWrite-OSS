@@ -191,6 +191,7 @@ function CompactStepTimeline({ parts, isRunning }: { parts: ToolCallPart[]; isRu
             const isCurrent = part.status === "running";
             const isDone = part.status === "complete";
             const isErr = part.status === "error";
+            const isDegraded = part.status === "degraded";
             return (
               <div key={i} className="relative flex items-center gap-2.5">
                 {/* 时间线竖线 */}
@@ -202,16 +203,17 @@ function CompactStepTimeline({ parts, isRunning }: { parts: ToolCallPart[]; isRu
                 )}
                 {/* 状态圆点 */}
                 <PulseIndicator
-                  status={isDone ? "complete" : isCurrent ? "running" : isErr ? "error" : "idle"}
+                  status={isDone ? "complete" : isCurrent ? "running" : isErr ? "error" : isDegraded ? "error" : "idle"}
                   size="sm"
                   ring={isCurrent}
                 />
                 {/* 标签 */}
                 <span className={cn(
                   "text-xs",
-                  isCurrent ? "text-primary font-medium" : isDone ? "text-muted-foreground" : "text-muted-foreground/60"
+                  isCurrent ? "text-primary font-medium" : isDone ? "text-muted-foreground" : isDegraded ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground/60"
                 )}>
                   {STEP_LABELS[part.toolName] ?? part.toolName}
+                  {isDegraded && <span className="ml-1 text-amber-500">（已跳过）</span>}
                 </span>
                 {/* 耗时 */}
                 {part.durationMs != null && (
@@ -219,9 +221,9 @@ function CompactStepTimeline({ parts, isRunning }: { parts: ToolCallPart[]; isRu
                     {(part.durationMs / 1000).toFixed(1)}s
                   </span>
                 )}
-                {/* 错误提示 */}
+                {/* 错误/降级提示 */}
                 {part.error && (
-                  <span className="text-xs text-red-600 truncate">{part.error}</span>
+                  <span className={cn("text-xs truncate", isDegraded ? "text-amber-600 dark:text-amber-400" : "text-red-600")}>{part.error}</span>
                 )}
               </div>
             );

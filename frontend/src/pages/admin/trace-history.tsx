@@ -392,6 +392,7 @@ function TraceDetailDialog({
                                 step.status === "complete" ? "bg-green-100 text-green-700" :
                                 step.status === "error" ? "bg-red-100 text-red-700" :
                                 step.status === "running" ? "bg-blue-100 text-blue-700" :
+                                step.status === "degraded" ? "bg-amber-100 text-amber-700" :
                                 ""
                               }
                             >

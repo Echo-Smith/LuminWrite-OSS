@@ -118,7 +118,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <PopoverTrigger asChild>
             <button
               className="flex h-9 w-9 items-center justify-center transition-transform-precise hover:scale-105"
-              title={isGuest ? "注册账号" : (user?.userId ?? "用户")}
+              title={isGuest ? "登录/注册账号" : (user?.userId ?? "用户")}
             >
               <Avatar className="h-8 w-8">
                 <AvatarFallback className={cn(
@@ -363,7 +363,7 @@ function UserMenuContent({
       {isGuest ? (
         <MenuRow
           icon={UserPlus}
-          label="注册账号"
+          label="登录/注册账号"
           onClick={onRegister}
         />
       ) : (

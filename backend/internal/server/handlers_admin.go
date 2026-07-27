@@ -714,3 +714,145 @@ func (s *Server) adminAuthMiddleware(next http.Handler) http.Handler {
 		response.Err(w, http.StatusUnauthorized, "unauthorized", "admin token required")
 	})
 }
+
+// ─── Admin: Exit Reason Stats ─────────────────────────────
+
+func (s *Server) handleAdminExitStats(w http.ResponseWriter, r *http.Request) {
+	days := parseIntDefault(r.URL.Query().Get("days"), 7)
+
+	if s.adminRepo == nil || !s.dbAvail {
+		response.OK(w, map[string]interface{}{
+			"by_exit_reason":    []interface{}{},
+			"by_step":           []interface{}{},
+			"degraded_count":    0,
+			"total_failed":      0,
+			"total_completed":   0,
+			"total_paused":      0,
+			"days":              days,
+		})
+		return
+	}
+
+	ctx := r.Context()
+
+	// Exit reason distribution from failed traces
+	// The error field contains the raw error message; we categorize by keywords.
+	rows, err := s.adminRepo.DB().QueryContext(ctx, `
+		SELECT
+			CASE
+				WHEN error ILIKE '%timeout%' OR error ILIKE '%deadline%' THEN 'timeout'
+				WHEN error ILIKE '%budget%' OR error ILIKE '%token budget%' THEN 'budget_exceeded'
+				WHEN error ILIKE '%circuit%' OR error ILIKE '%consecutive LLM%' THEN 'circuit_breaker'
+				WHEN error ILIKE '%cancel%' THEN 'cancelled'
+				WHEN error ILIKE '%disconnect%' THEN 'disconnect'
+				ELSE 'step_failed'
+			END AS exit_reason,
+			COUNT(*) AS cnt
+		FROM agent_traces
+		WHERE status = 'failed'
+		  AND created_at >= NOW() - ($1 || ' days')::INTERVAL
+		GROUP BY exit_reason
+		ORDER BY cnt DESC
+	`, fmt.Sprintf("%d", days))
+	if err != nil {
+		slog.Warn("failed to query exit reasons", "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to get exit stats")
+		return
+	}
+	defer rows.Close()
+
+	type exitReasonStat struct {
+		ExitReason string `json:"exit_reason"`
+		Count      int    `json:"count"`
+		Label      string `json:"label"`
+	}
+	var byExitReason []exitReasonStat
+	labels := map[string]string{
+		"timeout":          "超时",
+		"budget_exceeded":  "Token 预算耗尽",
+		"circuit_breaker":  "断路器触发",
+		"cancelled":        "用户取消",
+		"disconnect":       "断连暂停",
+		"step_failed":      "步骤失败",
+	}
+	for rows.Next() {
+		var reason string
+		var cnt int
+		if err := rows.Scan(&reason, &cnt); err != nil {
+			continue
+		}
+		byExitReason = append(byExitReason, exitReasonStat{
+			ExitReason: reason,
+			Count:      cnt,
+			Label:      labels[reason],
+		})
+	}
+	if byExitReason == nil {
+		byExitReason = []exitReasonStat{}
+	}
+
+	// Degraded step count from step_history JSON
+	var degradedCount int
+	s.adminRepo.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM agent_traces
+		WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+		  AND step_history::text ILIKE '%degraded%'
+	`, fmt.Sprintf("%d", days)).Scan(&degradedCount)
+
+	// Status distribution
+	var totalFailed, totalCompleted, totalPaused int
+	s.adminRepo.DB().QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'failed'),
+			COUNT(*) FILTER (WHERE status = 'completed'),
+			COUNT(*) FILTER (WHERE status = 'paused')
+		FROM agent_traces
+		WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+	`, fmt.Sprintf("%d", days)).Scan(&totalFailed, &totalCompleted, &totalPaused)
+
+	// Step-level failure distribution (which steps fail most)
+	stepRows, err := s.adminRepo.DB().QueryContext(ctx, `
+		SELECT
+			jsonb_array_elements(step_history)->>'step' AS step_name,
+			jsonb_array_elements(step_history)->>'status' AS step_status,
+			COUNT(*) AS cnt
+		FROM agent_traces
+		WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+		  AND jsonb_array_length(step_history) > 0
+		GROUP BY step_name, step_status
+		ORDER BY cnt DESC
+		LIMIT 20
+	`, fmt.Sprintf("%d", days))
+	if err != nil {
+		slog.Warn("failed to query step stats", "error", err)
+	}
+	type stepStat struct {
+		Step   string `json:"step"`
+		Status string `json:"status"`
+		Count  int    `json:"count"`
+	}
+	var byStep []stepStat
+	if stepRows != nil {
+		defer stepRows.Close()
+		for stepRows.Next() {
+			var ss stepStat
+			if err := stepRows.Scan(&ss.Step, &ss.Status, &ss.Count); err != nil {
+				continue
+			}
+			byStep = append(byStep, ss)
+		}
+	}
+	if byStep == nil {
+		byStep = []stepStat{}
+	}
+
+	response.OK(w, map[string]interface{}{
+		"by_exit_reason":  byExitReason,
+		"by_step":         byStep,
+		"degraded_count":  degradedCount,
+		"total_failed":    totalFailed,
+		"total_completed": totalCompleted,
+		"total_paused":    totalPaused,
+		"days":            days,
+	})
+}

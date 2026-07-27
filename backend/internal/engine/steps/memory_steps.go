@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -16,7 +17,8 @@ import (
 //  - 将 MemoryContext 注入 ExecutionContext
 //  - 通过 emitter 推送 memory.used 事件
 type MemoryGateStep struct {
-	svc memoryServiceAdapter
+	svc      memoryServiceAdapter
+	embedder embedderForGraph
 }
 
 // memoryServiceAdapter 是对 internal/memory.Service 的接口抽象
@@ -26,12 +28,29 @@ type memoryServiceAdapter interface {
 	IsEnabledForUser(userID string) bool
 }
 
+// entityGraphAdapter 实体图检索适配器（可选接口）
+type entityGraphAdapter interface {
+	RetrieveEntityGraph(ctx context.Context, req memory.EntityGraphQuery) (*memory.EntityGraphResult, error)
+}
+
+// embedderForGraph 实体图检索需要的 embedding 接口
+type embedderForGraph interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
 func NewMemoryGateStep(svc memoryServiceAdapter) *MemoryGateStep {
 	return &MemoryGateStep{svc: svc}
 }
 
+// NewMemoryGateStepWithEntityGraph 创建带实体图检索的 MemoryGateStep
+func NewMemoryGateStepWithEntityGraph(svc memoryServiceAdapter, embedder embedderForGraph) *MemoryGateStep {
+	return &MemoryGateStep{svc: svc, embedder: embedder}
+}
+
 func (s *MemoryGateStep) Name() engine.StepName { return engine.StepMemoryGate }
 func (s *MemoryGateStep) CanPause() bool         { return false }
+func (s *MemoryGateStep) Timeout() time.Duration { return 30 * time.Second }
+func (s *MemoryGateStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for anonymous/guest users or when the memory service is nil.
 // Memory retrieval runs for ALL intents (including chat) so that
@@ -96,6 +115,28 @@ func (s *MemoryGateStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 	// Store in execution context
 	execCtx.MemoryContext = memCtx
 
+	// ── Entity memory network retrieval ──
+	if s.embedder != nil {
+		if entitySvc, ok := s.svc.(entityGraphAdapter); ok {
+			queryVector, err := s.embedder.Embed(ctx, execCtx.UserInput)
+			if err == nil && len(queryVector) > 0 {
+				entityResult, err := entitySvc.RetrieveEntityGraph(ctx, memory.EntityGraphQuery{
+					UserID:       execCtx.UserID,
+					QueryText:    execCtx.UserInput,
+					QueryVector:  queryVector,
+					MaxHops:      2,
+					MaxEntities:  10,
+					MinRelevance: 0.3,
+				})
+				if err != nil {
+					slog.Warn("memory gate: entity graph retrieval failed", "error", err)
+				} else if entityResult != nil && len(entityResult.Entities) > 0 {
+					execCtx.EntityContext = entityResult
+				}
+			}
+		}
+	}
+
 	// Emit memory.used event via emitter
 	if len(memCtx.Injected) > 0 || len(memCtx.ReviewGuard) > 0 {
 		if wsEmitter, ok := emitter.(interface {
@@ -136,6 +177,8 @@ func NewMemoryExtractStep(svc memoryExtractAdapter) *MemoryExtractStep {
 
 func (s *MemoryExtractStep) Name() engine.StepName { return engine.StepMemoryExtract }
 func (s *MemoryExtractStep) CanPause() bool         { return false }
+func (s *MemoryExtractStep) Timeout() time.Duration { return 60 * time.Second }
+func (s *MemoryExtractStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for chat intent or anonymous/guest users.
 // Guest users ("anonymous") don't have valid UUIDs, so skip to avoid DB errors.

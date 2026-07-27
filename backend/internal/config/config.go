@@ -161,11 +161,18 @@ type LogConfig struct {
 	Format string
 }
 
-// AgentConfig controls the agent execution mode.
+// AgentConfig controls the agent execution mode and exit mechanisms.
 //   - "pipeline" (default): use the fixed []Step pipeline (AgentEngine)
 //   - "unified": use the LLM-driven ReAct loop (UnifiedAgent)
 type AgentConfig struct {
-	Mode string // "pipeline" | "unified"
+	Mode                string        // "pipeline" | "unified"
+	Timeout             time.Duration // global agent execution timeout (default 5m)
+	MaxTokens           int           // token budget per execution (default 300000, 0=unlimited)
+	MaxFixAttempts      int           // max review→fix loop iterations (default 2)
+	MaxConcurrent       int           // max concurrent agent executions globally (default 10)
+	MaxConcurrentPerUser int          // max concurrent per user (default 1)
+	ConfirmTimeout      time.Duration // user confirm (await_input) timeout (default 5m)
+	CircuitBreakerFails int           // consecutive LLM failures before tripping (default 3)
 }
 
 // MCPServerConfig holds configuration for a single MCP server.
@@ -287,7 +294,14 @@ MaxClaims:   getEnvInt("JIAOZHEN_MAX_CLAIMS", 2),
 			FetchInterval: getEnvDuration("HOT_TOPICS_FETCH_INTERVAL", 10*time.Minute),
 		},
 		Agent: AgentConfig{
-			Mode: getEnv("AGENT_MODE", "pipeline"), // "pipeline" | "unified"
+			Mode:                getEnv("AGENT_MODE", "pipeline"),
+			Timeout:             getEnvDuration("AGENT_TIMEOUT", 5*time.Minute),
+			MaxTokens:           getEnvInt("AGENT_MAX_TOKENS", 300000),
+			MaxFixAttempts:      getEnvInt("AGENT_MAX_FIX_ATTEMPTS", 2),
+			MaxConcurrent:       getEnvInt("AGENT_MAX_CONCURRENT", 10),
+			MaxConcurrentPerUser: getEnvInt("AGENT_MAX_CONCURRENT_PER_USER", 1),
+			ConfirmTimeout:      getEnvDuration("AGENT_CONFIRM_TIMEOUT", 5*time.Minute),
+			CircuitBreakerFails: getEnvInt("AGENT_CIRCUIT_BREAKER_FAILS", 3),
 		},
 		MCPServers: loadMCPServers(),
 	}

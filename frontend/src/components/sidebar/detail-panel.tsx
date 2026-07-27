@@ -130,12 +130,14 @@ function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
   const totalDuration = parts.reduce((sum, p) => sum + (p.durationMs ?? 0), 0);
   const runningCount = parts.filter((p) => p.status === "running").length;
   const completedCount = parts.filter((p) => p.status === "complete").length;
+  const degradedCount = parts.filter((p) => p.status === "degraded").length;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-xs">
         <span className="text-muted-foreground">
           {runningCount > 0 ? `${completedCount}/${parts.length} 步骤完成` : `${parts.length} 步骤`}
+          {degradedCount > 0 && <span className="text-amber-600 dark:text-amber-400"> · {degradedCount} 跳过</span>}
         </span>
         <span className="font-medium tabular-nums">
           {(totalDuration / 1000).toFixed(1)}s

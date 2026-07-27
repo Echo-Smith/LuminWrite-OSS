@@ -418,6 +418,149 @@ CREATE INDEX idx_sensitive_words_category ON sensitive_words (category, is_activ
 CREATE INDEX idx_sensitive_words_severity ON sensitive_words (severity, is_active);
 ```
 
+### 17. conversation_messages — 对话消息（短期记忆）
+
+存储每个会话中的用户/助手消息，支持语义检索和动态窗口。属于短期记忆系统，超过 30 天的记录自动清理。
+
+```sql
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    conversation_id VARCHAR(64) NOT NULL,           -- 前端会话 ID，同一会话内的消息组成一段对话
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    trace_id        VARCHAR(64),                     -- 关联的 agent_traces.trace_id
+
+    role            VARCHAR(16) NOT NULL,            -- user | assistant | system
+    content         TEXT NOT NULL,
+    content_type    VARCHAR(16) NOT NULL DEFAULT 'text', -- text | article | review | outline
+    intent          VARCHAR(32) NOT NULL DEFAULT '',  -- writing | chat | polish | ...
+
+    -- 语义检索
+    embedding       vector(1024),
+
+    -- Token 预算管理
+    token_count     INTEGER NOT NULL DEFAULT 0,
+
+    -- 元数据
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_conversation
+    ON conversation_messages (conversation_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_user
+    ON conversation_messages (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_embedding
+    ON conversation_messages
+    USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_created_at
+    ON conversation_messages (created_at);
+```
+
+### 18. memory_entities — 记忆实体（长期记忆网络）
+
+实体记忆网络将用户偏好、话题、风格等建模为图结构的节点。
+
+```sql
+CREATE TABLE IF NOT EXISTS memory_entities (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+    -- 实体分类
+    entity_type     VARCHAR(32) NOT NULL,            -- topic | style | preference | concept | person | tone | structure
+    name            VARCHAR(256) NOT NULL,            -- 实体名称（如"短文风格"、"科技话题"）
+    description     TEXT NOT NULL DEFAULT '',         -- 实体描述
+
+    -- 语义检索
+    embedding       vector(1024),
+
+    -- 置信度与生命周期
+    confidence      DECIMAL(3,2) NOT NULL DEFAULT 0.50,
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    source_trace_id VARCHAR(64),
+
+    -- 状态
+    status          VARCHAR(16) NOT NULL DEFAULT 'active', -- active | superseded | archived
+    superseded_by   UUID REFERENCES memory_entities(id),
+
+    -- 时间
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 约束：同一用户同一类型+名称只有一条活跃记录
+    CONSTRAINT uk_user_entity UNIQUE (user_id, entity_type, name, status)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entities_user_active
+    ON memory_entities (user_id, status)
+    WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_entities_user_type
+    ON memory_entities (user_id, entity_type, status);
+
+CREATE INDEX IF NOT EXISTS idx_entities_embedding
+    ON memory_entities
+    USING hnsw (embedding vector_cosine_ops);
+```
+
+### 19. memory_relations — 记忆关系（长期记忆网络边）
+
+实体间的关系建模为图结构的边，支持偏好、共现、对比等关系类型。
+
+```sql
+CREATE TABLE IF NOT EXISTS memory_relations (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+    source_entity_id UUID NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+    target_entity_id UUID NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+
+    -- 关系类型
+    relation_type   VARCHAR(32) NOT NULL,            -- prefers | dislikes | related_to | evolved_from | co_occurs_with | contrasts_with
+    weight          DECIMAL(3,2) NOT NULL DEFAULT 0.50, -- 关系强度 0.0-1.0
+    evidence_count  INTEGER NOT NULL DEFAULT 1,       -- 支持该关系的证据数量
+    source_trace_id VARCHAR(64),
+
+    -- 时间
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 约束：同一用户同一关系类型+source+target 只有一条记录
+    CONSTRAINT uk_user_relation UNIQUE (user_id, source_entity_id, target_entity_id, relation_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relations_user
+    ON memory_relations (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_relations_source
+    ON memory_relations (source_entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_relations_target
+    ON memory_relations (target_entity_id);
+```
+
+### 20. working_summaries — 工作记忆摘要
+
+持久化每次执行的增量摘要，跨请求继承工作记忆，使新请求能参考上一轮的执行上下文。
+
+```sql
+CREATE TABLE IF NOT EXISTS working_summaries (
+    conversation_id  VARCHAR(64) NOT NULL,
+    trace_id         VARCHAR(64),
+    summary          JSONB NOT NULL,
+    last_updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (conversation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_working_summaries_conversation
+    ON working_summaries (conversation_id);
+```
+
 ## 初始数据
 
 ```sql

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
@@ -344,4 +345,33 @@ func vectorToPgFormat(vec []float32) interface{} {
 	}
 	sb.WriteByte(']')
 	return sb.String()
+}
+
+// pgVectorToFloat32 将 pgvector 字符串（如 "[0.1,0.2,0.3]"）解析为 []float32。
+// 空字符串或 NULL 返回 nil。
+func pgVectorToFloat32(s string) []float32 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "NULL" {
+		return nil
+	}
+	// 去掉首尾方括号
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	vec := make([]float32, 0, len(parts))
+	for _, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 32)
+		if err != nil {
+			continue
+		}
+		vec = append(vec, float32(v))
+	}
+	if len(vec) == 0 {
+		return nil
+	}
+	return vec
 }

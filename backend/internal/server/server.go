@@ -371,6 +371,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 
 			// Dashboard stats
 			r.Get("/stats", s.handleAdminStats)
+			r.Get("/exit-stats", s.handleAdminExitStats)
 
 			// Traces
 			r.Get("/traces", s.handleAdminListTraces)
@@ -767,6 +768,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if s.metrics != nil {
 			s.metrics.WSConnectionsActive.Dec()
 		}
+
+		// ── Signal disconnect to active agent execution ──
+		// When the WebSocket client disconnects, notify the ExecutionContext
+		// so the agent can pause gracefully instead of continuing to run.
+		if traceID := client.TraceID(); traceID != "" {
+			if val, ok := s.sessions.Load(traceID); ok {
+				if execCtx, ok := val.(*engine.ExecutionContext); ok {
+					execCtx.SignalDisconnect()
+					slog.Info("client disconnected, signaled agent",
+						"trace_id", traceID,
+						"step", execCtx.CurrentStep)
+				}
+			}
+		}
 	}()
 
 	// Keep connection alive until ReadLoop exits
@@ -825,6 +840,52 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 	}
 
+	// ── Per-user concurrent agent limit ──
+	if s.cfg.Agent.MaxConcurrentPerUser > 0 {
+		userActive := 0
+		s.sessions.Range(func(_, v interface{}) bool {
+			if ec, ok := v.(*engine.ExecutionContext); ok && ec.UserID == userID {
+				if ec.Status == engine.StatusRunning || ec.Status == engine.StatusPaused {
+					userActive++
+				}
+			}
+			return true
+		})
+		if userActive >= s.cfg.Agent.MaxConcurrentPerUser {
+			client.SendDirect(&websocket.ServerMessage{
+				Type: websocket.MsgAgentError,
+				Payload: map[string]interface{}{
+					"code":    "concurrent_limit",
+					"message": "已有写作任务进行中，请等待完成或取消后再试",
+				},
+			})
+			return
+		}
+	}
+
+	// ── Global concurrent agent limit ──
+	if s.cfg.Agent.MaxConcurrent > 0 {
+		globalActive := 0
+		s.sessions.Range(func(_, v interface{}) bool {
+			if ec, ok := v.(*engine.ExecutionContext); ok {
+				if ec.Status == engine.StatusRunning || ec.Status == engine.StatusPaused {
+					globalActive++
+				}
+			}
+			return true
+		})
+		if globalActive >= s.cfg.Agent.MaxConcurrent {
+			client.SendDirect(&websocket.ServerMessage{
+				Type: websocket.MsgAgentError,
+				Payload: map[string]interface{}{
+					"code":    "server_busy",
+					"message": "服务器繁忙，当前并发任务已满，请稍后再试",
+				},
+			})
+			return
+		}
+	}
+
 	traceID := engine.GenerateTraceID()
 
 	slog.Info("agent started", "trace_id", traceID, "user_id", userID, "role", userRole, "style", func() string {
@@ -858,6 +919,18 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	execCtx.UserMaterials = p.UserMaterials
 	execCtx.WordLimit = p.WordLimit
 	execCtx.SessionID = traceID // SessionID 用于记忆 dismiss 追踪
+	// ConversationID 用于短期记忆分组（同一会话内的消息组成对话历史）
+	if p.SessionID != "" {
+		execCtx.ConversationID = p.SessionID
+	} else {
+		execCtx.ConversationID = traceID
+	}
+
+	// ── Exit mechanism configuration ──
+	execCtx.MaxTokens = s.cfg.Agent.MaxTokens
+	execCtx.MaxFixAttempts = s.cfg.Agent.MaxFixAttempts
+	execCtx.MaxLLMFails = s.cfg.Agent.CircuitBreakerFails
+	execCtx.ConfirmTimeout = s.cfg.Agent.ConfirmTimeout
 
 	// Store session
 	s.sessions.Store(traceID, execCtx)
@@ -882,6 +955,16 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// Create steps
 	var engineSteps []engine.Step
+
+	// ── Short-term memory: load conversation history before intent classification ──
+	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+		engineSteps = append(engineSteps, steps.NewShortTermMemoryStep(
+			s.memorySvc,
+			&embedderAdapter{svc: s.memorySvc},
+			memory.DefaultDynamicWindowConfig(),
+		))
+	}
+
 	engineSteps = append(engineSteps,
 		steps.NewIntentStep(llmClient),
 	)
@@ -902,7 +985,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 		memoryBranch := []engine.Step{
-			steps.NewMemoryGateStep(s.memorySvc),
+			steps.NewMemoryGateStepWithEntityGraph(s.memorySvc, &embedderAdapter{svc: s.memorySvc}),
 		}
 		engineSteps = append(engineSteps, engine.NewParallelGroup(
 			"parallel_pre_write",
@@ -912,6 +995,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	} else {
 		// No memory service — just run the search chain sequentially
 		engineSteps = append(engineSteps, searchBranch...)
+	}
+
+	// ── Working memory: incremental summarization after search/relevance ──
+	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+		engineSteps = append(engineSteps, steps.NewWorkingMemoryStep(
+			&workingMemoryLLMAdapter{llm: llmClient},
+			memory.DefaultSummarizerConfig(),
+		))
 	}
 
 	// ChatStep: handles chat intent (skips itself for non-chat intents)
@@ -938,6 +1029,11 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	// Memory extract: extract patterns after article completion (async)
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 		engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memorySvc))
+		// Short-term memory: store conversation messages after completion
+		engineSteps = append(engineSteps, steps.NewShortTermStoreStep(
+			s.memorySvc,
+			&embedderAdapter{svc: s.memorySvc},
+		))
 	}
 
 	// Create and run engine
@@ -979,6 +1075,11 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}()
 
 		ctx := context.Background()
+		if s.cfg.Agent.Timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, s.cfg.Agent.Timeout)
+			defer cancel()
+		}
 		start := time.Now()
 		if err := agentRunner.Run(ctx, execCtx); err != nil {
 			slog.Error("agent execution failed", "trace_id", traceID, "error", err)

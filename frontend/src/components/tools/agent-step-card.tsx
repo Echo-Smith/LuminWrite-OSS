@@ -18,6 +18,7 @@ import {
   X,
   Loader2,
   ChevronRight,
+  AlertTriangle,
 } from "lucide-react";
 import type { ToolCallPart } from "@/stores/agent-store";
 import { STEP_LABELS, STEP_DESCRIPTIONS } from "@/lib/constants";
@@ -68,6 +69,7 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
   const isRunning = part.status === "running";
   const isComplete = part.status === "complete";
   const isError = part.status === "error";
+  const isDegraded = part.status === "degraded";
 
   return (
     <div
@@ -76,7 +78,8 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
         isRunning && "border-primary/30 bg-primary/5",
         isComplete && "border-emerald-200/50 bg-emerald-50/30 dark:bg-emerald-950/10",
         isError && "border-red-200/50 bg-red-50/30 dark:bg-red-950/10",
-        !isRunning && !isComplete && !isError && "border-border bg-card"
+        isDegraded && "border-amber-200/50 bg-amber-50/30 dark:bg-amber-950/10",
+        !isRunning && !isComplete && !isError && !isDegraded && "border-border bg-card"
       )}
     >
       {/* 头部 */}
@@ -90,7 +93,8 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
             isRunning && "bg-muted text-foreground",
             isComplete && "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400",
             isError && "bg-red-100 text-red-600 dark:bg-red-950/40 dark:text-red-400",
-            !isRunning && !isComplete && !isError && "bg-muted text-muted-foreground"
+            isDegraded && "bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400",
+            !isRunning && !isComplete && !isError && !isDegraded && "bg-muted text-muted-foreground"
           )}
         >
           {isRunning ? (
@@ -99,6 +103,8 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
             <Check className="h-4 w-4" />
           ) : isError ? (
             <X className="h-4 w-4" />
+          ) : isDegraded ? (
+            <AlertTriangle className="h-4 w-4" />
           ) : (
             <Icon className="h-4 w-4" />
           )}
@@ -107,6 +113,9 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">{label}</span>
+            {isDegraded && (
+              <Badge variant="outline" className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">已跳过</Badge>
+            )}
             {part.durationMs && (
               <span className="text-xs text-muted-foreground font-mono-sm">
                 {(part.durationMs / 1000).toFixed(1)}s
@@ -114,7 +123,9 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
             )}
           </div>
           {!expanded && (
-            <p className="text-xs text-muted-foreground truncate">{description}</p>
+            <p className="text-xs text-muted-foreground truncate">
+              {isDegraded && part.error ? part.error : description}
+            </p>
           )}
         </div>
 
@@ -137,6 +148,18 @@ export function AgentStepCard({ part, defaultOpen = false }: AgentStepCardProps)
 }
 
 function StepResult({ part }: { part: ToolCallPart }) {
+  if (part.status === "degraded" && part.error) {
+    return (
+      <div className="space-y-1 text-sm">
+        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          <span>步骤已跳过（非关键步骤失败）</span>
+        </div>
+        <p className="text-xs text-amber-600 dark:text-amber-500 pl-5">{part.error}</p>
+      </div>
+    );
+  }
+
   if (part.error) {
     return <p className="text-sm text-red-600">{part.error}</p>;
   }

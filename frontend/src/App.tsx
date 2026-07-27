@@ -12,6 +12,8 @@ import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
+import { TermsPage } from "@/pages/legal/terms";
+import { PrivacyPage } from "@/pages/legal/privacy";
 
 export function App() {
   const init = useAuthStore((s) => s.init);
@@ -73,6 +75,10 @@ export function App() {
               </ProtectedRoute>
             }
           />
+
+          {/* 法律页面 — 公开访问，无需登录 */}
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
 
           {/* 默认重定向 */}
           <Route path="/" element={<Navigate to="/write" replace />} />
