@@ -99,6 +99,7 @@ type AdvanceTaskInput struct {
 	TargetStatus TaskStatus   `json:"target_status"`
 	AssigneeType AssigneeType `json:"assignee_type,omitempty"`
 	Rationale    string       `json:"rationale,omitempty"`
+	DecidedBy    string       `json:"decided_by,omitempty"` // 决策者 ID（人类 userID 或 "system"）
 }
 
 // ─── 交付物类型 ───────────────────────────────────────────
@@ -191,7 +192,7 @@ func (t ArtifactType) ConsumerFor() string {
 		return "research_agent"
 	case ArtifactResearchBrief, ArtifactFactClaims:
 		return "writing_agent"
-	case ArtifactSourcePack, ArtifactFactClaims, ArtifactDraft, ArtifactRevisedDraft:
+	case ArtifactSourcePack, ArtifactDraft, ArtifactRevisedDraft:
 		return "review_agent"
 	case ArtifactReviewReport:
 		return "writing_agent"

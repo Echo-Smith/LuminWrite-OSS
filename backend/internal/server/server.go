@@ -258,7 +258,7 @@ func New(cfg *config.Config) *Server {
 
 	// ── Editorial system initialization ──
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
-		edStore := editorial.NewStore(adminRepo.DB())
+		edStore := editorial.NewStore(adminRepo.DB().DB)
 		edEmitter := &editorialWSEmitter{hub: s.hub}
 		edSvc := editorial.NewService(edStore, edEmitter)
 

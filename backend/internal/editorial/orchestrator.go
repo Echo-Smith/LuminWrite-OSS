@@ -12,7 +12,7 @@ import (
 
 // OrchestratorEvent 编排器发出的事件
 type OrchestratorEvent struct {
-	Type      string      `json:"type"`       // task.status_changed | artifact.produced | artifact.reviewed | decision.required | agent.started | agent.completed | agent.failed
+	Type      string      `json:"type"`       // task.status_changed | artifact.produced | artifact.reviewed | decision.required | decision.created | agent.started | agent.completed | agent.failed
 	TaskID    string      `json:"task_id"`
 	Payload   interface{} `json:"payload"`
 	Timestamp time.Time   `json:"timestamp"`
@@ -26,9 +26,12 @@ type EventEmitter interface {
 // ─── 编排器 ───────────────────────────────────────────────
 
 // Orchestrator 三 Agent 编排器 — 管理 研究→写作→审校 的协作流程
+//
+// 核心原则：Decision 是状态转换的唯一合法原因。
+// 每次 AdvanceTask 都会原子化地创建一条 Decision 记录，然后才更新状态。
 type Orchestrator struct {
-	store    *Store
-	emitter  EventEmitter
+	store     *Store
+	emitter   EventEmitter
 	executors map[AgentRole]AgentExecutorAdapter
 }
 
@@ -53,7 +56,59 @@ func (o *Orchestrator) RegisterExecutor(exec AgentExecutorAdapter) {
 	slog.Info("orchestrator: executor registered", "role", exec.Role())
 }
 
-// AdvanceTask 推进任务到下一阶段
+// ─── 状态转换 ↔ Decision 映射 ────────────────────────────
+
+// transitionDecision 返回状态转换对应的 DecisionType 和默认 decidedByType
+func transitionDecision(from, to TaskStatus) (DecisionType, DecidedByType) {
+	switch {
+	// draft → pending_approval: 提交审批（人类操作）
+	case from == StatusDraft && to == StatusPendingApproval:
+		return DecisionApproveTopic, DecidedByHuman
+	// pending_approval → research: 批准立项（人类决策）
+	case from == StatusPendingApproval && to == StatusResearch:
+		return DecisionApproveTopic, DecidedByHuman
+	// pending_approval → draft: 驳回立项（人类决策）
+	case from == StatusPendingApproval && to == StatusDraft:
+		return DecisionApproveTopic, DecidedByHuman
+	// research → writing: 研究完成，自动推进（系统决策）
+	case from == StatusResearch && to == StatusWriting:
+		return DecisionAllowRewrite, DecidedBySystem
+	// writing → review: 写作完成，自动推进（系统决策）
+	case from == StatusWriting && to == StatusReview:
+		return DecisionAllowRewrite, DecidedBySystem
+	// review → pending_publish: 审校通过（审校 Agent 决策）
+	case from == StatusReview && to == StatusPendingPublish:
+		return DecisionAcceptReview, DecidedByReviewAgent
+	// review → writing: 审校驳回，退回修改（审校 Agent 决策）
+	case from == StatusReview && to == StatusWriting:
+		return DecisionAcceptReview, DecidedByReviewAgent
+	// review → pending_approval: 严重问题升级（审校 Agent 决策）
+	case from == StatusReview && to == StatusPendingApproval:
+		return DecisionEscalate, DecidedByReviewAgent
+	// pending_publish → published: 发布（人类决策）
+	case from == StatusPendingPublish && to == StatusPublished:
+		return DecisionPublish, DecidedByHuman
+	// pending_publish → review: 驳回发布（人类决策）
+	case from == StatusPendingPublish && to == StatusReview:
+		return DecisionPublish, DecidedByHuman
+	default:
+		return DecisionEscalate, DecidedBySystem
+	}
+}
+
+// decisionStatusForTransition 根据目标状态判断 Decision 是 approved 还是 rejected
+func decisionStatusForTransition(to TaskStatus) DecisionStatus {
+	// 退回类转换 = rejected，前进类转换 = approved
+	switch to {
+	case StatusDraft, StatusPendingApproval:
+		// 退回到 draft 或 pending_approval = 驳回
+		return DecisionStatusRejected
+	default:
+		return DecisionStatusApproved
+	}
+}
+
+// AdvanceTask 推进任务到下一阶段 — 原子化创建 Decision + 更新状态
 //
 // 核心编排逻辑：
 //   - pending_approval → research: 启动研究 Agent
@@ -70,6 +125,39 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 	if !task.Status.CanTransitionTo(input.TargetStatus) {
 		return fmt.Errorf("%w: %s → %s", ErrInvalidTransition, task.Status, input.TargetStatus)
 	}
+
+	// ── 原子化：先创建 Decision，再更新状态 ──
+	decType, decByType := transitionDecision(task.Status, input.TargetStatus)
+	decStatus := decisionStatusForTransition(input.TargetStatus)
+
+	// 如果是人类操作，用 input 中传入的或默认的 decidedBy
+	decidedBy := input.DecidedBy
+	if decidedBy == "" {
+		decidedBy = task.OwnerID
+	}
+
+	decision, err := o.store.CreateDecision(ctx, CreateDecisionInput{
+		Type:          decType,
+		DecidedBy:     decidedBy,
+		DecidedByType: decByType,
+		Status:        decStatus,
+		Rationale:     input.Rationale,
+	}, taskID)
+	if err != nil {
+		return fmt.Errorf("create decision: %w", err)
+	}
+
+	// 发射决策创建事件
+	o.emit(OrchestratorEvent{
+		Type:    "decision.created",
+		TaskID:  taskID,
+		Payload: map[string]interface{}{
+			"decision_id": decision.ID,
+			"type":        decType,
+			"status":      decStatus,
+			"by":          decByType,
+		},
+	})
 
 	// 发射状态变更事件
 	o.emit(OrchestratorEvent{
@@ -99,7 +187,29 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 		return o.runReviewAgent(ctx, task)
 	default:
 		// pending_publish, published, archived 等终态不需要自动执行
+		// 但如果进入了 pending_publish 或 pending_approval，需要通知人类
+		if input.TargetStatus == StatusPendingPublish || input.TargetStatus == StatusPendingApproval {
+			o.emit(OrchestratorEvent{
+				Type:    "decision.required",
+				TaskID:  taskID,
+				Payload: map[string]interface{}{
+					"type":    decType,
+					"message": humanActionMessage(input.TargetStatus),
+				},
+			})
+		}
 		return nil
+	}
+}
+
+func humanActionMessage(status TaskStatus) string {
+	switch status {
+	case StatusPendingPublish:
+		return "稿件审查通过，等待发布确认"
+	case StatusPendingApproval:
+		return "审校发现严重问题，需人工裁决"
+	default:
+		return "需要人工介入"
 	}
 }
 
@@ -127,6 +237,9 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 		Payload: map[string]interface{}{"role": "research_agent"},
 	})
 
+	// 记录上一个状态，用于失败回退
+	prevStatus := StatusPendingApproval
+
 	// 异步执行
 	go func() {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -140,6 +253,8 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 				TaskID:  task.ID,
 				Payload: map[string]interface{}{"role": "research_agent", "error": err.Error()},
 			})
+			// 回退到上一个状态，让人类可以重试
+			o.rollbackTask(task.ID, StatusResearch, prevStatus, "research agent failed: "+err.Error())
 			return
 		}
 
@@ -155,6 +270,7 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 			o.AdvanceTask(context.Background(), task.ID, AdvanceTaskInput{
 				TargetStatus: StatusWriting,
 				AssigneeType: AssigneeWritingAgent,
+				DecidedBy:    "system",
 			})
 		}
 
@@ -193,6 +309,12 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 		ac.AddInputArtifact(*reviewReport)
 	}
 
+	// 记录上一个状态，用于失败回退
+	prevStatus := StatusResearch
+	if reviewReport != nil {
+		prevStatus = StatusReview // 修改场景，回退到审校
+	}
+
 	o.emit(OrchestratorEvent{
 		Type:    "agent.started",
 		TaskID:  task.ID,
@@ -211,6 +333,7 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 				TaskID:  task.ID,
 				Payload: map[string]interface{}{"role": "writing_agent", "error": err.Error()},
 			})
+			o.rollbackTask(task.ID, StatusWriting, prevStatus, "writing agent failed: "+err.Error())
 			return
 		}
 
@@ -225,6 +348,7 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 			o.AdvanceTask(context.Background(), task.ID, AdvanceTaskInput{
 				TargetStatus: StatusReview,
 				AssigneeType: AssigneeReviewAgent,
+				DecidedBy:    "system",
 			})
 		}
 
@@ -275,6 +399,8 @@ func (o *Orchestrator) runReviewAgent(ctx context.Context, task *Task) error {
 				TaskID:  task.ID,
 				Payload: map[string]interface{}{"role": "review_agent", "error": err.Error()},
 			})
+			// 审校失败回退到写作阶段
+			o.rollbackTask(task.ID, StatusReview, StatusWriting, "review agent failed: "+err.Error())
 			return
 		}
 
@@ -303,15 +429,17 @@ func (o *Orchestrator) runReviewAgent(ctx context.Context, task *Task) error {
 func (o *Orchestrator) handleReviewResult(ctx context.Context, task *Task, reviewArtifact *Artifact) {
 	// 解析审查报告内容
 	var report struct {
-		Passed   bool `json:"passed"`
+		Passed   bool   `json:"passed"`
 		Severity string `json:"severity"` // low | medium | high
 	}
 	if err := json.Unmarshal([]byte(reviewArtifact.Content), &report); err != nil {
 		slog.Warn("failed to parse review report", "error", err)
-		// 解析失败，默认退回写作
+		// 解析失败，退回写作
 		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
 			TargetStatus: StatusWriting,
 			AssigneeType: AssigneeWritingAgent,
+			DecidedBy:    "review_agent",
+			Rationale:    "审查报告解析失败，退回写作 Agent",
 		})
 		return
 	}
@@ -321,32 +449,63 @@ func (o *Orchestrator) handleReviewResult(ctx context.Context, task *Task, revie
 		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
 			TargetStatus: StatusPendingPublish,
 			AssigneeType: AssigneeHuman,
-		})
-		// 发射需要人类决策事件
-		o.emit(OrchestratorEvent{
-			Type:    "decision.required",
-			TaskID:  task.ID,
-			Payload: map[string]interface{}{"type": "publish", "message": "稿件审查通过，等待发布确认"},
+			DecidedBy:    "review_agent",
+			Rationale:    "审校通过，等待人类发布",
 		})
 	} else if report.Severity == "high" {
 		// 严重问题 → 升级到人类
 		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
 			TargetStatus: StatusPendingApproval,
 			AssigneeType: AssigneeHuman,
-		})
-		o.emit(OrchestratorEvent{
-			Type:    "decision.required",
-			TaskID:  task.ID,
-			Payload: map[string]interface{}{"type": "escalate", "message": "审查发现严重问题，需人工裁决"},
+			DecidedBy:    "review_agent",
+			Rationale:    "审查发现严重问题（severity=high），升级人工裁决",
 		})
 	} else {
 		// 一般问题 → 退回写作 Agent 修改
 		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
 			TargetStatus: StatusWriting,
 			AssigneeType: AssigneeWritingAgent,
-			Rationale:    "审查发现可修正问题，退回写作 Agent 修改",
+			DecidedBy:    "review_agent",
+			Rationale:    "审查发现可修正问题（severity=" + report.Severity + "），退回写作 Agent 修改",
 		})
 	}
+}
+
+// ─── 失败回退 ─────────────────────────────────────────────
+
+// rollbackTask 将任务从失败状态回退到上一个状态
+func (o *Orchestrator) rollbackTask(taskID string, fromStatus, toStatus TaskStatus, reason string) {
+	// 创建回退 Decision
+	_, err := o.store.CreateDecision(context.Background(), CreateDecisionInput{
+		Type:          DecisionEscalate,
+		DecidedBy:     "system",
+		DecidedByType: DecidedBySystem,
+		Status:        DecisionStatusEscalated,
+		Rationale:     reason,
+	}, taskID)
+	if err != nil {
+		slog.Error("failed to create rollback decision", "task_id", taskID, "error", err)
+	}
+
+	// 回退状态
+	if err := o.store.UpdateTaskStatus(context.Background(), taskID, toStatus, AssigneeHuman); err != nil {
+		slog.Error("failed to rollback task status", "task_id", taskID, "error", err)
+		return
+	}
+
+	o.emit(OrchestratorEvent{
+		Type:    "task.status_changed",
+		TaskID:  taskID,
+		Payload: map[string]interface{}{"from": fromStatus, "to": toStatus, "reason": "agent_failure"},
+	})
+	o.emit(OrchestratorEvent{
+		Type:    "decision.required",
+		TaskID:  taskID,
+		Payload: map[string]interface{}{"type": "escalate", "message": "Agent 执行失败，需要人工介入: " + reason},
+	})
+
+	slog.Warn("task rolled back due to agent failure",
+		"task_id", taskID, "from", fromStatus, "to", toStatus, "reason", reason)
 }
 
 // ─── 辅助 ─────────────────────────────────────────────────

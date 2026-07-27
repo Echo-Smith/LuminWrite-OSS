@@ -1,11 +1,17 @@
 /**
- * 编辑部任务看板 — 看板式协作界面
+ * 编辑部任务看板 — 协作工作台界面
  *
  * 左侧：任务列表（按状态分列）
- * 右侧：当前任务详情（交付物时间线 + 决策记录）
+ * 右侧：当前任务详情（交付物时间线 + 决策记录 + Agent 活动）
+ *
+ * 核心改进：
+ * - Artifact 可展开查看内容
+ * - WebSocket 事件驱动的实时刷新
+ * - Agent 活动/失败状态可视化
+ * - Decision 显示决策理由和证据链
  */
-import { useEffect, useState } from "react";
-import { useEditorialStore, type EditorialTask, type TaskStatus } from "@/stores/editorial-store";
+import { useEffect, useState, useRef } from "react";
+import { useEditorialStore, type EditorialTask, type TaskStatus, type Artifact, type Decision } from "@/stores/editorial-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,9 +28,16 @@ import {
   FileText,
   Plus,
   ChevronRight,
+  ChevronDown,
   Clock,
   Coins,
   Loader2,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  User,
+  Bot,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -57,13 +70,37 @@ const ASSIGNEE_LABELS: Record<string, string> = {
 };
 
 export function EditorialBoard() {
-  const { tasks, loading, fetchTasks, createTask, advanceTask } = useEditorialStore();
+  const { tasks, loading, fetchTasks, createTask, advanceTask, events } = useEditorialStore();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
   useEffect(() => {
     fetchTasks();
   }, [fetchTasks]);
+
+  // 定时刷新任务列表（作为 WebSocket 的补充，30 秒一次）
+  const refreshTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  useEffect(() => {
+    refreshTimer.current = setInterval(() => {
+      fetchTasks();
+    }, 30_000);
+    return () => {
+      if (refreshTimer.current) clearInterval(refreshTimer.current);
+    };
+  }, [fetchTasks]);
+
+  // 最近事件 toast
+  const [recentEvent, setRecentEvent] = useState<string | null>(null);
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    const msg = formatEventMessage(last.type, last.payload);
+    if (msg) {
+      setRecentEvent(msg);
+      const timer = setTimeout(() => setRecentEvent(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [events.length]);
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)]">
@@ -94,6 +131,14 @@ export function EditorialBoard() {
             />
           </Dialog>
         </div>
+
+        {/* 事件提示条 */}
+        {recentEvent && (
+          <div className="px-6 py-2 bg-blue-50 dark:bg-blue-950/30 border-b text-sm text-blue-700 dark:text-blue-300 flex items-center gap-2">
+            <Activity className="h-3.5 w-3.5 animate-pulse" />
+            {recentEvent}
+          </div>
+        )}
 
         {/* 看板列 */}
         <div className="flex gap-4 p-4 min-w-max">
@@ -138,7 +183,7 @@ export function EditorialBoard() {
 
       {/* ─── 右侧：任务详情 ─── */}
       {selectedTaskId && (
-        <div className="w-96 border-l overflow-y-auto">
+        <div className="w-[28rem] border-l overflow-y-auto">
           <TaskDetailPanel taskId={selectedTaskId} />
         </div>
       )}
@@ -163,12 +208,15 @@ function TaskCard({
     ? Math.min(100, (task.token_used / task.token_budget) * 100)
     : 0;
 
+  const isAgentWorking = ["research", "writing", "review"].includes(task.status);
+
   return (
     <div
       onClick={onClick}
       className={cn(
         "rounded-lg border bg-card p-3 cursor-pointer transition-all hover:shadow-md",
-        selected && "ring-2 ring-primary"
+        selected && "ring-2 ring-primary",
+        isAgentWorking && "border-blue-300 dark:border-blue-700"
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -185,13 +233,23 @@ function TaskCard({
       {/* 元数据 */}
       <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
-          <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+          {isAgentWorking ? (
+            <Bot className="h-3 w-3 text-blue-500" />
+          ) : (
+            <User className="h-3 w-3" />
+          )}
           {ASSIGNEE_LABELS[task.assignee_type] || task.assignee_type}
         </span>
         {task.deadline && (
           <span className="flex items-center gap-1">
             <Clock className="h-3 w-3" />
             {new Date(task.deadline).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}
+          </span>
+        )}
+        {isAgentWorking && (
+          <span className="flex items-center gap-1 text-blue-500">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            执行中
           </span>
         )}
       </div>
@@ -276,7 +334,7 @@ function AdvanceButton({
 // ─── 任务详情面板 ─────────────────────────────────────────
 
 function TaskDetailPanel({ taskId }: { taskId: string }) {
-  const { currentTask, artifacts, decisions, fetchTask, fetchArtifacts, fetchDecisions } =
+  const { currentTask, artifacts, decisions, events, fetchTask, fetchArtifacts, fetchDecisions, expandedArtifactIds, toggleArtifactExpand } =
     useEditorialStore();
 
   useEffect(() => {
@@ -293,6 +351,9 @@ function TaskDetailPanel({ taskId }: { taskId: string }) {
     );
   }
 
+  // 过滤当前任务的事件
+  const taskEvents = events.filter((e) => e.task_id === taskId);
+
   return (
     <div className="p-4 space-y-4">
       {/* 任务信息 */}
@@ -306,58 +367,37 @@ function TaskDetailPanel({ taskId }: { taskId: string }) {
           <Badge variant="outline">
             {ASSIGNEE_LABELS[currentTask.assignee_type] || currentTask.assignee_type}
           </Badge>
+          {currentTask.style_slug && (
+            <Badge variant="outline" className="text-xs">
+              {currentTask.style_slug}
+            </Badge>
+          )}
         </div>
       </div>
 
       {/* 验收标准 */}
       {currentTask.accept_criteria && (
-        <div>
-          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="rounded-lg bg-muted/50 p-3">
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">
             验收标准
           </h3>
-          <p className="mt-1 text-sm">{currentTask.accept_criteria}</p>
+          <p className="text-sm">{currentTask.accept_criteria}</p>
         </div>
       )}
 
       {/* 交付物时间线 */}
       <div>
-        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
           交付物 ({artifacts.length})
         </h3>
-        <div className="mt-2 space-y-2">
+        <div className="space-y-2">
           {artifacts.map((art) => (
-            <div
+            <ArtifactCard
               key={art.id}
-              className="rounded-lg border p-2 text-sm"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-medium">{ARTIFACT_LABELS[art.type] || art.type}</span>
-                <Badge
-                  variant={
-                    art.status === "approved" ? "default" :
-                    art.status === "rejected" ? "destructive" :
-                    art.status === "superseded" ? "secondary" : "outline"
-                  }
-                  className="text-xs"
-                >
-                  {ARTIFACT_STATUS_LABELS[art.status] || art.status}
-                </Badge>
-              </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <span>v{art.version}</span>
-                <span>·</span>
-                <span>{art.produced_by}</span>
-                {art.token_cost > 0 && (
-                  <>
-                    <span>·</span>
-                    <span className="flex items-center gap-0.5">
-                      <Coins className="h-3 w-3" />
-                      {art.token_cost}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
+              artifact={art}
+              expanded={expandedArtifactIds.has(art.id)}
+              onToggle={() => toggleArtifactExpand(art.id)}
+            />
           ))}
           {artifacts.length === 0 && (
             <p className="text-xs text-muted-foreground">暂无交付物</p>
@@ -367,38 +407,275 @@ function TaskDetailPanel({ taskId }: { taskId: string }) {
 
       {/* 决策记录 */}
       <div>
-        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
           决策记录 ({decisions.length})
         </h3>
-        <div className="mt-2 space-y-2">
+        <div className="space-y-2">
           {decisions.map((d) => (
-            <div key={d.id} className="rounded-lg border p-2 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="font-medium">{DECISION_LABELS[d.type] || d.type}</span>
-                <Badge
-                  variant={
-                    d.status === "approved" ? "default" :
-                    d.status === "rejected" ? "destructive" :
-                    d.status === "escalated" ? "destructive" : "outline"
-                  }
-                  className="text-xs"
-                >
-                  {d.status}
-                </Badge>
-              </div>
-              {d.rationale && (
-                <p className="mt-1 text-xs text-muted-foreground">{d.rationale}</p>
-              )}
-              <div className="mt-1 text-xs text-muted-foreground">
-                {d.decided_by_type} · {new Date(d.created_at).toLocaleString("zh-CN")}
-              </div>
-            </div>
+            <DecisionCard key={d.id} decision={d} />
           ))}
           {decisions.length === 0 && (
             <p className="text-xs text-muted-foreground">暂无决策记录</p>
           )}
         </div>
       </div>
+
+      {/* Agent 活动日志 */}
+      {taskEvents.length > 0 && (
+        <div>
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+            Agent 活动 ({taskEvents.length})
+          </h3>
+          <div className="space-y-1">
+            {taskEvents.slice(-10).reverse().map((evt, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                {getEventIcon(evt.type)}
+                <span>{formatEventMessage(evt.type, evt.payload)}</span>
+                <span className="ml-auto text-[10px]">
+                  {new Date(evt.timestamp).toLocaleTimeString("zh-CN")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 交付物卡片（可展开） ─────────────────────────────────
+
+function ArtifactCard({
+  artifact,
+  expanded,
+  onToggle,
+}: {
+  artifact: Artifact;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rounded-lg border overflow-hidden">
+      {/* 头部 */}
+      <div
+        onClick={onToggle}
+        className="flex items-center justify-between p-2 cursor-pointer hover:bg-muted/50 transition-colors"
+      >
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          )}
+          <span className="text-sm font-medium truncate">
+            {ARTIFACT_LABELS[artifact.type] || artifact.type}
+          </span>
+          <Badge variant="outline" className="text-xs shrink-0">
+            v{artifact.version}
+          </Badge>
+        </div>
+        <Badge
+          variant={
+            artifact.status === "approved" ? "default" :
+            artifact.status === "rejected" ? "destructive" :
+            artifact.status === "superseded" ? "secondary" : "outline"
+          }
+          className="text-xs shrink-0"
+        >
+          {ARTIFACT_STATUS_LABELS[artifact.status] || artifact.status}
+        </Badge>
+      </div>
+
+      {/* 元数据行 */}
+      <div className="px-2 pb-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="flex items-center gap-0.5">
+          {artifact.produced_by === "human" ? (
+            <User className="h-3 w-3" />
+          ) : (
+            <Bot className="h-3 w-3" />
+          )}
+          {artifact.produced_by}
+        </span>
+        {artifact.token_cost > 0 && (
+          <>
+            <span>·</span>
+            <span className="flex items-center gap-0.5">
+              <Coins className="h-3 w-3" />
+              {artifact.token_cost}
+            </span>
+          </>
+        )}
+        {artifact.reviewed_by && (
+          <>
+            <span>·</span>
+            <span>审阅: {artifact.reviewed_by}</span>
+          </>
+        )}
+      </div>
+
+      {/* 展开内容 */}
+      {expanded && (
+        <div className="border-t bg-muted/20 p-3">
+          {artifact.content ? (
+            <ArtifactContent content={artifact.content} type={artifact.type} />
+          ) : (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              加载内容中...
+            </div>
+          )}
+          {artifact.review_note && (
+            <div className="mt-2 rounded bg-amber-50 dark:bg-amber-950/30 p-2 text-xs">
+              <span className="font-medium">审阅意见: </span>
+              {artifact.review_note}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 交付物内容渲染 ───────────────────────────────────────
+
+function ArtifactContent({ content, type }: { content: string; type: string }) {
+  // 尝试解析 JSON 并格式化展示
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    // 不是 JSON，按纯文本展示
+  }
+
+  if (parsed && typeof parsed === "object") {
+    // 根据类型特殊渲染
+    if (type === "review_report" && parsed && typeof parsed === "object") {
+      const report = parsed as { passed?: boolean; severity?: string; issues?: Array<{ problem?: string; evidence?: string; suggestion?: string }> };
+      return (
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            {report.passed ? (
+              <Badge className="bg-green-500"><CheckCircle2 className="h-3 w-3 mr-1" />通过</Badge>
+            ) : (
+              <Badge variant="destructive"><XCircle className="h-3 w-3 mr-1" />未通过</Badge>
+            )}
+            {report.severity && (
+              <Badge variant={report.severity === "high" ? "destructive" : "secondary"}>
+                严重度: {report.severity}
+              </Badge>
+            )}
+          </div>
+          {report.issues && report.issues.length > 0 && (
+            <div className="space-y-2">
+              {report.issues.map((issue, i) => (
+                <div key={i} className="rounded border p-2 text-xs">
+                  {issue.problem && <p className="font-medium">问题: {issue.problem}</p>}
+                  {issue.evidence && <p className="text-muted-foreground mt-1">证据: {issue.evidence}</p>}
+                  {issue.suggestion && <p className="text-blue-600 dark:text-blue-400 mt-1">建议: {issue.suggestion}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "source_pack" && Array.isArray(parsed)) {
+      return (
+        <div className="space-y-1">
+          {(parsed as Array<{ url?: string; title?: string; credibility?: string }>).map((src, i) => (
+            <div key={i} className="rounded border p-2 text-xs">
+              {src.title && <p className="font-medium">{src.title}</p>}
+              {src.url && <a href={src.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline truncate block">{src.url}</a>}
+              {src.credibility && <Badge variant="outline" className="mt-1 text-xs">可信度: {src.credibility}</Badge>}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (type === "fact_claims" && Array.isArray(parsed)) {
+      return (
+        <div className="space-y-1">
+          {(parsed as Array<{ claim?: string; source?: string; verified?: boolean }>).map((claim, i) => (
+            <div key={i} className="rounded border p-2 text-xs">
+              <div className="flex items-center gap-2">
+                {claim.verified ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />
+                ) : (
+                  <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />
+                )}
+                <span className="font-medium">{claim.claim}</span>
+              </div>
+              {claim.source && <p className="text-muted-foreground mt-1 ml-5">来源: {claim.source}</p>}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // 通用 JSON 展示
+    return (
+      <pre className="text-xs overflow-x-auto whitespace-pre-wrap break-all max-h-96">
+        {JSON.stringify(parsed, null, 2)}
+      </pre>
+    );
+  }
+
+  // 纯文本内容（如文章初稿）
+  return (
+    <div className="text-sm whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
+      {content}
+    </div>
+  );
+}
+
+// ─── 决策卡片 ─────────────────────────────────────────────
+
+function DecisionCard({ decision }: { decision: Decision }) {
+  const isApproved = decision.status === "approved";
+  const isRejected = decision.status === "rejected";
+  const isEscalated = decision.status === "escalated";
+
+  return (
+    <div className="rounded-lg border p-2 text-sm">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">{DECISION_LABELS[decision.type] || decision.type}</span>
+        <Badge
+          variant={
+            isApproved ? "default" :
+            isRejected ? "destructive" :
+            isEscalated ? "destructive" : "outline"
+          }
+          className="text-xs"
+        >
+          {isApproved && <CheckCircle2 className="h-3 w-3 mr-1" />}
+          {isRejected && <XCircle className="h-3 w-3 mr-1" />}
+          {isEscalated && <AlertTriangle className="h-3 w-3 mr-1" />}
+          {decision.status}
+        </Badge>
+      </div>
+      {decision.rationale && (
+        <p className="mt-1 text-xs text-muted-foreground">{decision.rationale}</p>
+      )}
+      <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="flex items-center gap-0.5">
+          {decision.decided_by_type === "human" ? (
+            <User className="h-3 w-3" />
+          ) : (
+            <Bot className="h-3 w-3" />
+          )}
+          {decision.decided_by_type}
+        </span>
+        <span>·</span>
+        <span>{new Date(decision.created_at).toLocaleString("zh-CN")}</span>
+      </div>
+      {decision.evidence && (
+        <div className="mt-1 rounded bg-muted/50 p-1.5 text-xs">
+          <span className="font-medium">证据: </span>
+          {decision.evidence}
+        </div>
+      )}
     </div>
   );
 }
@@ -483,6 +760,72 @@ function CreateTaskDialog({
       </div>
     </DialogContent>
   );
+}
+
+// ─── 辅助函数 ─────────────────────────────────────────────
+
+function formatEventMessage(type: string, payload: Record<string, unknown>): string | null {
+  switch (type) {
+    case "task.status_changed": {
+      const from = payload.from as string;
+      const to = payload.to as string;
+      const reason = payload.reason as string | undefined;
+      if (reason === "agent_failure") {
+        return `⚠️ 任务从 ${STATUS_LABELS[from] || from} 回退到 ${STATUS_LABELS[to] || to}（Agent 失败）`;
+      }
+      return `任务状态变更: ${STATUS_LABELS[from] || from} → ${STATUS_LABELS[to] || to}`;
+    }
+    case "agent.started": {
+      const role = payload.role as string;
+      return `${ASSIGNEE_LABELS[role] || role} 开始执行...`;
+    }
+    case "agent.completed": {
+      const role = payload.role as string;
+      return `${ASSIGNEE_LABELS[role] || role} 执行完成`;
+    }
+    case "agent.failed": {
+      const role = payload.role as string;
+      const error = payload.error as string;
+      return `❌ ${ASSIGNEE_LABELS[role] || role} 执行失败: ${error}`;
+    }
+    case "artifact.produced": {
+      const role = payload.role as string;
+      const artType = payload.artifact_type as string;
+      return `${ASSIGNEE_LABELS[role] || role} 产出 ${ARTIFACT_LABELS[artType] || artType}`;
+    }
+    case "decision.created": {
+      const decType = payload.type as string;
+      const by = payload.by as string;
+      return `决策记录: ${DECISION_LABELS[decType] || decType}（由 ${ASSIGNEE_LABELS[by] || by} 创建）`;
+    }
+    case "decision.required": {
+      const msg = payload.message as string;
+      return `🔔 需要人工决策: ${msg}`;
+    }
+    default:
+      return null;
+  }
+}
+
+function getEventIcon(type: string) {
+  switch (type) {
+    case "agent.started":
+      return <Bot className="h-3 w-3 text-blue-500" />;
+    case "agent.completed":
+      return <CheckCircle2 className="h-3 w-3 text-green-500" />;
+    case "agent.failed":
+      return <XCircle className="h-3 w-3 text-red-500" />;
+    case "artifact.produced":
+      return <FileText className="h-3 w-3 text-indigo-500" />;
+    case "decision.required":
+      return <AlertTriangle className="h-3 w-3 text-amber-500" />;
+    case "decision.created":
+      return <CheckCircle2 className="h-3 w-3 text-purple-500" />;
+    case "task.status_changed":
+      return <ChevronRight className="h-3 w-3 text-muted-foreground" />;
+    default:
+      return <Activity className="h-3 w-3 text-muted-foreground" />;
+  }
 }
 
 // ─── 常量 ─────────────────────────────────────────────────

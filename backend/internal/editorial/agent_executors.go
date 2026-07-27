@@ -211,7 +211,7 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	if report := ac.GetArtifact(ArtifactReviewReport); report != nil {
 		hasReviewReport = true
 		// 将审查报告作为用户材料注入
-		execCtx.UserMaterials = report.Content
+		execCtx.UserMaterials = []string{report.Content}
 	}
 
 	// 修改场景：注入上一版稿件作为基础文本，避免"重新写一篇"
@@ -353,10 +353,12 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 
 	// 注入信源包和事实声明（用于事实核查）
 	if sourcePack := ac.GetArtifact(ArtifactSourcePack); sourcePack != nil {
-		// 将信源包内容解析为 SearchResults
-		var sources []engine.SearchResult
-		if err := json.Unmarshal([]byte(sourcePack.Content), &sources); err == nil {
-			execCtx.SearchResults = sources
+		// 信源包格式为 {"sources": [...], "count": N}
+		var sourceData struct {
+			Sources []engine.SearchResult `json:"sources"`
+		}
+		if err := json.Unmarshal([]byte(sourcePack.Content), &sourceData); err == nil {
+			execCtx.SearchResults = sourceData.Sources
 		}
 	}
 

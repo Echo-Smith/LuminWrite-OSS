@@ -58,7 +58,8 @@ export type WSServerMessageType =
   | "agent.error"
   | "agent.cancelled"
   | "session.resumed"
-  | "memory.used";
+  | "memory.used"
+  | "editorial.event";
 
 export interface WSClientMessage {
   type: WSClientMessageType;
