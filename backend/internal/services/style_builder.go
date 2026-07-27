@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
@@ -14,24 +17,24 @@ import (
 
 // StyleBuilderMessage represents one turn in the style builder conversation.
 type StyleBuilderMessage struct {
-	Role    string `json:"role"`    // user | assistant
+	Role    string `json:"role"` // user | assistant
 	Content string `json:"content"`
 }
 
 // StyleBuilderSession holds the state of an AI style creation conversation.
 type StyleBuilderSession struct {
-	ID        string                 `json:"id"`
-	UserID    string                 `json:"user_id"`
-	Messages  []StyleBuilderMessage  `json:"messages"`
-	Profile   *profile.StyleProfile  `json:"profile,omitempty"` // generated config (nil until ready)
-	Ready     bool                   `json:"ready"`             // true when AI thinks the profile is complete
+	ID       string                `json:"id"`
+	UserID   string                `json:"user_id"`
+	Messages []StyleBuilderMessage `json:"messages"`
+	Profile  *profile.StyleProfile `json:"profile,omitempty"` // generated config (nil until ready)
+	Ready    bool                  `json:"ready"`             // true when AI thinks the profile is complete
 }
 
 // StyleBuilderResponse is returned after each message.
 type StyleBuilderResponse struct {
-	Message   string                `json:"message"`    // AI's reply text
-	Ready     bool                  `json:"ready"`      // true when profile is complete
-	Profile   *profile.StyleProfile `json:"profile,omitempty"` // present when ready=true
+	Message string                `json:"message"`             // AI's reply text
+	Ready   bool                  `json:"ready"`               // true when profile is complete
+	Profile *profile.StyleProfile `json:"profile,omitempty"`   // present when ready=true
 }
 
 // ─── Service ─────────────────────────────────────────────
@@ -53,7 +56,7 @@ func NewStyleBuilderService(llm *tools.LLMClient) *StyleBuilderService {
 
 // CreateSession starts a new style builder conversation.
 func (s *StyleBuilderService) CreateSession(userID string) *StyleBuilderSession {
-	sessionID := fmt.Sprintf("sb_%s_%d", userID[:8], len(s.sessions))
+	sessionID := fmt.Sprintf("sb_%d_%s", time.Now().UnixNano(), uuid.NewString()[:8])
 	session := &StyleBuilderSession{
 		ID:       sessionID,
 		UserID:   userID,
@@ -83,12 +86,9 @@ func (s *StyleBuilderService) SendMessage(ctx context.Context, sessionID, userMe
 		Content: userMessage,
 	})
 
-	// Build system prompt
-	systemPrompt := buildStyleBuilderSystemPrompt()
-
 	// Build conversation messages for LLM
 	llmMessages := []tools.LLMMessage{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: styleBuilderSystemPrompt},
 	}
 	for _, msg := range session.Messages {
 		llmMessages = append(llmMessages, tools.LLMMessage{
@@ -113,9 +113,7 @@ func (s *StyleBuilderService) SendMessage(ctx context.Context, sessionID, userMe
 		if err := json.Unmarshal([]byte(jsonStr), &p); err == nil && p.Slug != "" && p.SystemPrompt != "" {
 			styleProfile = &p
 			ready = true
-
-			// Clean the reply: remove the JSON block, keep only the conversational text
-			reply = stripJSONBlock(reply)
+			reply = stripTrailingJSON(reply)
 		}
 	}
 
@@ -154,8 +152,27 @@ func (s *StyleBuilderService) DeleteSession(sessionID string) {
 
 // ─── Helpers ─────────────────────────────────────────────
 
-func buildStyleBuilderSystemPrompt() string {
-	return `你是一个专业的写作风格配置助手。你的任务是通过多轮对话帮助用户创建自定义写作风格。
+// stripTrailingJSON removes the last balanced JSON object from text,
+// keeping only the conversational prefix. Returns the original text
+// if no balanced JSON block is found.
+func stripTrailingJSON(text string) string {
+	depth := 0
+	for i := len(text) - 1; i >= 0; i-- {
+		switch text[i] {
+		case '}':
+			depth++
+		case '{':
+			depth--
+			if depth == 0 {
+				return strings.TrimRight(text[:i], " \n\r\t")
+			}
+		}
+	}
+	return text
+}
+
+// styleBuilderSystemPrompt is the system prompt for the AI style builder.
+const styleBuilderSystemPrompt = `你是一个专业的写作风格配置助手。你的任务是通过多轮对话帮助用户创建自定义写作风格。
 
 ## 工作流程
 1. 用户描述他们想要的写作风格
@@ -228,40 +245,3 @@ func buildStyleBuilderSystemPrompt() string {
 - slug 必须是英文，仅小写字母和下划线
 - system_prompt 是最关键字段，需详细定义写作角色、语言风格、结构要求和输出格式
 - 不要在 JSON 外输出多余内容`
-}
-
-func stripJSONBlock(text string) string {
-	// Remove the last JSON object from the text
-	start := -1
-	depth := 0
-	for i := len(text) - 1; i >= 0; i-- {
-		if text[i] == '}' {
-			depth++
-			if start == -1 {
-				start = i
-			}
-		} else if text[i] == '{' {
-			depth--
-			if depth == 0 {
-				// Found the complete JSON block, remove it
-				before := text[:i]
-				// Trim trailing whitespace
-				return trimTrailingWhitespace(before)
-			}
-		}
-	}
-	return text
-}
-
-func trimTrailingWhitespace(s string) string {
-	end := len(s)
-	for end > 0 {
-		c := s[end-1]
-		if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
-			end--
-		} else {
-			break
-		}
-	}
-	return s[:end]
-}

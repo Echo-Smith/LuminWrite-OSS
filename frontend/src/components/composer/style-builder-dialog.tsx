@@ -2,11 +2,10 @@
  * AI 风格创建对话框 — 多轮对话生成自定义写作风格
  */
 import { useState, useRef, useEffect } from "react";
-import { Sparkles, Send, Loader2, Check, X } from "lucide-react";
+import { Sparkles, Send, Loader2, Check } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useAuthStore } from "@/stores/auth-store";
 
@@ -31,6 +30,7 @@ export function StyleBuilderDialog({ open, onOpenChange, onCreated }: StyleBuild
   const scrollRef = useRef<HTMLDivElement>(null);
   const token = useAuthStore((s) => s.token);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- createSession is stable enough; depends on open only
   useEffect(() => {
     if (open && !sessionId) {
       createSession();
@@ -41,6 +41,7 @@ export function StyleBuilderDialog({ open, onOpenChange, onCreated }: StyleBuild
       setInput("");
       setReady(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
