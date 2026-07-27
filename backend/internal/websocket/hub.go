@@ -184,3 +184,12 @@ func (h *Hub) SendToTraceDirect(traceID string, msg *ServerMessage) bool {
 	}
 	return client.SendDirect(msg) == nil
 }
+
+// Broadcast sends a message to all connected clients.
+func (h *Hub) Broadcast(msg *ServerMessage) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, client := range h.clients {
+		client.Send(msg)
+	}
+}

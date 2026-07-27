@@ -25,6 +25,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
@@ -59,6 +60,8 @@ type Server struct {
 	memorySvc     *memsvc.Service
 	mcpRegistry   *mcp.Registry
 	toolRegistry  *engine.ToolRegistry
+	editorialSvc  *editorial.Service
+	editorialHdlr *editorial.Handlers
 }
 
 // New creates a new Server.
@@ -252,6 +255,28 @@ func New(cfg *config.Config) *Server {
 		mcpRegistry:   mcpRegistry,
 		toolRegistry:  toolRegistry,
 	}
+
+	// ── Editorial system initialization ──
+	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
+		edStore := editorial.NewStore(adminRepo.DB())
+		edEmitter := &editorialWSEmitter{hub: s.hub}
+		edSvc := editorial.NewService(edStore, edEmitter)
+
+		// Register Agent executors (adapt V2 Steps to editorial AgentExecutor)
+		if llm != nil {
+			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(llm, searchClient, embeddingClient, edStore))
+			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
+				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(llm, defaultProfile, searchClient, edStore))
+				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(llm, defaultProfile, searchClient, edStore))
+			}
+		}
+
+		s.editorialSvc = edSvc
+		s.editorialHdlr = editorial.NewHandlers(edSvc)
+		slog.Info("editorial system initialized")
+	} else {
+		slog.Warn("editorial system disabled — database not available")
+	}
 }
 
 // Router returns the HTTP router with all routes registered.
@@ -343,6 +368,11 @@ r.Get("/evaluation/runs/{id}/export/{format}", s.handleExportEvalRun)
 		r.Get("/sse/topics", s.handleSSETopics)
 		r.Get("/topics/stream", s.handleSSETopics) // alias per docs/03-api-specification.md
 		r.Get("/sse/stats", s.handleSSEStats)
+
+		// Editorial (编辑部系统)
+		if s.editorialHdlr != nil {
+			s.editorialHdlr.RegisterRoutes(r)
+		}
 
 // Auth (JWT)
 r.Post("/auth/login", s.handleLogin)
