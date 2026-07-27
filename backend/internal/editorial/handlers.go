@@ -166,23 +166,20 @@ func (h *Handlers) handleAdvanceTask(w http.ResponseWriter, r *http.Request) {
 		input.DecidedBy = userIDFromContext(r.Context())
 	}
 
-	// 所有权检查：非 admin 只能操作自己的任务
-	userID := userIDFromContext(r.Context())
+	// 授权检查
+	userOK := userIDFromContext(r.Context())
 	isAdmin := isAdminFromContext(r.Context())
-	if !isAdmin {
-		task, err := h.svc.GetTask(r.Context(), taskID)
-		if err != nil {
-			if err == ErrTaskNotFound {
-				response.Err(w, http.StatusNotFound, "not_found", "task not found")
-				return
-			}
-			response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if err := h.svc.authorizeTask(r.Context(), taskID, userOK, isAdmin); err != nil {
+		if err == ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "task not found")
 			return
 		}
-		if task.OwnerID != userID {
+		if err == ErrForbidden {
 			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
 			return
 		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	if err := h.svc.AdvanceTask(r.Context(), taskID, input); err != nil {
@@ -210,6 +207,22 @@ func (h *Handlers) handleSubmitArtifact(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 授权检查
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeTask(r.Context(), taskID, userOK, isAdmin); err != nil {
+		if err == ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "task not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	art, err := h.svc.SubmitArtifact(r.Context(), taskID, input)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -220,6 +233,23 @@ func (h *Handlers) handleSubmitArtifact(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handlers) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	artID := chi.URLParam(r, "id")
+
+	// 授权检查：通过 artifactID 反查 taskID
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeArtifact(r.Context(), artID, userOK, isAdmin); err != nil {
+		if err == ErrArtifactNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "artifact not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	art, err := h.svc.GetArtifact(r.Context(), artID)
 	if err != nil {
 		if err == ErrArtifactNotFound {
@@ -234,6 +264,23 @@ func (h *Handlers) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
+
+	// 授权检查
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeTask(r.Context(), taskID, userOK, isAdmin); err != nil {
+		if err == ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "task not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	artifacts, err := h.svc.ListArtifacts(r.Context(), taskID)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -250,8 +297,23 @@ func (h *Handlers) handleReviewArtifact(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	userID := userIDFromContext(r.Context())
-	input.ReviewerID = userID
+	// 授权检查：通过 artifactID 反查 taskID
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeArtifact(r.Context(), artID, userOK, isAdmin); err != nil {
+		if err == ErrArtifactNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "artifact not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	input.ReviewerID = userOK
 
 	art, err := h.svc.ReviewArtifact(r.Context(), artID, input)
 	if err != nil {
@@ -275,9 +337,24 @@ func (h *Handlers) handleCreateDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	userID := userIDFromContext(r.Context())
+	// 授权检查
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeTask(r.Context(), taskID, userOK, isAdmin); err != nil {
+		if err == ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "task not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	if input.DecidedBy == "" {
-		input.DecidedBy = userID
+		input.DecidedBy = userOK
 	}
 	if input.DecidedByType == "" {
 		input.DecidedByType = DecidedByHuman
@@ -293,6 +370,23 @@ func (h *Handlers) handleCreateDecision(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handlers) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
+
+	// 授权检查
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeTask(r.Context(), taskID, userOK, isAdmin); err != nil {
+		if err == ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "task not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	decisions, err := h.svc.ListDecisions(r.Context(), taskID)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -332,7 +426,22 @@ func (h *Handlers) handleResolveDecision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 授权检查：通过 decisionID 反查 taskID
 	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeDecision(r.Context(), decisionID, userOK, isAdmin); err != nil {
+		if err == ErrDecisionNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "decision not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	d, err := h.svc.ResolveDecision(r.Context(), decisionID, input, userOK)
 	if err != nil {
 		if err == ErrDecisionNotFound {
@@ -357,6 +466,23 @@ func (h *Handlers) handleResolveDecision(w http.ResponseWriter, r *http.Request)
 
 func (h *Handlers) handleGetDecisionPacket(w http.ResponseWriter, r *http.Request) {
 	decisionID := chi.URLParam(r, "id")
+
+	// 授权检查：通过 decisionID 反查 taskID
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeDecision(r.Context(), decisionID, userOK, isAdmin); err != nil {
+		if err == ErrDecisionNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "decision not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	packet, err := h.svc.BuildDecisionPacket(r.Context(), decisionID)
 	if err != nil {
 		if err == ErrDecisionNotFound {
@@ -373,6 +499,23 @@ func (h *Handlers) handleGetDecisionPacket(w http.ResponseWriter, r *http.Reques
 
 func (h *Handlers) handleListAgentEvents(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
+
+	// 授权检查
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeTask(r.Context(), taskID, userOK, isAdmin); err != nil {
+		if err == ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "task not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	events, err := h.svc.Store().ListAgentRunEvents(r.Context(), taskID)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -523,6 +666,23 @@ func (h *Handlers) handleListAgentReputation(w http.ResponseWriter, r *http.Requ
 
 func (h *Handlers) handleListArtifactVersions(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	// 授权检查：通过 artifactID 反查 taskID
+	userOK := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if err := h.svc.authorizeArtifact(r.Context(), id, userOK, isAdmin); err != nil {
+		if err == ErrArtifactNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "artifact not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	art, err := h.svc.GetArtifact(r.Context(), id)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())

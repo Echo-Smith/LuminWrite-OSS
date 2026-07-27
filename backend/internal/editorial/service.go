@@ -32,6 +32,49 @@ func (s *Service) Store() *Store {
 	return s.store
 }
 
+// ─── 授权检查 ─────────────────────────────────────────────
+
+// authorizeTask 检查用户是否有权访问指定任务。
+// admin 用户可以访问任何任务；非 admin 用户只能访问自己创建的任务。
+// 返回 nil 表示授权通过，返回 ErrForbidden 表示无权访问。
+func (s *Service) authorizeTask(ctx context.Context, taskID, userID string, isAdmin bool) error {
+	if isAdmin {
+		return nil
+	}
+	task, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return err // ErrTaskNotFound or other DB error
+	}
+	if task.OwnerID != userID {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// authorizeArtifact 通过 artifactID 反查 taskID，再检查任务所有权。
+func (s *Service) authorizeArtifact(ctx context.Context, artifactID, userID string, isAdmin bool) error {
+	if isAdmin {
+		return nil
+	}
+	taskID, err := s.store.GetTaskIDForArtifact(ctx, artifactID)
+	if err != nil {
+		return err // ErrArtifactNotFound
+	}
+	return s.authorizeTask(ctx, taskID, userID, false)
+}
+
+// authorizeDecision 通过 decisionID 反查 taskID，再检查任务所有权。
+func (s *Service) authorizeDecision(ctx context.Context, decisionID, userID string, isAdmin bool) error {
+	if isAdmin {
+		return nil
+	}
+	taskID, err := s.store.GetTaskIDForDecision(ctx, decisionID)
+	if err != nil {
+		return err // ErrDecisionNotFound
+	}
+	return s.authorizeTask(ctx, taskID, userID, false)
+}
+
 // ─── 任务操作 ─────────────────────────────────────────────
 
 // CreateTask 创建任务

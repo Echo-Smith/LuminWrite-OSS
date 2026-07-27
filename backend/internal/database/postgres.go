@@ -42,67 +42,13 @@ func NewPostgres(url string, maxOpen, maxIdle int) (*DB, error) {
 	return &DB{db}, nil
 }
 
-// Migrate runs all SQL migration files in order.
+// Migrate runs all pending SQL migrations using the new migration engine.
+// Migrations are auto-discovered from the embedded migrations/ directory,
+// tracked in a schema_migrations table, and each runs in its own transaction.
 func Migrate(db *DB) error {
-	migrations := []string{
-		"001_extensions",
-		"002_style_profiles",
-		"003_users_topics",
-		"004_agent_traces",
-		"005_knowledge_base",
-		"006_feedback_eval",
-		"007_sensitive_words_upgrade",
-		"008_admin_tables",
-		"009_reputation_workbuddy",
-		"010_embedding",
-		"011_evaluation_seed",
-		"012_passkey",
-		"013_users_password",
-		"014_api_key_hash",
-		"015_user_memories",
-		"016_user_session_delete",
-		"017_model_api_key",
-		"018_evaluation_seed_supplement",
-		"019_admin_user_uuid",
-		"020_article_title",
-		"021_topic_favorites_trends",
-		"022_topic_unique_title_platform",
-		"023_topic_recommendations",
-		"024_update_model_names",
-		"025_v4_context_window",
-		"026_model_api_key_inline",
-		"027_reasoning_content",
-		"028_conversation_messages",
-		"029_memory_entities_relations",
-		"030_working_summaries",
-		"031_editorial_tasks",
-		"032_editorial_artifacts",
-		"033_editorial_decisions",
-		"034_editorial_memory",
-		"035_editorial_experiments",
-		"036_fix_actor_types",
-		"037_decision_actor_model",
-		"038_agent_run_events",
-		"039_knowledge_fingerprint",
-		"040_fix_lease_constraint",
-	}
-
-	for _, name := range migrations {
-		sqlBytes, err := migrationFS.ReadFile("migrations/" + name + ".up.sql")
-		if err != nil {
-			slog.Warn("failed to read migration file", "name", name, "error", err)
-			continue
-		}
-		if _, err := db.Exec(string(sqlBytes)); err != nil {
-			slog.Warn("failed to execute migration", "name", name, "error", err)
-			// Continue — tables may already exist
-		} else {
-			slog.Info("migration completed", "name", name)
-		}
-	}
-
-	slog.Info("all migrations completed")
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return MigrateDB(ctx, db, migrationFS)
 }
 
 // IsAvailable checks if the database is reachable.

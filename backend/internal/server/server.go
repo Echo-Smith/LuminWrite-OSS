@@ -65,7 +65,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config) *Server {
+func New(cfg *config.Config) (*Server, error) {
 	var llm *tools.LLMClient
 	if cfg.DeepSeek.APIKey != "" {
 		llm = tools.NewLLMClient(
@@ -140,7 +140,8 @@ func New(cfg *config.Config) *Server {
 		}
 		kbRepo = database.NewKnowledgeBaseRepo(db, embeddingClient)
 		if err := database.Migrate(db); err != nil {
-			slog.Warn("database migration failed", "error", err)
+			slog.Error("database migration failed — refusing to start with incomplete schema", "error", err)
+			return nil, fmt.Errorf("database migration failed: %w", err)
 		}
 	}
 
@@ -290,7 +291,7 @@ func New(cfg *config.Config) *Server {
 		slog.Warn("editorial system disabled — database not available")
 	}
 
-	return s
+	return s, nil
 }
 
 // Router returns the HTTP router with all routes registered.

@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS editorial_agent_leases (
     acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expired_at  TIMESTAMPTZ NOT NULL,
     released_at TIMESTAMPTZ,
-    metadata    JSONB DEFAULT '{}',
+    metadata    JSONB DEFAULT '{}'
 
     -- Note: Do NOT add a regular UNIQUE constraint on (task_id, agent_role) here.
     -- The partial unique index below (WHERE status = 'active') is the correct approach,

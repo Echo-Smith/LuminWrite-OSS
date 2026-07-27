@@ -687,6 +687,137 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 	return dPtr, nextStatus, nil
 }
 
+// AdvanceTaskTxParams holds parameters for the transactional task advancement.
+type AdvanceTaskTxParams struct {
+	TaskID         string
+	TargetStatus   TaskStatus
+	Actor          Actor
+	DecisionType   DecisionType
+	DecisionStatus DecisionStatus
+	DecidedBy      string
+	DecidedByType  DecidedByType
+	Rationale      string
+	ApproveTarget  TaskStatus
+	RejectTarget   TaskStatus
+	Assignee       AssigneeType // optional; if empty, defaults to defaultAssignee(TargetStatus)
+}
+
+// AdvanceTaskTx atomically creates a Decision and updates the task status
+// in a single transaction. If either step fails, the entire operation rolls back.
+// This prevents "half-baked" records where a Decision exists but the task
+// status was never updated.
+func (s *Store) AdvanceTaskTx(ctx context.Context, params AdvanceTaskTxParams) (*Decision, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Lock the task row and verify the transition is legal
+	var currentStatus TaskStatus
+	err = tx.QueryRowContext(ctx, `
+		SELECT status FROM editorial_tasks WHERE id = $1 FOR UPDATE
+	`, params.TaskID).Scan(&currentStatus)
+	if err == sql.ErrNoRows {
+		return nil, ErrTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock task in tx: %w", err)
+	}
+	if !currentStatus.CanTransitionTo(params.TargetStatus) {
+		return nil, fmt.Errorf("%w: %s → %s", ErrInvalidTransition, currentStatus, params.TargetStatus)
+	}
+
+	// 2. Create the Decision within the transaction
+	actor := params.Actor
+	if actor.Label == "" {
+		actor.Label = actor.UserID
+		if actor.Label == "" {
+			actor.Label = actor.Role
+		}
+		if actor.Label == "" {
+			actor.Label = string(actor.Type)
+		}
+	}
+
+	var actorUserID interface{}
+	if actor.UserID != "" {
+		actorUserID = actor.UserID
+	} else {
+		actorUserID = nil
+	}
+
+	var approveTarget, rejectTarget interface{}
+	if params.ApproveTarget != "" {
+		approveTarget = string(params.ApproveTarget)
+	} else {
+		approveTarget = nil
+	}
+	if params.RejectTarget != "" {
+		rejectTarget = string(params.RejectTarget)
+	} else {
+		rejectTarget = nil
+	}
+
+	var decidedBy sql.NullString
+	if params.DecidedBy != "" {
+		decidedBy.Valid = true
+		decidedBy.String = params.DecidedBy
+	} else if actor.UserID != "" {
+		decidedBy.Valid = true
+		decidedBy.String = actor.UserID
+	} else if actor.Role != "" {
+		decidedBy.Valid = true
+		decidedBy.String = actor.Role
+	}
+
+	var decidedAt interface{}
+	if params.DecisionStatus != DecisionStatusPending {
+		decidedAt = time.Now()
+	} else {
+		decidedAt = nil
+	}
+
+	var d Decision
+	rawRow := tx.QueryRowContext(ctx, `
+		INSERT INTO editorial_decisions (
+			task_id, type,
+			actor_type, actor_user_id, actor_role, actor_label,
+			approve_target_status, reject_target_status,
+			status, rationale, evidence, artifact_id, decided_at,
+			decided_by, decided_by_type
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14)
+		RETURNING `+decisionScanColumns,
+		params.TaskID, params.DecisionType,
+		actor.Type, actorUserID, actor.Role, actor.Label,
+		approveTarget, rejectTarget,
+		params.DecisionStatus, params.Rationale, "", decidedAt,
+		decidedBy, params.DecidedByType,
+	)
+	if err := scanDecision(rawRow, &d); err != nil {
+		return nil, fmt.Errorf("create decision in tx: %w", err)
+	}
+
+	// 3. Update the task status within the same transaction
+	assignee := params.Assignee
+	if assignee == "" {
+		assignee = defaultAssignee(params.TargetStatus)
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+	`, params.TaskID, params.TargetStatus, assignee)
+	if err != nil {
+		return nil, fmt.Errorf("update task status in tx: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit advance task tx: %w", err)
+	}
+
+	return &d, nil
+}
+
 // ─── TransitionTask (P0-2: 单一事务化入口) ──────────────
 
 // TransitionTask is the single entry point for all task status transitions.
@@ -872,6 +1003,40 @@ func (s *Store) HasActiveLease(ctx context.Context, taskID string, role AgentRol
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// ─── Sub-resource ownership resolution ──────────────────
+
+// GetTaskIDForArtifact resolves the task_id that owns an artifact.
+// Returns ErrArtifactNotFound if the artifact does not exist.
+func (s *Store) GetTaskIDForArtifact(ctx context.Context, artifactID string) (string, error) {
+	var taskID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT task_id FROM editorial_artifacts WHERE id = $1
+	`, artifactID).Scan(&taskID)
+	if err == sql.ErrNoRows {
+		return "", ErrArtifactNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get task_id for artifact: %w", err)
+	}
+	return taskID, nil
+}
+
+// GetTaskIDForDecision resolves the task_id that owns a decision.
+// Returns ErrDecisionNotFound if the decision does not exist.
+func (s *Store) GetTaskIDForDecision(ctx context.Context, decisionID string) (string, error) {
+	var taskID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT task_id FROM editorial_decisions WHERE id = $1
+	`, decisionID).Scan(&taskID)
+	if err == sql.ErrNoRows {
+		return "", ErrDecisionNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get task_id for decision: %w", err)
+	}
+	return taskID, nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -42,6 +43,8 @@ type Orchestrator struct {
 	store     *Store
 	emitter   EventEmitter
 	executors map[AgentRole]AgentExecutorAdapter
+	retryMu   sync.Mutex         // protects retryMap
+	retryMap  map[string]int // key: taskID+"|"+role → current retry count
 }
 
 // AgentExecutorAdapter 适配器 — 将 V2 的 Step/UnifiedAgent 适配为 AgentExecutor
@@ -56,6 +59,7 @@ func NewOrchestrator(store *Store, emitter EventEmitter) *Orchestrator {
 		store:     store,
 		emitter:   emitter,
 		executors: make(map[AgentRole]AgentExecutorAdapter),
+		retryMap:  make(map[string]int),
 	}
 }
 
@@ -154,7 +158,7 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 		return fmt.Errorf("%w: %s → %s", ErrInvalidTransition, task.Status, input.TargetStatus)
 	}
 
-	// ── 原子化：先创建 Decision，再更新状态 ──
+	// ── 事务化：CreateDecision + UpdateTaskStatus 在同一事务中执行 ──
 	decType, decByType := transitionDecision(task.Status, input.TargetStatus)
 	decStatus := decisionStatusForTransition(task.Status, input.TargetStatus)
 
@@ -174,21 +178,24 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 		rejectTarget = input.TargetStatus
 	}
 
-	decision, err := o.store.CreateDecision(ctx, CreateDecisionInput{
-		Type:                decType,
-		Actor:               actor,
-		DecidedByType:       decByType,
-		DecidedBy:           input.DecidedBy,
-		Status:              decStatus,
-		Rationale:           input.Rationale,
-		ApproveTargetStatus: approveTarget,
-		RejectTargetStatus:  rejectTarget,
-	}, taskID)
+	// 事务化执行：CreateDecision + UpdateTaskStatus 原子提交
+	decision, err := o.store.AdvanceTaskTx(ctx, AdvanceTaskTxParams{
+		TaskID:         taskID,
+		TargetStatus:   input.TargetStatus,
+		Actor:          actor,
+		DecisionType:   decType,
+		DecisionStatus: decStatus,
+		DecidedBy:       input.DecidedBy,
+		DecidedByType:  decByType,
+		Rationale:      input.Rationale,
+		ApproveTarget:  approveTarget,
+		RejectTarget:   rejectTarget,
+	})
 	if err != nil {
-		return fmt.Errorf("create decision: %w", err)
+		return fmt.Errorf("advance task tx: %w", err)
 	}
 
-	// 发射决策创建事件
+	// 事务已提交 — 发射事件（仅记录，不影响数据一致性）
 	o.emit(OrchestratorEvent{
 		Type:    "decision.created",
 		TaskID:  taskID,
@@ -200,25 +207,16 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 		},
 	})
 
-	// 发射状态变更事件
 	o.emit(OrchestratorEvent{
 		Type:    "task.status_changed",
 		TaskID:  taskID,
 		Payload: map[string]interface{}{"from": task.Status, "to": input.TargetStatus},
 	})
 
-	// 更新任务状态
-	assignee := input.AssigneeType
-	if assignee == "" {
-		assignee = defaultAssignee(input.TargetStatus)
-	}
-	if err := o.store.UpdateTaskStatus(ctx, taskID, input.TargetStatus, assignee); err != nil {
-		return fmt.Errorf("update task status: %w", err)
-	}
 	task.Status = input.TargetStatus
-	task.AssigneeType = assignee
+	task.AssigneeType = defaultAssignee(input.TargetStatus)
 
-	// 根据目标状态触发对应 Agent
+	// 根据目标状态触发对应 Agent（事务提交后异步执行）
 	switch input.TargetStatus {
 	case StatusResearch:
 		return o.runResearchAgent(ctx, task)
@@ -326,6 +324,9 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 	// 构建 Agent 上下文
 	ac := NewAgentContext(RoleResearch, task.ID, task.OwnerID)
 
+	// 注入组织知识
+	ac.LocalMemory = o.loadOrgKnowledge(ctx, task)
+
 	// 加载输入交付物（选题卡）
 	topicCard, err := o.store.GetLatestApprovedArtifact(ctx, task.ID, ArtifactTopicCard)
 	if err == nil && topicCard != nil {
@@ -346,19 +347,17 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		// G1: 确保 lease 释放
-		defer func() {
-			if err := o.store.ReleaseLease(context.Background(), task.ID, RoleResearch, "completed"); err != nil {
-				slog.Warn("failed to release research lease", "task_id", task.ID, "error", err)
-			}
-		}()
-
 		start := time.Now()
 		artifact, err := exec.Execute(execCtx, ac, task)
 		durationMs := time.Since(start).Milliseconds()
 
 		// 记录 Agent 信誉
 		o.recordAgentOutcome(task.ID, RoleResearch, err == nil, artifact, durationMs)
+
+		// ── 在路由前释放 lease，防止重试时 AcquireLease 死锁 ──
+		if relErr := o.store.ReleaseLease(context.Background(), task.ID, RoleResearch, "completed"); relErr != nil {
+			slog.Warn("failed to release research lease", "task_id", task.ID, "error", relErr)
+		}
 
 		if err != nil {
 			slog.Error("research agent failed", "task_id", task.ID, "error", err)
@@ -419,6 +418,9 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 	// 构建写作 Agent 上下文
 	ac := NewAgentContext(RoleWriting, task.ID, task.OwnerID)
 
+	// 注入组织知识
+	ac.LocalMemory = o.loadOrgKnowledge(ctx, task)
+
 	// 加载已批准的研究交付物
 	for _, t := range []ArtifactType{ArtifactResearchBrief, ArtifactFactClaims, ArtifactTopicCard} {
 		art, err := o.store.GetLatestApprovedArtifact(ctx, task.ID, t)
@@ -466,19 +468,17 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		// G1: 确保 lease 释放
-		defer func() {
-			if err := o.store.ReleaseLease(context.Background(), task.ID, RoleWriting, "completed"); err != nil {
-				slog.Warn("failed to release writing lease", "task_id", task.ID, "error", err)
-			}
-		}()
-
 		start := time.Now()
 		artifact, err := exec.Execute(execCtx, ac, task)
 		durationMs := time.Since(start).Milliseconds()
 
 		// 记录 Agent 信誉
 		o.recordAgentOutcome(task.ID, RoleWriting, err == nil, artifact, durationMs)
+
+		// ── 在路由前释放 lease，防止重试时 AcquireLease 死锁 ──
+		if relErr := o.store.ReleaseLease(context.Background(), task.ID, RoleWriting, "completed"); relErr != nil {
+			slog.Warn("failed to release writing lease", "task_id", task.ID, "error", relErr)
+		}
 
 		if err != nil {
 			slog.Error("writing agent failed", "task_id", task.ID, "error", err)
@@ -539,6 +539,9 @@ func (o *Orchestrator) runReviewAgent(ctx context.Context, task *Task) error {
 	// 构建审校 Agent 上下文 — 上下文隔离，只看 Artifact
 	ac := NewAgentContext(RoleReview, task.ID, task.OwnerID)
 
+	// 注入组织知识（审校 Agent 也需要知道栏目标准和历史审查经验）
+	ac.LocalMemory = o.loadOrgKnowledge(ctx, task)
+
 	// 审校 Agent 只看初稿和信源包，不看写作过程
 	for _, t := range []ArtifactType{ArtifactDraft, ArtifactRevisedDraft, ArtifactSourcePack, ArtifactFactClaims, ArtifactResearchBrief} {
 		art, err := o.store.GetLatestApprovedArtifact(ctx, task.ID, t)
@@ -557,19 +560,17 @@ func (o *Orchestrator) runReviewAgent(ctx context.Context, task *Task) error {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		// G1: 确保 lease 释放
-		defer func() {
-			if err := o.store.ReleaseLease(context.Background(), task.ID, RoleReview, "completed"); err != nil {
-				slog.Warn("failed to release review lease", "task_id", task.ID, "error", err)
-			}
-		}()
-
 		start := time.Now()
 		artifact, err := exec.Execute(execCtx, ac, task)
 		durationMs := time.Since(start).Milliseconds()
 
 		// 记录 Agent 信誉
 		o.recordAgentOutcome(task.ID, RoleReview, err == nil, artifact, durationMs)
+
+		// ── 在路由前释放 lease ──
+		if relErr := o.store.ReleaseLease(context.Background(), task.ID, RoleReview, "completed"); relErr != nil {
+			slog.Warn("failed to release review lease", "task_id", task.ID, "error", relErr)
+		}
 
 		if err != nil {
 			slog.Error("review agent failed", "task_id", task.ID, "error", err)
@@ -658,6 +659,37 @@ func (o *Orchestrator) handleReviewResult(ctx context.Context, task *Task, revie
 
 // ─── 动态路由 ─────────────────────────────────────────────
 
+// maxAgentRetries is the maximum number of automatic retries before escalating to human.
+const maxAgentRetries = 2
+
+// retryKey builds the map key for tracking retries per task+role.
+func retryKey(taskID string, role AgentRole) string {
+	return taskID + "|" + string(role)
+}
+
+// getRetryCount returns the current retry count for a task+role.
+func (o *Orchestrator) getRetryCount(taskID string, role AgentRole) int {
+	o.retryMu.Lock()
+	defer o.retryMu.Unlock()
+	return o.retryMap[retryKey(taskID, role)]
+}
+
+// incrementRetry increments and returns the retry count for a task+role.
+func (o *Orchestrator) incrementRetry(taskID string, role AgentRole) int {
+	o.retryMu.Lock()
+	defer o.retryMu.Unlock()
+	key := retryKey(taskID, role)
+	o.retryMap[key]++
+	return o.retryMap[key]
+}
+
+// resetRetry clears the retry counter for a task+role (e.g., after successful advance).
+func (o *Orchestrator) resetRetry(taskID string, role AgentRole) {
+	o.retryMu.Lock()
+	defer o.retryMu.Unlock()
+	delete(o.retryMap, retryKey(taskID, role))
+}
+
 // routeAfterResearch 研究完成后评估质量，决定自动推进还是等待人类审批
 func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artifact *Artifact, event *AgentRunEvent) {
 	var brief struct {
@@ -705,8 +737,9 @@ func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artif
 		"gaps", gapCount)
 
 	switch {
-	case sourceCount >= 3 && gapCount == 0:
+	case sourceCount >= 3 && gapCount == 0 && verifiedClaims >= 1:
 		// 质量充分 → 用 Event 驱动自动推进到写作
+		o.resetRetry(task.ID, RoleResearch)
 		if err := o.transitionAfterEvent(ctx, task, event.ID, StatusWriting,
 			fmt.Sprintf("研究质量充分（%d 信源, %d supported, %d verified），自动推进到写作", sourceCount, supportedClaims, verifiedClaims)); err != nil {
 			slog.Error("failed to transition after research event", "task_id", task.ID, "error", err)
@@ -714,19 +747,37 @@ func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artif
 
 	case sourceCount >= 2 && gapCount <= 1:
 		// 质量尚可但有小缺口 → 创建 pending decision，人类可快速批准
+		o.resetRetry(task.ID, RoleResearch)
 		o.requestHumanDecision(ctx, task, DecisionSelectAngle,
 			fmt.Sprintf("研究有 %d 信源和 %d 个信息缺口，建议人工确认后再进入写作", sourceCount, gapCount))
 
 	default:
-		// 质量不足 → 直接重跑研究 Agent
+		// 质量不足 → 检查重试次数
+		retries := o.getRetryCount(task.ID, RoleResearch)
+		if retries >= maxAgentRetries {
+			// 超过重试上限 → 升级到人工
+			slog.Warn("research quality insufficient, max retries exceeded, escalating",
+				"task_id", task.ID, "sources", sourceCount, "gaps", gapCount, "retries", retries)
+			o.resetRetry(task.ID, RoleResearch)
+			o.requestHumanDecision(ctx, task, DecisionApproveTopic,
+				fmt.Sprintf("研究 Agent 重试 %d 次后质量仍不足（%d 信源, %d 缺口），需人工介入", retries, sourceCount, gapCount))
+			return
+		}
+		// 未超上限 → 重跑研究 Agent
+		o.incrementRetry(task.ID, RoleResearch)
 		slog.Warn("research quality insufficient, retrying",
-			"task_id", task.ID, "sources", sourceCount, "gaps", gapCount)
+			"task_id", task.ID, "sources", sourceCount, "gaps", gapCount,
+				"retry", retries+1, "max", maxAgentRetries)
 		o.emit(OrchestratorEvent{
 			Type:    "decision.created",
 			TaskID:  task.ID,
 			Payload: map[string]interface{}{"type": "allow_rewrite", "status": "rejected", "by": "system", "reason": "research quality insufficient"},
 		})
-		o.runResearchAgent(ctx, task)
+		if retryErr := o.runResearchAgent(ctx, task); retryErr != nil {
+			slog.Error("failed to retry research agent", "task_id", task.ID, "error", retryErr)
+			o.requestHumanDecision(ctx, task, DecisionApproveTopic,
+				"研究 Agent 重试启动失败，需人工介入: "+retryErr.Error())
+		}
 	}
 }
 
@@ -756,6 +807,7 @@ func (o *Orchestrator) routeAfterWriting(ctx context.Context, task *Task, artifa
 	switch {
 	case draft.WordCount >= 500 && len(draft.Outline) >= 2:
 		// 质量充分 → 用 Event 驱动自动推进到审校
+		o.resetRetry(task.ID, RoleWriting)
 		if err := o.transitionAfterEvent(ctx, task, event.ID, StatusReview,
 			fmt.Sprintf("初稿质量充分（%d 字, %d 章节），自动推进到审校", draft.WordCount, len(draft.Outline))); err != nil {
 			slog.Error("failed to transition after writing event", "task_id", task.ID, "error", err)
@@ -763,19 +815,65 @@ func (o *Orchestrator) routeAfterWriting(ctx context.Context, task *Task, artifa
 
 	case draft.WordCount > 0:
 		// 质量尚可但偏短 → 创建 pending decision
+		o.resetRetry(task.ID, RoleWriting)
 		o.requestHumanDecision(ctx, task, DecisionAllowRewrite,
 			fmt.Sprintf("初稿仅 %d 字（建议 500+），建议人工确认是否需要扩充后再审校", draft.WordCount))
 
 	default:
-		// 内容为空 → 直接重跑写作 Agent
-		slog.Warn("draft content empty, retrying", "task_id", task.ID)
+		// 内容为空 → 检查重试次数
+		retries := o.getRetryCount(task.ID, RoleWriting)
+		if retries >= maxAgentRetries {
+			slog.Warn("draft content empty, max retries exceeded, escalating",
+				"task_id", task.ID, "retries", retries)
+			o.resetRetry(task.ID, RoleWriting)
+			o.requestHumanDecision(ctx, task, DecisionEscalate,
+				fmt.Sprintf("写作 Agent 重试 %d 次后仍无内容产出，需人工介入", retries))
+			return
+		}
+		// 未超上限 → 重跑写作 Agent
+		o.incrementRetry(task.ID, RoleWriting)
+		slog.Warn("draft content empty, retrying", "task_id", task.ID,
+			"retry", retries+1, "max", maxAgentRetries)
 		o.emit(OrchestratorEvent{
 			Type:    "decision.created",
 			TaskID:  task.ID,
 			Payload: map[string]interface{}{"type": "allow_rewrite", "status": "rejected", "by": "system", "reason": "draft content empty"},
 		})
-		o.runWritingAgent(ctx, task)
+		if retryErr := o.runWritingAgent(ctx, task); retryErr != nil {
+			slog.Error("failed to retry writing agent", "task_id", task.ID, "error", retryErr)
+			o.requestHumanDecision(ctx, task, DecisionEscalate,
+				"写作 Agent 重试启动失败，需人工介入: "+retryErr.Error())
+		}
 	}
+}
+
+// loadOrgKnowledge loads active organizational knowledge for a task.
+// This is called before starting each Agent to inject org memory into the AgentContext.
+func (o *Orchestrator) loadOrgKnowledge(ctx context.Context, task *Task) *OrgKnowledge {
+	org := &OrgKnowledge{}
+
+	// Load active knowledge (limit to 20 most relevant)
+	columnTag := ""
+	if len(task.Tags) > 0 {
+		columnTag = task.Tags[0]
+	}
+	if knowledge, err := o.store.ListKnowledge(ctx, "", columnTag, "", 20); err == nil {
+		org.ActiveKnowledge = knowledge
+	}
+
+	// Load column preference
+	if columnTag != "" {
+		if cp, err := o.store.GetColumnPreference(ctx, columnTag); err == nil && cp != nil {
+			org.ColumnPref = cp
+		}
+	}
+
+	// Load top credible sources (limit 10)
+	if sources, err := o.store.ListSourceCredibility(ctx, 10); err == nil {
+		org.TopSources = sources
+	}
+
+	return org
 }
 
 // requestHumanDecision 创建一个 pending decision 并通知人类
@@ -817,22 +915,21 @@ func (o *Orchestrator) requestHumanDecision(ctx context.Context, task *Task, dec
 
 // ─── 失败回退 ─────────────────────────────────────────────
 
-// rollbackTask 将任务从失败状态回退到上一个状态
+// rollbackTask 将任务从失败状态回退到上一个状态 — 事务化执行
 func (o *Orchestrator) rollbackTask(taskID string, fromStatus, toStatus TaskStatus, reason string) {
-	_, err := o.store.CreateDecision(context.Background(), CreateDecisionInput{
-		Type:          DecisionEscalate,
-		Actor:         NewSystemActor("system"),
-		DecidedBy:     "system",
-		DecidedByType: DecidedBySystem,
-		Status:        DecisionStatusEscalated,
-		Rationale:     reason,
-	}, taskID)
+	_, err := o.store.AdvanceTaskTx(context.Background(), AdvanceTaskTxParams{
+		TaskID:         taskID,
+		TargetStatus:   toStatus,
+		Actor:          NewSystemActor("system"),
+		DecisionType:   DecisionEscalate,
+		DecisionStatus: DecisionStatusEscalated,
+		DecidedBy:      "system",
+		DecidedByType:  DecidedBySystem,
+		Rationale:      reason,
+		Assignee:       AssigneeHuman,
+	})
 	if err != nil {
-		slog.Error("failed to create rollback decision", "task_id", taskID, "error", err)
-	}
-
-	if err := o.store.UpdateTaskStatus(context.Background(), taskID, toStatus, AssigneeHuman); err != nil {
-		slog.Error("failed to rollback task status", "task_id", taskID, "error", err)
+		slog.Error("failed to rollback task in tx", "task_id", taskID, "error", err)
 		return
 	}
 
