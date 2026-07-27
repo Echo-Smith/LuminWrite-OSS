@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,17 +46,27 @@ func testStore(t *testing.T) *Store {
 		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
 	}
 
+	// Wait briefly for any goroutines from previous tests to complete
+	// (orchestrator goroutines use context.Background() and may still be
+	// holding database locks when the next test starts)
+	time.Sleep(300 * time.Millisecond)
+
 	// Clean up editorial tables before each test
+	// Use TRUNCATE CASCADE to avoid blocking on row-level locks from
+	// goroutines that might still be running from previous tests
 	tables := []string{
 		"editorial_agent_leases",
+		"editorial_agent_run_events",
 		"editorial_decisions",
 		"editorial_artifacts",
 		"editorial_tasks",
+		"editorial_knowledge",
 	}
-	for _, table := range tables {
-		if _, err := testDB.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {
-			// Table might not exist yet
-			t.Logf("cleanup %s: %v", table, err)
+	// TRUNCATE all tables in one command to avoid FK constraint issues
+	if _, err := testDB.Exec(fmt.Sprintf("TRUNCATE %s CASCADE", strings.Join(tables, ", "))); err != nil {
+		// Fall back to DELETE if TRUNCATE fails (e.g., tables don't exist yet)
+		for _, table := range tables {
+			testDB.Exec(fmt.Sprintf("DELETE FROM %s", table))
 		}
 	}
 

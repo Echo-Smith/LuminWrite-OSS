@@ -21,7 +21,7 @@ UPDATE editorial_decisions SET
         ELSE 'system'
     END,
     actor_user_id = CASE
-        WHEN decided_by_type = 'human' AND decided_by ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        WHEN decided_by_type = 'human' AND decided_by::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         THEN decided_by::uuid
         ELSE NULL
     END,
@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS editorial_agent_leases (
     released_at TIMESTAMPTZ,
     metadata    JSONB DEFAULT '{}',
 
-    CONSTRAINT uk_active_lease UNIQUE (task_id, agent_role)
+    -- Note: Do NOT add a regular UNIQUE constraint on (task_id, agent_role) here.
+    -- The partial unique index below (WHERE status = 'active') is the correct approach,
+    -- as it allows re-acquiring a lease after the previous one has been released.
 );
 
 -- This unique constraint only allows one active lease per task+role.
