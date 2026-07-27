@@ -110,6 +110,46 @@ func (s *Service) ListDecisions(ctx context.Context, taskID string) ([]Decision,
 	return s.store.ListDecisions(ctx, taskID)
 }
 
+// ListPendingDecisions 列出所有待处理决策（跨任务）
+func (s *Service) ListPendingDecisions(ctx context.Context, limit int) ([]DecisionWithTask, error) {
+	return s.store.ListPendingDecisions(ctx, limit)
+}
+
+// ResolveDecision 人类处理待决策 — 更新 Decision 状态后自动推进任务
+func (s *Service) ResolveDecision(ctx context.Context, decisionID string, input ResolveDecisionInput, userID string) (*Decision, error) {
+	d, err := s.store.UpdateDecisionStatus(ctx, decisionID, input.Status, input.Rationale, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 根据 Decision 类型和处理结果决定任务下一步
+	if input.Status == DecisionStatusApproved {
+		// 批准 → 推进到下一阶段
+		nextStatus := nextStatusForDecision(d.Type, d.TaskID)
+		if nextStatus != "" {
+			s.orchestrator.AdvanceTask(ctx, d.TaskID, AdvanceTaskInput{
+				TargetStatus: nextStatus,
+				DecidedBy:    userID,
+				Rationale:    input.Rationale,
+			})
+		}
+	} else if input.Status == DecisionStatusRejected {
+		// 驳回 → 退回上一个阶段
+		prevStatus := prevStatusForDecision(d.Type)
+		if prevStatus != "" {
+			s.orchestrator.AdvanceTask(ctx, d.TaskID, AdvanceTaskInput{
+				TargetStatus: prevStatus,
+				DecidedBy:    userID,
+				Rationale:    input.Rationale,
+			})
+		}
+	}
+
+	slog.Info("editorial: decision resolved",
+		"decision_id", decisionID, "status", input.Status, "by", userID)
+	return d, nil
+}
+
 // ─── 统计 ─────────────────────────────────────────────────
 
 // Stats 编辑部统计
@@ -140,4 +180,36 @@ func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
 	}
 
 	return stats, nil
+}
+
+// nextStatusForDecision 根据决策类型返回批准后应该推进到的状态
+func nextStatusForDecision(decType DecisionType, taskID string) TaskStatus {
+	switch decType {
+	case DecisionApproveTopic:
+		return StatusResearch
+	case DecisionPublish:
+		return StatusPublished
+	case DecisionAcceptReview:
+		return StatusPendingPublish
+	case DecisionEscalate:
+		return StatusResearch // 升级被批准后重新研究
+	default:
+		return ""
+	}
+}
+
+// prevStatusForDecision 根据决策类型返回驳回后应该退回的状态
+func prevStatusForDecision(decType DecisionType) TaskStatus {
+	switch decType {
+	case DecisionApproveTopic:
+		return StatusDraft
+	case DecisionPublish:
+		return StatusReview
+	case DecisionAcceptReview:
+		return StatusWriting
+	case DecisionEscalate:
+		return StatusPendingApproval
+	default:
+		return ""
+	}
 }
