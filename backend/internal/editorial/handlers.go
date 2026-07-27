@@ -38,6 +38,8 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		// Decision 管理
 		r.Get("/tasks/{id}/decisions", h.handleListDecisions)
 		r.Post("/tasks/{id}/decisions", h.handleCreateDecision)
+		r.Get("/decisions/pending", h.handleListPendingDecisions)
+		r.Patch("/decisions/{id}/resolve", h.handleResolveDecision)
 
 		// 统计
 		r.Get("/stats", h.handleGetStats)
@@ -234,6 +236,43 @@ func (h *Handlers) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, map[string]interface{}{"decisions": decisions})
+}
+
+// ─── 全局待处理决策 ─────────────────────────────────────
+
+func (h *Handlers) handleListPendingDecisions(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	results, err := h.svc.ListPendingDecisions(r.Context(), limit)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"pending": results})
+}
+
+func (h *Handlers) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
+	decisionID := chi.URLParam(r, "id")
+	var input ResolveDecisionInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	if input.Status != DecisionStatusApproved && input.Status != DecisionStatusRejected {
+		response.Err(w, http.StatusBadRequest, "bad_request", "status must be approved or rejected")
+		return
+	}
+
+	userOK := userIDFromContext(r.Context())
+	d, err := h.svc.ResolveDecision(r.Context(), decisionID, input, userOK)
+	if err != nil {
+		if err == ErrDecisionNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "decision not found")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, d)
 }
 
 // ─── 统计 ─────────────────────────────────────────────────

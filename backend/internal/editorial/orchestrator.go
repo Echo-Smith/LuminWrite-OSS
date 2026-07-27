@@ -266,12 +266,8 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 				Payload: map[string]interface{}{"role": "research_agent", "artifact_type": artifact.Type},
 			})
 
-			// 研究完成后自动推进到写作阶段
-			o.AdvanceTask(context.Background(), task.ID, AdvanceTaskInput{
-				TargetStatus: StatusWriting,
-				AssigneeType: AssigneeWritingAgent,
-				DecidedBy:    "system",
-			})
+			// ── 动态路由：评估研究质量决定下一步 ──
+			o.routeAfterResearch(context.Background(), task, artifact)
 		}
 
 		o.emit(OrchestratorEvent{
@@ -344,12 +340,8 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 				Payload: map[string]interface{}{"role": "writing_agent", "artifact_type": artifact.Type},
 			})
 
-			// 写作完成后自动推进到审校阶段
-			o.AdvanceTask(context.Background(), task.ID, AdvanceTaskInput{
-				TargetStatus: StatusReview,
-				AssigneeType: AssigneeReviewAgent,
-				DecidedBy:    "system",
-			})
+			// ── 动态路由：评估初稿质量决定下一步 ──
+			o.routeAfterWriting(context.Background(), task, artifact)
 		}
 
 		o.emit(OrchestratorEvent{
@@ -469,6 +461,167 @@ func (o *Orchestrator) handleReviewResult(ctx context.Context, task *Task, revie
 			Rationale:    "审查发现可修正问题（severity=" + report.Severity + "），退回写作 Agent 修改",
 		})
 	}
+}
+
+// ─── 动态路由 ─────────────────────────────────────────────
+
+// routeAfterResearch 研究完成后评估质量，决定自动推进还是等待人类审批
+func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artifact *Artifact) {
+	// 解析研究简报内容
+	var brief struct {
+		Summary    string `json:"summary"`
+		Sources    []struct {
+			URL       string `json:"url"`
+			Source    string `json:"source"`
+			Relevance string `json:"relevance"`
+		} `json:"sources"`
+		Claims []struct {
+			Claim    string `json:"claim"`
+			Verified bool   `json:"verified"`
+		} `json:"claims"`
+		Gaps []string `json:"gaps"`
+	}
+	if err := json.Unmarshal([]byte(artifact.Content), &brief); err != nil {
+		slog.Warn("failed to parse research brief for routing", "error", err)
+		// 解析失败，退回人类审批
+		o.requestHumanDecision(ctx, task, DecisionApproveTopic,
+			"研究简报格式异常，需人工确认后再进入写作")
+		return
+	}
+
+	// 评估指标
+	sourceCount := len(brief.Sources)
+	verifiedClaims := 0
+	for _, c := range brief.Claims {
+		if c.Verified {
+			verifiedClaims++
+		}
+	}
+	gapCount := len(brief.Gaps)
+
+	slog.Info("research quality评估",
+		"task_id", task.ID,
+		"sources", sourceCount,
+		"verified_claims", verifiedClaims,
+		"gaps", gapCount)
+
+	// 动态路由决策
+	switch {
+	case sourceCount >= 3 && verifiedClaims >= 2 && gapCount == 0:
+		// 质量充分 → 自动推进到写作
+		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
+			TargetStatus: StatusWriting,
+			AssigneeType: AssigneeWritingAgent,
+			DecidedBy:    "system",
+			Rationale:    fmt.Sprintf("研究质量充分（%d 信源, %d 已验证声明），自动推进到写作", sourceCount, verifiedClaims),
+		})
+
+	case sourceCount >= 2 && gapCount <= 1:
+		// 质量尚可但有小缺口 → 创建 pending decision，人类可快速批准
+		o.requestHumanDecision(ctx, task, DecisionSelectAngle,
+			fmt.Sprintf("研究有 %d 信源和 %d 个信息缺口，建议人工确认后再进入写作", sourceCount, gapCount))
+
+	default:
+		// 质量不足 → 直接重跑研究 Agent（不转状态）
+		slog.Warn("research quality insufficient, retrying",
+			"task_id", task.ID, "sources", sourceCount, "gaps", gapCount)
+		o.emit(OrchestratorEvent{
+			Type:    "decision.created",
+			TaskID:  task.ID,
+			Payload: map[string]interface{}{"type": "allow_rewrite", "status": "rejected", "by": "system", "reason": "research quality insufficient"},
+		})
+		o.runResearchAgent(ctx, task)
+	}
+}
+
+// routeAfterWriting 写作完成后评估质量，决定自动推进到审校还是等待人类确认
+func (o *Orchestrator) routeAfterWriting(ctx context.Context, task *Task, artifact *Artifact) {
+	// 解析初稿内容
+	var draft struct {
+		Title      string `json:"title"`
+		Content    string `json:"content"`
+		WordCount  int    `json:"word_count"`
+		Outline    []struct {
+			Section string `json:"section"`
+		} `json:"outline"`
+	}
+	if err := json.Unmarshal([]byte(artifact.Content), &draft); err != nil {
+		slog.Warn("failed to parse draft for routing", "error", err)
+		// 解析失败，仍然推进到审校（审校 Agent 会发现问题）
+		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
+			TargetStatus: StatusReview,
+			AssigneeType: AssigneeReviewAgent,
+			DecidedBy:    "system",
+			Rationale:    "初稿格式异常，推进到审校检查",
+		})
+		return
+	}
+
+	slog.Info("draft quality评估",
+		"task_id", task.ID,
+		"word_count", draft.WordCount,
+		"sections", len(draft.Outline))
+
+	// 动态路由决策
+	switch {
+	case draft.WordCount >= 500 && len(draft.Outline) >= 2:
+		// 质量充分 → 自动推进到审校
+		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
+			TargetStatus: StatusReview,
+			AssigneeType: AssigneeReviewAgent,
+			DecidedBy:    "system",
+			Rationale:    fmt.Sprintf("初稿质量充分（%d 字, %d 章节），自动推进到审校", draft.WordCount, len(draft.Outline)),
+		})
+
+	case draft.WordCount > 0:
+		// 质量尚可但偏短 → 创建 pending decision
+		o.requestHumanDecision(ctx, task, DecisionAllowRewrite,
+			fmt.Sprintf("初稿仅 %d 字（建议 500+），建议人工确认是否需要扩充后再审校", draft.WordCount))
+
+	default:
+		// 内容为空 → 直接重跑写作 Agent
+		slog.Warn("draft content empty, retrying", "task_id", task.ID)
+		o.emit(OrchestratorEvent{
+			Type:    "decision.created",
+			TaskID:  task.ID,
+			Payload: map[string]interface{}{"type": "allow_rewrite", "status": "rejected", "by": "system", "reason": "draft content empty"},
+		})
+		o.runWritingAgent(ctx, task)
+	}
+}
+
+// requestHumanDecision 创建一个 pending decision 并通知人类
+func (o *Orchestrator) requestHumanDecision(ctx context.Context, task *Task, decType DecisionType, message string) {
+	// 创建 pending decision
+	_, err := o.store.CreateDecision(ctx, CreateDecisionInput{
+		Type:          decType,
+		DecidedByType: DecidedByHuman,
+		Status:        DecisionStatusPending,
+		Rationale:     message,
+	}, task.ID)
+	if err != nil {
+		slog.Error("failed to create pending decision", "task_id", task.ID, "error", err)
+		// 创建失败，仅发事件通知人类，不转状态（避免非法转换）
+		o.emit(OrchestratorEvent{
+			Type:    "decision.required",
+			TaskID:  task.ID,
+			Payload: map[string]interface{}{"type": decType, "message": "⚠️ 决策记录创建失败，需人工介入: " + message},
+		})
+		return
+	}
+
+	// 发射决策要求事件
+	o.emit(OrchestratorEvent{
+		Type:    "decision.required",
+		TaskID:  task.ID,
+		Payload: map[string]interface{}{
+			"type":    decType,
+			"message": message,
+		},
+	})
+
+	slog.Info("human decision requested",
+		"task_id", task.ID, "type", decType, "message", message)
 }
 
 // ─── 失败回退 ─────────────────────────────────────────────

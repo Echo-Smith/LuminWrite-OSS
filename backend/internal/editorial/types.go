@@ -265,6 +265,24 @@ type CreateDecisionInput struct {
 	ArtifactID    string          `json:"artifact_id,omitempty"`
 }
 
+// DecisionWithTask 带任务信息的决策（用于全局待处理决策列表）
+type DecisionWithTask struct {
+	Decision        Decision   `json:"decision"`
+	TaskTitle       string     `json:"task_title"`
+	TaskStatus      TaskStatus `json:"task_status"`
+	TaskAssignee    string     `json:"task_assignee"`
+	TaskOwnerID     string     `json:"task_owner_id"`
+	TaskPriority    int        `json:"task_priority"`
+	TaskTokenUsed   int        `json:"task_token_used"`
+	TaskTokenBudget int        `json:"task_token_budget"`
+}
+
+// ResolveDecisionInput 人类处理待决策的输入
+type ResolveDecisionInput struct {
+	Status    DecisionStatus `json:"status"`     // approved | rejected
+	Rationale string         `json:"rationale"`  // 决策理由
+}
+
 // ─── Agent 角色 ───────────────────────────────────────────
 
 // AgentRole Agent 角色标识

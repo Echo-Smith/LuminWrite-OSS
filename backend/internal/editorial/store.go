@@ -363,3 +363,73 @@ func (s *Store) ListDecisions(ctx context.Context, taskID string) ([]Decision, e
 	}
 	return decisions, nil
 }
+
+// ListPendingDecisions 列出所有待处理决策（跨任务）
+func (s *Store) ListPendingDecisions(ctx context.Context, limit int) ([]DecisionWithTask, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT d.id, d.task_id, d.type, COALESCE(d.decided_by::text, ''), d.decided_by_type,
+		       d.status, d.rationale, d.evidence, COALESCE(d.artifact_id::text, ''),
+		       d.created_at, d.decided_at,
+		       t.title, t.status, t.assignee_type, t.owner_id, t.priority, t.token_used, t.token_budget
+		FROM editorial_decisions d
+		JOIN editorial_tasks t ON t.id = d.task_id
+		WHERE d.status = 'pending'
+		ORDER BY t.priority DESC, d.created_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var results []DecisionWithTask
+	for rows.Next() {
+		var dwt DecisionWithTask
+		var decidedAt sql.NullTime
+		if err := rows.Scan(
+			&dwt.Decision.ID, &dwt.Decision.TaskID, &dwt.Decision.Type, &dwt.Decision.DecidedBy,
+			&dwt.Decision.DecidedByType, &dwt.Decision.Status, &dwt.Decision.Rationale,
+			&dwt.Decision.Evidence, &dwt.Decision.ArtifactID, &dwt.Decision.CreatedAt, &decidedAt,
+			&dwt.TaskTitle, &dwt.TaskStatus, &dwt.TaskAssignee, &dwt.TaskOwnerID, &dwt.TaskPriority,
+			&dwt.TaskTokenUsed, &dwt.TaskTokenBudget,
+		); err != nil {
+			return nil, fmt.Errorf("scan pending decision: %w", err)
+		}
+		if decidedAt.Valid {
+			dwt.Decision.DecidedAt = &decidedAt.Time
+		}
+		results = append(results, dwt)
+	}
+	return results, nil
+}
+
+// UpdateDecisionStatus 更新决策状态（用于人类处理 pending 决策）
+func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, status DecisionStatus, rationale string, decidedBy string) (*Decision, error) {
+	var d Decision
+	var decidedAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE editorial_decisions
+		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
+		WHERE id = $1
+		RETURNING id, task_id, type, COALESCE(decided_by::text, ''), decided_by_type, status, rationale, evidence,
+			COALESCE(artifact_id::text, ''), created_at, decided_at
+	`,
+		decisionID, status, rationale, decidedBy,
+	).Scan(
+		&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
+		&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrDecisionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update decision status: %w", err)
+	}
+	if decidedAt.Valid {
+		d.DecidedAt = &decidedAt.Time
+	}
+	return &d, nil
+}

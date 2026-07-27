@@ -86,6 +86,17 @@ export interface EditorialStats {
   total_token_budget: number;
 }
 
+export interface DecisionWithTask {
+  decision: Decision;
+  task_title: string;
+  task_status: TaskStatus;
+  task_assignee: string;
+  task_owner_id: string;
+  task_priority: number;
+  task_token_used: number;
+  task_token_budget: number;
+}
+
 interface EditorialEvent {
   type: string;
   task_id: string;
@@ -104,6 +115,7 @@ interface EditorialState {
   loading: boolean;
   error: string | null;
   events: EditorialEvent[];
+  pendingDecisions: DecisionWithTask[];
   expandedArtifactIds: Set<string>;
 
   // Actions
@@ -137,6 +149,8 @@ interface EditorialState {
     artifact_id?: string;
   }) => Promise<boolean>;
   fetchStats: () => Promise<void>;
+  fetchPendingDecisions: (limit?: number) => Promise<void>;
+  resolveDecision: (decisionId: string, status: "approved" | "rejected", rationale: string) => Promise<boolean>;
   pushEvent: (evt: EditorialEvent) => void;
   toggleArtifactExpand: (id: string) => void;
   clearError: () => void;
@@ -161,6 +175,7 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
   loading: false,
   error: null,
   events: [],
+  pendingDecisions: [],
   expandedArtifactIds: new Set(),
 
   fetchTasks: async (status?: string) => {
@@ -356,15 +371,54 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
     }
   },
 
+  fetchPendingDecisions: async (limit?: number) => {
+    try {
+      const params = limit ? `?limit=${limit}` : "";
+      const res = await fetch(`${API_BASE}/decisions/pending${params}`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch pending decisions");
+      const json = await res.json();
+      const pending = json.data?.pending ?? [];
+      set({ pendingDecisions: pending });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  resolveDecision: async (decisionId, status, rationale) => {
+    set({ error: null });
+    try {
+      const res = await fetch(`${API_BASE}/decisions/${decisionId}/resolve`, {
+        method: "PATCH",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ status, rationale }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error?.message || "Failed to resolve decision");
+      }
+      // 从 pendingDecisions 中移除已处理的
+      set((s) => ({
+        pendingDecisions: s.pendingDecisions.filter((d) => d.decision.id !== decisionId),
+      }));
+      // 刷新任务列表
+      get().fetchTasks();
+      return true;
+    } catch (e) {
+      set({ error: (e as Error).message });
+      return false;
+    }
+  },
+
   pushEvent: (evt) => {
     set((s) => ({ events: [...s.events.slice(-49), evt] }));
 
     // 根据事件类型自动刷新数据
     const state = get();
 
-    // 任务状态变更 → 刷新任务列表
+    // 任务状态变更 → 刷新任务列表 + 待处理决策
     if (evt.type === "task.status_changed" || evt.type === "agent.completed" || evt.type === "agent.failed") {
       state.fetchTasks();
+      state.fetchPendingDecisions();
       // 如果当前选中的任务就是这个事件的任务，也刷新详情
       if (state.currentTask?.id === evt.task_id) {
         state.fetchTask(evt.task_id);
