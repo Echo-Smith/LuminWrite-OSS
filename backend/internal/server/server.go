@@ -62,6 +62,9 @@ type Server struct {
 	toolRegistry  *engine.ToolRegistry
 	editorialSvc  *editorial.Service
 	editorialHdlr *editorial.Handlers
+
+	userStyleStore  *database.UserStyleStore
+	styleBuilder   *services.StyleBuilderService
 }
 
 // New creates a new Server.
@@ -257,6 +260,14 @@ func New(cfg *config.Config) (*Server, error) {
 		toolRegistry:  toolRegistry,
 	}
 
+	// ── User custom styles & AI builder ──
+	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
+		s.userStyleStore = database.NewUserStyleStore(db)
+	}
+	if llm != nil {
+		s.styleBuilder = services.NewStyleBuilderService(llm)
+	}
+
 	// ── Editorial system initialization ──
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
 		edStore := editorial.NewStore(adminRepo.DB().DB)
@@ -312,10 +323,22 @@ func (s *Server) Router() http.Handler {
 
 	// API v2
 	r.Route("/api/v2", func(r chi.Router) {
-		// Styles
-		r.Get("/styles", s.handleListStyles)
+		// Styles (jwtOptional: logged-in users see global + their private styles)
+		r.With(s.jwtOptionalMiddleware).Get("/styles", s.handleListStylesWithUserStyles)
 		r.Get("/styles/{slug}", s.handleGetStyle)
-		r.Post("/styles/{slug}/publish", s.handlePublishStyle)
+
+		// User Custom Styles (requires auth)
+		r.With(s.jwtAuthMiddleware).Get("/my-styles", s.handleListMyStyles)
+		r.With(s.jwtAuthMiddleware).Post("/my-styles", s.handleCreateMyStyle)
+		r.With(s.jwtAuthMiddleware).Get("/my-styles/{id}", s.handleGetMyStyle)
+		r.With(s.jwtAuthMiddleware).Put("/my-styles/{id}", s.handleUpdateMyStyle)
+		r.With(s.jwtAuthMiddleware).Delete("/my-styles/{id}", s.handleDeleteMyStyle)
+		r.With(s.jwtAuthMiddleware).Post("/my-styles/{id}/submit", s.handleSubmitMyStyleForReview)
+
+		// AI Style Builder (requires auth)
+		r.With(s.jwtAuthMiddleware).Post("/style-builder/sessions", s.handleCreateBuilderSession)
+		r.With(s.jwtAuthMiddleware).Post("/style-builder/sessions/{id}/messages", s.handleSendBuilderMessage)
+		r.With(s.jwtAuthMiddleware).Post("/style-builder/sessions/{id}/commit", s.handleCommitBuilderSession)
 
 		// Models (public — list active models for composer)
 		r.Get("/models", s.handleListActiveModels)
@@ -434,7 +457,12 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 			r.Post("/styles/{slug}/archive", s.handleAdminArchiveStyle)
 			r.Get("/styles/{slug}/versions", s.handleAdminListVersions)
 			r.Post("/styles/{slug}/versions/{version}/republish", s.handleAdminRepublishVersion)
-			r.Get("/styles/{slug}/versions/compare", s.handleAdminCompareVersions)
+            r.Get("/styles/{slug}/versions/compare", s.handleAdminCompareVersions)
+
+            // Community style review (pending user submissions)
+            r.Get("/pending-styles", s.handleAdminListPendingStyles)
+            r.Post("/pending-styles/{id}/approve", s.handleAdminApproveStyle)
+            r.Post("/pending-styles/{id}/reject", s.handleAdminRejectStyle)
 
             // Rollout (Grayscale)
             r.Get("/styles/{slug}/rollout", s.handleAdminGetRollout)
