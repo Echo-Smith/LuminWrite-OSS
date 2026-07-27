@@ -332,6 +332,87 @@ type DecisionWithTask struct {
 	TaskTokenBudget int        `json:"task_token_budget"`
 }
 
+// ─── Decision Packet (第二步: 决策包数据结构) ──────────────
+
+// DecisionPacket 是呈现给人类决策者的完整上下文包。
+// 当一个 pending Decision 被创建时，系统组装此 Packet，
+// 让人类能够在不查看完整任务历史的情况下做出判断。
+//
+// 设计原则：
+//   - 自包含：包含决策所需的所有关键信息，无需额外请求
+//   - 可追溯：引用触发此决策的 Event 或上下文 Artifact
+//   - 可操作：明确标注 approve/reject 后的走向
+type DecisionPacket struct {
+	DecisionID string        `json:"decision_id"`
+	TaskID     string        `json:"task_id"`
+	Type       DecisionType  `json:"type"`
+	Status     DecisionStatus `json:"status"`
+
+	// 任务摘要
+	TaskSummary TaskSummary `json:"task_summary"`
+
+	// 决策选项 — 明确标注每个选项的后果
+	Options []DecisionOption `json:"options"`
+
+	// 证据材料 — 支撑决策的关键 Artifact 摘要
+	Evidence []ArtifactSummary `json:"evidence,omitempty"`
+
+	// 质量指标 — Agent 产出的量化评估
+	Metrics *DecisionMetrics `json:"metrics,omitempty"`
+
+	// 触发原因 — 为什么需要人类决策
+	TriggerReason string `json:"trigger_reason"`
+
+	// 关联的 Agent 事件（如果有）
+	CauseEventID string `json:"cause_event_id,omitempty"`
+
+	// 创建时间
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TaskSummary 任务摘要 — 决策时的任务快照
+type TaskSummary struct {
+	Title          string     `json:"title"`
+	Description    string     `json:"description,omitempty"`
+	CurrentStatus  TaskStatus `json:"current_status"`
+	Priority       int        `json:"priority"`
+	StyleSlug      string     `json:"style_slug,omitempty"`
+	TokenUsed      int        `json:"token_used"`
+	TokenBudget    int        `json:"token_budget"`
+	Tags           []string   `json:"tags,omitempty"`
+}
+
+// DecisionOption 决策选项 — 描述一个可选行动及其后果
+type DecisionOption struct {
+	ID          string     `json:"id"`           // "approve" | "reject" | "escalate"
+	Label       string     `json:"label"`        // 人类可读标签
+	Description string     `json:"description"`  // 选项说明
+	TargetStatus TaskStatus `json:"target_status"` // 选择此选项后的任务状态
+}
+
+// ArtifactSummary 交付物摘要 — 用于决策包中的证据展示
+type ArtifactSummary struct {
+	ID        string        `json:"id"`
+	Type      ArtifactType  `json:"type"`
+	Status    ArtifactStatus `json:"status"`
+	ProducedBy string       `json:"produced_by"`
+	Snippet   string        `json:"snippet"`     // 内容摘要（前 N 字符）
+	Version   int           `json:"version"`
+	CreatedAt time.Time     `json:"created_at"`
+}
+
+// DecisionMetrics 质量指标 — Agent 产出的量化评估
+type DecisionMetrics struct {
+	SourceCount      int    `json:"source_count,omitempty"`
+	SupportedClaims  int    `json:"supported_claims,omitempty"`
+	VerifiedClaims   int    `json:"verified_claims,omitempty"`
+	ConflictedClaims int    `json:"conflicted_claims,omitempty"`
+	GapCount         int    `json:"gap_count,omitempty"`
+	WordCount        int    `json:"word_count,omitempty"`
+	SectionCount     int    `json:"section_count,omitempty"`
+	Severity         string `json:"severity,omitempty"` // low | medium | high（审校场景）
+}
+
 // ResolveDecisionInput 人类处理待决策的输入
 type ResolveDecisionInput struct {
 	Status    DecisionStatus `json:"status"`     // approved | rejected
@@ -482,14 +563,15 @@ const (
 // 与 Decision 区分：Agent 完成工作是客观事件，不需要选择
 // 只有需要人类裁决或权限判断时才创建 Decision
 type AgentRunEvent struct {
-	ID        string     `json:"id"`
-	TaskID    string     `json:"task_id"`
-	Type      EventType  `json:"type"`
-	AgentRole AgentRole  `json:"agent_role"`
-	Status    string     `json:"status"` // completed | failed
-	ArtifactID string    `json:"artifact_id,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID         string     `json:"id"`
+	TaskID     string     `json:"task_id"`
+	Type       EventType  `json:"type"`
+	AgentRole  AgentRole  `json:"agent_role"`
+	Status     string     `json:"status"` // completed | failed
+	ArtifactID string     `json:"artifact_id,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	Metadata   []byte     `json:"metadata,omitempty"` // JSONB metadata
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
 // TransitionCauseType 标识状态变化的触发原因

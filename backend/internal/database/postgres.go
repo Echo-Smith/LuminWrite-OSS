@@ -82,6 +82,8 @@ func Migrate(db *DB) error {
 		"035_editorial_experiments",
 		"036_fix_actor_types",
 		"037_decision_actor_model",
+		"038_agent_run_events",
+		"039_knowledge_fingerprint",
 	}
 
 	for _, name := range migrations {

@@ -134,6 +134,9 @@ export interface EditorialKnowledge {
   column_tag: string;
   title: string;
   content: string;
+  content_fingerprint: string;
+  scope: string;
+  source: string;
   source_task_id: string;
   source_artifact_id: string;
   confidence: number;
@@ -194,6 +197,64 @@ interface EditorialEvent {
   timestamp: string;
 }
 
+export interface AgentRunEvent {
+  id: string;
+  task_id: string;
+  type: string;
+  agent_role: string;
+  status: string;
+  artifact_id: string;
+  error: string;
+  created_at: string;
+}
+
+// ─── Decision Packet 类型 ──────────────────────────────────
+
+export interface DecisionPacket {
+  decision_id: string;
+  task_id: string;
+  type: string;
+  status: string;
+  task_summary: {
+    title: string;
+    description: string;
+    current_status: TaskStatus;
+    priority: number;
+    style_slug: string;
+    token_used: number;
+    token_budget: number;
+    tags: string[];
+  };
+  options: Array<{
+    id: string;
+    label: string;
+    description: string;
+    target_status: TaskStatus;
+  }>;
+  evidence: Array<{
+    id: string;
+    type: ArtifactType;
+    status: ArtifactStatus;
+    produced_by: string;
+    snippet: string;
+    version: number;
+    created_at: string;
+  }>;
+  metrics: {
+    source_count: number;
+    supported_claims: number;
+    verified_claims: number;
+    conflicted_claims: number;
+    gap_count: number;
+    word_count: number;
+    section_count: number;
+    severity: string;
+  } | null;
+  trigger_reason: string;
+  cause_event_id: string;
+  created_at: string;
+}
+
 // ─── 状态 ─────────────────────────────────────────────────
 
 interface EditorialState {
@@ -212,6 +273,9 @@ interface EditorialState {
   agentReputation: AgentReputation[];
   experiments: Experiment[];
   expandedArtifactIds: Set<string>;
+  decisionPacket: DecisionPacket | null;
+  decisionPacketLoading: boolean;
+  agentEvents: AgentRunEvent[];
 
   // Actions
   fetchTasks: (status?: string) => Promise<void>;
@@ -255,6 +319,8 @@ interface EditorialState {
   runExperiment: (id: string) => Promise<boolean>;
   cancelExperiment: (id: string) => Promise<boolean>;
   fetchArtifactVersions: (artifactId: string) => Promise<Artifact[] | null>;
+  fetchDecisionPacket: (decisionId: string) => Promise<void>;
+  fetchAgentEvents: (taskId: string) => Promise<void>;
   pushEvent: (evt: EditorialEvent) => void;
   toggleArtifactExpand: (id: string) => void;
   clearError: () => void;
@@ -286,6 +352,9 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
   agentReputation: [],
   experiments: [],
   expandedArtifactIds: new Set(),
+  decisionPacket: null,
+  decisionPacketLoading: false,
+  agentEvents: [],
 
   fetchTasks: async (status?: string) => {
     set({ loading: true, error: null });
@@ -581,6 +650,31 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
     } catch (e) {
       set({ error: (e as Error).message });
       return null;
+    }
+  },
+
+  fetchDecisionPacket: async (decisionId: string) => {
+    set({ decisionPacketLoading: true });
+    try {
+      const res = await fetch(`${API_BASE}/decisions/${decisionId}/packet`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch decision packet");
+      const json = await res.json();
+      const packet = json.data ?? json;
+      set({ decisionPacket: packet, decisionPacketLoading: false });
+    } catch (e) {
+      set({ error: (e as Error).message, decisionPacketLoading: false });
+    }
+  },
+
+  fetchAgentEvents: async (taskId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/tasks/${taskId}/events`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch agent events");
+      const json = await res.json();
+      const events = json.data?.events ?? [];
+      set({ agentEvents: events });
+    } catch (e) {
+      set({ error: (e as Error).message });
     }
   },
 
