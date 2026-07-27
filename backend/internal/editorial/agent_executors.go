@@ -50,6 +50,33 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		execCtx.UserInput = task.Title + ": " + task.Description
 	}
 
+	// ── 注入组织知识 ──
+	if org := ac.GetOrgKnowledge(); org != nil {
+		// 注入高可信度信源提示
+		if len(org.TopSources) > 0 {
+			var sourceHints []string
+			for _, s := range org.TopSources {
+				sourceHints = append(sourceHints, fmt.Sprintf("%s (可信度: %.1f, 已验证: %d次)",
+					s.SourceDomain, s.CredibilityScore, s.VerifiedCount))
+			}
+			execCtx.UserInput += "\n\n[高可信度信源] 优先参考以下信源：\n" + strings.Join(sourceHints, "\n")
+		}
+		// 注入活跃知识
+		if len(org.ActiveKnowledge) > 0 {
+			var knowledgeHints []string
+			for _, k := range org.ActiveKnowledge {
+				knowledgeHints = append(knowledgeHints, fmt.Sprintf("- %s: %s", k.Title, k.Content))
+			}
+			execCtx.UserInput += "\n\n[组织知识] 以下为编辑部已确认的知识：\n" + strings.Join(knowledgeHints, "\n")
+		}
+		// 注入栏目偏好
+		if org.ColumnPref != nil && org.ColumnPref.Tone != "" {
+			execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + org.ColumnPref.Tone
+		}
+		slog.Info("research agent: org knowledge injected",
+			"task_id", task.ID, "knowledge_count", len(org.ActiveKnowledge), "sources_count", len(org.TopSources))
+	}
+
 	emitter := &noopEmitter{}
 
 	// 1. Query Plan
@@ -242,11 +269,19 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	execCtx.Mode = "guided"
 	execCtx.MaxTokens = task.TokenBudget - task.TokenUsed
 
-	// ── 组织记忆：读取栏目偏好，注入写作约束 ──
-	if len(task.Tags) > 0 {
-		columnTag := task.Tags[0]
-		if cp, err := e.store.GetColumnPreference(ctx, columnTag); err == nil && cp != nil {
-			// 栏目偏好存在，注入到执行上下文
+	// ── 注入组织知识：活跃知识 + 栏目偏好 ──
+	if org := ac.GetOrgKnowledge(); org != nil {
+		// 注入活跃知识（审校经验、拒稿原因等）
+		if len(org.ActiveKnowledge) > 0 {
+			var knowledgeHints []string
+			for _, k := range org.ActiveKnowledge {
+				knowledgeHints = append(knowledgeHints, fmt.Sprintf("- %s: %s", k.Title, k.Content))
+			}
+			execCtx.UserInput += "\n\n[组织知识] 以下为编辑部已确认的知识：\n" + strings.Join(knowledgeHints, "\n")
+		}
+		// 注入栏目偏好
+		if org.ColumnPref != nil {
+			cp := org.ColumnPref
 			if cp.Tone != "" {
 				execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + cp.Tone
 			}
@@ -259,7 +294,28 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 			if cp.ReviewCriteria != "" {
 				execCtx.UserInput += "\n[栏目偏好] 审校标准：" + cp.ReviewCriteria
 			}
-			slog.Info("writing agent: loaded column preference", "column_tag", columnTag, "tone", cp.Tone)
+			slog.Info("writing agent: loaded column preference from org knowledge",
+				"column_tag", cp.ColumnTag, "tone", cp.Tone)
+		}
+	} else {
+		// Fallback: 直接从 Store 查询栏目偏好（兼容旧路径）
+		if len(task.Tags) > 0 {
+			columnTag := task.Tags[0]
+			if cp, err := e.store.GetColumnPreference(ctx, columnTag); err == nil && cp != nil {
+				if cp.Tone != "" {
+					execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + cp.Tone
+				}
+				if len(cp.ForbiddenWords) > 0 {
+					execCtx.UserInput += "\n[栏目偏好] 禁用词：" + strings.Join(cp.ForbiddenWords, ", ")
+				}
+				if cp.PreferredLengthMin > 0 || cp.PreferredLengthMax > 0 {
+					execCtx.UserInput += fmt.Sprintf("\n[栏目偏好] 建议字数：%d-%d", cp.PreferredLengthMin, cp.PreferredLengthMax)
+				}
+				if cp.ReviewCriteria != "" {
+					execCtx.UserInput += "\n[栏目偏好] 审校标准：" + cp.ReviewCriteria
+				}
+				slog.Info("writing agent: loaded column preference (fallback)", "column_tag", columnTag, "tone", cp.Tone)
+			}
 		}
 	}
 
@@ -436,6 +492,33 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 	execCtx.Article = articleBody
 	execCtx.ArticleTitle = articleData.Title
 	execCtx.MaxTokens = task.TokenBudget - task.TokenUsed
+
+	// ── 注入组织知识：活跃知识 + 栏目偏好 + 信源可信度 ──
+	if org := ac.GetOrgKnowledge(); org != nil {
+		// 注入活跃知识（历史审校经验、拒稿原因等）
+		if len(org.ActiveKnowledge) > 0 {
+			var knowledgeHints []string
+			for _, k := range org.ActiveKnowledge {
+				knowledgeHints = append(knowledgeHints, fmt.Sprintf("- %s: %s", k.Title, k.Content))
+			}
+			execCtx.UserInput += "\n\n[组织知识] 以下为编辑部已确认的审校经验：\n" + strings.Join(knowledgeHints, "\n")
+		}
+		// 注入栏目偏好（审校标准）
+		if org.ColumnPref != nil {
+			cp := org.ColumnPref
+			if cp.ReviewCriteria != "" {
+				execCtx.UserInput += "\n\n[栏目审校标准] " + cp.ReviewCriteria
+			}
+			if len(cp.ForbiddenWords) > 0 {
+				execCtx.UserInput += "\n[栏目禁用词] " + strings.Join(cp.ForbiddenWords, ", ")
+			}
+			if cp.PreferredLengthMin > 0 || cp.PreferredLengthMax > 0 {
+				execCtx.UserInput += fmt.Sprintf("\n[栏目建议字数] %d-%d", cp.PreferredLengthMin, cp.PreferredLengthMax)
+			}
+		}
+		slog.Info("review agent: org knowledge injected",
+			"task_id", task.ID, "knowledge_count", len(org.ActiveKnowledge))
+	}
 
 	// 注入信源包和事实声明（用于事实核查）
 	if sourcePack := ac.GetArtifact(ArtifactSourcePack); sourcePack != nil {

@@ -97,6 +97,7 @@ func Test_RouteAfterResearch_HighQualityAutoAdvance(t *testing.T) {
 		"claims": []map[string]interface{}{
 			{"claim": "fact1", "status": "supported"},
 			{"claim": "fact2", "status": "supported"},
+			{"claim": "fact3", "status": "verified", "verified": true},
 		},
 		"gaps": []string{},
 	})

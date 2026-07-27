@@ -506,6 +506,7 @@ type AgentContext struct {
 	TokenUsage     int
 	Timeout        time.Duration
 	MaxLLMFails    int
+	RetryCount     int // 当前 Agent 在同一阶段的重试次数
 }
 
 // NewAgentContext 创建新的 Agent 上下文
@@ -520,6 +521,28 @@ func NewAgentContext(role AgentRole, taskID, userID string) *AgentContext {
 // AddInputArtifact 添加输入交付物
 func (ac *AgentContext) AddInputArtifact(a Artifact) {
 	ac.InputArtifacts = append(ac.InputArtifacts, a)
+}
+
+// OrgKnowledge 注入到 Agent 上下文的组织知识集合。
+// 由 Orchestrator 在启动 Agent 前从 Store 加载，通过 LocalMemory 传递。
+type OrgKnowledge struct {
+	// ActiveKnowledge 活跃的编辑部知识条目（status=active）
+	ActiveKnowledge []EditorialKnowledge
+	// ColumnPref 当前栏目偏好（如果任务有 tags[0] 匹配的栏目）
+	ColumnPref *ColumnPreference
+	// TopSources 高可信度信源列表（供研究 Agent 优先参考）
+	TopSources []SourceCredibility
+}
+
+// GetOrgKnowledge 从 LocalMemory 中提取 OrgKnowledge，如果不存在则返回 nil。
+func (ac *AgentContext) GetOrgKnowledge() *OrgKnowledge {
+	if ac.LocalMemory == nil {
+		return nil
+	}
+	if v, ok := ac.LocalMemory.(*OrgKnowledge); ok {
+		return v
+	}
+	return nil
 }
 
 // GetArtifact 按类型获取最近的输入交付物

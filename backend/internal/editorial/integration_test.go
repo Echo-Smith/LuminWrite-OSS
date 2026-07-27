@@ -19,8 +19,15 @@ var testDB *sql.DB
 func TestMain(m *testing.M) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
-		// Skip integration tests if no database is configured
-		os.Exit(0)
+		if os.Getenv("CI") == "true" {
+			// In CI, a missing TEST_DATABASE_URL is a hard failure —
+			// integration tests MUST run, not silently skip.
+			fmt.Fprintln(os.Stderr, "CI=true but TEST_DATABASE_URL is not set — integration tests cannot run")
+			os.Exit(1)
+		}
+		// Local dev without database — let pure unit tests run.
+		// Integration tests will skip themselves via testStore's t.Skip().
+		os.Exit(m.Run())
 	}
 
 	db, err := database.NewPostgres(dbURL, 5, 2)
@@ -43,6 +50,9 @@ func TestMain(m *testing.M) {
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	if testDB == nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("CI=true but testDB is nil — integration tests must not be skipped in CI")
+		}
 		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
 	}
 

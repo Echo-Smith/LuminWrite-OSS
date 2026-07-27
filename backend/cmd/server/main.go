@@ -25,7 +25,11 @@ func main() {
 	)
 
 	// Create server
-	srv := server.New(cfg)
+	srv, err := server.New(cfg)
+	if err != nil {
+		slog.Error("failed to create server", "error", err)
+		os.Exit(1)
+	}
 
 	// Handle graceful shutdown
 	ctx, cancel := signal.NotifyContext(context.Background(),
