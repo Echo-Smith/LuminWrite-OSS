@@ -269,6 +269,13 @@ func New(cfg *config.Config) *Server {
 				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(llm, defaultProfile, searchClient, edStore))
 				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(llm, defaultProfile, searchClient, edStore))
 			}
+
+			// 初始化对照实验运行器
+			expRunner := editorial.NewExperimentRunner(
+				edStore, llm, searchClient, embeddingClient,
+				profileLoader, edSvc.Orchestrator(),
+			)
+			editorial.SetExperimentRunner(expRunner)
 		}
 
 		s.editorialSvc = edSvc

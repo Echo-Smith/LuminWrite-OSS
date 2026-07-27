@@ -158,6 +158,35 @@ export interface AgentReputation {
   updated_at: string;
 }
 
+export interface ExperimentMetrics {
+  mode: string;
+  token_cost: number;
+  duration_ms: number;
+  word_count: number;
+  source_count: number;
+  review_passed: boolean;
+  issue_count: number;
+  quality_score: number;
+  article_title: string;
+  article_excerpt: string;
+  error: string;
+}
+
+export interface Experiment {
+  id: string;
+  title: string;
+  description: string;
+  style_slug: string;
+  status: string;
+  pipeline_result: ExperimentMetrics | null;
+  unified_result: ExperimentMetrics | null;
+  editorial_result: ExperimentMetrics | null;
+  summary: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface EditorialEvent {
   type: string;
   task_id: string;
@@ -181,6 +210,7 @@ interface EditorialState {
   columns: ColumnPreference[];
   knowledge: EditorialKnowledge[];
   agentReputation: AgentReputation[];
+  experiments: Experiment[];
   expandedArtifactIds: Set<string>;
 
   // Actions
@@ -220,6 +250,9 @@ interface EditorialState {
   fetchColumns: () => Promise<void>;
   fetchKnowledge: (category?: string, column?: string) => Promise<void>;
   fetchAgentReputation: () => Promise<void>;
+  fetchExperiments: () => Promise<void>;
+  createExperiment: (input: { title: string; description: string; style_slug?: string }) => Promise<Experiment | null>;
+  runExperiment: (id: string) => Promise<boolean>;
   fetchArtifactVersions: (artifactId: string) => Promise<Artifact[] | null>;
   pushEvent: (evt: EditorialEvent) => void;
   toggleArtifactExpand: (id: string) => void;
@@ -250,6 +283,7 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
   columns: [],
   knowledge: [],
   agentReputation: [],
+  experiments: [],
   expandedArtifactIds: new Set(),
 
   fetchTasks: async (status?: string) => {
@@ -546,6 +580,51 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
     } catch (e) {
       set({ error: (e as Error).message });
       return null;
+    }
+  },
+
+  fetchExperiments: async () => {
+    set({ loading: true, error: null });
+    try {
+      const res = await fetch(`${API_BASE}/experiments`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch experiments");
+      const json = await res.json();
+      const experiments = json.data?.experiments ?? [];
+      set({ experiments, loading: false });
+    } catch (e) {
+      set({ error: (e as Error).message, loading: false });
+    }
+  },
+
+  createExperiment: async (input) => {
+    try {
+      const res = await fetch(`${API_BASE}/experiments`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify(input),
+      });
+      if (!res.ok) throw new Error("Failed to create experiment");
+      const json = await res.json();
+      const exp = json.data;
+      await get().fetchExperiments();
+      return exp;
+    } catch (e) {
+      set({ error: (e as Error).message });
+      return null;
+    }
+  },
+
+  runExperiment: async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/experiments/${id}/run`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error("Failed to run experiment");
+      return true;
+    } catch (e) {
+      set({ error: (e as Error).message });
+      return false;
     }
   },
 
