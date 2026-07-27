@@ -227,7 +227,7 @@ func New(cfg *config.Config) *Server {
 	// (Steps + Built-in tools + MCP tools)
 	toolRegistry := engine.NewToolRegistry()
 
-	return &Server{
+	s := &Server{
 		cfg:           cfg,
 		hub:           websocket.NewHub(),
 		sseHub:        NewSSEHub(),
@@ -277,6 +277,8 @@ func New(cfg *config.Config) *Server {
 	} else {
 		slog.Warn("editorial system disabled — database not available")
 	}
+
+	return s
 }
 
 // Router returns the HTTP router with all routes registered.

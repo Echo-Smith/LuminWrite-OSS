@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS editorial_artifacts (
     content     JSONB NOT NULL DEFAULT '{}',
     status      VARCHAR(16) NOT NULL DEFAULT 'draft', -- draft | submitted | approved | rejected | superseded
     produced_by VARCHAR(32) NOT NULL, -- research_agent | writing_agent | review_agent | human
-    reviewed_by UUID REFERENCES users(id),
+    reviewed_by VARCHAR(64) NOT NULL DEFAULT '', -- 可以是人类 UUID 或 Agent 角色名
     review_note TEXT NOT NULL DEFAULT '',
     parent_id   UUID REFERENCES editorial_artifacts(id),
     token_cost  INTEGER NOT NULL DEFAULT 0,

@@ -93,24 +93,84 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		return nil, fmt.Errorf("create research brief: %w", err)
 	}
 
-	// 信源包
-	sourcePackData, _ := json.Marshal(execCtx.SearchResults)
-	e.store.CreateArtifact(ctx, SubmitArtifactInput{
+	// 信源包 — 包含分级和可信度
+	type sourceEntry struct {
+		Title     string `json:"title"`
+		Snippet   string `json:"snippet"`
+		URL       string `json:"url,omitempty"`
+		Source    string `json:"source"`
+		Relevance string `json:"relevance,omitempty"`
+		Score     float64 `json:"score,omitempty"`
+	}
+	sources := make([]sourceEntry, 0, len(execCtx.SearchResults))
+	for _, sr := range execCtx.SearchResults {
+		sources = append(sources, sourceEntry{
+			Title: sr.Title, Snippet: sr.Snippet, URL: sr.URL,
+			Source: sr.Source, Relevance: sr.Relevance, Score: sr.Score,
+		})
+	}
+	sourcePackData, _ := json.Marshal(map[string]interface{}{
+		"sources": sources,
+		"count":   len(sources),
+	})
+	sourcePackArtifact, err := e.store.CreateArtifact(ctx, SubmitArtifactInput{
 		Type:       ArtifactSourcePack,
 		Content:    string(sourcePackData),
 		ProducedBy: "research_agent",
 		TokenCost:  0,
 	}, task.ID)
+	if err != nil {
+		slog.Warn("failed to create source pack", "task_id", task.ID, "error", err)
+	}
 
-	// 自动批准研究交付物（研究 Agent 的产出默认可信，由审校 Agent 验证）
-	e.store.ReviewArtifact(ctx, briefArtifact.ID, ReviewArtifactInput{
-		Status:     ArtifactStatusApproved,
-		ReviewerID: "research_agent",
-		ReviewNote: "研究简报自动批准，待审校验证",
-	})
+	// 事实声明表 — 从搜索结果中提取关键事实声明
+	factClaims := make([]map[string]interface{}, 0)
+	for _, sr := range execCtx.SearchResults {
+		if sr.Relevance == "strong" || sr.Relevance == "medium" {
+			factClaims = append(factClaims, map[string]interface{}{
+				"claim":      sr.Snippet,
+				"source_url": sr.URL,
+				"source":     sr.Source,
+				"relevance":  sr.Relevance,
+				"verified":   false, // 待审校 Agent 验证
+			})
+		}
+	}
+	if len(factClaims) > 0 {
+		factClaimsData, _ := json.Marshal(map[string]interface{}{
+			"claims": factClaims,
+			"count":  len(factClaims),
+		})
+		if _, err := e.store.CreateArtifact(ctx, SubmitArtifactInput{
+			Type:       ArtifactFactClaims,
+			Content:    string(factClaimsData),
+			ProducedBy: "research_agent",
+			TokenCost:  0,
+		}, task.ID); err != nil {
+			slog.Warn("failed to create fact claims", "task_id", task.ID, "error", err)
+		}
+	}
+
+	// 自动批准所有研究交付物（研究 Agent 的产出默认可信，由审校 Agent 验证）
+	autoApprove := func(artID string, note string) {
+		if artID == "" {
+			return
+		}
+		if _, err := e.store.ReviewArtifact(ctx, artID, ReviewArtifactInput{
+			Status:     ArtifactStatusApproved,
+			ReviewerID: "research_agent",
+			ReviewNote: note,
+		}); err != nil {
+			slog.Warn("failed to auto-approve artifact", "artifact_id", artID, "error", err)
+		}
+	}
+	autoApprove(briefArtifact.ID, "研究简报自动批准，待审校验证")
+	if sourcePackArtifact != nil {
+		autoApprove(sourcePackArtifact.ID, "信源包自动批准，待审校验证")
+	}
 
 	slog.Info("research agent completed",
-		"task_id", task.ID, "sources", len(execCtx.SearchResults), "tokens", tokenUsed)
+		"task_id", task.ID, "sources", len(execCtx.SearchResults), "fact_claims", len(factClaims), "tokens", tokenUsed)
 
 	return briefArtifact, nil
 }
@@ -152,6 +212,27 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 		hasReviewReport = true
 		// 将审查报告作为用户材料注入
 		execCtx.UserMaterials = report.Content
+	}
+
+	// 修改场景：注入上一版稿件作为基础文本，避免"重新写一篇"
+	if hasReviewReport {
+		// 优先取修改稿，没有则取初稿
+		prevDraft := ac.GetArtifact(ArtifactRevisedDraft)
+		if prevDraft == nil {
+			prevDraft = ac.GetArtifact(ArtifactDraft)
+		}
+		if prevDraft != nil {
+			// 将上一版稿件内容解析并注入到执行上下文
+			var prevData struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			}
+			if err := json.Unmarshal([]byte(prevDraft.Content), &prevData); err == nil && prevData.Body != "" {
+				// 将上一版稿件作为已有文章注入，让 WriteStep 基于它修改
+				execCtx.Article = prevData.Body
+				execCtx.ArticleTitle = prevData.Title
+			}
+		}
 	}
 
 	emitter := &noopEmitter{}
@@ -245,10 +326,10 @@ func (e *ReviewAgentExecutor) Role() AgentRole { return RoleReview }
 
 func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, task *Task) (*Artifact, error) {
 	// 上下文隔离：审校 Agent 只看交付物，不看写作过程
-	// 获取初稿或修改稿
-	draft := ac.GetArtifact(ArtifactDraft)
+	// 优先审查修改稿（如果存在），否则审查初稿
+	draft := ac.GetArtifact(ArtifactRevisedDraft)
 	if draft == nil {
-		draft = ac.GetArtifact(ArtifactRevisedDraft)
+		draft = ac.GetArtifact(ArtifactDraft)
 	}
 	if draft == nil {
 		return nil, fmt.Errorf("no draft artifact to review")

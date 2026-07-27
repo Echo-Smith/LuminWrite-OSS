@@ -180,7 +180,8 @@ func (s *Store) CreateArtifact(ctx context.Context, input SubmitArtifactInput, t
 	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO editorial_artifacts (task_id, type, version, content, status, produced_by, parent_id, token_cost)
 		VALUES ($1, $2, $3, $4, 'submitted', $5, $6, $7)
-		RETURNING id, task_id, type, version, content, status, produced_by, reviewed_by, review_note, parent_id, token_cost, created_at, updated_at
+		RETURNING id, task_id, type, version, content, status, produced_by,
+			reviewed_by, review_note, COALESCE(parent_id::text, ''), token_cost, created_at, updated_at
 	`,
 		taskID, input.Type, nextVersion, input.Content, input.ProducedBy, parentID, input.TokenCost,
 	).Scan(
