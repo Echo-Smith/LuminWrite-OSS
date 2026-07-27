@@ -414,7 +414,7 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 	}
 
 	var d Decision
-	err := s.db.QueryRowContext(ctx, `
+	rawRow := s.db.QueryRowContext(ctx, `
 		INSERT INTO editorial_decisions (
 			task_id, type,
 			actor_type, actor_user_id, actor_role, actor_label,
@@ -430,19 +430,10 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 		approveTarget, rejectTarget,
 		input.Status, input.Rationale, input.Evidence, artifactID,
 		decidedBy, input.DecidedByType,
-	).Scan(
-		&d.ID, &d.TaskID, &d.Type,
-		new(sql.NullString), new(sql.NullString), new(sql.NullString), new(sql.NullString),
-		new(sql.NullString), new(sql.NullString),
-		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
-		&d.CreatedAt, new(sql.NullTime),
-		&d.DecidedBy, &d.DecidedByType,
 	)
-	// Use scanDecision instead for proper field mapping
-	if err != nil {
+	if err := scanDecision(rawRow, &d); err != nil {
 		return nil, fmt.Errorf("create decision: %w", err)
 	}
-	d.Actor = actor
 	return &d, nil
 }
 
@@ -564,24 +555,17 @@ func scanDecisionWithTask(scanner interface{ Scan(dest ...interface{}) error }, 
 // UpdateDecisionStatus 更新决策状态（用于人类处理 pending 决策）
 func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, status DecisionStatus, rationale string, decidedBy string) (*Decision, error) {
 	var d Decision
-	err := s.db.QueryRowContext(ctx, `
+	rawRow := s.db.QueryRowContext(ctx, `
 		UPDATE editorial_decisions
 		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
 		WHERE id = $1
 		RETURNING ` + decisionScanColumns,
 		decisionID, status, rationale, decidedBy,
-	).Scan(
-		&d.ID, &d.TaskID, &d.Type,
-		new(sql.NullString), new(sql.NullString), new(sql.NullString), new(sql.NullString),
-		new(sql.NullString), new(sql.NullString),
-		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
-		&d.CreatedAt, new(sql.NullTime),
-		&d.DecidedBy, &d.DecidedByType,
 	)
-	if err == sql.ErrNoRows {
-		return nil, ErrDecisionNotFound
-	}
-	if err != nil {
+	if err := scanDecision(rawRow, &d); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrDecisionNotFound
+		}
 		return nil, fmt.Errorf("update decision status: %w", err)
 	}
 	return &d, nil
@@ -590,21 +574,14 @@ func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, sta
 // GetDecision 获取单个决策
 func (s *Store) GetDecision(ctx context.Context, decisionID string) (*Decision, error) {
 	var d Decision
-	err := s.db.QueryRowContext(ctx, `
+	rawRow := s.db.QueryRowContext(ctx, `
 		SELECT `+decisionScanColumns+`
 		FROM editorial_decisions WHERE id = $1
-	`, decisionID).Scan(
-		&d.ID, &d.TaskID, &d.Type,
-		new(sql.NullString), new(sql.NullString), new(sql.NullString), new(sql.NullString),
-		new(sql.NullString), new(sql.NullString),
-		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
-		&d.CreatedAt, new(sql.NullTime),
-		&d.DecidedBy, &d.DecidedByType,
-	)
-	if err == sql.ErrNoRows {
-		return nil, ErrDecisionNotFound
-	}
-	if err != nil {
+	`, decisionID)
+	if err := scanDecision(rawRow, &d); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrDecisionNotFound
+		}
 		return nil, fmt.Errorf("get decision: %w", err)
 	}
 	return &d, nil
@@ -786,6 +763,54 @@ func (s *Store) TransitionTask(ctx context.Context, cmd TransitionCommand) (*Tas
 	task.Status = cmd.TargetStatus
 	task.AssigneeType = assignee
 	return &task, nil
+}
+
+// ─── Agent Run Events (P0-4: Event/Decision/Transition 三层模型) ──
+
+// RecordAgentRunEvent records an objective event about agent execution.
+// Unlike Decisions, Events do not involve choice — they record what happened.
+func (s *Store) RecordAgentRunEvent(ctx context.Context, evt AgentRunEvent) (*AgentRunEvent, error) {
+	var e AgentRunEvent
+	var artifactID interface{}
+	if evt.ArtifactID != "" {
+		artifactID = evt.ArtifactID
+	} else {
+		artifactID = nil
+	}
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO editorial_agent_run_events (task_id, type, agent_role, status, artifact_id, error, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, task_id, type, agent_role, status, COALESCE(artifact_id::text, ''), COALESCE(error, ''), created_at
+	`, evt.TaskID, evt.Type, evt.AgentRole, evt.Status, artifactID, evt.Error, evt.Metadata,
+	).Scan(&e.ID, &e.TaskID, &e.Type, &e.AgentRole, &e.Status, &e.ArtifactID, &e.Error, &e.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("record agent run event: %w", err)
+	}
+	return &e, nil
+}
+
+// ListAgentRunEvents lists events for a task, ordered by creation time.
+func (s *Store) ListAgentRunEvents(ctx context.Context, taskID string) ([]AgentRunEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, task_id, type, agent_role, status, COALESCE(artifact_id::text, ''), COALESCE(error, ''), created_at
+		FROM editorial_agent_run_events
+		WHERE task_id = $1
+		ORDER BY created_at ASC
+	`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent run events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []AgentRunEvent
+	for rows.Next() {
+		var e AgentRunEvent
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.Type, &e.AgentRole, &e.Status, &e.ArtifactID, &e.Error, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan agent run event: %w", err)
+		}
+		events = append(events, e)
+	}
+	return events, nil
 }
 
 // ─── Agent Run Leases (P0-2: 数据库级互斥) ──────────────

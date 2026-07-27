@@ -53,7 +53,11 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Get("/tasks/{id}/decisions", h.handleListDecisions)
 		r.Post("/tasks/{id}/decisions", h.handleCreateDecision)
 		r.Get("/decisions/pending", h.handleListPendingDecisions)
+		r.Get("/decisions/{id}/packet", h.handleGetDecisionPacket)
 		r.Patch("/decisions/{id}/resolve", h.handleResolveDecision)
+
+		// Agent 事件
+		r.Get("/tasks/{id}/events", h.handleListAgentEvents)
 
 		// 组织记忆
 		r.Get("/sources", h.handleListSources)
@@ -344,6 +348,34 @@ func (h *Handlers) handleResolveDecision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	response.OK(w, d)
+}
+
+// ─── Decision Packet ────────────────────────────────────
+
+func (h *Handlers) handleGetDecisionPacket(w http.ResponseWriter, r *http.Request) {
+	decisionID := chi.URLParam(r, "id")
+	packet, err := h.svc.BuildDecisionPacket(r.Context(), decisionID)
+	if err != nil {
+		if err == ErrDecisionNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "decision not found")
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, packet)
+}
+
+// ─── Agent 事件 ────────────────────────────────────────────
+
+func (h *Handlers) handleListAgentEvents(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	events, err := h.svc.Store().ListAgentRunEvents(r.Context(), taskID)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"events": events})
 }
 
 // ─── 统计 ─────────────────────────────────────────────────

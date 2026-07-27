@@ -13,6 +13,7 @@ import {
   type Artifact,
   type Decision,
   type DecisionWithTask,
+  type DecisionPacket,
   type SourceCredibility,
   type AgentReputation,
   type EditorialKnowledge,
@@ -485,16 +486,21 @@ function PendingDecisionCard({
   dwt: DecisionWithTask;
   onTaskClick: () => void;
 }) {
-  const { resolveDecision } = useEditorialStore();
-  const [showRationale, setShowRationale] = useState(false);
+  const { resolveDecision, fetchDecisionPacket, decisionPacket, decisionPacketLoading } = useEditorialStore();
+  const [showPacket, setShowPacket] = useState(false);
   const [rationale, setRationale] = useState("");
   const [resolving, setResolving] = useState(false);
+
+  const handleShowPacket = async () => {
+    setShowPacket(true);
+    await fetchDecisionPacket(dwt.decision.id);
+  };
 
   const handleResolve = async (status: "approved" | "rejected") => {
     setResolving(true);
     await resolveDecision(dwt.decision.id, status, rationale || (status === "approved" ? "批准" : "驳回"));
     setResolving(false);
-    setShowRationale(false);
+    setShowPacket(false);
     setRationale("");
   };
 
@@ -502,9 +508,23 @@ function PendingDecisionCard({
     ? Math.min(100, (dwt.task_token_used / dwt.task_token_budget) * 100)
     : 0;
 
+  if (showPacket) {
+    return (
+      <DecisionPacketView
+        dwt={dwt}
+        packet={decisionPacket}
+        loading={decisionPacketLoading}
+        rationale={rationale}
+        setRationale={setRationale}
+        onResolve={handleResolve}
+        resolving={resolving}
+        onBack={() => setShowPacket(false)}
+      />
+    );
+  }
+
   return (
     <div className="rounded-lg border bg-card p-3 space-y-2">
-      {/* 任务标题 */}
       <div className="flex items-start justify-between gap-2">
         <button
           onClick={onTaskClick}
@@ -517,12 +537,10 @@ function PendingDecisionCard({
         </Badge>
       </div>
 
-      {/* 决策理由 */}
       {dwt.decision.rationale && (
         <p className="text-xs text-muted-foreground">{dwt.decision.rationale}</p>
       )}
 
-      {/* 元数据 */}
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <Badge variant="secondary" className="text-xs">
           {STATUS_LABELS[dwt.task_status] || dwt.task_status}
@@ -542,60 +560,237 @@ function PendingDecisionCard({
         )}
       </div>
 
-      {/* 决策操作 */}
-      {!showRationale ? (
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="default"
+          className="h-7 text-xs flex-1"
+          onClick={handleShowPacket}
+        >
+          <Gavel className="h-3 w-3 mr-1" />
+          查看决策包
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Decision Packet 视图 ────────────────────────────────────
+
+function DecisionPacketView({
+  dwt,
+  packet,
+  loading,
+  rationale,
+  setRationale,
+  onResolve,
+  resolving,
+  onBack,
+}: {
+  dwt: DecisionWithTask;
+  packet: DecisionPacket | null;
+  loading: boolean;
+  rationale: string;
+  setRationale: (v: string) => void;
+  onResolve: (status: "approved" | "rejected") => void;
+  resolving: boolean;
+  onBack: () => void;
+}) {
+  if (loading || !packet) {
+    return (
+      <div className="rounded-lg border bg-card p-6 flex flex-col items-center gap-3">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">加载决策包...</p>
+        <Button size="sm" variant="ghost" onClick={onBack}>返回</Button>
+      </div>
+    );
+  }
+
+  const tokenPct = packet.task_summary.token_budget > 0
+    ? Math.min(100, (packet.task_summary.token_used / packet.task_summary.token_budget) * 100)
+    : 0;
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-4">
+      {/* 头部 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground text-sm">← 返回</button>
+          <span className="text-sm font-medium">
+            {DECISION_LABELS[packet.type] || packet.type}
+          </span>
+        </div>
+        <Badge variant="outline" className="text-xs">
+          {STATUS_LABELS[packet.task_summary.current_status] || packet.task_summary.current_status}
+        </Badge>
+      </div>
+
+      {/* 任务摘要 */}
+      <div className="rounded-lg bg-muted/50 p-3 space-y-1">
+        <h3 className="text-sm font-semibold">{packet.task_summary.title}</h3>
+        {packet.task_summary.description && (
+          <p className="text-xs text-muted-foreground">{packet.task_summary.description}</p>
+        )}
+        <div className="flex items-center gap-3 text-xs text-muted-foreground pt-1">
+          {packet.task_summary.priority > 0 && (
+            <span className="flex items-center gap-0.5">
+              <TrendingUp className="h-3 w-3" />
+              P{packet.task_summary.priority}
+            </span>
+          )}
+          {packet.task_summary.style_slug && (
+            <Badge variant="outline" className="text-xs">{packet.task_summary.style_slug}</Badge>
+          )}
+          {tokenPct > 0 && (
+            <span className="flex items-center gap-0.5">
+              <Coins className="h-3 w-3" />
+              预算 {tokenPct.toFixed(0)}%
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* 触发原因 */}
+      {packet.trigger_reason && (
+        <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+          <div className="flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+            <span className="text-xs font-medium text-amber-700 dark:text-amber-300">触发原因</span>
+          </div>
+          <p className="text-xs text-amber-600 dark:text-amber-400">{packet.trigger_reason}</p>
+        </div>
+      )}
+
+      {/* 质量指标 */}
+      {packet.metrics && (
+        <div>
+          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">质量指标</h4>
+          <div className="grid grid-cols-4 gap-2">
+            {packet.metrics.source_count > 0 && (
+              <MetricBox label="信源" value={packet.metrics.source_count} icon={<Globe className="h-3 w-3" />} />
+            )}
+            {packet.metrics.supported_claims > 0 && (
+              <MetricBox label="已支持" value={packet.metrics.supported_claims} color="text-green-500" />
+            )}
+            {packet.metrics.verified_claims > 0 && (
+              <MetricBox label="已验证" value={packet.metrics.verified_claims} color="text-blue-500" />
+            )}
+            {packet.metrics.conflicted_claims > 0 && (
+              <MetricBox label="有矛盾" value={packet.metrics.conflicted_claims} color="text-red-500" />
+            )}
+            {packet.metrics.gap_count > 0 && (
+              <MetricBox label="信息缺口" value={packet.metrics.gap_count} color="text-amber-500" />
+            )}
+            {packet.metrics.word_count > 0 && (
+              <MetricBox label="字数" value={packet.metrics.word_count} />
+            )}
+            {packet.metrics.section_count > 0 && (
+              <MetricBox label="章节" value={packet.metrics.section_count} />
+            )}
+            {packet.metrics.severity && (
+              <MetricBox label="严重度" value={packet.metrics.severity} color={
+                packet.metrics.severity === "high" ? "text-red-500" :
+                packet.metrics.severity === "medium" ? "text-amber-500" : "text-green-500"
+              } />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 证据材料 */}
+      {packet.evidence && packet.evidence.length > 0 && (
+        <div>
+          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+            证据材料 ({packet.evidence.length})
+          </h4>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {packet.evidence.map((ev) => (
+              <div key={ev.id} className="rounded border p-2 text-xs">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium">{ARTIFACT_LABELS[ev.type] || ev.type} v{ev.version}</span>
+                  <Badge variant="outline" className="text-xs">
+                    {ARTIFACT_STATUS_LABELS[ev.status] || ev.status}
+                  </Badge>
+                </div>
+                <p className="text-muted-foreground line-clamp-3">{ev.snippet}</p>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  由 {ev.produced_by} 产出 · {new Date(ev.created_at).toLocaleString("zh-CN")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 决策选项 */}
+      <div>
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">决策选项</h4>
+        <div className="grid grid-cols-2 gap-2">
+          {packet.options.map((opt) => (
+            <div key={opt.id} className={cn(
+              "rounded-lg border p-2 text-xs",
+              opt.id === "approve" ? "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800" :
+              opt.id === "reject" ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800" :
+              "bg-muted/50"
+            )}>
+              <div className="flex items-center gap-1 mb-1">
+                {opt.id === "approve" ? <CheckCircle2 className="h-3 w-3 text-green-500" /> :
+                 opt.id === "reject" ? <XCircle className="h-3 w-3 text-red-500" /> : null}
+                <span className="font-medium">{opt.label}</span>
+              </div>
+              <p className="text-muted-foreground">{opt.description}</p>
+              <Badge variant="outline" className="mt-1 text-xs">
+                → {STATUS_LABELS[opt.target_status] || opt.target_status}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 决策输入 */}
+      <div className="space-y-2 border-t pt-3">
+        <Textarea
+          value={rationale}
+          onChange={(e) => setRationale(e.target.value)}
+          placeholder="决策理由（可选）..."
+          rows={2}
+          className="text-xs"
+        />
         <div className="flex gap-2">
           <Button
             size="sm"
             variant="default"
-            className="h-7 text-xs flex-1"
-            onClick={() => setShowRationale(true)}
+            className="h-8 text-xs flex-1"
+            onClick={() => onResolve("approved")}
+            disabled={resolving}
           >
-            <CheckCircle2 className="h-3 w-3 mr-1" />
-            处理
+            {resolving ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3 mr-1" />}
+            批准
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-8 text-xs flex-1"
+            onClick={() => onResolve("rejected")}
+            disabled={resolving}
+          >
+            <XCircle className="h-3 w-3 mr-1" />
+            驳回
           </Button>
         </div>
-      ) : (
-        <div className="space-y-2">
-          <Textarea
-            value={rationale}
-            onChange={(e) => setRationale(e.target.value)}
-            placeholder="决策理由（可选）..."
-            rows={2}
-            className="text-xs"
-          />
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="default"
-              className="h-7 text-xs flex-1"
-              onClick={() => handleResolve("approved")}
-              disabled={resolving}
-            >
-              {resolving ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3 mr-1" />}
-              批准
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              className="h-7 text-xs flex-1"
-              onClick={() => handleResolve("rejected")}
-              disabled={resolving}
-            >
-              <XCircle className="h-3 w-3 mr-1" />
-              驳回
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 text-xs"
-              onClick={() => setShowRationale(false)}
-            >
-              取消
-            </Button>
-          </div>
-        </div>
-      )}
+      </div>
+    </div>
+  );
+}
+
+function MetricBox({ label, value, color, icon }: { label: string; value: number | string; color?: string; icon?: React.ReactNode }) {
+  return (
+    <div className="rounded bg-muted/50 p-2 text-center">
+      <div className={cn("text-sm font-bold tabular-nums flex items-center justify-center gap-0.5", color)}>
+        {icon}
+        {value}
+      </div>
+      <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
     </div>
   );
 }

@@ -204,6 +204,209 @@ func (s *Service) ResolveDecision(ctx context.Context, decisionID string, input 
 	return resolved, nil
 }
 
+// ─── Decision Packet (第二步: 决策包组装) ──────────────────
+
+// BuildDecisionPacket 为人类决策者组装完整的决策上下文包。
+// 包含任务摘要、决策选项、证据材料和质量指标。
+func (s *Service) BuildDecisionPacket(ctx context.Context, decisionID string) (*DecisionPacket, error) {
+	d, err := s.store.GetDecision(ctx, decisionID)
+	if err != nil {
+		return nil, fmt.Errorf("get decision: %w", err)
+	}
+
+	task, err := s.store.GetTask(ctx, d.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("get task for packet: %w", err)
+	}
+
+	// 获取相关 Artifacts 作为证据
+	artifacts, _ := s.store.ListArtifacts(ctx, d.TaskID)
+
+	// 构建 Artifact 摘要列表（取最新的几个）
+	var evidence []ArtifactSummary
+	for i := len(artifacts) - 1; i >= 0 && len(evidence) < 5; i-- {
+		art := artifacts[i]
+		snippet := art.Content
+		if len(snippet) > 500 {
+			snippet = snippet[:500] + "..."
+		}
+		evidence = append(evidence, ArtifactSummary{
+			ID:         art.ID,
+			Type:       art.Type,
+			Status:     art.Status,
+			ProducedBy: art.ProducedBy,
+			Snippet:    snippet,
+			Version:    art.Version,
+			CreatedAt:  art.CreatedAt,
+		})
+	}
+
+	// 构建决策选项
+	options := s.buildDecisionOptions(d)
+
+	// 从 Artifacts 提取质量指标
+	metrics := s.extractMetrics(artifacts)
+
+	// 获取关联的 Agent 事件
+	events, _ := s.store.ListAgentRunEvents(ctx, d.TaskID)
+	var causeEventID string
+	if len(events) > 0 {
+		causeEventID = events[len(events)-1].ID
+	}
+
+	return &DecisionPacket{
+		DecisionID:    d.ID,
+		TaskID:        d.TaskID,
+		Type:          d.Type,
+		Status:        d.Status,
+		TaskSummary: TaskSummary{
+			Title:         task.Title,
+			Description:   task.Description,
+			CurrentStatus: task.Status,
+			Priority:      task.Priority,
+			StyleSlug:     task.StyleSlug,
+			TokenUsed:     task.TokenUsed,
+			TokenBudget:   task.TokenBudget,
+			Tags:          task.Tags,
+		},
+		Options:       options,
+		Evidence:      evidence,
+		Metrics:       metrics,
+		TriggerReason: d.Rationale,
+		CauseEventID:  causeEventID,
+		CreatedAt:     d.CreatedAt,
+	}, nil
+}
+
+// buildDecisionOptions 根据决策类型构建选项
+func (s *Service) buildDecisionOptions(d *Decision) []DecisionOption {
+	approveStatus := TaskStatus(d.ApproveTargetStatus)
+	rejectStatus := TaskStatus(d.RejectTargetStatus)
+
+	return []DecisionOption{
+		{
+			ID:           "approve",
+			Label:        "批准",
+			Description:  decisionApproveDescription(d.Type),
+			TargetStatus: approveStatus,
+		},
+		{
+			ID:           "reject",
+			Label:        "驳回",
+			Description:  decisionRejectDescription(d.Type),
+			TargetStatus: rejectStatus,
+		},
+	}
+}
+
+// extractMetrics 从 Artifacts 中提取质量指标
+func (s *Service) extractMetrics(artifacts []Artifact) *DecisionMetrics {
+	var metrics DecisionMetrics
+	found := false
+
+	for _, art := range artifacts {
+		switch art.Type {
+		case ArtifactResearchBrief, ArtifactFactClaims:
+			var brief struct {
+				Sources []struct{} `json:"sources"`
+				Claims  []struct {
+					Status   ClaimStatus `json:"status"`
+					Verified bool        `json:"verified,omitempty"`
+				} `json:"claims"`
+				Gaps []struct{} `json:"gaps"`
+			}
+			if json.Unmarshal([]byte(art.Content), &brief) == nil {
+				metrics.SourceCount = max(metrics.SourceCount, len(brief.Sources))
+				metrics.GapCount = max(metrics.GapCount, len(brief.Gaps))
+				for _, c := range brief.Claims {
+					if c.Verified {
+						metrics.VerifiedClaims++
+					}
+					switch c.Status {
+					case ClaimSupported:
+						metrics.SupportedClaims++
+					case ClaimVerified:
+						metrics.VerifiedClaims++
+					case ClaimConflicted:
+						metrics.ConflictedClaims++
+					}
+				}
+				found = true
+			}
+		case ArtifactDraft, ArtifactRevisedDraft:
+			var draft struct {
+				WordCount int `json:"word_count"`
+				Outline   []struct {
+					Section string `json:"section"`
+				} `json:"outline"`
+			}
+			if json.Unmarshal([]byte(art.Content), &draft) == nil {
+				metrics.WordCount = max(metrics.WordCount, draft.WordCount)
+				metrics.SectionCount = max(metrics.SectionCount, len(draft.Outline))
+				found = true
+			}
+		case ArtifactReviewReport:
+			var report struct {
+				Severity string `json:"severity"`
+			}
+			if json.Unmarshal([]byte(art.Content), &report) == nil {
+				metrics.Severity = report.Severity
+				found = true
+			}
+		}
+	}
+
+	if !found {
+		return nil
+	}
+	return &metrics
+}
+
+func decisionApproveDescription(decType DecisionType) string {
+	switch decType {
+	case DecisionApproveTopic:
+		return "批准立项，进入研究阶段"
+	case DecisionSelectAngle:
+		return "确认角度，进入写作阶段"
+	case DecisionAllowRewrite:
+		return "允许进入审校阶段"
+	case DecisionPublish:
+		return "批准发布"
+	case DecisionAcceptReview:
+		return "接受审校结果"
+	case DecisionEscalate:
+		return "确认无需升级，继续执行"
+	default:
+		return "批准"
+	}
+}
+
+func decisionRejectDescription(decType DecisionType) string {
+	switch decType {
+	case DecisionApproveTopic:
+		return "驳回立项，退回草稿"
+	case DecisionSelectAngle:
+		return "驳回，退回研究"
+	case DecisionAllowRewrite:
+		return "驳回，退回写作修改"
+	case DecisionPublish:
+		return "驳回发布，退回审校"
+	case DecisionAcceptReview:
+		return "驳回，退回写作修改"
+	case DecisionEscalate:
+		return "升级到人工裁决"
+	default:
+		return "驳回"
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // ─── 统计 ─────────────────────────────────────────────────
 
 // Stats 编辑部统计
