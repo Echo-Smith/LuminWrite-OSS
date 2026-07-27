@@ -55,6 +55,12 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		// Artifact 版本
 		r.Get("/artifacts/{id}/versions", h.handleListArtifactVersions)
 
+		// 对照实验
+		r.Post("/experiments", h.handleCreateExperiment)
+		r.Get("/experiments", h.handleListExperiments)
+		r.Get("/experiments/{id}", h.handleGetExperiment)
+		r.Post("/experiments/{id}/run", h.handleRunExperiment)
+
 		// 统计
 		r.Get("/stats", h.handleGetStats)
 	})
@@ -414,4 +420,55 @@ func (h *Handlers) handleListArtifactVersions(w http.ResponseWriter, r *http.Req
 		}
 	}
 	response.OK(w, map[string]interface{}{"versions": sameType})
+}
+
+// ─── 对照实验 ─────────────────────────────────────────────
+
+func (h *Handlers) handleCreateExperiment(w http.ResponseWriter, r *http.Request) {
+	var input CreateExperimentInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	if input.Title == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "title is required")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+	exp, err := h.svc.CreateExperiment(r.Context(), input, userID)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.Created(w, exp)
+}
+
+func (h *Handlers) handleListExperiments(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	exps, err := h.svc.ListExperiments(r.Context(), limit)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"experiments": exps})
+}
+
+func (h *Handlers) handleGetExperiment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	exp, err := h.svc.GetExperiment(r.Context(), id)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "experiment not found")
+		return
+	}
+	response.OK(w, exp)
+}
+
+func (h *Handlers) handleRunExperiment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.svc.RunExperiment(r.Context(), id); err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]string{"status": "running"})
 }

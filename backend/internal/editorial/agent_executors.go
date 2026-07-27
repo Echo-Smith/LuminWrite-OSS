@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
@@ -78,11 +79,42 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 	// 5. 产出交付物
 	tokenUsed := execCtx.TotalTokens
 
-	// 研究简报
-	researchBriefContent := execCtx.CompressedContext
-	if researchBriefContent == "" {
-		researchBriefContent = "无可用研究简报"
+	// 事实声明表 — 从搜索结果中提取关键事实声明（先构建，brief 中需引用）
+	factClaims := make([]map[string]interface{}, 0)
+	for _, sr := range execCtx.SearchResults {
+		if sr.Relevance == "strong" || sr.Relevance == "medium" {
+			factClaims = append(factClaims, map[string]interface{}{
+				"claim":      sr.Snippet,
+				"source_url": sr.URL,
+				"source":     sr.Source,
+				"relevance":  sr.Relevance,
+				"verified":   false, // 待审校 Agent 验证
+			})
+		}
 	}
+
+	// 研究简报 — 存为结构化 JSON 供动态路由评估
+	researchBriefText := execCtx.CompressedContext
+	if researchBriefText == "" {
+		researchBriefText = "无可用研究简报"
+	}
+
+	// 构建 brief JSON: { summary, sources, claims, gaps }
+	briefSources := make([]map[string]interface{}, 0, len(execCtx.SearchResults))
+	for _, sr := range execCtx.SearchResults {
+		briefSources = append(briefSources, map[string]interface{}{
+			"url":       sr.URL,
+			"source":    sr.Source,
+			"relevance": sr.Relevance,
+		})
+	}
+	briefData, _ := json.Marshal(map[string]interface{}{
+		"summary": researchBriefText,
+		"sources": briefSources,
+		"claims":  factClaims,
+		"gaps":    []string{}, // 研究 Agent 当前不产 gaps
+	})
+	researchBriefContent := string(briefData)
 	briefArtifact, err := e.store.CreateArtifact(ctx, SubmitArtifactInput{
 		Type:       ArtifactResearchBrief,
 		Content:    researchBriefContent,
@@ -123,19 +155,7 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		slog.Warn("failed to create source pack", "task_id", task.ID, "error", err)
 	}
 
-	// 事实声明表 — 从搜索结果中提取关键事实声明
-	factClaims := make([]map[string]interface{}, 0)
-	for _, sr := range execCtx.SearchResults {
-		if sr.Relevance == "strong" || sr.Relevance == "medium" {
-			factClaims = append(factClaims, map[string]interface{}{
-				"claim":      sr.Snippet,
-				"source_url": sr.URL,
-				"source":     sr.Source,
-				"relevance":  sr.Relevance,
-				"verified":   false, // 待审校 Agent 验证
-			})
-		}
-	}
+	// 事实声明表 Artifact
 	if len(factClaims) > 0 {
 		factClaimsData, _ := json.Marshal(map[string]interface{}{
 			"claims": factClaims,
@@ -167,6 +187,27 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 	autoApprove(briefArtifact.ID, "研究简报自动批准，待审校验证")
 	if sourcePackArtifact != nil {
 		autoApprove(sourcePackArtifact.ID, "信源包自动批准，待审校验证")
+	}
+
+	// ── 组织记忆：记录信源使用情况 ──
+	for _, sr := range execCtx.SearchResults {
+		domain := extractDomain(sr.URL)
+		if domain == "" {
+			domain = sr.Source
+		}
+		if domain == "" {
+			continue
+		}
+		if err := e.store.RecordSourceUsage(ctx, RecordSourceInput{
+			SourceDomain: domain,
+			SourceName:   sr.Source,
+			Category:     categorizeSource(sr.Source),
+			TaskID:       task.ID,
+			Verified:     false, // 研究 Agent 阶段未验证，待审校 Agent 确认
+			Refuted:      false,
+		}); err != nil {
+			slog.Warn("failed to record source usage", "domain", domain, "error", err)
+		}
 	}
 
 	slog.Info("research agent completed",
@@ -201,6 +242,27 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	execCtx.Mode = "guided"
 	execCtx.MaxTokens = task.TokenBudget - task.TokenUsed
 
+	// ── 组织记忆：读取栏目偏好，注入写作约束 ──
+	if len(task.Tags) > 0 {
+		columnTag := task.Tags[0]
+		if cp, err := e.store.GetColumnPreference(ctx, columnTag); err == nil && cp != nil {
+			// 栏目偏好存在，注入到执行上下文
+			if cp.Tone != "" {
+				execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + cp.Tone
+			}
+			if len(cp.ForbiddenWords) > 0 {
+				execCtx.UserInput += "\n[栏目偏好] 禁用词：" + strings.Join(cp.ForbiddenWords, ", ")
+			}
+			if cp.PreferredLengthMin > 0 || cp.PreferredLengthMax > 0 {
+				execCtx.UserInput += fmt.Sprintf("\n[栏目偏好] 建议字数：%d-%d", cp.PreferredLengthMin, cp.PreferredLengthMax)
+			}
+			if cp.ReviewCriteria != "" {
+				execCtx.UserInput += "\n[栏目偏好] 审校标准：" + cp.ReviewCriteria
+			}
+			slog.Info("writing agent: loaded column preference", "column_tag", columnTag, "tone", cp.Tone)
+		}
+	}
+
 	// 注入研究简报
 	if brief := ac.GetArtifact(ArtifactResearchBrief); brief != nil {
 		execCtx.CompressedContext = brief.Content
@@ -224,13 +286,20 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 		if prevDraft != nil {
 			// 将上一版稿件内容解析并注入到执行上下文
 			var prevData struct {
-				Title string `json:"title"`
-				Body  string `json:"body"`
+				Title   string `json:"title"`
+				Content string `json:"content"`
+				Body    string `json:"body"` // 兼容旧格式
 			}
-			if err := json.Unmarshal([]byte(prevDraft.Content), &prevData); err == nil && prevData.Body != "" {
-				// 将上一版稿件作为已有文章注入，让 WriteStep 基于它修改
-				execCtx.Article = prevData.Body
-				execCtx.ArticleTitle = prevData.Title
+			if err := json.Unmarshal([]byte(prevDraft.Content), &prevData); err == nil {
+				prevBody := prevData.Content
+				if prevBody == "" {
+					prevBody = prevData.Body
+				}
+				if prevBody != "" {
+					// 将上一版稿件作为已有文章注入，让 WriteStep 基于它修改
+					execCtx.Article = prevBody
+					execCtx.ArticleTitle = prevData.Title
+				}
 			}
 		}
 	}
@@ -273,11 +342,22 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 		artType = ArtifactRevisedDraft
 	}
 
-	// 将文章内容包装为 JSON
+	// 将文章内容包装为 JSON（字段名与 routeAfterWriting 解析保持一致）
+	// 统计正文字数（中文按 rune 计数）
+	wordCount := len([]rune(execCtx.Article))
+	outlineSections := make([]map[string]interface{}, 0)
+	if execCtx.Outline != nil {
+		for _, s := range execCtx.Outline.Outline {
+			outlineSections = append(outlineSections, map[string]interface{}{
+				"section": s.Point,
+			})
+		}
+	}
 	articleData, _ := json.Marshal(map[string]interface{}{
-		"title":  execCtx.ArticleTitle,
-		"body":   execCtx.Article,
-		"length": len(execCtx.Article),
+		"title":      execCtx.ArticleTitle,
+		"content":    execCtx.Article,
+		"word_count": wordCount,
+		"outline":    outlineSections,
 	})
 
 	art, err := e.store.CreateArtifact(ctx, SubmitArtifactInput{
@@ -335,19 +415,25 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 		return nil, fmt.Errorf("no draft artifact to review")
 	}
 
-	// 解析文章内容
+	// 解析文章内容（与写作 Agent 产出的 JSON 字段对齐）
 	var articleData struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+		Body    string `json:"body"` // 兼容旧格式
 	}
 	if err := json.Unmarshal([]byte(draft.Content), &articleData); err != nil {
 		return nil, fmt.Errorf("parse draft content: %w", err)
 	}
+	// 优先使用 content，旧格式回退到 body
+	articleBody := articleData.Content
+	if articleBody == "" {
+		articleBody = articleData.Body
+	}
 
 	// 构建独立 ExecutionContext（隔离上下文）
-	execCtx := engine.NewExecutionContext("review_"+task.ID, task.OwnerID, articleData.Body)
+	execCtx := engine.NewExecutionContext("review_"+task.ID, task.OwnerID, articleBody)
 	execCtx.StyleSlug = task.StyleSlug
-	execCtx.Article = articleData.Body
+	execCtx.Article = articleBody
 	execCtx.ArticleTitle = articleData.Title
 	execCtx.MaxTokens = task.TokenBudget - task.TokenUsed
 
@@ -400,6 +486,61 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 		ReviewNote: "审查报告已生成",
 	})
 
+	// ── 组织记忆：自动沉淀审校知识 ──
+	if len(reviewResult.Issues) > 0 {
+		columnTag := ""
+		if len(task.Tags) > 0 {
+			columnTag = task.Tags[0]
+		}
+		for _, issue := range reviewResult.Issues {
+			category := "review_tip"
+			if issue.Severity == "high" {
+				category = "rejection_reason"
+			}
+			if _, err := e.store.CreateKnowledge(ctx, EditorialKnowledge{
+				Category:         category,
+				ColumnTag:        columnTag,
+				Title:            fmt.Sprintf("[%s] %s", issue.Type, issue.Severity),
+				Content:          issue.Message,
+				SourceTaskID:     task.ID,
+				SourceArtifactID: art.ID,
+				Confidence:       0.7, // 审校 Agent 产出的知识默认中等置信度
+			}); err != nil {
+				slog.Warn("failed to create knowledge from review issue", "error", err)
+			}
+		}
+		slog.Info("review agent: knowledge deposited", "task_id", task.ID, "issues", len(reviewResult.Issues))
+	}
+
+	// ── 组织记忆：更新信源可信度（基于审校结果） ──
+	if sourcePack := ac.GetArtifact(ArtifactSourcePack); sourcePack != nil {
+		var sourceData struct {
+			Sources []engine.SearchResult `json:"sources"`
+		}
+		if err := json.Unmarshal([]byte(sourcePack.Content), &sourceData); err == nil {
+			for _, sr := range sourceData.Sources {
+				domain := extractDomain(sr.URL)
+				if domain == "" {
+					domain = sr.Source
+				}
+				if domain == "" {
+					continue
+				}
+				// 审校通过 → 信源验证为真；不通过 → 未验证（不直接证伪，除非有明确证据）
+				if err := e.store.RecordSourceUsage(ctx, RecordSourceInput{
+					SourceDomain: domain,
+					SourceName:   sr.Source,
+					Category:     categorizeSource(sr.Source),
+					TaskID:       task.ID,
+					Verified:     reviewResult.Passed,
+					Refuted:      false,
+				}); err != nil {
+					slog.Warn("failed to update source credibility", "domain", domain, "error", err)
+				}
+			}
+		}
+	}
+
 	slog.Info("review agent completed",
 		"task_id", task.ID, "passed", reviewResult.Passed, "issues", len(reviewResult.Issues), "tokens", tokenUsed)
 
@@ -420,6 +561,38 @@ func severityFromReview(rr *engine.ReviewResult) string {
 		return "medium"
 	}
 	return "low"
+}
+
+// extractDomain 从 URL 中提取域名
+func extractDomain(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u := strings.TrimSpace(rawURL)
+	u = strings.TrimPrefix(u, "https://")
+	u = strings.TrimPrefix(u, "http://")
+	u = strings.TrimPrefix(u, "www.")
+	if idx := strings.Index(u, "/"); idx > 0 {
+		u = u[:idx]
+	}
+	return strings.ToLower(u)
+}
+
+// categorizeSource 根据来源名称推断类别
+func categorizeSource(sourceName string) string {
+	name := strings.ToLower(sourceName)
+	switch {
+	case strings.Contains(name, "gov") || strings.Contains(name, "政府") || strings.Contains(name, "官方"):
+		return "gov"
+	case strings.Contains(name, "edu") || strings.Contains(name, "学术") || strings.Contains(name, "大学"):
+		return "academic"
+	case strings.Contains(name, "微博") || strings.Contains(name, "微信") || strings.Contains(name, "social"):
+		return "social"
+	case strings.Contains(name, "blog") || strings.Contains(name, "博客"):
+		return "blog"
+	default:
+		return "news"
+	}
 }
 
 // ─── Noop Emitter（用于 Agent 执行器内部复用 Steps）────────

@@ -52,16 +52,24 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput, userID 
 		"priority":        task.Priority,
 		"created_by":      task.CreatedBy,
 	})
-	if _, err := s.store.CreateArtifact(ctx, SubmitArtifactInput{
+	topicCard, err := s.store.CreateArtifact(ctx, SubmitArtifactInput{
 		Type:       ArtifactTopicCard,
 		Content:    string(topicCardContent),
 		ProducedBy: "human",
 		TokenCost:  0,
-	}, task.ID); err != nil {
+	}, task.ID)
+	if err != nil {
 		slog.Warn("editorial: failed to create topic card artifact", "task_id", task.ID, "error", err)
 	} else {
-		// 自动批准选题卡
-		slog.Info("editorial: topic card artifact created", "task_id", task.ID)
+		// 自动批准选题卡（人类创建的选题卡默认可信，研究 Agent 只加载 approved 状态的交付物）
+		if _, err := s.store.ReviewArtifact(ctx, topicCard.ID, ReviewArtifactInput{
+			Status:     ArtifactStatusApproved,
+			ReviewerID: "system",
+			ReviewNote: "选题卡自动批准",
+		}); err != nil {
+			slog.Warn("editorial: failed to auto-approve topic card", "task_id", task.ID, "error", err)
+		}
+		slog.Info("editorial: topic card artifact created and auto-approved", "task_id", task.ID, "artifact_id", topicCard.ID)
 	}
 
 	return task, nil
@@ -290,4 +298,43 @@ func (s *Service) RecordAgentOutcome(ctx context.Context, input RecordAgentOutco
 // ListAgentReputation 列出所有 Agent 信誉
 func (s *Service) ListAgentReputation(ctx context.Context) ([]AgentReputation, error) {
 	return s.store.ListAgentReputation(ctx)
+}
+
+// ─── 对照实验 ─────────────────────────────────────────────
+
+// experimentRunner 实验运行器（延迟初始化）
+var experimentRunner *ExperimentRunner
+
+// SetExperimentRunner 注入实验运行器（由 server 初始化时调用）
+func SetExperimentRunner(r *ExperimentRunner) {
+	experimentRunner = r
+}
+
+// CreateExperiment 创建对照实验
+func (s *Service) CreateExperiment(ctx context.Context, input CreateExperimentInput, userID string) (*Experiment, error) {
+	return s.store.CreateExperiment(ctx, input, userID)
+}
+
+// GetExperiment 获取实验详情
+func (s *Service) GetExperiment(ctx context.Context, id string) (*Experiment, error) {
+	return s.store.GetExperiment(ctx, id)
+}
+
+// ListExperiments 列出实验
+func (s *Service) ListExperiments(ctx context.Context, limit int) ([]Experiment, error) {
+	return s.store.ListExperiments(ctx, limit)
+}
+
+// RunExperiment 启动实验（异步执行三组对比）
+func (s *Service) RunExperiment(ctx context.Context, id string) error {
+	if experimentRunner == nil {
+		return fmt.Errorf("experiment runner not initialized")
+	}
+	exp, err := s.store.GetExperiment(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get experiment: %w", err)
+	}
+	// 异步执行
+	go experimentRunner.RunExperiment(context.Background(), exp)
+	return nil
 }
