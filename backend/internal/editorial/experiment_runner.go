@@ -17,12 +17,16 @@ import (
 
 // ExperimentRunner 对照实验运行器
 type ExperimentRunner struct {
-	store    *Store
-	llm      *tools.LLMClient
-	search   *tools.SearchClient
+	store     *Store
+	llm       *tools.LLMClient
+	search    *tools.SearchClient
 	embedding *tools.EmbeddingClient
-	profiles *profile.Loader
-	orch     *Orchestrator
+	profiles  *profile.Loader
+	orch      *Orchestrator
+
+	// 运行中的实验 cancel 函数集合，支持外部取消
+	activeRuns   map[string]context.CancelFunc
+	activeRunsMu sync.Mutex
 }
 
 // NewExperimentRunner 创建实验运行器
@@ -37,15 +41,45 @@ func NewExperimentRunner(
 	return &ExperimentRunner{
 		store: store, llm: llm, search: search, embedding: embedding,
 		profiles: profiles, orch: orch,
+		activeRuns: make(map[string]context.CancelFunc),
 	}
 }
 
-// RunExperiment 运行对照实验（三组并行）
+// CancelExperiment 取消正在运行的实验
+func (r *ExperimentRunner) CancelExperiment(experimentID string) bool {
+	r.activeRunsMu.Lock()
+	defer r.activeRunsMu.Unlock()
+	if cancel, ok := r.activeRuns[experimentID]; ok {
+		cancel()
+		delete(r.activeRuns, experimentID)
+		slog.Info("experiment cancelled", "id", experimentID)
+		return true
+	}
+	return false
+}
+
+// RunExperiment 运行对照实验（三组并行，带速率限制保护）
 func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) error {
 	slog.Info("experiment started", "id", exp.ID, "title", exp.Title)
 
+	// 创建可取消的 context
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// 注册 cancel 函数，支持外部取消
+	r.activeRunsMu.Lock()
+	r.activeRuns[exp.ID] = cancel
+	r.activeRunsMu.Unlock()
+	defer func() {
+		r.activeRunsMu.Lock()
+		delete(r.activeRuns, exp.ID)
+		r.activeRunsMu.Unlock()
+	}()
+
 	// 更新状态为 running
-	r.store.UpdateExperimentStatus(ctx, exp.ID, "running", nil)
+	if err := r.store.UpdateExperimentStatus(runCtx, exp.ID, "running", nil); err != nil {
+		slog.Error("failed to update experiment status", "id", exp.ID, "error", err)
+	}
 
 	topic := exp.Title
 	if exp.Description != "" {
@@ -56,53 +90,81 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 	results := make(map[string]ExperimentMetrics)
 	var mu sync.Mutex
 
-	// ── 1. Pipeline 模式 ──
-	wg.Add(1)
+	// 速率限制：错开启动时间，避免三组同时请求 LLM API 导致 429
+	// Pipeline 先启动，10s 后 Unified，20s 后 Editorial
+	modes := []struct {
+		name     string
+		delay    time.Duration
+		runFn    func(ctx context.Context, topic, styleSlug string) ExperimentMetrics
+	}{
+		{name: "pipeline", delay: 0, runFn: r.runPipelineMode},
+		{name: "unified", delay: 10 * time.Second, runFn: r.runUnifiedMode},
+		{name: "editorial", delay: 20 * time.Second, runFn: r.runEditorialMode},
+	}
+
+	for _, m := range modes {
+		m := m // capture
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// 速率限制延迟
+			if m.delay > 0 {
+				select {
+				case <-runCtx.Done():
+					mu.Lock()
+					results[m.name] = ExperimentMetrics{Mode: m.name, Error: "cancelled before start"}
+					mu.Unlock()
+					return
+				case <-time.After(m.delay):
+				}
+			}
+
+			metrics := m.runFn(runCtx, topic, exp.StyleSlug)
+			mu.Lock()
+			results[m.name] = metrics
+			mu.Unlock()
+
+			resultJSON, _ := json.Marshal(metrics)
+			if err := r.store.UpdateExperimentResult(runCtx, exp.ID, m.name, resultJSON); err != nil {
+				slog.Error("failed to update experiment result", "id", exp.ID, "mode", m.name, "error", err)
+			}
+			slog.Info("experiment mode done", "id", exp.ID, "mode", m.name, "tokens", metrics.TokenCost, "duration_ms", metrics.DurationMs)
+		}()
+	}
+
+	// 等待所有模式完成或 context 取消
+	waitCh := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		metrics := r.runPipelineMode(ctx, topic, exp.StyleSlug)
-		mu.Lock()
-		results["pipeline"] = metrics
-		mu.Unlock()
-		resultJSON, _ := json.Marshal(metrics)
-		r.store.UpdateExperimentResult(ctx, exp.ID, "pipeline", resultJSON)
-		slog.Info("experiment: pipeline mode done", "id", exp.ID, "tokens", metrics.TokenCost, "duration_ms", metrics.DurationMs)
+		wg.Wait()
+		close(waitCh)
 	}()
 
-	// ── 2. Unified Agent 模式 ──
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		metrics := r.runUnifiedMode(ctx, topic, exp.StyleSlug)
-		mu.Lock()
-		results["unified"] = metrics
-		mu.Unlock()
-		resultJSON, _ := json.Marshal(metrics)
-		r.store.UpdateExperimentResult(ctx, exp.ID, "unified", resultJSON)
-		slog.Info("experiment: unified mode done", "id", exp.ID, "tokens", metrics.TokenCost, "duration_ms", metrics.DurationMs)
-	}()
-
-	// ── 3. Editorial 模式 ──
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		metrics := r.runEditorialMode(ctx, topic, exp.StyleSlug)
-		mu.Lock()
-		results["editorial"] = metrics
-		mu.Unlock()
-		resultJSON, _ := json.Marshal(metrics)
-		r.store.UpdateExperimentResult(ctx, exp.ID, "editorial", resultJSON)
-		slog.Info("experiment: editorial mode done", "id", exp.ID, "tokens", metrics.TokenCost, "duration_ms", metrics.DurationMs)
-	}()
-
-	wg.Wait()
+	select {
+	case <-waitCh:
+		// 正常完成
+	case <-runCtx.Done():
+		// context 取消，等待 goroutine 退出
+		slog.Warn("experiment context cancelled, waiting for goroutines", "id", exp.ID)
+		wg.Wait()
+	}
 
 	// 生成汇总
 	summary := r.buildSummary(results)
 	summaryJSON, _ := json.Marshal(summary)
-	r.store.UpdateExperimentStatus(ctx, exp.ID, "completed", summaryJSON)
 
-	slog.Info("experiment completed", "id", exp.ID, "summary", string(summaryJSON))
+	// 判断最终状态
+	finalStatus := "completed"
+	if runCtx.Err() != nil {
+		finalStatus = "failed"
+		summary["cancel_reason"] = runCtx.Err().Error()
+	}
+
+	if err := r.store.UpdateExperimentStatus(context.Background(), exp.ID, finalStatus, summaryJSON); err != nil {
+		slog.Error("failed to update experiment final status", "id", exp.ID, "error", err)
+	}
+
+	slog.Info("experiment finished", "id", exp.ID, "status", finalStatus, "summary", string(summaryJSON))
 	return nil
 }
 

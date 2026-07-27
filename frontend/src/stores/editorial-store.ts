@@ -253,6 +253,7 @@ interface EditorialState {
   fetchExperiments: () => Promise<void>;
   createExperiment: (input: { title: string; description: string; style_slug?: string }) => Promise<Experiment | null>;
   runExperiment: (id: string) => Promise<boolean>;
+  cancelExperiment: (id: string) => Promise<boolean>;
   fetchArtifactVersions: (artifactId: string) => Promise<Artifact[] | null>;
   pushEvent: (evt: EditorialEvent) => void;
   toggleArtifactExpand: (id: string) => void;
@@ -621,6 +622,21 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
         headers: getAuthHeaders(),
       });
       if (!res.ok) throw new Error("Failed to run experiment");
+      return true;
+    } catch (e) {
+      set({ error: (e as Error).message });
+      return false;
+    }
+  },
+
+  cancelExperiment: async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/experiments/${id}/cancel`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error("Failed to cancel experiment");
+      await get().fetchExperiments();
       return true;
     } catch (e) {
       set({ error: (e as Error).message });
