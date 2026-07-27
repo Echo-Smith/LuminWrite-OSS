@@ -2,7 +2,16 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+// Sentinel errors for exit mechanisms.
+var (
+	ErrConfirmTimeout     = errors.New("confirm timeout: user inactive")
+	ErrClientDisconnected = errors.New("client disconnected")
+	ErrBudgetExceeded     = errors.New("token budget exceeded")
+	ErrCircuitBreaker     = errors.New("circuit breaker tripped: consecutive LLM failures")
 )
 
 // ExecutionStatus represents the current status of an execution.
@@ -21,18 +30,21 @@ const (
 type StepName string
 
 const (
-	StepIntent       StepName = "intent"
-	StepMemoryGate   StepName = "memory_gate"
-	StepQueryPlan    StepName = "query_plan"
-	StepSearch       StepName = "search"
-	StepRelevance    StepName = "relevance"
-	StepOutline      StepName = "outline"
-	StepWrite        StepName = "write"
-	StepPostReview    StepName = "post_review"
-	StepAutoFix       StepName = "auto_fix"
-	StepMemoryExtract StepName = "memory_extract"
-	StepChat          StepName = "chat"
-	StepCompress      StepName = "compress"
+	StepIntent          StepName = "intent"
+	StepMemoryGate      StepName = "memory_gate"
+	StepQueryPlan       StepName = "query_plan"
+	StepSearch          StepName = "search"
+	StepRelevance       StepName = "relevance"
+	StepOutline         StepName = "outline"
+	StepWrite           StepName = "write"
+	StepPostReview       StepName = "post_review"
+	StepAutoFix          StepName = "auto_fix"
+	StepMemoryExtract    StepName = "memory_extract"
+	StepChat             StepName = "chat"
+	StepCompress         StepName = "compress"
+	StepShortTermMemory  StepName = "short_term_memory"
+	StepShortTermStore   StepName = "short_term_store"
+	StepWorkingMemory    StepName = "working_memory"
 )
 
 // StepRecord records the execution of a single step.
@@ -126,6 +138,19 @@ type ExecutionContext struct {
 	// Memory context (populated by MemoryGateStep)
 	MemoryContext interface{}    `json:"memory_context,omitempty"`
 
+	// Short-term memory: conversation history (populated by ShortTermMemoryStep)
+	ConversationHistory interface{} `json:"conversation_history,omitempty"`
+
+	// Working memory: incremental summary + stochastic state
+	WorkingSummary    interface{} `json:"working_summary,omitempty"`
+	StochasticState   interface{} `json:"stochastic_state,omitempty"`
+
+	// Entity memory network context (populated by MemoryGateStep)
+	EntityContext interface{} `json:"entity_context,omitempty"`
+
+	// ConversationID groups messages in the same conversation session
+	ConversationID string `json:"conversation_id,omitempty"`
+
 	// Compressed search context (populated by CompressStep)
 	// If set, WriteStep uses this structured brief instead of raw SearchResults,
 	// reducing prompt token consumption by ~60% and improving generation quality.
@@ -140,12 +165,21 @@ type ExecutionContext struct {
 
 	// Token usage
 	TotalTokens   int             `json:"total_tokens"`
+	MaxTokens     int             `json:"max_tokens,omitempty"` // 0 = unlimited
+
+	// Exit mechanism state
+	FixAttempts       int  `json:"fix_attempts,omitempty"`
+	MaxFixAttempts    int  `json:"max_fix_attempts,omitempty"` // 0 = unlimited
+	ConsecutiveLLMFails int `json:"-"`                              // circuit breaker counter
+	MaxLLMFails       int  `json:"-"`                              // circuit breaker threshold
+	ConfirmTimeout    time.Duration `json:"-"`                    // await_input timeout (0 = no timer)
 
 	// Control channels
 	pauseCh       chan struct{}
 	resumeCh      chan struct{}
 	cancelCh      chan struct{}
 	confirmCh     chan map[string]interface{}
+	disconnectCh  chan struct{} // closed when WS client disconnects
 }
 
 // TaskIntent holds the result of intent classification.
@@ -169,6 +203,7 @@ func NewExecutionContext(traceID, userID, message string) *ExecutionContext {
 		resumeCh:    make(chan struct{}, 1),
 		cancelCh:    make(chan struct{}, 1),
 		confirmCh:   make(chan map[string]interface{}, 1),
+		disconnectCh: make(chan struct{}),
 	}
 }
 
@@ -248,7 +283,22 @@ func (ctx *ExecutionContext) CheckPause(ctxGo context.Context, emitter EventEmit
 }
 
 // WaitForConfirm blocks until the user confirms the outline.
+// A confirm timeout is applied to prevent indefinite blocking.
 func (ctx *ExecutionContext) WaitForConfirm(ctxGo context.Context) (map[string]interface{}, error) {
+	return ctx.WaitForConfirmWithTimeout(ctxGo, 0)
+}
+
+// WaitForConfirmWithTimeout blocks until the user confirms or the timeout elapses.
+// If timeout is 0, no additional timer is used (relies on ctxGo for cancellation).
+func (ctx *ExecutionContext) WaitForConfirmWithTimeout(ctxGo context.Context, timeout time.Duration) (map[string]interface{}, error) {
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+		defer timer.Stop()
+		timerC = timer.C
+	}
+
 	select {
 	case data := <-ctx.confirmCh:
 		return data, nil
@@ -256,5 +306,55 @@ func (ctx *ExecutionContext) WaitForConfirm(ctxGo context.Context) (map[string]i
 		return nil, context.Canceled
 	case <-ctxGo.Done():
 		return nil, ctxGo.Err()
+	case <-ctx.disconnectCh:
+		return nil, ErrClientDisconnected
+	case <-timerC:
+		return nil, ErrConfirmTimeout
 	}
+}
+
+// ─── Exit Mechanism Helpers ──────────────────────────────
+
+// CheckBudget returns true if the token budget has been exceeded.
+// Returns false if MaxTokens is 0 (unlimited) or not yet reached.
+func (ctx *ExecutionContext) CheckBudget() bool {
+	return ctx.MaxTokens > 0 && ctx.TotalTokens >= ctx.MaxTokens
+}
+
+// SignalDisconnect marks the client as disconnected.
+// Safe to call multiple times — uses sync.Once semantics via channel close.
+func (ctx *ExecutionContext) SignalDisconnect() {
+	select {
+	case <-ctx.disconnectCh:
+		// already closed
+	default:
+		close(ctx.disconnectCh)
+	}
+}
+
+// IsDisconnected checks if the client has disconnected.
+func (ctx *ExecutionContext) IsDisconnected() bool {
+	select {
+	case <-ctx.disconnectCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// RecordLLMFailure increments the consecutive LLM failure counter.
+// Returns true if the circuit breaker has tripped.
+func (ctx *ExecutionContext) RecordLLMFailure() bool {
+	ctx.ConsecutiveLLMFails++
+	return ctx.MaxLLMFails > 0 && ctx.ConsecutiveLLMFails >= ctx.MaxLLMFails
+}
+
+// RecordLLMSuccess resets the consecutive LLM failure counter.
+func (ctx *ExecutionContext) RecordLLMSuccess() {
+	ctx.ConsecutiveLLMFails = 0
+}
+
+// CheckFixLimit returns true if the max fix attempts have been reached.
+func (ctx *ExecutionContext) CheckFixLimit() bool {
+	return ctx.MaxFixAttempts > 0 && ctx.FixAttempts >= ctx.MaxFixAttempts
 }

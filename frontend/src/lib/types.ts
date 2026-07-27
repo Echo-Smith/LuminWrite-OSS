@@ -18,7 +18,7 @@ export type AgentStepName =
   | "chat"
   | "parallel_pre_write";
 
-export type AgentStepStatus = "running" | "complete" | "error" | "await_input";
+export type AgentStepStatus = "running" | "complete" | "error" | "await_input" | "degraded";
 
 export interface StepRecord {
   step: AgentStepName;

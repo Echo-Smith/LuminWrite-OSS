@@ -3,10 +3,11 @@
  * 调用 /api/v2/admin/stats 获取统计数据 + /api/v2/admin/traces 获取最近 trace 列表
  */
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, TrendingUp, FileText, Users, Award, Activity, Clock } from "lucide-react";
+import { RefreshCw, TrendingUp, FileText, Users, Award, Activity, Clock, AlertTriangle, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface DashboardStats {
   today_writes: number;
@@ -60,9 +61,57 @@ const STYLE_LABELS: Record<string, string> = {
   unknown: "未知",
 };
 
+interface ExitStats {
+  by_exit_reason: ExitReasonStat[];
+  by_step: StepStat[];
+  degraded_count: number;
+  total_failed: number;
+  total_completed: number;
+  total_paused: number;
+  days: number;
+}
+
+interface ExitReasonStat {
+  exit_reason: string;
+  count: number;
+  label: string;
+}
+
+interface StepStat {
+  step: string;
+  status: string;
+  count: number;
+}
+
+const EXIT_REASON_COLORS: Record<string, string> = {
+  timeout: "bg-orange-100 text-orange-700",
+  budget_exceeded: "bg-purple-100 text-purple-700",
+  circuit_breaker: "bg-red-100 text-red-700",
+  cancelled: "bg-gray-100 text-gray-700",
+  disconnect: "bg-blue-100 text-blue-700",
+  step_failed: "bg-red-100 text-red-700",
+};
+
+const STEP_LABELS_LOCAL: Record<string, string> = {
+  intent: "意图分类",
+  query_plan: "检索规划",
+  search: "搜索",
+  relevance: "素材过滤",
+  outline: "提纲",
+  write: "写作",
+  post_review: "质量检查",
+  auto_fix: "自动修正",
+  memory_gate: "记忆门控",
+  memory_extract: "记忆提取",
+  chat: "对话",
+};
+
 export function OverviewPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(false);
+  const [exitStats, setExitStats] = useState<ExitStats | null>(null);
+  const [exitLoading, setExitLoading] = useState(false);
+  const [exitDays, setExitDays] = useState("7");
 
   const loadStats = useCallback(async () => {
     setLoading(true);
@@ -79,9 +128,28 @@ export function OverviewPage() {
     }
   }, []);
 
+  const loadExitStats = useCallback(async () => {
+    setExitLoading(true);
+    try {
+      const res = await fetch(`/api/v2/admin/exit-stats?days=${exitDays}`);
+      const json = await res.json();
+      if (json.success) {
+        setExitStats(json.data);
+      }
+    } catch (e) {
+      console.error("Failed to load exit stats", e);
+    } finally {
+      setExitLoading(false);
+    }
+  }, [exitDays]);
+
   useEffect(() => {
     loadStats();
   }, [loadStats]);
+
+  useEffect(() => {
+    loadExitStats();
+  }, [loadExitStats]);
 
   return (
     <div className="p-6 space-y-6">
@@ -185,6 +253,148 @@ export function OverviewPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Exit Mechanism Monitoring */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4" />
+              退出机制监控
+              {exitStats && exitStats.degraded_count > 0 && (
+                <Badge variant="outline" className="bg-amber-100 text-amber-700">
+                  {exitStats.degraded_count} 次降级
+                </Badge>
+              )}
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Select value={exitDays} onValueChange={setExitDays}>
+                <SelectTrigger className="w-24 h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">24h</SelectItem>
+                  <SelectItem value="7">7天</SelectItem>
+                  <SelectItem value="30">30天</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" onClick={loadExitStats} disabled={exitLoading}>
+                <RefreshCw className={`h-3.5 w-3.5 ${exitLoading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {exitStats ? (
+            <div className="space-y-4">
+              {/* Summary metrics */}
+              <div className="grid grid-cols-4 gap-3">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">成功完成</p>
+                  <p className="text-xl font-bold text-green-600 mt-1">{exitStats.total_completed}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">失败</p>
+                  <p className="text-xl font-bold text-red-600 mt-1">{exitStats.total_failed}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">暂停</p>
+                  <p className="text-xl font-bold text-yellow-600 mt-1">{exitStats.total_paused}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">降级跳过</p>
+                  <p className="text-xl font-bold text-amber-600 mt-1">{exitStats.degraded_count}</p>
+                </div>
+              </div>
+
+              {/* Exit reason distribution */}
+              {exitStats.by_exit_reason.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">退出原因分布</p>
+                  <div className="space-y-1.5">
+                    {exitStats.by_exit_reason.map((item) => {
+                      const total = exitStats.by_exit_reason.reduce((s, i) => s + i.count, 0) || 1;
+                      const pct = (item.count / total) * 100;
+                      return (
+                        <div key={item.exit_reason} className="flex items-center gap-3">
+                          <Badge
+                            variant="outline"
+                            className={EXIT_REASON_COLORS[item.exit_reason] ?? ""}
+                          >
+                            {item.label}
+                          </Badge>
+                          <div className="flex-1 h-5 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-primary/70 rounded-full"
+                              style={{ width: `${Math.max(pct, 3)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-muted-foreground w-20 text-right">
+                            {item.count} 次 ({pct.toFixed(0)}%)
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Step-level status distribution */}
+              {exitStats.by_step.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">步骤执行统计</p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b text-muted-foreground">
+                          <th className="text-left py-1.5 pr-4 font-medium">步骤</th>
+                          <th className="text-left py-1.5 pr-4 font-medium">状态</th>
+                          <th className="text-right py-1.5 font-medium">次数</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exitStats.by_step
+                          .filter((s) => s.status === "error" || s.status === "degraded")
+                          .map((item, i) => (
+                            <tr key={i} className="border-b last:border-0">
+                              <td className="py-1.5 pr-4">
+                                {STEP_LABELS_LOCAL[item.step] ?? item.step}
+                              </td>
+                              <td className="py-1.5 pr-4">
+                                <Badge
+                                  variant="outline"
+                                  className={
+                                    item.status === "error"
+                                      ? "bg-red-100 text-red-700"
+                                      : item.status === "degraded"
+                                      ? "bg-amber-100 text-amber-700"
+                                      : ""
+                                  }
+                                >
+                                  {item.status}
+                                </Badge>
+                              </td>
+                              <td className="text-right py-1.5 font-medium">{item.count}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {exitStats.by_exit_reason.length === 0 && exitStats.total_failed === 0 && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                  <AlertTriangle className="h-4 w-4 text-green-500" />
+                  <span>近 {exitStats.days} 天无异常退出</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground text-center py-8">加载中...</p>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Recent Traces */}
       <Card>

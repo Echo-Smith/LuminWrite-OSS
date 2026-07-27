@@ -546,8 +546,10 @@ articleTitle: d.article_title,
 
       case "agent.step.complete": {
         const step = p.step as AgentStepName;
-        const result = p.result;
+        const result = p.result as Record<string, unknown> | undefined;
         const durationMs = p.duration_ms as number | undefined;
+        // Check if the step was degraded (non-critical step failed and was skipped)
+        const isDegraded = result?.degraded === true;
         get()._updateLastAssistantMessage((m) => ({
           ...m,
           parts: m.parts.map((part, i) => {
@@ -561,10 +563,11 @@ articleTitle: d.article_title,
               if (isLast) {
                 return {
                   ...part,
-                  status: "complete" as AgentStepStatus,
+                  status: (isDegraded ? "degraded" : "complete") as AgentStepStatus,
                   result,
                   durationMs,
                   completedAt: Date.now(),
+                  error: isDegraded ? (result?.error as string) : undefined,
                 };
               }
             }
@@ -695,10 +698,23 @@ articleTitle: d.article_title,
         break;
       }
 
-      case "agent.paused": {
-        get()._updateActiveSession((s) => ({ ...s, status: "paused" }));
-        break;
-      }
+case "agent.paused": {
+  // Check if this is a disconnect-induced pause
+  const reason = p.reason as string | undefined;
+  if (reason === "disconnect") {
+    get()._updateLastAssistantMessage((m) => ({
+      ...m,
+      parts: [
+        ...m.parts.map((part) =>
+          part.type === "text" && part.streaming ? { ...part, streaming: false } : part
+        ),
+        { type: "text", text: "📡 连接已断开，重连后可继续写作" },
+      ],
+    }));
+  }
+  get()._updateActiveSession((s) => ({ ...s, status: "paused" }));
+  break;
+}
 
       case "agent.resumed": {
         get()._updateActiveSession((s) => ({ ...s, status: "running" }));
@@ -740,6 +756,18 @@ articleTitle: d.article_title,
         const errorMsg = p.message as string;
         const errorCode = p.code as string;
 
+        // ── Friendly error messages for exit mechanism codes ──
+        const ERROR_MESSAGES: Record<string, string> = {
+          timeout: "⏱️ 写作超时，请简化选题后重试",
+          budget_exceeded: "💰 Token 预算已用尽，请稍后重试",
+          circuit_breaker: "🔌 AI 服务暂时不可用，请稍后重试",
+          concurrent_limit: "⏳ 已有写作任务进行中，请等待完成或取消后再试",
+          server_busy: "🔧 服务器繁忙，请稍后重试",
+          step_failed: `❌ 步骤执行失败：${errorMsg}`,
+          panic: `❌ 内部错误：${errorMsg}`,
+        };
+        const friendlyMsg = ERROR_MESSAGES[errorCode] ?? `❌ 错误：${errorMsg}`;
+
         // Guest limit reached — auto-open register modal
         if (errorCode === "guest_limit_reached") {
           // Use dynamic import to avoid circular dependency
@@ -759,7 +787,7 @@ articleTitle: d.article_title,
             ...m.parts.map((part) =>
               part.type === "text" && part.streaming ? { ...part, streaming: false } : part
             ),
-            { type: "text", text: `❌ 错误：${errorMsg}` },
+            { type: "text", text: friendlyMsg },
           ],
         }));
         get()._updateActiveSession((s) => ({ ...s, status: "error" }));

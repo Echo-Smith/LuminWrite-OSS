@@ -56,6 +56,8 @@ func NewIntentStep(llm *tools.LLMClient) *IntentStep {
 
 func (s *IntentStep) Name() engine.StepName { return engine.StepIntent }
 func (s *IntentStep) CanPause() bool         { return false }
+func (s *IntentStep) Timeout() time.Duration { return 30 * time.Second }
+func (s *IntentStep) Critical() bool         { return true }
 
 func (s *IntentStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	message := execCtx.UserInput
@@ -217,6 +219,8 @@ func NewQueryPlanStep(llm *tools.LLMClient) *QueryPlanStep {
 
 func (s *QueryPlanStep) Name() engine.StepName { return engine.StepQueryPlan }
 func (s *QueryPlanStep) CanPause() bool         { return false }
+func (s *QueryPlanStep) Timeout() time.Duration { return 30 * time.Second }
+func (s *QueryPlanStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for intents that don't need search/query planning.
 // chat: conversational, no writing pipeline
@@ -317,6 +321,8 @@ func NewSearchStep(llm *tools.LLMClient, search *tools.SearchClient) *SearchStep
 
 func (s *SearchStep) Name() engine.StepName { return engine.StepSearch }
 func (s *SearchStep) CanPause() bool         { return true }
+func (s *SearchStep) Timeout() time.Duration { return 45 * time.Second }
+func (s *SearchStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for intents that don't need search.
 // Same set as QueryPlanStep — if no query plan was created, no search is needed.
@@ -439,6 +445,8 @@ func NewRelevanceStepWithEmbedding(emb *tools.EmbeddingClient) *RelevanceStep {
 
 func (s *RelevanceStep) Name() engine.StepName { return engine.StepRelevance }
 func (s *RelevanceStep) CanPause() bool         { return false }
+func (s *RelevanceStep) Timeout() time.Duration { return 30 * time.Second }
+func (s *RelevanceStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for intents that don't produce search results.
 func (s *RelevanceStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
@@ -488,6 +496,20 @@ func (s *RelevanceStep) Execute(ctx context.Context, execCtx *engine.ExecutionCo
 		execCtx.SearchResults = deduplicateResultsSemantic(ctx, execCtx.SearchResults, s.embedding)
 	} else {
 		execCtx.SearchResults = deduplicateResults(execCtx.SearchResults)
+	}
+
+	// Stochastic sampling: keep all strong/medium results, randomly sample weak results
+	if execCtx.StochasticState != nil {
+		if ss, ok := execCtx.StochasticState.(*memory.StochasticState); ok {
+			var filtered []engine.SearchResult
+			for _, r := range execCtx.SearchResults {
+				if r.Relevance == "weak" && !ss.ShouldKeep() {
+					continue // 随机丢弃弱相关结果
+				}
+				filtered = append(filtered, r)
+			}
+			execCtx.SearchResults = filtered
+		}
 	}
 
 	return nil
@@ -731,6 +753,8 @@ func NewOutlineStep(llm *tools.LLMClient) *OutlineStep {
 
 func (s *OutlineStep) Name() engine.StepName { return engine.StepOutline }
 func (s *OutlineStep) CanPause() bool         { return true }
+func (s *OutlineStep) Timeout() time.Duration { return 60 * time.Second }
+func (s *OutlineStep) Critical() bool         { return true }
 
 // ShouldSkip returns true for intents that don't need an outline.
 // Also skips when WritingTask is nil (e.g. when QueryPlanStep was skipped).
@@ -775,9 +799,15 @@ func (s *OutlineStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		// Emit await_input and wait for user confirmation
 		emitter.AwaitInput(engine.StepOutline, outline, []string{"confirm", "edit", "regenerate"}, attempt+1, 5)
 
-		// Wait for user confirmation
-		confirmedData, err := execCtx.WaitForConfirm(ctx)
+		// Wait for user confirmation (with timeout for user inactivity)
+		confirmedData, err := execCtx.WaitForConfirmWithTimeout(ctx, execCtx.ConfirmTimeout)
 		if err != nil {
+			// Handle confirm timeout: auto-confirm with current outline
+			if err == engine.ErrConfirmTimeout {
+				slog.Warn("outline confirm timeout, auto-confirming",
+					"trace_id", execCtx.TraceID)
+				return nil
+			}
 			return err
 		}
 
@@ -883,6 +913,8 @@ func NewWriteStepWithSearch(llm *tools.LLMClient, p *profile.StyleProfile, searc
 
 func (s *WriteStep) Name() engine.StepName { return engine.StepWrite }
 func (s *WriteStep) CanPause() bool         { return true }
+func (s *WriteStep) Timeout() time.Duration { return 180 * time.Second }
+func (s *WriteStep) Critical() bool         { return true }
 
 // ShouldSkip returns true for chat intent — chat is handled by ChatStep.
 func (s *WriteStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
@@ -1052,6 +1084,22 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		}
 	}
 
+	// Inject entity memory network context
+	if execCtx.EntityContext != nil {
+		if entityCtx, ok := execCtx.EntityContext.(*memory.EntityGraphResult); ok {
+			promptBuilder.WriteString(entityCtx.FormattedContext)
+		}
+	}
+
+	// Inject working memory summary
+	if execCtx.WorkingSummary != nil {
+		if ws, ok := execCtx.WorkingSummary.(*memory.WorkingSummary); ok {
+			if wsStr := memory.FormatWorkingSummaryForPrompt(ws); wsStr != "" {
+				promptBuilder.WriteString(wsStr)
+			}
+		}
+	}
+
 	// Add output format requirements
 	// For writing mode: use JSON title prefix + Markdown body
 	// For other modes (polish/shorten/expand): plain Markdown (title already in source text)
@@ -1067,11 +1115,35 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		promptBuilder.WriteString(fmt.Sprintf("\n输出格式：Markdown，标题以 %s 开头\n", s.profile.OutputFormat.TitlePrefix))
 	}
 
-	// Stream the article
-	messages := []tools.LLMMessage{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: promptBuilder.String()},
+// Stream the article
+messages := []tools.LLMMessage{
+	{Role: "system", Content: systemPrompt},
+}
+
+// Inject conversation history (short-term memory) before current user message
+if execCtx.ConversationHistory != nil {
+	if history, ok := execCtx.ConversationHistory.([]memory.ConversationMessage); ok {
+		for _, msg := range history {
+			content := msg.Content
+			// 安全截断过长的历史消息，避免 token 溢出
+			maxLen := 800
+			if msg.Role == memory.RoleAssistant && msg.ContentType == memory.ContentArticle {
+				maxLen = 500
+			}
+			if len(content) > maxLen {
+				content = memory.SafeTruncate(content, maxLen) + "...（已截断）"
+			}
+			messages = append(messages, tools.LLMMessage{
+				Role:    string(msg.Role),
+				Content: content,
+			})
+		}
 	}
+}
+
+messages = append(messages, tools.LLMMessage{
+	Role: "user", Content: promptBuilder.String(),
+})
 
 	// Determine thinking strategy by task mode:
 	//   writing → thinking enabled (deep reasoning for article composition)
@@ -1085,6 +1157,14 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	} else {
 		streamOpts = []tools.ChatOption{
 			tools.WithThinking(false),
+		}
+	}
+
+	// Apply stochastic temperature adjustment (from StochasticState)
+	if execCtx.StochasticState != nil {
+		if ss, ok := execCtx.StochasticState.(*memory.StochasticState); ok {
+			adjusted := ss.AdjustedTemperature(0.7) // base temp 0.7 for writing
+			streamOpts = append(streamOpts, tools.WithTemperature(adjusted))
 		}
 	}
 
@@ -1411,6 +1491,8 @@ func NewPostReviewStepWithSearchAndJiaozhen(llm *tools.LLMClient, sc engine.Sens
 
 func (s *PostReviewStep) Name() engine.StepName { return engine.StepPostReview }
 func (s *PostReviewStep) CanPause() bool         { return false }
+func (s *PostReviewStep) Timeout() time.Duration { return 60 * time.Second }
+func (s *PostReviewStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for chat intent — chat responses don't need review.
 func (s *PostReviewStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
@@ -1761,6 +1843,8 @@ func NewAutoFixStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *A
 
 func (s *AutoFixStep) Name() engine.StepName { return engine.StepAutoFix }
 func (s *AutoFixStep) CanPause() bool         { return false }
+func (s *AutoFixStep) Timeout() time.Duration { return 90 * time.Second }
+func (s *AutoFixStep) Critical() bool         { return false }
 
 // ShouldSkip returns true for chat intent — chat responses don't need auto-fix.
 func (s *AutoFixStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
@@ -1769,6 +1853,15 @@ func (s *AutoFixStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
 
 func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if execCtx.ReviewResult == nil || execCtx.ReviewResult.Passed {
+		return nil
+	}
+
+	// ── Review-Fix loop limit ──
+	if execCtx.CheckFixLimit() {
+		slog.Warn("max fix attempts reached, skipping auto_fix",
+			"trace_id", execCtx.TraceID,
+			"attempts", execCtx.FixAttempts,
+			"max", execCtx.MaxFixAttempts)
 		return nil
 	}
 
@@ -1854,6 +1947,7 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 	// Mark as passed if we fixed at least something
 	if fixedSomething {
 		execCtx.ReviewResult.Passed = true
+		execCtx.FixAttempts++
 	}
 
 	return nil

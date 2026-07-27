@@ -116,6 +116,18 @@ func (e *WSEmitter) Paused(step engine.StepName, savedState interface{}) {
 	})
 }
 
+func (e *WSEmitter) PausedWithReason(step engine.StepName, savedState interface{}, reason string) {
+	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
+		Type: websocket.MsgAgentPaused,
+		Payload: websocket.PausedPayload{
+			TraceID:    e.traceID,
+			Step:       string(step),
+			SavedState: savedState,
+			Reason:     reason,
+		},
+	})
+}
+
 func (e *WSEmitter) Resumed(step engine.StepName) {
 	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
 		Type: websocket.MsgAgentResumed,

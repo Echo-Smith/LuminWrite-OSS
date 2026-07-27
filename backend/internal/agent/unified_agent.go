@@ -71,14 +71,49 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 	}
 
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
+		// ── Exit check: cancellation ──
 		if execCtx.IsCancelled() {
 			a.emitter.Cancelled()
 			return fmt.Errorf("cancelled")
 		}
 
+		// ── Exit check: global context timeout ──
+		if ctx.Err() != nil {
+			a.emitter.Error("timeout", "执行超时（超过全局时间限制）", execCtx.CurrentStep)
+			execCtx.Status = engine.StatusFailed
+			return ctx.Err()
+		}
+
+		// ── Exit check: token budget ──
+		if execCtx.CheckBudget() {
+			a.emitter.Error("budget_exceeded",
+				fmt.Sprintf("Token 预算已用尽（已用 %d / 上限 %d）", execCtx.TotalTokens, execCtx.MaxTokens),
+				execCtx.CurrentStep)
+			execCtx.Status = engine.StatusFailed
+			return engine.ErrBudgetExceeded
+		}
+
+		// ── Exit check: client disconnected ──
+		if execCtx.IsDisconnected() {
+			slog.Info("client disconnected, pausing unified agent", "trace_id", execCtx.TraceID, "iteration", iteration)
+			execCtx.Status = engine.StatusPaused
+			a.emitter.PausedWithReason(execCtx.CurrentStep, nil, "disconnect")
+			return nil
+		}
+
+		// ── Exit check: circuit breaker ──
+		if execCtx.MaxLLMFails > 0 && execCtx.ConsecutiveLLMFails >= execCtx.MaxLLMFails {
+			a.emitter.Error("circuit_breaker",
+				fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
+				execCtx.CurrentStep)
+			execCtx.Status = engine.StatusFailed
+			return engine.ErrCircuitBreaker
+		}
+
 		slog.Info("unified agent iteration",
 			"trace_id", execCtx.TraceID,
 			"iteration", iteration,
+			"total_tokens", execCtx.TotalTokens,
 		)
 
 		resp, llmResp, err := a.llm.Chat(ctx, conversation,
@@ -87,8 +122,19 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 			tools.WithTools(toolDefs),
 		)
 		if err != nil {
+			// ── Circuit breaker: record LLM failure ──
+			if execCtx.RecordLLMFailure() {
+				a.emitter.Error("circuit_breaker",
+					fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
+					execCtx.CurrentStep)
+				execCtx.Status = engine.StatusFailed
+				return fmt.Errorf("circuit breaker tripped after LLM error at iteration %d: %w", iteration, err)
+			}
 			return fmt.Errorf("unified agent LLM call failed at iteration %d: %w", iteration, err)
 		}
+		// LLM call succeeded — reset circuit breaker
+		execCtx.RecordLLMSuccess()
+
 		if llmResp != nil {
 			execCtx.TotalTokens += llmResp.Usage.TotalTokens
 		}
@@ -168,6 +214,14 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 				ToolCallID: tc.ID,
 			})
 
+			// ── Exit check: disconnect during tool execution ──
+			if execCtx.IsDisconnected() {
+				slog.Info("client disconnected during tool execution", "trace_id", execCtx.TraceID, "tool", toolName)
+				execCtx.Status = engine.StatusPaused
+				a.emitter.PausedWithReason(engine.StepName(toolName), nil, "disconnect")
+				return nil
+			}
+
 			if execCtx.CheckPause(ctx, a.emitter, engine.StepName(toolName)) != nil {
 				if execCtx.IsCancelled() {
 					a.emitter.Cancelled()
@@ -236,8 +290,9 @@ func (a *UnifiedAgent) buildPlannerPrompt() string {
 	sb.WriteString("3. 如果 post_review 发现问题且 auto_fix 可以修复，调用 auto_fix\n")
 	sb.WriteString("4. 如果 auto_fix 后仍有严重问题，可以再次调用 post_review\n")
 	sb.WriteString("5. 文章生成并评审通过后，调用 memory_extract，然后结束\n")
-	sb.WriteString("6. 可以使用 MCP 工具（mcp__ 开头）获取额外信息，如事实核查、文件读取等\n")
-	sb.WriteString("7. 每次只调用一个工具，根据执行结果决定下一步\n")
+	sb.WriteString("6. auto_fix 最多执行 2 次，超过后不再修复，直接完成\n")
+	sb.WriteString("7. 可以使用 MCP 工具（mcp__ 开头）获取额外信息，如事实核查、文件读取等\n")
+	sb.WriteString("8. 每次只调用一个工具，根据执行结果决定下一步\n")
 	sb.WriteString("\n重要：如果当前状态已经满足用户需求，直接回复完成（不调用工具）。\n")
 	return sb.String()
 }

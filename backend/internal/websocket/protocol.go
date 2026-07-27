@@ -174,6 +174,7 @@ type PausedPayload struct {
 	TraceID    string      `json:"trace_id"`
 	Step       string      `json:"step"`
 	SavedState interface{} `json:"saved_state"`
+	Reason     string      `json:"reason,omitempty"` // "disconnect" | "user" | ""
 }
 
 // ResumedPayload
