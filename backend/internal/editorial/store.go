@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -80,8 +81,8 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	return &task, nil
 }
 
-// ListTasks 列出任务（支持状态过滤）
-func (s *Store) ListTasks(ctx context.Context, status string, limit, offset int) ([]Task, error) {
+// ListTasks 列出任务（支持状态过滤和用户隔离）
+func (s *Store) ListTasks(ctx context.Context, status string, ownerID string, limit, offset int) ([]Task, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -93,11 +94,22 @@ func (s *Store) ListTasks(ctx context.Context, status string, limit, offset int)
 		FROM editorial_tasks
 	`
 	args := []interface{}{}
+	argIdx := 1
+	whereParts := []string{}
 	if status != "" {
-		query += " WHERE status = $1"
+		whereParts = append(whereParts, fmt.Sprintf("status = $%d", argIdx))
 		args = append(args, status)
+		argIdx++
 	}
-	query += " ORDER BY created_at DESC LIMIT $" + fmt.Sprintf("%d", len(args)+1) + " OFFSET $" + fmt.Sprintf("%d", len(args)+2)
+	if ownerID != "" {
+		whereParts = append(whereParts, fmt.Sprintf("owner_id = $%d", argIdx))
+		args = append(args, ownerID)
+		argIdx++
+	}
+	if len(whereParts) > 0 {
+		query += " WHERE " + strings.Join(whereParts, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -312,15 +324,22 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 		decidedBy.Valid = true
 		decidedBy.String = input.DecidedBy
 	}
+	// Use NULLIF for artifact_id to avoid inserting empty string into UUID column
+	var artifactID interface{}
+	if input.ArtifactID != "" {
+		artifactID = input.ArtifactID
+	} else {
+		artifactID = nil
+	}
 
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO editorial_decisions (task_id, type, decided_by, decided_by_type, status, rationale, evidence, artifact_id, decided_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $5 != 'pending' THEN NOW() ELSE NULL END)
-		RETURNING id, task_id, type, COALESCE(decided_by::text, ''), decided_by_type, status, rationale, evidence,
+		RETURNING id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
 			COALESCE(artifact_id::text, ''), created_at, decided_at
 	`,
 		taskID, input.Type, decidedBy, input.DecidedByType, input.Status,
-		input.Rationale, input.Evidence, input.ArtifactID,
+		input.Rationale, input.Evidence, artifactID,
 	).Scan(
 		&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
 		&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
@@ -337,7 +356,7 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 // ListDecisions 列出任务的所有决策
 func (s *Store) ListDecisions(ctx context.Context, taskID string) ([]Decision, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, task_id, type, COALESCE(decided_by::text, ''), decided_by_type, status, rationale, evidence,
+		SELECT id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
 			COALESCE(artifact_id::text, ''), created_at, decided_at
 		FROM editorial_decisions WHERE task_id = $1 ORDER BY created_at ASC
 	`, taskID)
@@ -364,22 +383,31 @@ func (s *Store) ListDecisions(ctx context.Context, taskID string) ([]Decision, e
 	return decisions, nil
 }
 
-// ListPendingDecisions 列出所有待处理决策（跨任务）
-func (s *Store) ListPendingDecisions(ctx context.Context, limit int) ([]DecisionWithTask, error) {
+// ListPendingDecisions 列出所有待处理决策（跨任务，支持用户隔离）
+func (s *Store) ListPendingDecisions(ctx context.Context, ownerID string, limit int) ([]DecisionWithTask, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.id, d.task_id, d.type, COALESCE(d.decided_by::text, ''), d.decided_by_type,
+	query := `
+		SELECT d.id, d.task_id, d.type, COALESCE(d.decided_by, ''), d.decided_by_type,
 		       d.status, d.rationale, d.evidence, COALESCE(d.artifact_id::text, ''),
 		       d.created_at, d.decided_at,
 		       t.title, t.status, t.assignee_type, t.owner_id, t.priority, t.token_used, t.token_budget
 		FROM editorial_decisions d
 		JOIN editorial_tasks t ON t.id = d.task_id
 		WHERE d.status = 'pending'
-		ORDER BY t.priority DESC, d.created_at ASC
-		LIMIT $1
-	`, limit)
+	`
+	args := []interface{}{}
+	argIdx := 1
+	if ownerID != "" {
+		query += fmt.Sprintf(" AND t.owner_id = $%d", argIdx)
+		args = append(args, ownerID)
+		argIdx++
+	}
+	query += fmt.Sprintf(" ORDER BY t.priority DESC, d.created_at ASC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list pending decisions: %w", err)
 	}
@@ -414,7 +442,7 @@ func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, sta
 		UPDATE editorial_decisions
 		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
 		WHERE id = $1
-		RETURNING id, task_id, type, COALESCE(decided_by::text, ''), decided_by_type, status, rationale, evidence,
+		RETURNING id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
 			COALESCE(artifact_id::text, ''), created_at, decided_at
 	`,
 		decisionID, status, rationale, decidedBy,
@@ -430,6 +458,96 @@ func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, sta
 	}
 	if decidedAt.Valid {
 		d.DecidedAt = &decidedAt.Time
+	}
+	return &d, nil
+}
+
+// ResolveDecisionTxParams holds parameters for the transactional decision resolution.
+type ResolveDecisionTxParams struct {
+	DecisionID       string
+	Status           DecisionStatus
+	Rationale        string
+	DecidedBy        string
+	NextStatus       TaskStatus // empty = no task status change
+	Assignee         AssigneeType
+	TransitionType   DecisionType   // decision type for the transition record
+	TransitionByType DecidedByType  // who triggered the transition
+}
+
+// ResolveDecisionTx atomically resolves a decision and advances the task.
+// Both the decision status update and the task status update happen in a single transaction.
+// If either fails, the entire operation rolls back.
+func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxParams) (*Decision, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Update the pending decision status
+	var d Decision
+	var decidedAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		UPDATE editorial_decisions
+		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
+		WHERE id = $1
+		RETURNING id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
+			COALESCE(artifact_id::text, ''), created_at, decided_at
+	`,
+		params.DecisionID, params.Status, params.Rationale, params.DecidedBy,
+	).Scan(
+		&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
+		&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrDecisionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update decision status in tx: %w", err)
+	}
+	if decidedAt.Valid {
+		d.DecidedAt = &decidedAt.Time
+	}
+
+	// 2. If advancing the task, create transition decision + update task status
+	if params.NextStatus != "" {
+		decStatus := DecisionStatusApproved
+		if params.Status == DecisionStatusRejected {
+			decStatus = DecisionStatusRejected
+		}
+
+		var decidedBy sql.NullString
+		if params.DecidedBy != "" {
+			decidedBy.Valid = true
+			decidedBy.String = params.DecidedBy
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO editorial_decisions (task_id, type, decided_by, decided_by_type, status, rationale, decided_at)
+			VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		`,
+			d.TaskID, params.TransitionType, decidedBy, params.TransitionByType, decStatus, params.Rationale,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create transition decision in tx: %w", err)
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+		`,
+			d.TaskID, params.NextStatus, params.Assignee,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("update task status in tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit resolve decision tx: %w", err)
 	}
 	return &d, nil
 }

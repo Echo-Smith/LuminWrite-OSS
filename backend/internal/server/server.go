@@ -378,9 +378,12 @@ r.Get("/evaluation/runs/{id}/export/{format}", s.handleExportEvalRun)
 		r.Get("/topics/stream", s.handleSSETopics) // alias per docs/03-api-specification.md
 		r.Get("/sse/stats", s.handleSSEStats)
 
-		// Editorial (编辑部系统)
+		// Editorial (编辑部系统) — JWT-protected
 		if s.editorialHdlr != nil {
-			s.editorialHdlr.RegisterRoutes(r)
+			r.Group(func(r chi.Router) {
+				r.Use(s.jwtAuthMiddleware)
+				s.editorialHdlr.RegisterRoutes(r)
+			})
 		}
 
 // Auth (JWT)

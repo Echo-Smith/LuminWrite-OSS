@@ -59,10 +59,10 @@ func (s *Store) CreateExperiment(ctx context.Context, input CreateExperimentInpu
 	var exp Experiment
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO editorial_experiments (title, description, style_slug, status, created_by)
-		VALUES ($1, $2, $3, 'pending', NULLIF($4, '')::uuid)
+		VALUES ($1, $2, $3, 'pending', NULLIF($4, ''))
 		RETURNING id::text, title, description, style_slug, status,
 			pipeline_result, unified_result, editorial_result, summary,
-			COALESCE(created_by::text, ''), created_at, updated_at
+			COALESCE(created_by, ''), created_at, updated_at
 	`,
 		input.Title, input.Description, styleSlug, userID,
 	).Scan(
@@ -82,7 +82,7 @@ func (s *Store) GetExperiment(ctx context.Context, id string) (*Experiment, erro
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id::text, title, description, style_slug, status,
 			pipeline_result, unified_result, editorial_result, summary,
-			COALESCE(created_by::text, ''), created_at, updated_at
+			COALESCE(created_by, ''), created_at, updated_at
 		FROM editorial_experiments WHERE id = $1
 	`, id).Scan(
 		&exp.ID, &exp.Title, &exp.Description, &exp.StyleSlug, &exp.Status,
@@ -106,7 +106,7 @@ func (s *Store) ListExperiments(ctx context.Context, limit int) ([]Experiment, e
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, title, description, style_slug, status,
 			pipeline_result, unified_result, editorial_result, summary,
-			COALESCE(created_by::text, ''), created_at, updated_at
+			COALESCE(created_by, ''), created_at, updated_at
 		FROM editorial_experiments
 		ORDER BY created_at DESC
 		LIMIT $1

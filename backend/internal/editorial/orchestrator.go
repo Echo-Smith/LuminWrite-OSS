@@ -56,12 +56,27 @@ func (o *Orchestrator) RegisterExecutor(exec AgentExecutorAdapter) {
 	slog.Info("orchestrator: executor registered", "role", exec.Role())
 }
 
+// RunResearchAgent 启动研究 Agent（导出方法，供 Service 在事务提交后调用）
+func (o *Orchestrator) RunResearchAgent(ctx context.Context, task *Task) error {
+	return o.runResearchAgent(ctx, task)
+}
+
+// RunWritingAgent 启动写作 Agent（导出方法，供 Service 在事务提交后调用）
+func (o *Orchestrator) RunWritingAgent(ctx context.Context, task *Task) error {
+	return o.runWritingAgent(ctx, task)
+}
+
+// RunReviewAgent 启动审校 Agent（导出方法，供 Service 在事务提交后调用）
+func (o *Orchestrator) RunReviewAgent(ctx context.Context, task *Task) error {
+	return o.runReviewAgent(ctx, task)
+}
+
 // ─── 状态转换 ↔ Decision 映射 ────────────────────────────
 
 // transitionDecision 返回状态转换对应的 DecisionType 和默认 decidedByType
 func transitionDecision(from, to TaskStatus) (DecisionType, DecidedByType) {
 	switch {
-	// draft → pending_approval: 提交审批（人类操作）
+	// draft → pending_approval: 提交审批（人类操作，前向推进）
 	case from == StatusDraft && to == StatusPendingApproval:
 		return DecisionApproveTopic, DecidedByHuman
 	// pending_approval → research: 批准立项（人类决策）
@@ -72,10 +87,10 @@ func transitionDecision(from, to TaskStatus) (DecisionType, DecidedByType) {
 		return DecisionApproveTopic, DecidedByHuman
 	// research → writing: 研究完成，自动推进（系统决策）
 	case from == StatusResearch && to == StatusWriting:
-		return DecisionAllowRewrite, DecidedBySystem
+		return DecisionResearchComplete, DecidedBySystem
 	// writing → review: 写作完成，自动推进（系统决策）
 	case from == StatusWriting && to == StatusReview:
-		return DecisionAllowRewrite, DecidedBySystem
+		return DecisionDraftComplete, DecidedBySystem
 	// review → pending_publish: 审校通过（审校 Agent 决策）
 	case from == StatusReview && to == StatusPendingPublish:
 		return DecisionAcceptReview, DecidedByReviewAgent
@@ -96,14 +111,22 @@ func transitionDecision(from, to TaskStatus) (DecisionType, DecidedByType) {
 	}
 }
 
-// decisionStatusForTransition 根据目标状态判断 Decision 是 approved 还是 rejected
-func decisionStatusForTransition(to TaskStatus) DecisionStatus {
-	// 退回类转换 = rejected，前进类转换 = approved
-	switch to {
-	case StatusDraft, StatusPendingApproval:
-		// 退回到 draft 或 pending_approval = 驳回
+// decisionStatusForTransition 根据转换方向判断 Decision 是 approved 还是 rejected
+// 只有真正的退回（向 draft/writing 方向）才是 rejected；
+// 前向推进（包括提交审批、升级到人类裁决）都是 approved。
+func decisionStatusForTransition(from, to TaskStatus) DecisionStatus {
+	switch {
+	case to == StatusDraft:
+		// 退回到 draft = 驳回
+		return DecisionStatusRejected
+	case from == StatusReview && to == StatusWriting:
+		// 审校退回写作 = 驳回
+		return DecisionStatusRejected
+	case from == StatusPendingPublish && to == StatusReview:
+		// 驳回发布 = 驳回
 		return DecisionStatusRejected
 	default:
+		// 前向推进 = 批准（包括 draft→pending_approval, research→writing, writing→review, review→pending_approval 等）
 		return DecisionStatusApproved
 	}
 }
@@ -128,7 +151,7 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 
 	// ── 原子化：先创建 Decision，再更新状态 ──
 	decType, decByType := transitionDecision(task.Status, input.TargetStatus)
-	decStatus := decisionStatusForTransition(input.TargetStatus)
+	decStatus := decisionStatusForTransition(task.Status, input.TargetStatus)
 
 	// 如果是人类操作，用 input 中传入的或默认的 decidedBy
 	decidedBy := input.DecidedBy
@@ -559,8 +582,8 @@ func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artif
 
 	// 动态路由决策
 	switch {
-	case sourceCount >= 3 && verifiedClaims >= 2 && gapCount == 0:
-		// 质量充分 → 自动推进到写作
+	case sourceCount >= 3 && gapCount == 0:
+		// 质量充分 → 自动推进到写作（不再要求 verifiedClaims >= 2，审校 Agent 负责验证）
 		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
 			TargetStatus: StatusWriting,
 			AssigneeType: AssigneeWritingAgent,
