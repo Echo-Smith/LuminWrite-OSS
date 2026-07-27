@@ -3,25 +3,32 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 )
 
+// ─── Errors ──────────────────────────────────────────────
+
+// ErrUserStyleNotFound is returned when a user style profile or version is not found.
+var ErrUserStyleNotFound = errors.New("user style not found")
+
 // ─── Types ───────────────────────────────────────────────
 
 // UserStyleProfile is the user-owned style profile record.
 type UserStyleProfile struct {
-	ID            string    `json:"id"`
-	OwnerUserID   string    `json:"owner_user_id"`
-	Slug          string    `json:"slug"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description"`
-	Status        string    `json:"status"` // draft | pending_review | approved | rejected
-	CurrentVersion int      `json:"current_version"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	OwnerUserID    string    `json:"owner_user_id"`
+	Slug           string    `json:"slug"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description"`
+	Status         string    `json:"status"` // draft | pending_review | approved | rejected
+	CurrentVersion int       `json:"current_version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // UserStyleProfileVersion is an immutable snapshot of a style config.
@@ -36,21 +43,37 @@ type UserStyleProfileVersion struct {
 
 // StyleReviewRequest is a review request bound to a specific version.
 type StyleReviewRequest struct {
-	ID                string     `json:"id"`
-	ProfileID         string     `json:"profile_id"`
-	SubmittedVersionID string    `json:"submitted_version_id"`
-	Status            string     `json:"status"` // pending | approved | rejected
-	ReviewNote        string     `json:"review_note"`
-	ReviewedBy        string     `json:"reviewed_by"`
-	ReviewedAt        *time.Time `json:"reviewed_at"`
-	CreatedAt         time.Time  `json:"created_at"`
+	ID                 string     `json:"id"`
+	ProfileID          string     `json:"profile_id"`
+	SubmittedVersionID string     `json:"submitted_version_id"`
+	Status             string     `json:"status"` // pending | approved | rejected
+	ReviewNote         string     `json:"review_note"`
+	ReviewedBy         string     `json:"reviewed_by"`
+	ReviewedAt         *time.Time `json:"reviewed_at"`
+	CreatedAt          time.Time  `json:"created_at"`
 
-	// Joined fields (optional)
-	ProfileName    string `json:"profile_name,omitempty"`
-	ProfileSlug    string `json:"profile_slug,omitempty"`
-	OwnerUserID    string `json:"owner_user_id,omitempty"`
-	VersionNumber  int    `json:"version_number,omitempty"`
-	VersionConfig  string `json:"version_config,omitempty"`
+	// Joined fields (populated by ListPendingReviews)
+	ProfileName   string `json:"profile_name,omitempty"`
+	ProfileSlug   string `json:"profile_slug,omitempty"`
+	OwnerUserID   string `json:"owner_user_id,omitempty"`
+	VersionNumber int    `json:"version_number,omitempty"`
+	VersionConfig string `json:"version_config,omitempty"`
+}
+
+// ─── SQL Constants ───────────────────────────────────────
+
+const userProfileColumns = `id, owner_user_id::text, slug, name, description, status, current_version, created_at, updated_at`
+
+const versionColumns = `id, profile_id, version, config::text, changelog, created_at`
+
+// scanProfile scans a full UserStyleProfile from a scanner.
+func scanProfile(s interface{ Scan(...any) error }, p *UserStyleProfile) error {
+	return s.Scan(&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt)
+}
+
+// scanVersion scans a full UserStyleProfileVersion from a scanner.
+func scanVersion(s interface{ Scan(...any) error }, v *UserStyleProfileVersion) error {
+	return s.Scan(&v.ID, &v.ProfileID, &v.Version, &v.Config, &v.Changelog, &v.CreatedAt)
 }
 
 // ─── Store ───────────────────────────────────────────────
@@ -73,10 +96,9 @@ func (s *UserStyleStore) CreateProfile(ctx context.Context, ownerUserID, slug, n
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO user_style_profiles (owner_user_id, slug, name, description, status, current_version)
 		VALUES ($1, $2, $3, $4, 'draft', 0)
-		RETURNING id, owner_user_id::text, slug, name, description, status, current_version, created_at, updated_at
-	`, ownerUserID, slug, name, description).Scan(
-		&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt,
-	)
+		RETURNING `+userProfileColumns,
+		ownerUserID, slug, name, description,
+	).Scan(&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create user style profile: %w", err)
 	}
@@ -87,11 +109,9 @@ func (s *UserStyleStore) CreateProfile(ctx context.Context, ownerUserID, slug, n
 func (s *UserStyleStore) GetProfile(ctx context.Context, id string) (*UserStyleProfile, error) {
 	var p UserStyleProfile
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, owner_user_id::text, slug, name, description, status, current_version, created_at, updated_at
+		SELECT `+userProfileColumns+`
 		FROM user_style_profiles WHERE id = $1
-	`, id).Scan(
-		&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt,
-	)
+	`, id).Scan(&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get user style profile: %w", err)
 	}
@@ -101,7 +121,7 @@ func (s *UserStyleStore) GetProfile(ctx context.Context, id string) (*UserStyleP
 // ListProfilesByOwner returns all style profiles for a user.
 func (s *UserStyleStore) ListProfilesByOwner(ctx context.Context, ownerUserID string) ([]UserStyleProfile, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, owner_user_id::text, slug, name, description, status, current_version, created_at, updated_at
+		SELECT `+userProfileColumns+`
 		FROM user_style_profiles
 		WHERE owner_user_id = $1
 		ORDER BY updated_at DESC
@@ -114,12 +134,53 @@ func (s *UserStyleStore) ListProfilesByOwner(ctx context.Context, ownerUserID st
 	var profiles []UserStyleProfile
 	for rows.Next() {
 		var p UserStyleProfile
-		if err := rows.Scan(&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := scanProfile(rows, &p); err != nil {
 			return nil, err
 		}
 		profiles = append(profiles, p)
 	}
-	return profiles, nil
+	return profiles, rows.Err()
+}
+
+// ProfileWithConfig pairs a user style profile with its latest version config JSON.
+type ProfileWithConfig struct {
+	UserStyleProfile
+	ConfigJSON string // empty if no version saved
+}
+
+// ListProfilesWithLatestVersion returns all profiles for a user with their latest
+// version config in a single query (LATERAL JOIN), avoiding N+1.
+func (s *UserStyleStore) ListProfilesWithLatestVersion(ctx context.Context, ownerUserID string) ([]ProfileWithConfig, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.`+userProfileColumns+`,
+		       COALESCE(v.config::text, '') AS latest_config
+		FROM user_style_profiles p
+		LEFT JOIN LATERAL (
+			SELECT config FROM user_style_profile_versions
+			WHERE profile_id = p.id
+			ORDER BY version DESC LIMIT 1
+		) v ON true
+		WHERE p.owner_user_id = $1
+		ORDER BY p.updated_at DESC
+	`, ownerUserID)
+	if err != nil {
+		return nil, fmt.Errorf("list profiles with version: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ProfileWithConfig
+	for rows.Next() {
+		var pwc ProfileWithConfig
+		if err := rows.Scan(
+			&pwc.ID, &pwc.OwnerUserID, &pwc.Slug, &pwc.Name, &pwc.Description,
+			&pwc.Status, &pwc.CurrentVersion, &pwc.CreatedAt, &pwc.UpdatedAt,
+			&pwc.ConfigJSON,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, pwc)
+	}
+	return result, rows.Err()
 }
 
 // UpdateProfile updates the mutable fields of a user style profile.
@@ -168,7 +229,7 @@ func (s *UserStyleStore) SaveVersion(ctx context.Context, profileID string, conf
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO user_style_profile_versions (id, profile_id, version, config, changelog)
 		VALUES ($1, $2, $3, $4, $5)
-	`, versionID, profileID, newVersion, []byte(config), changelog)
+	`, versionID, profileID, newVersion, config, changelog)
 	if err != nil {
 		return nil, fmt.Errorf("insert version: %w", err)
 	}
@@ -197,7 +258,7 @@ func (s *UserStyleStore) SaveVersion(ctx context.Context, profileID string, conf
 func (s *UserStyleStore) GetLatestVersion(ctx context.Context, profileID string) (*UserStyleProfileVersion, error) {
 	var v UserStyleProfileVersion
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, profile_id, version, config::text, changelog, created_at
+		SELECT `+versionColumns+`
 		FROM user_style_profile_versions
 		WHERE profile_id = $1
 		ORDER BY version DESC
@@ -213,7 +274,7 @@ func (s *UserStyleStore) GetLatestVersion(ctx context.Context, profileID string)
 func (s *UserStyleStore) GetVersion(ctx context.Context, versionID string) (*UserStyleProfileVersion, error) {
 	var v UserStyleProfileVersion
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, profile_id, version, config::text, changelog, created_at
+		SELECT `+versionColumns+`
 		FROM user_style_profile_versions WHERE id = $1
 	`, versionID).Scan(&v.ID, &v.ProfileID, &v.Version, &v.Config, &v.Changelog, &v.CreatedAt)
 	if err != nil {
@@ -225,7 +286,7 @@ func (s *UserStyleStore) GetVersion(ctx context.Context, versionID string) (*Use
 // ListVersions returns all versions for a profile.
 func (s *UserStyleStore) ListVersions(ctx context.Context, profileID string) ([]UserStyleProfileVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, profile_id, version, config::text, changelog, created_at
+		SELECT `+versionColumns+`
 		FROM user_style_profile_versions
 		WHERE profile_id = $1
 		ORDER BY version DESC
@@ -238,12 +299,12 @@ func (s *UserStyleStore) ListVersions(ctx context.Context, profileID string) ([]
 	var versions []UserStyleProfileVersion
 	for rows.Next() {
 		var v UserStyleProfileVersion
-		if err := rows.Scan(&v.ID, &v.ProfileID, &v.Version, &v.Config, &v.Changelog, &v.CreatedAt); err != nil {
+		if err := scanVersion(rows, &v); err != nil {
 			return nil, err
 		}
 		versions = append(versions, v)
 	}
-	return versions, nil
+	return versions, rows.Err()
 }
 
 // ─── Review Workflow ─────────────────────────────────────
@@ -328,7 +389,7 @@ func (s *UserStyleStore) ListPendingReviews(ctx context.Context) ([]StyleReviewR
 		}
 		reviews = append(reviews, r)
 	}
-	return reviews, nil
+	return reviews, rows.Err()
 }
 
 // ApproveReview marks a review request as approved, updates the profile status,
@@ -342,13 +403,13 @@ func (s *UserStyleStore) ApproveReview(ctx context.Context, reviewID, reviewedBy
 
 	// Get review request with joined info
 	var (
-		profileID        string
+		profileID          string
 		submittedVersionID string
-		profileSlug      string
-		profileName      string
-		profileDesc      string
-		ownerUserID      string
-		versionConfig    []byte
+		profileSlug        string
+		profileName        string
+		profileDesc        string
+		ownerUserID        string
+		versionConfig      []byte
 	)
 	err = tx.QueryRowContext(ctx, `
 		SELECT r.profile_id, r.submitted_version_id, p.slug, p.name, p.description,
@@ -405,12 +466,14 @@ func (s *UserStyleStore) ApproveReview(ctx context.Context, reviewID, reviewedBy
 		return fmt.Errorf("insert into global style_profiles: %w", err)
 	}
 
-	// Also create a profile_versions record
-	_, _ = tx.ExecContext(ctx, `
+	// Also create a profile_versions record (best-effort, log on failure)
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO profile_versions (id, profile_slug, version, config, changelog, status, published_at, created_at, created_by)
 		VALUES (uuid_generate_v4(), $1, 1, $2, 'community contribution', 'published', NOW(), NOW(), $3)
 		ON CONFLICT (profile_slug, version) DO NOTHING
-	`, globalSlug, versionConfig, reviewedBy)
+	`, globalSlug, versionConfig, reviewedBy); err != nil {
+		slog.Warn("failed to insert profile_versions record (non-fatal)", "error", err, "slug", globalSlug)
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)

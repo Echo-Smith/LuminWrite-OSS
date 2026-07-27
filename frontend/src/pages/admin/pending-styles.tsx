@@ -30,15 +30,21 @@ export function PendingStylesPage() {
   const [rejectDialog, setRejectDialog] = useState<PendingReview | null>(null);
   const [rejectNote, setRejectNote] = useState("");
   const [actioning, setActioning] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const loadReviews = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch("/api/v2/admin/pending-styles");
       const json = await res.json();
       if (json.success) {
         setReviews(json.data?.reviews ?? []);
+      } else {
+        setError(json.error?.message ?? "加载失败");
       }
+    } catch {
+      setError("网络错误");
     } finally {
       setLoading(false);
     }
@@ -50,9 +56,17 @@ export function PendingStylesPage() {
 
   const handleApprove = async (id: string) => {
     setActioning(id);
+    setError(null);
     try {
-      await fetch(`/api/v2/admin/pending-styles/${id}/approve`, { method: "POST" });
-      await loadReviews();
+      const res = await fetch(`/api/v2/admin/pending-styles/${id}/approve`, { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        await loadReviews();
+      } else {
+        setError(json.error?.message ?? "操作失败");
+      }
+    } catch {
+      setError("网络错误");
     } finally {
       setActioning(null);
     }
@@ -61,15 +75,23 @@ export function PendingStylesPage() {
   const handleReject = async () => {
     if (!rejectDialog) return;
     setActioning(rejectDialog.id);
+    setError(null);
     try {
-      await fetch(`/api/v2/admin/pending-styles/${rejectDialog.id}/reject`, {
+      const res = await fetch(`/api/v2/admin/pending-styles/${rejectDialog.id}/reject`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note: rejectNote }),
       });
-      setRejectDialog(null);
-      setRejectNote("");
-      await loadReviews();
+      const json = await res.json();
+      if (json.success) {
+        setRejectDialog(null);
+        setRejectNote("");
+        await loadReviews();
+      } else {
+        setError(json.error?.message ?? "驳回失败");
+      }
+    } catch {
+      setError("网络错误");
     } finally {
       setActioning(null);
     }
@@ -97,6 +119,12 @@ export function PendingStylesPage() {
           </Badge>
         )}
       </div>
+
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-12">

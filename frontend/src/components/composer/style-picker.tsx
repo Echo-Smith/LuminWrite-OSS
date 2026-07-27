@@ -2,11 +2,12 @@
  * 风格选择器 — Popover 下拉选择
  * 支持全局风格 + 用户自定义风格 + AI 创建入口
  */
-import { useState, useEffect } from "react";
-import { Palette, ChevronDown, Sparkles, Plus } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Palette, ChevronDown, Sparkles } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { StyleBuilderDialog } from "@/components/composer/style-builder-dialog";
+import { useAuthStore } from "@/stores/auth-store";
 import type { StyleOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -19,9 +20,12 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
   const [styles, setStyles] = useState<StyleOption[]>([]);
   const [open, setOpen] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
+  const token = useAuthStore((s) => s.token);
 
-  const loadStyles = () => {
-    fetch("/api/v2/styles")
+  const loadStyles = useCallback(() => {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    fetch("/api/v2/styles", { headers })
       .then((res) => res.json())
       .then((data) => {
         const styles = data?.data?.styles ?? data?.styles ?? [];
@@ -34,11 +38,11 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
           { slug: "xiaohongshu", name: "小红书风格", description: "轻松种草风格", version: 1, word_range: [300, 800], tags: ["社交媒体", "种草"] },
         ]);
       });
-  };
+  }, [token]);
 
   useEffect(() => {
     loadStyles();
-  }, []);
+  }, [loadStyles]);
 
   const selected = styles.find((s) => s.slug === value);
 

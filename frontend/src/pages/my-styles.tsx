@@ -32,10 +32,12 @@ export function MyStylesPage() {
   const [loading, setLoading] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [submitting, setSubmitting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const token = useAuthStore((s) => s.token);
 
   const loadStyles = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch("/api/v2/my-styles", {
         headers: { Authorization: `Bearer ${token}` },
@@ -43,7 +45,11 @@ export function MyStylesPage() {
       const json = await res.json();
       if (json.success) {
         setStyles(json.data?.styles ?? []);
+      } else {
+        setError(json.error?.message ?? "加载失败");
       }
+    } catch {
+      setError("网络错误");
     } finally {
       setLoading(false);
     }
@@ -55,6 +61,7 @@ export function MyStylesPage() {
 
   const handleSubmit = async (id: string) => {
     setSubmitting(id);
+    setError(null);
     try {
       const res = await fetch(`/api/v2/my-styles/${id}/submit`, {
         method: "POST",
@@ -63,7 +70,11 @@ export function MyStylesPage() {
       const json = await res.json();
       if (json.success) {
         await loadStyles();
+      } else {
+        setError(json.error?.message ?? "提交失败");
       }
+    } catch {
+      setError("网络错误");
     } finally {
       setSubmitting(null);
     }
@@ -71,14 +82,20 @@ export function MyStylesPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("确定删除这个风格吗？")) return;
+    setError(null);
     try {
-      await fetch(`/api/v2/my-styles/${id}`, {
+      const res = await fetch(`/api/v2/my-styles/${id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
-      await loadStyles();
-    } catch (e) {
-      console.error("Delete failed", e);
+      const json = await res.json();
+      if (json.success) {
+        await loadStyles();
+      } else {
+        setError(json.error?.message ?? "删除失败");
+      }
+    } catch {
+      setError("网络错误");
     }
   };
 
@@ -94,6 +111,12 @@ export function MyStylesPage() {
           AI 创建风格
         </Button>
       </div>
+
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-12">
