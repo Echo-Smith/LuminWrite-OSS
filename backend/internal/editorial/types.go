@@ -209,13 +209,15 @@ func (t ArtifactType) ConsumerFor() string {
 type DecisionType string
 
 const (
-	DecisionApproveTopic  DecisionType = "approve_topic"   // 是否立项
-	DecisionSelectAngle   DecisionType = "select_angle"     // 哪个角度更值得写
-	DecisionTrustSource   DecisionType = "trust_source"     // 某条信源是否可信
-	DecisionAcceptReview  DecisionType = "accept_review"    // 是否接受审校意见
-	DecisionAllowRewrite  DecisionType = "allow_rewrite"    // 是否允许重写
-	DecisionPublish       DecisionType = "publish"          // 是否达到发布标准
-	DecisionEscalate      DecisionType = "escalate"         // 升级到人类裁决
+	DecisionApproveTopic    DecisionType = "approve_topic"      // 是否立项
+	DecisionSelectAngle     DecisionType = "select_angle"       // 哪个角度更值得写
+	DecisionTrustSource     DecisionType = "trust_source"       // 某条信源是否可信
+	DecisionAcceptReview    DecisionType = "accept_review"      // 是否接受审校意见
+	DecisionAllowRewrite    DecisionType = "allow_rewrite"      // 是否允许重写
+	DecisionPublish         DecisionType = "publish"            // 是否达到发布标准
+	DecisionEscalate        DecisionType = "escalate"           // 升级到人类裁决
+	DecisionResearchComplete DecisionType = "research_complete" // 研究完成，进入写作
+	DecisionDraftComplete   DecisionType = "draft_complete"     // 初稿完成，进入审校
 )
 
 // DecisionStatus 决策状态

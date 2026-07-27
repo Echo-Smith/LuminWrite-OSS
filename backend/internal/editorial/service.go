@@ -80,9 +80,9 @@ func (s *Service) GetTask(ctx context.Context, id string) (*Task, error) {
 	return s.store.GetTask(ctx, id)
 }
 
-// ListTasks 列出任务
-func (s *Service) ListTasks(ctx context.Context, status string, limit, offset int) ([]Task, error) {
-	return s.store.ListTasks(ctx, status, limit, offset)
+// ListTasks 列出任务（支持用户隔离）
+func (s *Service) ListTasks(ctx context.Context, status string, ownerID string, limit, offset int) ([]Task, error) {
+	return s.store.ListTasks(ctx, status, ownerID, limit, offset)
 }
 
 // AdvanceTask 推进任务
@@ -142,44 +142,76 @@ func (s *Service) ListDecisions(ctx context.Context, taskID string) ([]Decision,
 	return s.store.ListDecisions(ctx, taskID)
 }
 
-// ListPendingDecisions 列出所有待处理决策（跨任务）
-func (s *Service) ListPendingDecisions(ctx context.Context, limit int) ([]DecisionWithTask, error) {
-	return s.store.ListPendingDecisions(ctx, limit)
+// ListPendingDecisions 列出所有待处理决策（跨任务，支持用户隔离）
+func (s *Service) ListPendingDecisions(ctx context.Context, ownerID string, limit int) ([]DecisionWithTask, error) {
+	return s.store.ListPendingDecisions(ctx, ownerID, limit)
 }
 
-// ResolveDecision 人类处理待决策 — 更新 Decision 状态后自动推进任务
+// ResolveDecision 人类处理待决策 — 原子化更新 Decision 状态 + 推进任务状态
+// 使用数据库事务确保 Decision 状态更新和 Task 状态更新同时成功或同时失败。
+// Agent 执行在事务提交后异步触发。
 func (s *Service) ResolveDecision(ctx context.Context, decisionID string, input ResolveDecisionInput, userID string) (*Decision, error) {
-	d, err := s.store.UpdateDecisionStatus(ctx, decisionID, input.Status, input.Rationale, userID)
+	// 先获取决策信息以确定下一步状态
+	d, err := s.store.UpdateDecisionStatus(ctx, decisionID, DecisionStatusPending, "", "")
 	if err != nil {
 		return nil, err
 	}
 
-	// 根据 Decision 类型和处理结果决定任务下一步
+	// 根据决策类型和处理结果确定下一步
+	var nextStatus TaskStatus
+	var assignee AssigneeType
+	var transitionType DecisionType
+	var transitionByType DecidedByType = DecidedByHuman
+
 	if input.Status == DecisionStatusApproved {
-		// 批准 → 推进到下一阶段
-		nextStatus := nextStatusForDecision(d.Type, d.TaskID)
+		nextStatus = nextStatusForDecision(d.Type)
 		if nextStatus != "" {
-			s.orchestrator.AdvanceTask(ctx, d.TaskID, AdvanceTaskInput{
-				TargetStatus: nextStatus,
-				DecidedBy:    userID,
-				Rationale:    input.Rationale,
-			})
+			assignee = defaultAssigneeForStatus(nextStatus)
+			transitionType = transitionTypeForResolve(d.Type, true)
 		}
 	} else if input.Status == DecisionStatusRejected {
-		// 驳回 → 退回上一个阶段
-		prevStatus := prevStatusForDecision(d.Type)
-		if prevStatus != "" {
-			s.orchestrator.AdvanceTask(ctx, d.TaskID, AdvanceTaskInput{
-				TargetStatus: prevStatus,
-				DecidedBy:    userID,
-				Rationale:    input.Rationale,
-			})
+		nextStatus = prevStatusForDecision(d.Type)
+		if nextStatus != "" {
+			assignee = defaultAssigneeForStatus(nextStatus)
+			transitionType = transitionTypeForResolve(d.Type, false)
+		}
+	}
+
+	// 使用事务原子化执行
+	resolved, err := s.store.ResolveDecisionTx(ctx, ResolveDecisionTxParams{
+		DecisionID:       decisionID,
+		Status:           input.Status,
+		Rationale:        input.Rationale,
+		DecidedBy:        userID,
+		NextStatus:       nextStatus,
+		Assignee:         assignee,
+		TransitionType:   transitionType,
+		TransitionByType: transitionByType,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// 事务提交后，根据新的任务状态异步触发 Agent
+	if nextStatus != "" {
+		task, err := s.store.GetTask(ctx, resolved.TaskID)
+		if err == nil {
+			task.Status = nextStatus
+			task.AssigneeType = assignee
+			switch nextStatus {
+			case StatusResearch:
+				s.orchestrator.RunResearchAgent(ctx, task)
+			case StatusWriting:
+				s.orchestrator.RunWritingAgent(ctx, task)
+			case StatusReview:
+				s.orchestrator.RunReviewAgent(ctx, task)
+			}
 		}
 	}
 
 	slog.Info("editorial: decision resolved",
-		"decision_id", decisionID, "status", input.Status, "by", userID)
-	return d, nil
+		"decision_id", decisionID, "status", input.Status, "by", userID, "next_status", nextStatus)
+	return resolved, nil
 }
 
 // ─── 统计 ─────────────────────────────────────────────────
@@ -200,7 +232,7 @@ func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
 	stats := &Stats{ByStatus: make(map[string]int)}
 
 	// 任务按状态统计
-	tasks, err := s.store.ListTasks(ctx, "", 1000, 0)
+	tasks, err := s.store.ListTasks(ctx, "", "", 1000, 0)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks for stats: %w", err)
 	}
@@ -215,10 +247,14 @@ func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
 }
 
 // nextStatusForDecision 根据决策类型返回批准后应该推进到的状态
-func nextStatusForDecision(decType DecisionType, taskID string) TaskStatus {
+func nextStatusForDecision(decType DecisionType) TaskStatus {
 	switch decType {
 	case DecisionApproveTopic:
 		return StatusResearch
+	case DecisionSelectAngle:
+		return StatusWriting // 批准选题角度 → 进入写作
+	case DecisionAllowRewrite:
+		return StatusReview // 批准重写 → 进入审校
 	case DecisionPublish:
 		return StatusPublished
 	case DecisionAcceptReview:
@@ -235,6 +271,10 @@ func prevStatusForDecision(decType DecisionType) TaskStatus {
 	switch decType {
 	case DecisionApproveTopic:
 		return StatusDraft
+	case DecisionSelectAngle:
+		return StatusResearch // 驳回选题角度 → 退回研究
+	case DecisionAllowRewrite:
+		return StatusWriting // 驳回重写 → 退回写作
 	case DecisionPublish:
 		return StatusReview
 	case DecisionAcceptReview:
@@ -243,6 +283,46 @@ func prevStatusForDecision(decType DecisionType) TaskStatus {
 		return StatusPendingApproval
 	default:
 		return ""
+	}
+}
+
+// transitionTypeForResolve 返回 ResolveDecision 事务中创建的过渡 Decision 的类型
+func transitionTypeForResolve(decType DecisionType, approved bool) DecisionType {
+	switch decType {
+	case DecisionApproveTopic:
+		return DecisionApproveTopic
+	case DecisionSelectAngle:
+		if approved {
+			return DecisionResearchComplete
+		}
+		return DecisionSelectAngle
+	case DecisionAllowRewrite:
+		if approved {
+			return DecisionDraftComplete
+		}
+		return DecisionAllowRewrite
+	case DecisionPublish:
+		return DecisionPublish
+	case DecisionAcceptReview:
+		return DecisionAcceptReview
+	case DecisionEscalate:
+		return DecisionEscalate
+	default:
+		return DecisionEscalate
+	}
+}
+
+// defaultAssigneeForStatus 返回指定任务状态的默认负责人
+func defaultAssigneeForStatus(status TaskStatus) AssigneeType {
+	switch status {
+	case StatusResearch:
+		return AssigneeResearchAgent
+	case StatusWriting:
+		return AssigneeWritingAgent
+	case StatusReview:
+		return AssigneeReviewAgent
+	default:
+		return AssigneeHuman
 	}
 }
 

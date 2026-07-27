@@ -7,8 +7,22 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/auth"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
+
+// ─── Context helpers ────────────────────────────────────
+
+// userIDFromContext extracts the authenticated user ID from the request context.
+// Uses the shared auth package so it works with JWT middleware set by the server package.
+func userIDFromContext(ctx context.Context) string {
+	return auth.UserIDFromContext(ctx)
+}
+
+// isAdminFromContext checks if the authenticated user has admin role.
+func isAdminFromContext(ctx context.Context) bool {
+	return auth.IsAdminFromContext(ctx)
+}
 
 // Handlers 编辑部 HTTP 处理器
 type Handlers struct {
@@ -67,19 +81,8 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 	})
 }
 
-// userIDFromContext 安全地从 context 中获取 userID
-func userIDFromContext(ctx context.Context) string {
-	if v := ctx.Value(userIDCtxKey); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-type ctxKey string
-
-const userIDCtxKey ctxKey = "userID"
+// userIDFromContext is defined above with auth package.
+// Removed: old ctxKey / userIDCtxKey that never matched JWT middleware's context key.
 
 // ─── 任务处理 ─────────────────────────────────────────────
 
@@ -108,7 +111,13 @@ func (h *Handlers) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	tasks, err := h.svc.ListTasks(r.Context(), status, limit, offset)
+	// User isolation: non-admin users only see their own tasks
+	ownerID := ""
+	if !isAdminFromContext(r.Context()) {
+		ownerID = userIDFromContext(r.Context())
+	}
+
+	tasks, err := h.svc.ListTasks(r.Context(), status, ownerID, limit, offset)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -263,7 +272,14 @@ func (h *Handlers) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) handleListPendingDecisions(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	results, err := h.svc.ListPendingDecisions(r.Context(), limit)
+
+	// User isolation: non-admin users only see pending decisions for their own tasks
+	ownerID := ""
+	if !isAdminFromContext(r.Context()) {
+		ownerID = userIDFromContext(r.Context())
+	}
+
+	results, err := h.svc.ListPendingDecisions(r.Context(), ownerID, limit)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

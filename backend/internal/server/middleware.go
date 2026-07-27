@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/auth"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
@@ -106,7 +107,8 @@ func userFromContext(ctx context.Context) *JWTPayload {
 // ─── JWT Middleware ─────────────────────────────────────
 
 // jwtAuthMiddleware validates JWT from the Authorization header and stores
-// the user info in the request context.
+// the user info in the request context (both as *JWTPayload for server internals
+// and as *auth.User for cross-package access).
 func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("Authorization")
@@ -124,6 +126,8 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		ctx := withUser(r.Context(), payload)
+		// Also set the shared auth.User so editorial and other packages can read identity
+		ctx = auth.SetUser(ctx, &auth.User{ID: payload.Sub, Role: payload.Role})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -139,6 +143,7 @@ func (s *Server) jwtOptionalMiddleware(next http.Handler) http.Handler {
 		if token != "" {
 			if payload, err := s.ValidateJWT(token); err == nil {
 				ctx := withUser(r.Context(), payload)
+				ctx = auth.SetUser(ctx, &auth.User{ID: payload.Sub, Role: payload.Role})
 				r = r.WithContext(ctx)
 			}
 		}
