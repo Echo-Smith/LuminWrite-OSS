@@ -39,6 +39,22 @@ type ExperimentMetrics struct {
 	ArticleTitle string  `json:"article_title,omitempty"`
 	ArticleExcerpt string `json:"article_excerpt,omitempty"` // 前200字
 	Error        string  `json:"error,omitempty"`
+	// 4.2: 盲评详细得分（LLM-as-Judge）
+	JudgeScores *BlindJudgeScores `json:"judge_scores,omitempty"`
+	// FullArticle 临时存储完整文章，不序列化到 DB（用于盲评）
+	FullArticle string `json:"-"`
+}
+
+// BlindJudgeScores LLM 盲评详细得分
+type BlindJudgeScores struct {
+	Accuracy    float64 `json:"accuracy"`     // 事实准确性
+	Structure   float64 `json:"structure"`    // 结构逻辑性
+	Style       float64 `json:"style"`        // 风格表达力
+	Insight     float64 `json:"insight"`      // 深度洞察
+	Readability float64 `json:"readability"`  // 可读性
+	Safety      float64 `json:"safety"`       // 安全合规
+	Overall     float64 `json:"overall"`      // 综合评分
+	Comment     string  `json:"comment,omitempty"` // 评委评语
 }
 
 // CreateExperimentInput 创建实验的输入

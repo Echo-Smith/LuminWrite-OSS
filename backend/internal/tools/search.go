@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,14 +19,15 @@ import (
 
 // SearchClient manages multi-source search with concurrent execution.
 type SearchClient struct {
-	tavily      *TavilyClient
-	zhihu       *ZhihuClient
-	ima         *IMAClient
-	tencent     *TencentNewsClient
-	tencentCLI  *TencentNewsCLIClient
-	weibo       *WeiboClient
-	extraHot    *ExtraHotClient
-	bing        *BingClient
+	tavily            *TavilyClient
+	zhihu             *ZhihuClient
+	ima               *IMAClient
+	tencent           *TencentNewsClient
+	tencentCLI        *TencentNewsCLIClient
+	weibo             *WeiboClient
+	extraHot          *ExtraHotClient
+	bing              *BingClient
+	credibilityLookup engine.CredibilityLookup // optional: enrich results with source credibility
 }
 
 // NewSearchClient creates a new search client.
@@ -73,6 +75,13 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	}
 
 	return c
+}
+
+// SetCredibilityLookup sets an optional credibility lookup provider.
+// When set, search results will be enriched with credibility scores
+// and sorted by combined relevance × credibility.
+func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
+	c.credibilityLookup = lookup
 }
 
 // HasSources returns true if at least one search source is configured.
@@ -208,6 +217,11 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 
 	wg.Wait()
 
+	// Enrich with credibility scores if a lookup is configured
+	if c.credibilityLookup != nil && len(results) > 0 {
+		results = c.enrichWithCredibility(ctx, results)
+	}
+
 	// Truncate to maxTotal
 	if len(results) > maxTotal {
 		results = results[:maxTotal]
@@ -217,9 +231,58 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 		"query", query,
 		"results", len(results),
 		"sources", c.activeSources(),
+		"credibility_enriched", c.credibilityLookup != nil,
 	)
 
 	return results
+}
+
+// enrichWithCredibility adds credibility scores to search results and sorts by combined score.
+// Results from high-credibility sources are ranked higher.
+func (c *SearchClient) enrichWithCredibility(ctx context.Context, results []engine.SearchResult) []engine.SearchResult {
+	for i := range results {
+		domain := extractDomain(results[i].URL)
+		if domain == "" {
+			results[i].CredibilityScore = 0.5 // neutral for results without URL
+			continue
+		}
+		score, err := c.credibilityLookup.GetCredibility(ctx, domain)
+		if err != nil || score <= 0 {
+			results[i].CredibilityScore = 0.5 // default neutral
+		} else {
+			results[i].CredibilityScore = score
+		}
+	}
+
+	// Sort by combined score: relevance_score × (0.5 + 0.5 × credibility)
+	// This gives a 50% weight to each factor, but credibility acts as a multiplier
+	sort.SliceStable(results, func(i, j int) bool {
+		scoreI := results[i].Score * (0.5 + 0.5*results[i].CredibilityScore)
+		scoreJ := results[j].Score * (0.5 + 0.5*results[j].CredibilityScore)
+		// If scores are equal (e.g., both 0), sort by credibility alone
+		if scoreI == scoreJ {
+			return results[i].CredibilityScore > results[j].CredibilityScore
+		}
+		return scoreI > scoreJ
+	})
+
+	return results
+}
+
+// extractDomain extracts the domain from a URL string.
+func extractDomain(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	// Handle URLs without scheme
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		rawURL = "https://" + rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 func (c *SearchClient) activeSources() []string {

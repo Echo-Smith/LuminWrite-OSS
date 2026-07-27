@@ -46,23 +46,52 @@ type ColumnPreference struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+// ─── 知识生命周期状态 ─────────────────────────────────────
+
+// Knowledge status constants
+const (
+	KnowledgeStatusCandidate  string = "candidate"  // 候选：Agent 提取，待人类确认
+	KnowledgeStatusActive     string = "active"     // 活跃：已确认，正常注入
+	KnowledgeStatusArchived   string = "archived"   // 归档：不再使用但不删除
+	KnowledgeStatusSuperseded string = "superseded" // 已被新知识替代
+)
+
+// canTransitionTo validates knowledge status transitions.
+func knowledgeCanTransitionTo(from, to string) bool {
+	switch from {
+	case KnowledgeStatusCandidate:
+		return to == KnowledgeStatusActive || to == KnowledgeStatusArchived
+	case KnowledgeStatusActive:
+		return to == KnowledgeStatusArchived || to == KnowledgeStatusSuperseded
+	case KnowledgeStatusArchived:
+		return false // archived is terminal
+	case KnowledgeStatusSuperseded:
+		return false // superseded is terminal
+	default:
+		return false
+	}
+}
+
 // EditorialKnowledge 编辑部知识沉淀
 type EditorialKnowledge struct {
-	ID                 string    `json:"id"`
-	Category           string    `json:"category"` // rejection_reason | review_tip | style_guideline | fact_check_note
-	ColumnTag          string    `json:"column_tag,omitempty"`
-	Title              string    `json:"title"`
-	Content            string    `json:"content"`
-	ContentFingerprint string    `json:"content_fingerprint,omitempty"` // SHA-256 of normalized content (dedup key)
-	Scope              string    `json:"scope"`                          // global | column | task
-	Source             string    `json:"source"`                         // agent | human | system
-	SourceTaskID       string    `json:"source_task_id,omitempty"`
-	SourceArtifactID   string    `json:"source_artifact_id,omitempty"`
-	Confidence         float64   `json:"confidence"`
-	OccurrenceCount    int       `json:"occurrence_count"`
-	Status             string    `json:"status"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 string     `json:"id"`
+	Category           string     `json:"category"` // rejection_reason | review_tip | style_guideline | fact_check_note
+	ColumnTag          string     `json:"column_tag,omitempty"`
+	Title              string     `json:"title"`
+	Content            string     `json:"content"`
+	ContentFingerprint string     `json:"content_fingerprint,omitempty"` // SHA-256 of normalized content (dedup key)
+	Scope              string     `json:"scope"`                          // global | column | task
+	Source             string     `json:"source"`                         // agent | human | system
+	SourceTaskID       string     `json:"source_task_id,omitempty"`
+	SourceArtifactID   string     `json:"source_artifact_id,omitempty"`
+	Confidence         float64    `json:"confidence"`
+	OccurrenceCount    int        `json:"occurrence_count"`
+	Status             string     `json:"status"`
+	SupersededBy       string     `json:"superseded_by,omitempty"`
+	ArchivedReason     string     `json:"archived_reason,omitempty"`
+	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // AgentReputation Agent 信誉记录
@@ -305,6 +334,7 @@ func ComputeContentFingerprint(title, content string) string {
 
 // CreateKnowledge 创建编辑部知识 — 使用内容指纹去重
 // 如果相同指纹的知识已存在，递增 occurrence_count 并更新 confidence（取较高值）
+// Agent 来源的知识默认状态为 candidate，人类来源默认为 active
 func (s *Store) CreateKnowledge(ctx context.Context, k EditorialKnowledge) (*EditorialKnowledge, error) {
 	// Compute fingerprint if not provided
 	if k.ContentFingerprint == "" {
@@ -325,10 +355,19 @@ func (s *Store) CreateKnowledge(ctx context.Context, k EditorialKnowledge) (*Edi
 		k.Source = KnowledgeSourceAgent
 	}
 
+	// Default status: agent-sourced starts as candidate, human/system starts as active
+	if k.Status == "" {
+		if k.Source == KnowledgeSourceAgent {
+			k.Status = KnowledgeStatusCandidate
+		} else {
+			k.Status = KnowledgeStatusActive
+		}
+	}
+
 	var result EditorialKnowledge
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO editorial_knowledge (category, column_tag, title, content, content_fingerprint, scope, source, source_task_id, source_artifact_id, confidence)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, NULLIF($9, '')::uuid, $10)
+		INSERT INTO editorial_knowledge (category, column_tag, title, content, content_fingerprint, scope, source, source_task_id, source_artifact_id, confidence, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, NULLIF($9, '')::uuid, $10, $11)
 		ON CONFLICT (content_fingerprint) WHERE content_fingerprint IS NOT NULL
 		DO UPDATE SET
 			occurrence_count = editorial_knowledge.occurrence_count + 1,
@@ -337,15 +376,19 @@ func (s *Store) CreateKnowledge(ctx context.Context, k EditorialKnowledge) (*Edi
 		RETURNING id::text, category, column_tag, title, content,
 			COALESCE(content_fingerprint, ''), COALESCE(scope, 'global'), COALESCE(source, 'agent'),
 			COALESCE(source_task_id::text, ''), COALESCE(source_artifact_id::text, ''),
-			confidence, occurrence_count, status, created_at, updated_at
+			confidence, occurrence_count, status,
+			COALESCE(superseded_by::text, ''), COALESCE(archived_reason, ''),
+			archived_at, created_at, updated_at
 	`,
 		k.Category, k.ColumnTag, k.Title, k.Content, k.ContentFingerprint, k.Scope, k.Source,
-		k.SourceTaskID, k.SourceArtifactID, k.Confidence,
+		k.SourceTaskID, k.SourceArtifactID, k.Confidence, k.Status,
 	).Scan(
 		&result.ID, &result.Category, &result.ColumnTag, &result.Title, &result.Content,
 		&result.ContentFingerprint, &result.Scope, &result.Source,
 		&result.SourceTaskID, &result.SourceArtifactID,
-		&result.Confidence, &result.OccurrenceCount, &result.Status, &result.CreatedAt, &result.UpdatedAt,
+		&result.Confidence, &result.OccurrenceCount, &result.Status,
+		&result.SupersededBy, &result.ArchivedReason,
+		&result.ArchivedAt, &result.CreatedAt, &result.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create knowledge: %w", err)
@@ -354,7 +397,8 @@ func (s *Store) CreateKnowledge(ctx context.Context, k EditorialKnowledge) (*Edi
 }
 
 // ListKnowledge 列出编辑部知识
-func (s *Store) ListKnowledge(ctx context.Context, category, columnTag string, limit int) ([]EditorialKnowledge, error) {
+// statusFilter: "" = active only (default), "all" = all statuses, specific status = filter by that status
+func (s *Store) ListKnowledge(ctx context.Context, category, columnTag, statusFilter string, limit int) ([]EditorialKnowledge, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -362,18 +406,40 @@ func (s *Store) ListKnowledge(ctx context.Context, category, columnTag string, l
 		SELECT id::text, category, column_tag, title, content,
 		       COALESCE(content_fingerprint, ''), COALESCE(scope, 'global'), COALESCE(source, 'agent'),
 		       COALESCE(source_task_id::text, ''), COALESCE(source_artifact_id::text, ''),
-		       confidence, occurrence_count, status, created_at, updated_at
-		FROM editorial_knowledge WHERE status = 'active'
+		       confidence, occurrence_count, status,
+		       COALESCE(superseded_by::text, ''), COALESCE(archived_reason, ''),
+		       archived_at, created_at, updated_at
+		FROM editorial_knowledge
 	`
 	args := []interface{}{}
 	argIdx := 1
+
+	// Status filter
+	if statusFilter == "" || statusFilter == "active" {
+		query += fmt.Sprintf(" WHERE status = '%s'", KnowledgeStatusActive)
+	} else if statusFilter != "all" {
+		query += fmt.Sprintf(" WHERE status = $%d", argIdx)
+		args = append(args, statusFilter)
+		argIdx++
+	}
+
 	if category != "" {
-		query += fmt.Sprintf(" AND category = $%d", argIdx)
+		if argIdx == 1 {
+			query += " WHERE"
+		} else {
+			query += " AND"
+		}
+		query += fmt.Sprintf(" category = $%d", argIdx)
 		args = append(args, category)
 		argIdx++
 	}
 	if columnTag != "" {
-		query += fmt.Sprintf(" AND (column_tag = $%d OR column_tag = '' OR scope = 'global')", argIdx)
+		if argIdx == 1 {
+			query += " WHERE"
+		} else {
+			query += " AND"
+		}
+		query += fmt.Sprintf(" (column_tag = $%d OR column_tag = '' OR scope = 'global')", argIdx)
 		args = append(args, columnTag)
 		argIdx++
 	}
@@ -393,13 +459,125 @@ func (s *Store) ListKnowledge(ctx context.Context, category, columnTag string, l
 			&k.ID, &k.Category, &k.ColumnTag, &k.Title, &k.Content,
 			&k.ContentFingerprint, &k.Scope, &k.Source,
 			&k.SourceTaskID, &k.SourceArtifactID,
-			&k.Confidence, &k.OccurrenceCount, &k.Status, &k.CreatedAt, &k.UpdatedAt,
+			&k.Confidence, &k.OccurrenceCount, &k.Status,
+			&k.SupersededBy, &k.ArchivedReason,
+			&k.ArchivedAt, &k.CreatedAt, &k.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan knowledge: %w", err)
 		}
 		results = append(results, k)
 	}
 	return results, nil
+}
+
+// GetKnowledge 获取单条编辑部知识
+func (s *Store) GetKnowledge(ctx context.Context, id string) (*EditorialKnowledge, error) {
+	var k EditorialKnowledge
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id::text, category, column_tag, title, content,
+		       COALESCE(content_fingerprint, ''), COALESCE(scope, 'global'), COALESCE(source, 'agent'),
+		       COALESCE(source_task_id::text, ''), COALESCE(source_artifact_id::text, ''),
+		       confidence, occurrence_count, status,
+		       COALESCE(superseded_by::text, ''), COALESCE(archived_reason, ''),
+		       archived_at, created_at, updated_at
+		FROM editorial_knowledge WHERE id = $1::uuid
+	`, id).Scan(
+		&k.ID, &k.Category, &k.ColumnTag, &k.Title, &k.Content,
+		&k.ContentFingerprint, &k.Scope, &k.Source,
+		&k.SourceTaskID, &k.SourceArtifactID,
+		&k.Confidence, &k.OccurrenceCount, &k.Status,
+		&k.SupersededBy, &k.ArchivedReason,
+		&k.ArchivedAt, &k.CreatedAt, &k.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get knowledge: %w", err)
+	}
+	return &k, nil
+}
+
+// PromoteKnowledge 将候选知识提升为活跃（candidate → active）
+// 同时提升置信度
+func (s *Store) PromoteKnowledge(ctx context.Context, id string) (*EditorialKnowledge, error) {
+	// First read current state
+	current, err := s.GetKnowledge(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get knowledge for promote: %w", err)
+	}
+	if current == nil {
+		return nil, fmt.Errorf("knowledge not found")
+	}
+	if !knowledgeCanTransitionTo(current.Status, KnowledgeStatusActive) {
+		return nil, fmt.Errorf("cannot promote knowledge from %s to %s", current.Status, KnowledgeStatusActive)
+	}
+
+	// Promote: set status to active and bump confidence (cap at 1.0)
+	newConfidence := current.Confidence + 0.15
+	if newConfidence > 1.0 {
+		newConfidence = 1.0
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE editorial_knowledge
+		SET status = $2, confidence = $3, updated_at = NOW()
+		WHERE id = $1::uuid
+	`, id, KnowledgeStatusActive, newConfidence)
+	if err != nil {
+		return nil, fmt.Errorf("promote knowledge: %w", err)
+	}
+
+	return s.GetKnowledge(ctx, id)
+}
+
+// ArchiveKnowledge 将活跃知识归档（active → archived）
+func (s *Store) ArchiveKnowledge(ctx context.Context, id, reason string) (*EditorialKnowledge, error) {
+	current, err := s.GetKnowledge(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get knowledge for archive: %w", err)
+	}
+	if current == nil {
+		return nil, fmt.Errorf("knowledge not found")
+	}
+	if !knowledgeCanTransitionTo(current.Status, KnowledgeStatusArchived) {
+		return nil, fmt.Errorf("cannot archive knowledge from %s", current.Status)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE editorial_knowledge
+		SET status = $2, archived_reason = $3, archived_at = NOW(), updated_at = NOW()
+		WHERE id = $1::uuid
+	`, id, KnowledgeStatusArchived, reason)
+	if err != nil {
+		return nil, fmt.Errorf("archive knowledge: %w", err)
+	}
+
+	return s.GetKnowledge(ctx, id)
+}
+
+// SupersedeKnowledge 将旧知识标记为已被新知识替代（active → superseded）
+func (s *Store) SupersedeKnowledge(ctx context.Context, oldID, newID string) error {
+	current, err := s.GetKnowledge(ctx, oldID)
+	if err != nil {
+		return fmt.Errorf("get knowledge for supersede: %w", err)
+	}
+	if current == nil {
+		return fmt.Errorf("knowledge not found")
+	}
+	if !knowledgeCanTransitionTo(current.Status, KnowledgeStatusSuperseded) {
+		return fmt.Errorf("cannot supersede knowledge from %s", current.Status)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE editorial_knowledge
+		SET status = $2, superseded_by = NULLIF($3, '')::uuid, updated_at = NOW()
+		WHERE id = $1::uuid
+	`, oldID, KnowledgeStatusSuperseded, newID)
+	if err != nil {
+		return fmt.Errorf("supersede knowledge: %w", err)
+	}
+	return nil
 }
 
 // ─── Agent 信誉 Store ─────────────────────────────────────
@@ -491,6 +669,36 @@ func (s *Store) ListAgentReputation(ctx context.Context) ([]AgentReputation, err
 		results = append(results, ar)
 	}
 	return results, nil
+}
+
+// ─── 信源信誉适配器 ─────────────────────────────────────────
+
+// CredibilityLookupAdapter adapts editorial.Store to engine.CredibilityLookup.
+// This allows the search client to enrich search results with source credibility
+// scores from the editorial_source_credibility table.
+type CredibilityLookupAdapter struct {
+	store *Store
+}
+
+// NewCredibilityLookupAdapter creates a new adapter wrapping the editorial Store.
+func NewCredibilityLookupAdapter(store *Store) *CredibilityLookupAdapter {
+	return &CredibilityLookupAdapter{store: store}
+}
+
+// GetCredibility returns the credibility score (0.0-1.0) for a given domain.
+// Returns 0.5 (neutral) if the domain is not in the database.
+func (a *CredibilityLookupAdapter) GetCredibility(ctx context.Context, domain string) (float64, error) {
+	if domain == "" {
+		return 0.5, nil
+	}
+	sc, err := a.store.GetSourceCredibility(ctx, domain)
+	if err != nil {
+		return 0.5, nil // don't fail search on credibility lookup error
+	}
+	if sc == nil {
+		return 0.5, nil // unknown domain → neutral
+	}
+	return sc.CredibilityScore, nil
 }
 
 // ─── 辅助 ─────────────────────────────────────────────────
