@@ -66,6 +66,9 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Put("/columns/{tag}", h.handleUpsertColumn)
 		r.Get("/knowledge", h.handleListKnowledge)
 		r.Post("/knowledge", h.handleCreateKnowledge)
+		r.Get("/knowledge/{id}", h.handleGetKnowledge)
+		r.Patch("/knowledge/{id}/promote", h.handlePromoteKnowledge)
+		r.Patch("/knowledge/{id}/archive", h.handleArchiveKnowledge)
 
 		// Agent 信誉
 		r.Get("/agent-reputation", h.handleListAgentReputation)
@@ -443,8 +446,9 @@ func (h *Handlers) handleUpsertColumn(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 	category := r.URL.Query().Get("category")
 	columnTag := r.URL.Query().Get("column")
+	statusFilter := r.URL.Query().Get("status")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	knowledge, err := h.svc.ListKnowledge(r.Context(), category, columnTag, limit)
+	knowledge, err := h.svc.ListKnowledge(r.Context(), category, columnTag, statusFilter, limit)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -464,6 +468,44 @@ func (h *Handlers) handleCreateKnowledge(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	response.Created(w, result)
+}
+
+func (h *Handlers) handleGetKnowledge(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	k, err := h.svc.GetKnowledge(r.Context(), id)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if k == nil {
+		response.Err(w, http.StatusNotFound, "not_found", "knowledge not found")
+		return
+	}
+	response.OK(w, k)
+}
+
+func (h *Handlers) handlePromoteKnowledge(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	result, err := h.svc.PromoteKnowledge(r.Context(), id)
+	if err != nil {
+		response.Err(w, http.StatusBadRequest, "invalid_transition", err.Error())
+		return
+	}
+	response.OK(w, result)
+}
+
+func (h *Handlers) handleArchiveKnowledge(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional
+	result, err := h.svc.ArchiveKnowledge(r.Context(), id, body.Reason)
+	if err != nil {
+		response.Err(w, http.StatusBadRequest, "invalid_transition", err.Error())
+		return
+	}
+	response.OK(w, result)
 }
 
 // ─── Agent 信誉 ───────────────────────────────────────────

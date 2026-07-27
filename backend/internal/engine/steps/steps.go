@@ -343,6 +343,13 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 		return nil
 	}
 
+	// If search results are frozen (e.g., from a pre-computed snapshot for experiments),
+	// skip search and use the pre-populated results
+	if execCtx.FrozenSearchResults && len(execCtx.SearchResults) > 0 {
+		slog.Info("search step: using frozen search results", "count", len(execCtx.SearchResults))
+		return nil
+	}
+
 	// Check pause before starting search
 	if err := execCtx.CheckPause(ctx, emitter, engine.StepSearch); err != nil {
 		return err

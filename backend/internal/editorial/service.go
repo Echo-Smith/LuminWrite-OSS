@@ -518,8 +518,24 @@ func (s *Service) CreateKnowledge(ctx context.Context, k EditorialKnowledge) (*E
 }
 
 // ListKnowledge 列出编辑部知识
-func (s *Service) ListKnowledge(ctx context.Context, category, columnTag string, limit int) ([]EditorialKnowledge, error) {
-	return s.store.ListKnowledge(ctx, category, columnTag, limit)
+// statusFilter: "" = active only (default), "all" = all statuses, specific status = filter
+func (s *Service) ListKnowledge(ctx context.Context, category, columnTag, statusFilter string, limit int) ([]EditorialKnowledge, error) {
+	return s.store.ListKnowledge(ctx, category, columnTag, statusFilter, limit)
+}
+
+// GetKnowledge 获取单条编辑部知识
+func (s *Service) GetKnowledge(ctx context.Context, id string) (*EditorialKnowledge, error) {
+	return s.store.GetKnowledge(ctx, id)
+}
+
+// PromoteKnowledge 将候选知识提升为活跃
+func (s *Service) PromoteKnowledge(ctx context.Context, id string) (*EditorialKnowledge, error) {
+	return s.store.PromoteKnowledge(ctx, id)
+}
+
+// ArchiveKnowledge 将活跃知识归档
+func (s *Service) ArchiveKnowledge(ctx context.Context, id, reason string) (*EditorialKnowledge, error) {
+	return s.store.ArchiveKnowledge(ctx, id, reason)
 }
 
 // ─── Agent 信誉 ───────────────────────────────────────────

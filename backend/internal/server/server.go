@@ -262,6 +262,11 @@ func New(cfg *config.Config) *Server {
 		edEmitter := &editorialWSEmitter{hub: s.hub}
 		edSvc := editorial.NewService(edStore, edEmitter)
 
+		// Wire source credibility into search client
+		// This enriches search results with credibility scores from editorial_source_credibility
+		searchClient.SetCredibilityLookup(editorial.NewCredibilityLookupAdapter(edStore))
+		slog.Info("source credibility lookup wired into search client")
+
 		// Register Agent executors (adapt V2 Steps to editorial AgentExecutor)
 		if llm != nil {
 			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(llm, searchClient, embeddingClient, edStore))

@@ -880,3 +880,238 @@ func Test_ErrorSentinels_Distinct(t *testing.T) {
 		seen[msg] = true
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 知识生命周期状态机测试
+// ═══════════════════════════════════════════════════════════════
+
+func Test_KnowledgeCanTransitionTo_ValidTransitions(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+		want bool
+	}{
+		// candidate → active (promote)
+		{"candidate→active", KnowledgeStatusCandidate, KnowledgeStatusActive, true},
+		// candidate → archived (directly archive without promoting)
+		{"candidate→archived", KnowledgeStatusCandidate, KnowledgeStatusArchived, true},
+		// active → archived (archive)
+		{"active→archived", KnowledgeStatusActive, KnowledgeStatusArchived, true},
+		// active → superseded (replaced by newer knowledge)
+		{"active→superseded", KnowledgeStatusActive, KnowledgeStatusSuperseded, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := knowledgeCanTransitionTo(tt.from, tt.to)
+			if got != tt.want {
+				t.Errorf("knowledgeCanTransitionTo(%s→%s) = %v, want %v", tt.from, tt.to, got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_KnowledgeCanTransitionTo_InvalidTransitions(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+	}{
+		// candidate cannot be superseded (not active yet)
+		{"candidate→superseded", KnowledgeStatusCandidate, KnowledgeStatusSuperseded},
+		// cannot promote active (already active)
+		{"active→active", KnowledgeStatusActive, KnowledgeStatusActive},
+		// cannot promote archived
+		{"archived→active", KnowledgeStatusArchived, KnowledgeStatusActive},
+		// archived is terminal
+		{"archived→archived", KnowledgeStatusArchived, KnowledgeStatusArchived},
+		{"archived→superseded", KnowledgeStatusArchived, KnowledgeStatusSuperseded},
+		{"archived→candidate", KnowledgeStatusArchived, KnowledgeStatusCandidate},
+		// superseded is terminal
+		{"superseded→active", KnowledgeStatusSuperseded, KnowledgeStatusActive},
+		{"superseded→archived", KnowledgeStatusSuperseded, KnowledgeStatusArchived},
+		{"superseded→superseded", KnowledgeStatusSuperseded, KnowledgeStatusSuperseded},
+		// unknown status
+		{"unknown→active", "unknown", KnowledgeStatusActive},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := knowledgeCanTransitionTo(tt.from, tt.to)
+			if got {
+				t.Errorf("knowledgeCanTransitionTo(%s→%s) should be false, got true", tt.from, tt.to)
+			}
+		})
+	}
+}
+
+func Test_KnowledgeStatusConstants(t *testing.T) {
+	// Ensure status constants are distinct and non-empty
+	statuses := []string{KnowledgeStatusCandidate, KnowledgeStatusActive, KnowledgeStatusArchived, KnowledgeStatusSuperseded}
+	seen := make(map[string]bool)
+	for _, s := range statuses {
+		if s == "" {
+			t.Error("knowledge status constant should not be empty")
+		}
+		if seen[s] {
+			t.Errorf("knowledge status %q is duplicated", s)
+		}
+		seen[s] = true
+	}
+}
+
+func Test_ComputeContentFingerprint_Deterministic(t *testing.T) {
+	// Same input should produce same fingerprint
+	fp1 := ComputeContentFingerprint("Test Title", "Test Content")
+	fp2 := ComputeContentFingerprint("Test Title", "Test Content")
+	if fp1 != fp2 {
+		t.Errorf("fingerprint should be deterministic: %s != %s", fp1, fp2)
+	}
+
+	// Different input should produce different fingerprint
+	fp3 := ComputeContentFingerprint("Different Title", "Test Content")
+	if fp1 == fp3 {
+		t.Errorf("different input should produce different fingerprint: %s == %s", fp1, fp3)
+	}
+
+	// Whitespace normalization: extra spaces should produce same fingerprint
+	fp4 := ComputeContentFingerprint("Test Title", "Test   Content")
+	fp5 := ComputeContentFingerprint("Test  Title", "Test Content")
+	if fp1 != fp4 {
+		t.Errorf("fingerprint should normalize whitespace in content: %s != %s", fp1, fp4)
+	}
+	if fp1 != fp5 {
+		t.Errorf("fingerprint should normalize whitespace in title: %s != %s", fp1, fp5)
+	}
+
+	// Case normalization
+	fp6 := ComputeContentFingerprint("TEST TITLE", "TEST CONTENT")
+	if fp1 != fp6 {
+		t.Errorf("fingerprint should be case-insensitive: %s != %s", fp1, fp6)
+	}
+
+	// Fingerprint should be a valid hex SHA-256 (64 chars)
+	if len(fp1) != 64 {
+		t.Errorf("fingerprint should be 64 hex chars (SHA-256), got %d", len(fp1))
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 盲评得分计算测试
+// ═══════════════════════════════════════════════════════════════
+
+func Test_BlindJudgeScores_WeightedAverage(t *testing.T) {
+	// Test the weighted average calculation used in judgeSingleArticle
+	scores := BlindJudgeScores{
+		Accuracy:    0.90,
+		Structure:   0.80,
+		Style:       0.70,
+		Insight:     0.85,
+		Readability: 0.75,
+		Safety:      1.00,
+	}
+
+	// Manual calculation: 0.90×0.20 + 0.80×0.20 + 0.70×0.15 + 0.85×0.20 + 0.75×0.15 + 1.00×0.10
+	// = 0.18 + 0.16 + 0.105 + 0.17 + 0.1125 + 0.10
+	// = 0.8275
+	expected := 0.90*0.20 + 0.80*0.20 + 0.70*0.15 + 0.85*0.20 + 0.75*0.15 + 1.00*0.10
+
+	// Simulate the calculation in judgeSingleArticle
+	scores.Overall = scores.Accuracy*0.20 + scores.Structure*0.20 + scores.Style*0.15 +
+		scores.Insight*0.20 + scores.Readability*0.15 + scores.Safety*0.10
+
+	if abs(scores.Overall-expected) > 0.001 {
+		t.Errorf("weighted average = %.4f, expected %.4f", scores.Overall, expected)
+	}
+
+	// Overall should be between 0 and 1
+	if scores.Overall < 0 || scores.Overall > 1 {
+		t.Errorf("overall should be 0-1, got %f", scores.Overall)
+	}
+}
+
+func Test_BlindJudgeScores_AllPerfect(t *testing.T) {
+	scores := BlindJudgeScores{
+		Accuracy: 1.0, Structure: 1.0, Style: 1.0,
+		Insight: 1.0, Readability: 1.0, Safety: 1.0,
+	}
+	scores.Overall = scores.Accuracy*0.20 + scores.Structure*0.20 + scores.Style*0.15 +
+		scores.Insight*0.20 + scores.Readability*0.15 + scores.Safety*0.10
+
+	if scores.Overall != 1.0 {
+		t.Errorf("all-perfect should give overall 1.0, got %f", scores.Overall)
+	}
+}
+
+func Test_BlindJudgeScores_AllZero(t *testing.T) {
+	scores := BlindJudgeScores{}
+	scores.Overall = scores.Accuracy*0.20 + scores.Structure*0.20 + scores.Style*0.15 +
+		scores.Insight*0.20 + scores.Readability*0.15 + scores.Safety*0.10
+
+	if scores.Overall != 0 {
+		t.Errorf("all-zero should give overall 0, got %f", scores.Overall)
+	}
+}
+
+func Test_BlindJudgeScores_JSONRoundTrip(t *testing.T) {
+	original := BlindJudgeScores{
+		Accuracy:    0.85,
+		Structure:   0.80,
+		Style:       0.75,
+		Insight:     0.70,
+		Readability: 0.82,
+		Safety:      0.95,
+		Overall:     0.80,
+		Comment:     "结构清晰，论证有力",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var decoded BlindJudgeScores
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if decoded.Accuracy != original.Accuracy {
+		t.Errorf("accuracy mismatch: %f != %f", decoded.Accuracy, original.Accuracy)
+	}
+	if decoded.Comment != original.Comment {
+		t.Errorf("comment mismatch: %q != %q", decoded.Comment, original.Comment)
+	}
+}
+
+func Test_ExperimentMetrics_FullArticleNotSerialized(t *testing.T) {
+	// FullArticle has json:"-" tag, so it should not be serialized
+	m := ExperimentMetrics{
+		Mode:         "pipeline",
+		FullArticle:  "This is a full article that should not be serialized",
+		QualityScore: 0.8,
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	json.Unmarshal(data, &decoded)
+
+	if _, exists := decoded["FullArticle"]; exists {
+		t.Error("FullArticle should not be serialized (json:\"-\")")
+	}
+	if _, exists := decoded["full_article"]; exists {
+		t.Error("full_article should not be in JSON output")
+	}
+}
+
+// abs returns absolute value of a float64
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
