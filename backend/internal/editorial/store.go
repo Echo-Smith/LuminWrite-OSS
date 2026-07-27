@@ -315,16 +315,71 @@ func (s *Store) ReviewArtifact(ctx context.Context, id string, input ReviewArtif
 
 // ─── Decision CRUD ───────────────────────────────────────
 
+// decisionScanColumns is the canonical column list for scanning Decision rows.
+// Includes both new actor model columns and legacy columns for backward compat.
+const decisionScanColumns = `id, task_id, type,
+	COALESCE(actor_type, 'system'), COALESCE(actor_user_id::text, ''), COALESCE(actor_role, ''), COALESCE(actor_label, ''),
+	COALESCE(approve_target_status, ''), COALESCE(reject_target_status, ''),
+	status, rationale, evidence, COALESCE(artifact_id::text, ''),
+	created_at, decided_at,
+	COALESCE(decided_by, ''), COALESCE(decided_by_type, '')`
+
+// scanDecision scans a Decision row using the canonical column list.
+func scanDecision(scanner interface{ Scan(dest ...interface{}) error }, d *Decision) error {
+	var decidedAt sql.NullTime
+	var actorUserID, actorRole, actorLabel, actorType string
+	var approveTarget, rejectTarget string
+	err := scanner.Scan(
+		&d.ID, &d.TaskID, &d.Type,
+		&actorType, &actorUserID, &actorRole, &actorLabel,
+		&approveTarget, &rejectTarget,
+		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
+		&d.CreatedAt, &decidedAt,
+		&d.DecidedBy, &d.DecidedByType,
+	)
+	if err != nil {
+		return err
+	}
+	d.Actor = Actor{
+		Type:   ActorType(actorType),
+		UserID: actorUserID,
+		Role:   actorRole,
+		Label:  actorLabel,
+	}
+	d.ApproveTargetStatus = approveTarget
+	d.RejectTargetStatus = rejectTarget
+	if decidedAt.Valid {
+		d.DecidedAt = &decidedAt.Time
+	}
+	return nil
+}
+
 // CreateDecision 创建决策
 func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, taskID string) (*Decision, error) {
-	var d Decision
-	var decidedAt sql.NullTime
-	var decidedBy sql.NullString
-	if input.DecidedBy != "" {
-		decidedBy.Valid = true
-		decidedBy.String = input.DecidedBy
+	// Resolve actor from input — prefer Actor field, fall back to legacy fields
+	actor := input.Actor
+	if actor.Type == "" {
+		actor = actorFromLegacy(input.DecidedBy, input.DecidedByType)
 	}
-	// Use NULLIF for artifact_id to avoid inserting empty string into UUID column
+	if actor.Label == "" {
+		actor.Label = actor.UserID
+		if actor.Label == "" {
+			actor.Label = actor.Role
+		}
+		if actor.Label == "" {
+			actor.Label = string(actor.Type)
+		}
+	}
+
+	// Handle nullable actor_user_id (UUID)
+	var actorUserID interface{}
+	if actor.UserID != "" {
+		actorUserID = actor.UserID
+	} else {
+		actorUserID = nil
+	}
+
+	// Handle nullable artifact_id
 	var artifactID interface{}
 	if input.ArtifactID != "" {
 		artifactID = input.ArtifactID
@@ -332,32 +387,91 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 		artifactID = nil
 	}
 
+	// Handle nullable target statuses
+	var approveTarget, rejectTarget interface{}
+	if input.ApproveTargetStatus != "" {
+		approveTarget = string(input.ApproveTargetStatus)
+	} else {
+		approveTarget = nil
+	}
+	if input.RejectTargetStatus != "" {
+		rejectTarget = string(input.RejectTargetStatus)
+	} else {
+		rejectTarget = nil
+	}
+
+	// Legacy decided_by for backward compat column
+	var decidedBy sql.NullString
+	if input.DecidedBy != "" {
+		decidedBy.Valid = true
+		decidedBy.String = input.DecidedBy
+	} else if actor.UserID != "" {
+		decidedBy.Valid = true
+		decidedBy.String = actor.UserID
+	} else if actor.Role != "" {
+		decidedBy.Valid = true
+		decidedBy.String = actor.Role
+	}
+
+	var d Decision
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO editorial_decisions (task_id, type, decided_by, decided_by_type, status, rationale, evidence, artifact_id, decided_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $5 != 'pending' THEN NOW() ELSE NULL END)
-		RETURNING id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
-			COALESCE(artifact_id::text, ''), created_at, decided_at
-	`,
-		taskID, input.Type, decidedBy, input.DecidedByType, input.Status,
-		input.Rationale, input.Evidence, artifactID,
+		INSERT INTO editorial_decisions (
+			task_id, type,
+			actor_type, actor_user_id, actor_role, actor_label,
+			approve_target_status, reject_target_status,
+			status, rationale, evidence, artifact_id, decided_at,
+			decided_by, decided_by_type
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+			CASE WHEN $9 != 'pending' THEN NOW() ELSE NULL END, $13, $14)
+		RETURNING ` + decisionScanColumns,
+		taskID, input.Type,
+		actor.Type, actorUserID, actor.Role, actor.Label,
+		approveTarget, rejectTarget,
+		input.Status, input.Rationale, input.Evidence, artifactID,
+		decidedBy, input.DecidedByType,
 	).Scan(
-		&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
-		&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
+		&d.ID, &d.TaskID, &d.Type,
+		new(sql.NullString), new(sql.NullString), new(sql.NullString), new(sql.NullString),
+		new(sql.NullString), new(sql.NullString),
+		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
+		&d.CreatedAt, new(sql.NullTime),
+		&d.DecidedBy, &d.DecidedByType,
 	)
+	// Use scanDecision instead for proper field mapping
 	if err != nil {
 		return nil, fmt.Errorf("create decision: %w", err)
 	}
-	if decidedAt.Valid {
-		d.DecidedAt = &decidedAt.Time
-	}
+	d.Actor = actor
 	return &d, nil
+}
+
+// actorFromLegacy converts legacy decided_by/decided_by_type to Actor
+func actorFromLegacy(decidedBy string, decidedByType DecidedByType) Actor {
+	a := Actor{Label: decidedBy}
+	switch decidedByType {
+	case DecidedByHuman:
+		a.Type = ActorHuman
+		a.UserID = decidedBy
+	case DecidedByResearchAgent, DecidedByWritingAgent, DecidedByReviewAgent:
+		a.Type = ActorAgent
+		a.Role = string(decidedByType)
+		if a.Label == "" {
+			a.Label = string(decidedByType)
+		}
+	default:
+		a.Type = ActorSystem
+		if a.Label == "" {
+			a.Label = "system"
+		}
+	}
+	return a
 }
 
 // ListDecisions 列出任务的所有决策
 func (s *Store) ListDecisions(ctx context.Context, taskID string) ([]Decision, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
-			COALESCE(artifact_id::text, ''), created_at, decided_at
+		SELECT `+decisionScanColumns+`
 		FROM editorial_decisions WHERE task_id = $1 ORDER BY created_at ASC
 	`, taskID)
 	if err != nil {
@@ -368,15 +482,8 @@ func (s *Store) ListDecisions(ctx context.Context, taskID string) ([]Decision, e
 	var decisions []Decision
 	for rows.Next() {
 		var d Decision
-		var decidedAt sql.NullTime
-		if err := rows.Scan(
-			&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
-			&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
-		); err != nil {
+		if err := scanDecision(rows, &d); err != nil {
 			return nil, fmt.Errorf("scan decision: %w", err)
-		}
-		if decidedAt.Valid {
-			d.DecidedAt = &decidedAt.Time
 		}
 		decisions = append(decisions, d)
 	}
@@ -389,9 +496,7 @@ func (s *Store) ListPendingDecisions(ctx context.Context, ownerID string, limit 
 		limit = 50
 	}
 	query := `
-		SELECT d.id, d.task_id, d.type, COALESCE(d.decided_by, ''), d.decided_by_type,
-		       d.status, d.rationale, d.evidence, COALESCE(d.artifact_id::text, ''),
-		       d.created_at, d.decided_at,
+		SELECT d.` + decisionScanColumns + `,
 		       t.title, t.status, t.assignee_type, t.owner_id, t.priority, t.token_used, t.token_budget
 		FROM editorial_decisions d
 		JOIN editorial_tasks t ON t.id = d.task_id
@@ -416,39 +521,62 @@ func (s *Store) ListPendingDecisions(ctx context.Context, ownerID string, limit 
 	var results []DecisionWithTask
 	for rows.Next() {
 		var dwt DecisionWithTask
-		var decidedAt sql.NullTime
-		if err := rows.Scan(
-			&dwt.Decision.ID, &dwt.Decision.TaskID, &dwt.Decision.Type, &dwt.Decision.DecidedBy,
-			&dwt.Decision.DecidedByType, &dwt.Decision.Status, &dwt.Decision.Rationale,
-			&dwt.Decision.Evidence, &dwt.Decision.ArtifactID, &dwt.Decision.CreatedAt, &decidedAt,
-			&dwt.TaskTitle, &dwt.TaskStatus, &dwt.TaskAssignee, &dwt.TaskOwnerID, &dwt.TaskPriority,
-			&dwt.TaskTokenUsed, &dwt.TaskTokenBudget,
-		); err != nil {
+		if err := scanDecisionWithTask(rows, &dwt); err != nil {
 			return nil, fmt.Errorf("scan pending decision: %w", err)
-		}
-		if decidedAt.Valid {
-			dwt.Decision.DecidedAt = &decidedAt.Time
 		}
 		results = append(results, dwt)
 	}
 	return results, nil
 }
 
+// scanDecisionWithTask scans a Decision + Task info row.
+func scanDecisionWithTask(scanner interface{ Scan(dest ...interface{}) error }, dwt *DecisionWithTask) error {
+	var decidedAt sql.NullTime
+	var actorUserID, actorRole, actorLabel, actorType string
+	var approveTarget, rejectTarget string
+	err := scanner.Scan(
+		&dwt.Decision.ID, &dwt.Decision.TaskID, &dwt.Decision.Type,
+		&actorType, &actorUserID, &actorRole, &actorLabel,
+		&approveTarget, &rejectTarget,
+		&dwt.Decision.Status, &dwt.Decision.Rationale, &dwt.Decision.Evidence, &dwt.Decision.ArtifactID,
+		&dwt.Decision.CreatedAt, &decidedAt,
+		&dwt.Decision.DecidedBy, &dwt.Decision.DecidedByType,
+		&dwt.TaskTitle, &dwt.TaskStatus, &dwt.TaskAssignee, &dwt.TaskOwnerID, &dwt.TaskPriority,
+		&dwt.TaskTokenUsed, &dwt.TaskTokenBudget,
+	)
+	if err != nil {
+		return err
+	}
+	dwt.Decision.Actor = Actor{
+		Type:   ActorType(actorType),
+		UserID: actorUserID,
+		Role:   actorRole,
+		Label:  actorLabel,
+	}
+	dwt.Decision.ApproveTargetStatus = approveTarget
+	dwt.Decision.RejectTargetStatus = rejectTarget
+	if decidedAt.Valid {
+		dwt.Decision.DecidedAt = &decidedAt.Time
+	}
+	return nil
+}
+
 // UpdateDecisionStatus 更新决策状态（用于人类处理 pending 决策）
 func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, status DecisionStatus, rationale string, decidedBy string) (*Decision, error) {
 	var d Decision
-	var decidedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		UPDATE editorial_decisions
 		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
 		WHERE id = $1
-		RETURNING id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
-			COALESCE(artifact_id::text, ''), created_at, decided_at
-	`,
+		RETURNING ` + decisionScanColumns,
 		decisionID, status, rationale, decidedBy,
 	).Scan(
-		&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
-		&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
+		&d.ID, &d.TaskID, &d.Type,
+		new(sql.NullString), new(sql.NullString), new(sql.NullString), new(sql.NullString),
+		new(sql.NullString), new(sql.NullString),
+		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
+		&d.CreatedAt, new(sql.NullTime),
+		&d.DecidedBy, &d.DecidedByType,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrDecisionNotFound
@@ -456,28 +584,136 @@ func (s *Store) UpdateDecisionStatus(ctx context.Context, decisionID string, sta
 	if err != nil {
 		return nil, fmt.Errorf("update decision status: %w", err)
 	}
-	if decidedAt.Valid {
-		d.DecidedAt = &decidedAt.Time
+	return &d, nil
+}
+
+// GetDecision 获取单个决策
+func (s *Store) GetDecision(ctx context.Context, decisionID string) (*Decision, error) {
+	var d Decision
+	err := s.db.QueryRowContext(ctx, `
+		SELECT `+decisionScanColumns+`
+		FROM editorial_decisions WHERE id = $1
+	`, decisionID).Scan(
+		&d.ID, &d.TaskID, &d.Type,
+		new(sql.NullString), new(sql.NullString), new(sql.NullString), new(sql.NullString),
+		new(sql.NullString), new(sql.NullString),
+		&d.Status, &d.Rationale, &d.Evidence, &d.ArtifactID,
+		&d.CreatedAt, new(sql.NullTime),
+		&d.DecidedBy, &d.DecidedByType,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrDecisionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get decision: %w", err)
 	}
 	return &d, nil
 }
 
 // ResolveDecisionTxParams holds parameters for the transactional decision resolution.
 type ResolveDecisionTxParams struct {
-	DecisionID       string
-	Status           DecisionStatus
-	Rationale        string
-	DecidedBy        string
-	NextStatus       TaskStatus // empty = no task status change
-	Assignee         AssigneeType
-	TransitionType   DecisionType   // decision type for the transition record
-	TransitionByType DecidedByType  // who triggered the transition
+	DecisionID string
+	Status     DecisionStatus // approved | rejected
+	Rationale  string
+	DecidedBy  string // user ID of the human resolving the decision
 }
 
 // ResolveDecisionTx atomically resolves a decision and advances the task.
+// Uses approve_target_status / reject_target_status stored on the Decision itself,
+// eliminating the need for a global switch to guess the next state.
 // Both the decision status update and the task status update happen in a single transaction.
 // If either fails, the entire operation rolls back.
-func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxParams) (*Decision, error) {
+func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxParams) (*Decision, TaskStatus, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Resolve the decision and read its target statuses
+	var approveTarget, rejectTarget string
+	var taskID string
+	err = tx.QueryRowContext(ctx, `
+		UPDATE editorial_decisions
+		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
+		WHERE id = $1 AND status = 'pending'
+		RETURNING task_id,
+			COALESCE(approve_target_status, ''),
+			COALESCE(reject_target_status, '')
+	`, params.DecisionID, params.Status, params.Rationale, params.DecidedBy).Scan(
+		&taskID, &approveTarget, &rejectTarget,
+	)
+	if err == sql.ErrNoRows {
+		return nil, "", ErrDecisionNotFound
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("update decision in tx: %w", err)
+	}
+
+	// 2. Determine the target status from the Decision itself
+	var targetStatusStr string
+	if params.Status == DecisionStatusApproved {
+		targetStatusStr = approveTarget
+	} else {
+		targetStatusStr = rejectTarget
+	}
+
+	// 3. If there's a target status, advance the task with SELECT FOR UPDATE
+	var nextStatus TaskStatus
+	if targetStatusStr != "" {
+		nextStatus = TaskStatus(targetStatusStr)
+
+		// Lock the task row for the duration of this transaction
+		var currentStatus TaskStatus
+		err = tx.QueryRowContext(ctx, `
+			SELECT status FROM editorial_tasks WHERE id = $1 FOR UPDATE
+		`, taskID).Scan(&currentStatus)
+		if err != nil {
+			return nil, "", fmt.Errorf("lock task in tx: %w", err)
+		}
+
+		// Validate the transition is legal
+		if !currentStatus.CanTransitionTo(nextStatus) {
+			return nil, "", fmt.Errorf("%w: %s → %s", ErrInvalidTransition, currentStatus, nextStatus)
+		}
+
+		assignee := defaultAssignee(nextStatus)
+		_, err = tx.ExecContext(ctx, `
+			UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+		`, taskID, nextStatus, assignee)
+		if err != nil {
+			return nil, "", fmt.Errorf("update task status in tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, "", fmt.Errorf("commit resolve decision tx: %w", err)
+	}
+
+	// Re-read the full decision for the return value
+	dPtr, err := s.GetDecision(ctx, params.DecisionID)
+	if err != nil {
+		return nil, "", fmt.Errorf("re-read decision after resolve: %w", err)
+	}
+	return dPtr, nextStatus, nil
+}
+
+// ─── TransitionTask (P0-2: 单一事务化入口) ──────────────
+
+// TransitionTask is the single entry point for all task status transitions.
+// It performs the following in one transaction:
+//   - SELECT ... FOR UPDATE to lock the task row
+//   - Validate expected status (optimistic locking)
+//   - Validate the transition is legal
+//   - Update task status
+//   - Create an Agent run lease if transitioning to an agent-executing state
+//
+// Agent execution is NOT started here — the caller should do that after commit.
+func (s *Store) TransitionTask(ctx context.Context, cmd TransitionCommand) (*Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -488,66 +724,122 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 		}
 	}()
 
-	// 1. Update the pending decision status
-	var d Decision
-	var decidedAt sql.NullTime
+	// 1. Lock the task row and read current state
+	var task Task
 	err = tx.QueryRowContext(ctx, `
-		UPDATE editorial_decisions
-		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
-		WHERE id = $1
-		RETURNING id, task_id, type, COALESCE(decided_by, ''), decided_by_type, status, rationale, evidence,
-			COALESCE(artifact_id::text, ''), created_at, decided_at
-	`,
-		params.DecisionID, params.Status, params.Rationale, params.DecidedBy,
-	).Scan(
-		&d.ID, &d.TaskID, &d.Type, &d.DecidedBy, &d.DecidedByType, &d.Status,
-		&d.Rationale, &d.Evidence, &d.ArtifactID, &d.CreatedAt, &decidedAt,
+		SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
+			allowed_tools, token_budget, token_used, priority, tags, style_slug, conversation_id,
+			created_by, created_at, updated_at
+		FROM editorial_tasks WHERE id = $1 FOR UPDATE
+	`, cmd.TaskID).Scan(
+		&task.ID, &task.Title, &task.Description, &task.OwnerID, &task.AssigneeType,
+		&task.Deadline, &task.Status, &task.AcceptCriteria,
+		pq.Array(&task.AllowedTools), &task.TokenBudget, &task.TokenUsed,
+		&task.Priority, pq.Array(&task.Tags), &task.StyleSlug, &task.ConversationID,
+		&task.CreatedBy, &task.CreatedAt, &task.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, ErrDecisionNotFound
+		return nil, ErrTaskNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("update decision status in tx: %w", err)
-	}
-	if decidedAt.Valid {
-		d.DecidedAt = &decidedAt.Time
+		return nil, fmt.Errorf("lock task: %w", err)
 	}
 
-	// 2. If advancing the task, create transition decision + update task status
-	if params.NextStatus != "" {
-		decStatus := DecisionStatusApproved
-		if params.Status == DecisionStatusRejected {
-			decStatus = DecisionStatusRejected
-		}
+	// 2. Validate expected status (optimistic locking)
+	if cmd.ExpectedStatus != "" && task.Status != cmd.ExpectedStatus {
+		return nil, fmt.Errorf("%w: expected %s, got %s", ErrStatusConflict, cmd.ExpectedStatus, task.Status)
+	}
 
-		var decidedBy sql.NullString
-		if params.DecidedBy != "" {
-			decidedBy.Valid = true
-			decidedBy.String = params.DecidedBy
-		}
+	// 3. Validate the transition is legal
+	if !task.Status.CanTransitionTo(cmd.TargetStatus) {
+		return nil, fmt.Errorf("%w: %s → %s", ErrInvalidTransition, task.Status, cmd.TargetStatus)
+	}
 
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO editorial_decisions (task_id, type, decided_by, decided_by_type, status, rationale, decided_at)
-			VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		`,
-			d.TaskID, params.TransitionType, decidedBy, params.TransitionByType, decStatus, params.Rationale,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create transition decision in tx: %w", err)
-		}
+	// 4. Update task status
+	assignee := defaultAssignee(cmd.TargetStatus)
+	_, err = tx.ExecContext(ctx, `
+		UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+	`, cmd.TaskID, cmd.TargetStatus, assignee)
+	if err != nil {
+		return nil, fmt.Errorf("update task status: %w", err)
+	}
 
-		_, err = tx.ExecContext(ctx, `
-			UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
-		`,
-			d.TaskID, params.NextStatus, params.Assignee,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("update task status in tx: %w", err)
+	// 5. If transitioning to an agent-executing state, create a lease
+	if cmd.AutoStartAgent {
+		agentRole := agentRoleForStatus(cmd.TargetStatus)
+		if agentRole != "" {
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO editorial_agent_leases (task_id, agent_role, expired_at)
+				VALUES ($1, $2, NOW() + INTERVAL '10 minutes')
+			`, cmd.TaskID, agentRole)
+			if err != nil {
+				// If the unique index on active leases fails, it means another agent is already running
+				return nil, fmt.Errorf("%w: task_id=%s role=%s", ErrLeaseConflict, cmd.TaskID, agentRole)
+			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit resolve decision tx: %w", err)
+		return nil, fmt.Errorf("commit transition: %w", err)
 	}
-	return &d, nil
+
+	task.Status = cmd.TargetStatus
+	task.AssigneeType = assignee
+	return &task, nil
+}
+
+// ─── Agent Run Leases (P0-2: 数据库级互斥) ──────────────
+
+// AcquireLease attempts to acquire an agent run lease for the given task and role.
+// Returns ErrLeaseConflict if an active lease already exists.
+// The lease expires after the given duration.
+func (s *Store) AcquireLease(ctx context.Context, taskID string, role AgentRole, ttl time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO editorial_agent_leases (task_id, agent_role, expired_at)
+		VALUES ($1, $2, NOW() + $3::interval)
+	`, taskID, string(role), fmt.Sprintf("%d seconds", int(ttl.Seconds())))
+	if err != nil {
+		// Unique index violation means a lease already exists
+		return ErrLeaseConflict
+	}
+	return nil
+}
+
+// ReleaseLease marks an agent run lease as completed.
+func (s *Store) ReleaseLease(ctx context.Context, taskID string, role AgentRole, status string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE editorial_agent_leases
+		SET status = $3, released_at = NOW()
+		WHERE task_id = $1 AND agent_role = $2 AND status = 'active'
+	`, taskID, string(role), status)
+	return err
+}
+
+// HasActiveLease checks if there's an active (non-expired) lease for the given task and role.
+func (s *Store) HasActiveLease(ctx context.Context, taskID string, role AgentRole) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM editorial_agent_leases
+		WHERE task_id = $1 AND agent_role = $2 AND status = 'active' AND expired_at > NOW()
+	`, taskID, string(role)).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// ─── Helpers ─────────────────────────────────────────────
+
+// agentRoleForStatus returns the agent role that should execute for the given task status.
+func agentRoleForStatus(status TaskStatus) string {
+	switch status {
+	case StatusResearch:
+		return string(RoleResearch)
+	case StatusWriting:
+		return string(RoleWriting)
+	case StatusReview:
+		return string(RoleReview)
+	default:
+		return ""
+	}
 }
