@@ -561,6 +561,76 @@ CREATE INDEX IF NOT EXISTS idx_working_summaries_conversation
     ON working_summaries (conversation_id);
 ```
 
+### 28. editorial_tasks — 编辑部任务
+
+编辑部工作流的核心实体，代表一个选题从立项到发布的完整生命周期。
+
+```sql
+CREATE TABLE editorial_tasks (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title           VARCHAR(256) NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    owner_id        UUID REFERENCES users(id),
+    assignee_type   VARCHAR(32) NOT NULL DEFAULT 'human', -- human | research_agent | writing_agent | review_agent
+    deadline        TIMESTAMPTZ,
+    status          VARCHAR(32) NOT NULL DEFAULT 'draft', -- draft | pending_approval | research | writing | review | pending_publish | published | archived
+    accept_criteria TEXT NOT NULL DEFAULT '',
+    allowed_tools   TEXT[] DEFAULT '{}',
+    token_budget    INTEGER NOT NULL DEFAULT 300000,
+    token_used      INTEGER NOT NULL DEFAULT 0,
+    priority        SMALLINT NOT NULL DEFAULT 3,
+    tags            TEXT[] DEFAULT '{}',
+    style_slug      VARCHAR(64) NOT NULL DEFAULT 'yinyue',
+    conversation_id VARCHAR(64),
+    created_by      UUID REFERENCES users(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### 29. editorial_artifacts — 编辑部交付物
+
+Agent 之间传递的结构化交付物，每个交付物有版本控制和审批状态。
+
+```sql
+CREATE TABLE editorial_artifacts (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    task_id     UUID NOT NULL REFERENCES editorial_tasks(id) ON DELETE CASCADE,
+    type        VARCHAR(32) NOT NULL, -- topic_card | research_brief | source_pack | fact_claims | outline | draft | review_report | revised_draft
+    version     INTEGER NOT NULL DEFAULT 1,
+    content     JSONB NOT NULL DEFAULT '{}',
+    status      VARCHAR(16) NOT NULL DEFAULT 'draft', -- draft | submitted | approved | rejected | superseded
+    produced_by VARCHAR(32) NOT NULL,
+    reviewed_by UUID REFERENCES users(id),
+    review_note TEXT NOT NULL DEFAULT '',
+    parent_id   UUID REFERENCES editorial_artifacts(id),
+    token_cost  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uk_artifact_version UNIQUE (task_id, type, version)
+);
+```
+
+### 30. editorial_decisions — 编辑部决策
+
+记录每篇稿件的决策链：谁、在什么角色下、做了什么决策、依据是什么。
+
+```sql
+CREATE TABLE editorial_decisions (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    task_id         UUID NOT NULL REFERENCES editorial_tasks(id) ON DELETE CASCADE,
+    type            VARCHAR(32) NOT NULL, -- approve_topic | select_angle | trust_source | accept_review | allow_rewrite | publish | escalate
+    decided_by      UUID REFERENCES users(id),
+    decided_by_type VARCHAR(32) NOT NULL, -- human | research_agent | writing_agent | review_agent | system
+    status          VARCHAR(16) NOT NULL DEFAULT 'pending', -- pending | approved | rejected | escalated
+    rationale       TEXT NOT NULL DEFAULT '',
+    evidence        TEXT NOT NULL DEFAULT '',
+    artifact_id     UUID REFERENCES editorial_artifacts(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    decided_at      TIMESTAMPTZ
+);
+```
+
 ## 初始数据
 
 ```sql

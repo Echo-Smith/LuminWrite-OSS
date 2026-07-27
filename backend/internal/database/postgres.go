@@ -75,6 +75,9 @@ func Migrate(db *DB) error {
 		"028_conversation_messages",
 		"029_memory_entities_relations",
 		"030_working_summaries",
+		"031_editorial_tasks",
+		"032_editorial_artifacts",
+		"033_editorial_decisions",
 	}
 
 	for _, name := range migrations {

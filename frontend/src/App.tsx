@@ -12,6 +12,7 @@ import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
+import { EditorialBoard } from "@/pages/editorial/editorial-board";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
 
@@ -72,6 +73,16 @@ export function App() {
             element={
               <ProtectedRoute requireAdmin>
                 <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 编辑部 — 需登录 */}
+          <Route
+            path="/editorial"
+            element={
+              <ProtectedRoute>
+                <EditorialBoard />
               </ProtectedRoute>
             }
           />

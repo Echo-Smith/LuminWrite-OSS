@@ -9,7 +9,7 @@ import {
   Plus, MessageSquare, Trash2, Compass,
   Settings, Sun, Moon, LogOut, UserPlus,
   PanelLeftClose, PanelLeftOpen, Pen,
-  ChevronRight, User, AlertTriangle,
+  ChevronRight, User, AlertTriangle, Newspaper,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -108,6 +108,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           title="选题中心"
         >
           <Compass className="h-4 w-4" />
+        </button>
+
+        <button
+          onClick={() => navigate("/editorial")}
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+          title="编辑部"
+        >
+          <Newspaper className="h-4 w-4" />
         </button>
 
         {/* 占位 */}
