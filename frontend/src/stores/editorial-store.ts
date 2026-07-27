@@ -104,6 +104,7 @@ interface EditorialState {
   loading: boolean;
   error: string | null;
   events: EditorialEvent[];
+  expandedArtifactIds: Set<string>;
 
   // Actions
   fetchTasks: (status?: string) => Promise<void>;
@@ -119,6 +120,7 @@ interface EditorialState {
   }) => Promise<EditorialTask | null>;
   advanceTask: (id: string, targetStatus: TaskStatus, assigneeType?: string) => Promise<boolean>;
   fetchArtifacts: (taskId: string) => Promise<void>;
+  getArtifact: (id: string) => Promise<Artifact | null>;
   submitArtifact: (taskId: string, input: {
     type: ArtifactType;
     content: string;
@@ -136,6 +138,7 @@ interface EditorialState {
   }) => Promise<boolean>;
   fetchStats: () => Promise<void>;
   pushEvent: (evt: EditorialEvent) => void;
+  toggleArtifactExpand: (id: string) => void;
   clearError: () => void;
 }
 
@@ -158,6 +161,7 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
   loading: false,
   error: null,
   events: [],
+  expandedArtifactIds: new Set(),
 
   fetchTasks: async (status?: string) => {
     set({ loading: true, error: null });
@@ -165,7 +169,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
       const params = status ? `?status=${status}` : "";
       const res = await fetch(`${API_BASE}/tasks${params}`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error(`Failed to fetch tasks: ${res.statusText}`);
-      const tasks = await res.json();
+      const json = await res.json();
+      const tasks = json.data?.tasks ?? json.tasks ?? [];
       set({ tasks, loading: false });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -177,7 +182,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
     try {
       const res = await fetch(`${API_BASE}/tasks/${id}`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error(`Failed to fetch task: ${res.statusText}`);
-      const task = await res.json();
+      const json = await res.json();
+      const task = json.data ?? json;
       set({ currentTask: task, loading: false });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -194,9 +200,10 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || "Failed to create task");
+        throw new Error(err.error?.message || err.error || "Failed to create task");
       }
-      const task = await res.json();
+      const json = await res.json();
+      const task = json.data ?? json;
       set((s) => ({ tasks: [task, ...s.tasks] }));
       return task;
     } catch (e) {
@@ -215,7 +222,7 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || "Failed to advance task");
+        throw new Error(err.error?.message || err.error || "Failed to advance task");
       }
       // 更新本地状态
       set((s) => ({
@@ -239,10 +246,28 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
         headers: getAuthHeaders(),
       });
       if (!res.ok) throw new Error(`Failed to fetch artifacts: ${res.statusText}`);
-      const artifacts = await res.json();
+      const json = await res.json();
+      const artifacts = json.data?.artifacts ?? json.artifacts ?? [];
       set({ artifacts });
     } catch (e) {
       set({ error: (e as Error).message });
+    }
+  },
+
+  getArtifact: async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/artifacts/${id}`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error(`Failed to fetch artifact: ${res.statusText}`);
+      const json = await res.json();
+      const artifact = json.data ?? json;
+      // 更新 artifacts 列表中对应项
+      set((s) => ({
+        artifacts: s.artifacts.map((a) => (a.id === id ? artifact : a)),
+      }));
+      return artifact;
+    } catch (e) {
+      set({ error: (e as Error).message });
+      return null;
     }
   },
 
@@ -255,7 +280,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
         body: JSON.stringify(input),
       });
       if (!res.ok) throw new Error("Failed to submit artifact");
-      const artifact = await res.json();
+      const json = await res.json();
+      const artifact = json.data ?? json;
       set((s) => ({ artifacts: [...s.artifacts, artifact] }));
       return artifact;
     } catch (e) {
@@ -273,7 +299,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
         body: JSON.stringify({ status, review_note: reviewNote }),
       });
       if (!res.ok) throw new Error("Failed to review artifact");
-      const updated = await res.json();
+      const json = await res.json();
+      const updated = json.data ?? json;
       set((s) => ({
         artifacts: s.artifacts.map((a) => (a.id === artifactId ? updated : a)),
       }));
@@ -290,7 +317,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
         headers: getAuthHeaders(),
       });
       if (!res.ok) throw new Error(`Failed to fetch decisions: ${res.statusText}`);
-      const decisions = await res.json();
+      const json = await res.json();
+      const decisions = json.data?.decisions ?? json.decisions ?? [];
       set({ decisions });
     } catch (e) {
       set({ error: (e as Error).message });
@@ -306,7 +334,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
         body: JSON.stringify(input),
       });
       if (!res.ok) throw new Error("Failed to create decision");
-      const decision = await res.json();
+      const json = await res.json();
+      const decision = json.data ?? json;
       set((s) => ({ decisions: [...s.decisions, decision] }));
       return true;
     } catch (e) {
@@ -319,7 +348,8 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
     try {
       const res = await fetch(`${API_BASE}/stats`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error("Failed to fetch stats");
-      const stats = await res.json();
+      const json = await res.json();
+      const stats = json.data ?? json;
       set({ stats });
     } catch (e) {
       set({ error: (e as Error).message });
@@ -328,6 +358,51 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
 
   pushEvent: (evt) => {
     set((s) => ({ events: [...s.events.slice(-49), evt] }));
+
+    // 根据事件类型自动刷新数据
+    const state = get();
+
+    // 任务状态变更 → 刷新任务列表
+    if (evt.type === "task.status_changed" || evt.type === "agent.completed" || evt.type === "agent.failed") {
+      state.fetchTasks();
+      // 如果当前选中的任务就是这个事件的任务，也刷新详情
+      if (state.currentTask?.id === evt.task_id) {
+        state.fetchTask(evt.task_id);
+        state.fetchArtifacts(evt.task_id);
+        state.fetchDecisions(evt.task_id);
+      }
+    }
+
+    // 新交付物产出 → 刷新 artifacts
+    if (evt.type === "artifact.produced" || evt.type === "artifact.reviewed") {
+      if (state.currentTask?.id === evt.task_id) {
+        state.fetchArtifacts(evt.task_id);
+      }
+    }
+
+    // 新决策创建 → 刷新 decisions
+    if (evt.type === "decision.created" || evt.type === "decision.required") {
+      if (state.currentTask?.id === evt.task_id) {
+        state.fetchDecisions(evt.task_id);
+      }
+    }
+  },
+
+  toggleArtifactExpand: (id: string) => {
+    set((s) => {
+      const next = new Set(s.expandedArtifactIds);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return { expandedArtifactIds: next };
+    });
+    // 如果展开且内容为空，自动获取
+    const art = get().artifacts.find((a) => a.id === id);
+    if (art && !art.content) {
+      get().getArtifact(id);
+    }
   },
 
   clearError: () => set({ error: null }),

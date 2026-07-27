@@ -888,6 +888,15 @@ case "agent.paused": {
         });
         break;
       }
+
+      case "editorial.event": {
+        // Forward editorial events to the editorial store for auto-refresh
+        const evt = p as unknown as { type: string; task_id: string; payload: Record<string, unknown>; timestamp: string };
+        import("./editorial-store").then(({ useEditorialStore }) => {
+          useEditorialStore.getState().pushEvent(evt);
+        });
+        break;
+      }
     }
   },
 
