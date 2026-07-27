@@ -127,10 +127,17 @@ func (h *Handlers) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	task, err := h.svc.GetTask(r.Context(), taskID)
+	userID := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+
+	task, err := h.svc.GetTaskForUser(r.Context(), taskID, userID, isAdmin)
 	if err != nil {
 		if err == ErrTaskNotFound {
 			response.Err(w, http.StatusNotFound, "not_found", "task not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
 			return
 		}
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -150,6 +157,25 @@ func (h *Handlers) handleAdvanceTask(w http.ResponseWriter, r *http.Request) {
 	// 从 context 注入 decidedBy
 	if input.DecidedBy == "" {
 		input.DecidedBy = userIDFromContext(r.Context())
+	}
+
+	// 所有权检查：非 admin 只能操作自己的任务
+	userID := userIDFromContext(r.Context())
+	isAdmin := isAdminFromContext(r.Context())
+	if !isAdmin {
+		task, err := h.svc.GetTask(r.Context(), taskID)
+		if err != nil {
+			if err == ErrTaskNotFound {
+				response.Err(w, http.StatusNotFound, "not_found", "task not found")
+				return
+			}
+			response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if task.OwnerID != userID {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
 	}
 
 	if err := h.svc.AdvanceTask(r.Context(), taskID, input); err != nil {
@@ -304,6 +330,14 @@ func (h *Handlers) handleResolveDecision(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		if err == ErrDecisionNotFound {
 			response.Err(w, http.StatusNotFound, "not_found", "decision not found")
+			return
+		}
+		if err == ErrForbidden {
+			response.Err(w, http.StatusForbidden, "forbidden", "access denied")
+			return
+		}
+		if err == ErrInvalidTransition {
+			response.Err(w, http.StatusConflict, "invalid_transition", err.Error())
 			return
 		}
 		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())

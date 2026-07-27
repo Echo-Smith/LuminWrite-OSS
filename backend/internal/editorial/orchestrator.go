@@ -153,18 +153,32 @@ func (o *Orchestrator) AdvanceTask(ctx context.Context, taskID string, input Adv
 	decType, decByType := transitionDecision(task.Status, input.TargetStatus)
 	decStatus := decisionStatusForTransition(task.Status, input.TargetStatus)
 
-	// 如果是人类操作，用 input 中传入的或默认的 decidedBy
-	decidedBy := input.DecidedBy
-	if decidedBy == "" {
-		decidedBy = task.OwnerID
+	// 构建 Actor
+	actor := Actor{Type: ActorSystem, Label: "system"}
+	if decByType == DecidedByHuman {
+		actor = NewHumanActor(input.DecidedBy, input.DecidedBy)
+	} else if decByType == DecidedByResearchAgent || decByType == DecidedByWritingAgent || decByType == DecidedByReviewAgent {
+		actor = Actor{Type: ActorAgent, Role: string(decByType), Label: string(decByType)}
+	}
+
+	// 计算 approve/reject target status 并保存在 Decision 上
+	approveTarget := input.TargetStatus
+	rejectTarget := task.Status // 默认驳回 = 回到当前状态
+	if decStatus == DecisionStatusRejected {
+		// 如果这次是驳回，交换
+		approveTarget = task.Status
+		rejectTarget = input.TargetStatus
 	}
 
 	decision, err := o.store.CreateDecision(ctx, CreateDecisionInput{
-		Type:          decType,
-		DecidedBy:     decidedBy,
-		DecidedByType: decByType,
-		Status:        decStatus,
-		Rationale:     input.Rationale,
+		Type:                decType,
+		Actor:               actor,
+		DecidedByType:       decByType,
+		DecidedBy:           input.DecidedBy,
+		Status:              decStatus,
+		Rationale:           input.Rationale,
+		ApproveTargetStatus: approveTarget,
+		RejectTargetStatus:  rejectTarget,
 	}, taskID)
 	if err != nil {
 		return fmt.Errorf("create decision: %w", err)
@@ -551,8 +565,10 @@ func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artif
 			Relevance string `json:"relevance"`
 		} `json:"sources"`
 		Claims []struct {
-			Claim    string `json:"claim"`
-			Verified bool   `json:"verified"`
+			Claim  string     `json:"claim"`
+			Status ClaimStatus `json:"status"`
+			// Verified is deprecated, use Status instead
+			Verified bool `json:"verified,omitempty"`
 		} `json:"claims"`
 		Gaps []string `json:"gaps"`
 	}
@@ -566,9 +582,19 @@ func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artif
 
 	// 评估指标
 	sourceCount := len(brief.Sources)
+	// P0-5: 不再使用 verified=true，而是区分 supported/unsupported/conflicted/unknown
+	// 只有可追溯证据或人工确认才能标记为 verified
+	supportedClaims := 0
 	verifiedClaims := 0
 	for _, c := range brief.Claims {
+		// Backward compat: check legacy Verified field
 		if c.Verified {
+			verifiedClaims++
+		}
+		switch c.Status {
+		case ClaimSupported:
+			supportedClaims++
+		case ClaimVerified:
 			verifiedClaims++
 		}
 	}
@@ -577,18 +603,19 @@ func (o *Orchestrator) routeAfterResearch(ctx context.Context, task *Task, artif
 	slog.Info("research quality评估",
 		"task_id", task.ID,
 		"sources", sourceCount,
+		"supported_claims", supportedClaims,
 		"verified_claims", verifiedClaims,
 		"gaps", gapCount)
 
 	// 动态路由决策
 	switch {
 	case sourceCount >= 3 && gapCount == 0:
-		// 质量充分 → 自动推进到写作（不再要求 verifiedClaims >= 2，审校 Agent 负责验证）
+		// 质量充分 → 自动推进到写作
 		o.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
 			TargetStatus: StatusWriting,
 			AssigneeType: AssigneeWritingAgent,
 			DecidedBy:    "system",
-			Rationale:    fmt.Sprintf("研究质量充分（%d 信源, %d 已验证声明），自动推进到写作", sourceCount, verifiedClaims),
+			Rationale:    fmt.Sprintf("研究质量充分（%d 信源, %d supported, %d verified），自动推进到写作", sourceCount, supportedClaims, verifiedClaims),
 		})
 
 	case sourceCount >= 2 && gapCount <= 1:
@@ -667,12 +694,19 @@ func (o *Orchestrator) routeAfterWriting(ctx context.Context, task *Task, artifa
 
 // requestHumanDecision 创建一个 pending decision 并通知人类
 func (o *Orchestrator) requestHumanDecision(ctx context.Context, task *Task, decType DecisionType, message string) {
+	// 预计算 approve/reject target status
+	approveTarget := nextStatusForDecision(decType)
+	rejectTarget := prevStatusForDecision(decType)
+
 	// 创建 pending decision
 	_, err := o.store.CreateDecision(ctx, CreateDecisionInput{
-		Type:          decType,
-		DecidedByType: DecidedByHuman,
-		Status:        DecisionStatusPending,
-		Rationale:     message,
+		Type:                decType,
+		Actor:               NewSystemActor("system"),
+		DecidedByType:       DecidedByHuman,
+		Status:              DecisionStatusPending,
+		Rationale:           message,
+		ApproveTargetStatus: approveTarget,
+		RejectTargetStatus:  rejectTarget,
 	}, task.ID)
 	if err != nil {
 		slog.Error("failed to create pending decision", "task_id", task.ID, "error", err)
@@ -706,6 +740,7 @@ func (o *Orchestrator) rollbackTask(taskID string, fromStatus, toStatus TaskStat
 	// 创建回退 Decision
 	_, err := o.store.CreateDecision(context.Background(), CreateDecisionInput{
 		Type:          DecisionEscalate,
+		Actor:         NewSystemActor("system"),
 		DecidedBy:     "system",
 		DecidedByType: DecidedBySystem,
 		Status:        DecisionStatusEscalated,

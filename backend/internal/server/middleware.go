@@ -104,6 +104,14 @@ func userFromContext(ctx context.Context) *JWTPayload {
 	return val.(*JWTPayload)
 }
 
+// principalFromPayload converts a JWT payload into a shared auth.Principal.
+func principalFromPayload(payload *JWTPayload) *auth.Principal {
+	return &auth.Principal{
+		UserID: payload.Sub,
+		Role:   payload.Role,
+	}
+}
+
 // ─── JWT Middleware ─────────────────────────────────────
 
 // jwtAuthMiddleware validates JWT from the Authorization header and stores
@@ -126,8 +134,8 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		ctx := withUser(r.Context(), payload)
-		// Also set the shared auth.User so editorial and other packages can read identity
-		ctx = auth.SetUser(ctx, &auth.User{ID: payload.Sub, Role: payload.Role})
+		// Set the shared auth.Principal so editorial and other packages can read identity
+		ctx = auth.SetPrincipal(ctx, principalFromPayload(payload))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -143,7 +151,7 @@ func (s *Server) jwtOptionalMiddleware(next http.Handler) http.Handler {
 		if token != "" {
 			if payload, err := s.ValidateJWT(token); err == nil {
 				ctx := withUser(r.Context(), payload)
-				ctx = auth.SetUser(ctx, &auth.User{ID: payload.Sub, Role: payload.Role})
+				ctx = auth.SetPrincipal(ctx, principalFromPayload(payload))
 				r = r.WithContext(ctx)
 			}
 		}

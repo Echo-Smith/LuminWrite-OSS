@@ -78,6 +78,10 @@ func Migrate(db *DB) error {
 		"031_editorial_tasks",
 		"032_editorial_artifacts",
 		"033_editorial_decisions",
+		"034_editorial_memory",
+		"035_editorial_experiments",
+		"036_fix_actor_types",
+		"037_decision_actor_model",
 	}
 
 	for _, name := range migrations {
