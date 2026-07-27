@@ -17,10 +17,12 @@ import { ModelConfigsPage } from "./admin/model-configs";
 import { APIKeysPage } from "./admin/api-keys";
 import { TokenUsagePage } from "./admin/token-usage";
 import { CronJobsPage } from "./admin/cron-jobs";
+import { PendingStylesPage } from "./admin/pending-styles";
 
 type AdminPage =
   | "overview"
   | "styles"
+  | "pending-styles"
   | "traces"
   | "models"
   | "keys"
@@ -33,6 +35,7 @@ type AdminPage =
 const NAV_ITEMS: { key: AdminPage; label: string; icon: string }[] = [
   { key: "overview", label: "概览", icon: "📊" },
   { key: "styles", label: "风格管理", icon: "✍️" },
+  { key: "pending-styles", label: "社区审核", icon: "🔍" },
   { key: "traces", label: "Trace 历史", icon: "📋" },
   { key: "models", label: "模型配置", icon: "🤖" },
   { key: "keys", label: "MCP 服务密钥", icon: "🔑" },
@@ -102,6 +105,7 @@ export function AdminDashboard() {
       <main className="flex-1 overflow-y-auto">
         {activePage === "overview" && <OverviewPage />}
         {activePage === "styles" && <StyleManagementPage />}
+        {activePage === "pending-styles" && <PendingStylesPage />}
         {activePage === "traces" && <TraceHistoryPage />}
         {activePage === "models" && <ModelConfigsPage />}
         {activePage === "keys" && <APIKeysPage />}

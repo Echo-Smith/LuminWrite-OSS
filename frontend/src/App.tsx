@@ -13,6 +13,7 @@ import { TopicCenter } from "@/pages/topic-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
 import { EditorialBoard } from "@/pages/editorial/editorial-board";
+import { MyStylesPage } from "@/pages/my-styles";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
 
@@ -63,6 +64,15 @@ export function App() {
               <ProtectedRoute>
                 <WritingWorkspace />
                 <PersonalCenter />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/my-styles"
+            element={
+              <ProtectedRoute>
+                <MyStylesPage />
               </ProtectedRoute>
             }
           />
