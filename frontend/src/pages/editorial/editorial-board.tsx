@@ -13,6 +13,9 @@ import {
   type Artifact,
   type Decision,
   type DecisionWithTask,
+  type SourceCredibility,
+  type AgentReputation,
+  type EditorialKnowledge,
 } from "@/stores/editorial-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,6 +47,10 @@ import {
   TrendingUp,
   Zap,
   Shield,
+  Globe,
+  BookOpen,
+  BarChart3,
+  Star,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -76,15 +83,24 @@ const ASSIGNEE_LABELS: Record<string, string> = {
 };
 
 export function EditorialBoard() {
-  const { tasks, loading, fetchTasks, createTask, advanceTask, events, pendingDecisions, fetchPendingDecisions } = useEditorialStore();
+  const { tasks, loading, fetchTasks, createTask, advanceTask, events, pendingDecisions, fetchPendingDecisions, sources, fetchSources, agentReputation, fetchAgentReputation, knowledge, fetchKnowledge } = useEditorialStore();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [view, setView] = useState<"dashboard" | "kanban">("dashboard");
+  const [view, setView] = useState<"dashboard" | "kanban" | "insights">("dashboard");
 
   useEffect(() => {
     fetchTasks();
     fetchPendingDecisions();
   }, [fetchTasks, fetchPendingDecisions]);
+
+  // 洞察视图加载时获取数据
+  useEffect(() => {
+    if (view === "insights") {
+      fetchSources();
+      fetchAgentReputation();
+      fetchKnowledge();
+    }
+  }, [view, fetchSources, fetchAgentReputation, fetchKnowledge]);
 
   // 定时刷新
   const refreshTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -150,6 +166,15 @@ export function EditorialBoard() {
                 )}
               >
                 看板
+              </button>
+              <button
+                onClick={() => setView("insights")}
+                className={cn(
+                  "px-3 py-1 text-sm rounded-md transition-colors",
+                  view === "insights" ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                洞察
               </button>
             </div>
           </div>
@@ -258,6 +283,68 @@ export function EditorialBoard() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* 洞察视图 */}
+        {view === "insights" && (
+          <div className="p-6 space-y-6 overflow-y-auto">
+            {/* Agent 信誉 */}
+            <div>
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
+                <BarChart3 className="h-3.5 w-3.5" />
+                Agent 信誉
+              </h2>
+              <div className="grid grid-cols-3 gap-4">
+                {agentReputation.length === 0 ? (
+                  <div className="col-span-3 rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+                    暂无 Agent 执行记录
+                  </div>
+                ) : (
+                  agentReputation.map((ar) => (
+                    <AgentReputationCard key={ar.id} rep={ar} />
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* 信源可信度 */}
+            <div>
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
+                <Globe className="h-3.5 w-3.5" />
+                信源可信度
+              </h2>
+              {sources.length === 0 ? (
+                <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+                  暂无信源记录
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {sources.map((src) => (
+                    <SourceCredibilityCard key={src.id} source={src} />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 编辑部知识 */}
+            <div>
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
+                <BookOpen className="h-3.5 w-3.5" />
+                编辑部知识沉淀
+              </h2>
+              {knowledge.length === 0 ? (
+                <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+                  暂无知识记录
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {knowledge.map((k) => (
+                    <KnowledgeCard key={k.id} knowledge={k} />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1097,6 +1184,143 @@ function getEventIcon(type: string) {
     case "task.status_changed": return <ChevronRight className="h-3 w-3 text-muted-foreground" />;
     default: return <Activity className="h-3 w-3 text-muted-foreground" />;
   }
+}
+
+// ─── 洞察视图卡片组件 ───────────────────────────────────
+
+function AgentReputationCard({ rep }: { rep: AgentReputation }) {
+  const successRate = rep.total_executions > 0
+    ? (rep.success_count / rep.total_executions) * 100
+    : 0;
+  const roleLabels: Record<string, string> = {
+    research_agent: "研究 Agent",
+    writing_agent: "写作 Agent",
+    review_agent: "审校 Agent",
+  };
+  const roleIcons: Record<string, React.ReactNode> = {
+    research_agent: <Globe className="h-4 w-4 text-blue-500" />,
+    writing_agent: <FileText className="h-4 w-4 text-indigo-500" />,
+    review_agent: <Shield className="h-4 w-4 text-purple-500" />,
+  };
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {roleIcons[rep.agent_role] || <Bot className="h-4 w-4" />}
+          <span className="text-sm font-medium">{roleLabels[rep.agent_role] || rep.agent_role}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Star className="h-3.5 w-3.5 text-amber-500" />
+          <span className="text-sm font-bold tabular-nums">{(rep.avg_quality_score * 100).toFixed(0)}</span>
+          <span className="text-xs text-muted-foreground">/100</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded bg-muted/50 p-2">
+          <div className="text-muted-foreground">成功率</div>
+          <div className="font-medium tabular-nums">
+            {successRate.toFixed(0)}% ({rep.success_count}/{rep.total_executions})
+          </div>
+        </div>
+        <div className="rounded bg-muted/50 p-2">
+          <div className="text-muted-foreground">平均 Token</div>
+          <div className="font-medium tabular-nums">{(rep.avg_token_cost / 1000).toFixed(1)}k</div>
+        </div>
+        <div className="rounded bg-muted/50 p-2">
+          <div className="text-muted-foreground">平均耗时</div>
+          <div className="font-medium tabular-nums">{(rep.avg_duration_ms / 1000).toFixed(1)}s</div>
+        </div>
+        <div className="rounded bg-muted/50 p-2">
+          <div className="text-muted-foreground">失败次数</div>
+          <div className="font-medium tabular-nums text-red-500">{rep.failure_count}</div>
+        </div>
+      </div>
+
+      {rep.last_execution_at && (
+        <div className="text-xs text-muted-foreground">
+          最近执行: {new Date(rep.last_execution_at).toLocaleString("zh-CN")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourceCredibilityCard({ source }: { source: SourceCredibility }) {
+  const score = source.credibility_score;
+  const scoreColor = score >= 0.7 ? "text-green-500" : score >= 0.4 ? "text-amber-500" : "text-red-500";
+  const categoryLabels: Record<string, string> = {
+    news: "新闻", gov: "政府", academic: "学术", social: "社交", blog: "博客", general: "通用",
+  };
+
+  return (
+    <div className="rounded-lg border bg-card p-3 flex items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <Globe className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="text-sm font-medium truncate">{source.source_domain}</span>
+          <Badge variant="outline" className="text-xs shrink-0">
+            {categoryLabels[source.category] || source.category}
+          </Badge>
+        </div>
+        {source.source_name && (
+          <p className="text-xs text-muted-foreground mt-0.5 ml-5">{source.source_name}</p>
+        )}
+        <div className="flex items-center gap-3 mt-1 ml-5 text-xs text-muted-foreground">
+          <span>使用 {source.total_uses} 次</span>
+          <span className="text-green-500">验证 {source.verified_count}</span>
+          {source.refuted_count > 0 && (
+            <span className="text-red-500">证伪 {source.refuted_count}</span>
+          )}
+        </div>
+      </div>
+      <div className="text-right shrink-0">
+        <div className={cn("text-lg font-bold tabular-nums", scoreColor)}>
+          {(score * 100).toFixed(0)}
+        </div>
+        <div className="text-xs text-muted-foreground">可信度</div>
+      </div>
+    </div>
+  );
+}
+
+function KnowledgeCard({ knowledge }: { knowledge: EditorialKnowledge }) {
+  const categoryLabels: Record<string, string> = {
+    rejection_reason: "退稿原因",
+    review_tip: "审稿建议",
+    style_guideline: "风格规范",
+    fact_check_note: "事实核查",
+  };
+  const categoryColors: Record<string, string> = {
+    rejection_reason: "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800",
+    review_tip: "bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800",
+    style_guideline: "bg-indigo-50 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800",
+    fact_check_note: "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800",
+  };
+
+  return (
+    <div className="rounded-lg border bg-card p-3">
+      <div className="flex items-center gap-2 mb-1">
+        <Badge variant="outline" className={cn("text-xs", categoryColors[knowledge.category])}>
+          {categoryLabels[knowledge.category] || knowledge.category}
+        </Badge>
+        {knowledge.column_tag && (
+          <Badge variant="outline" className="text-xs">{knowledge.column_tag}</Badge>
+        )}
+        {knowledge.occurrence_count > 1 && (
+          <span className="text-xs text-muted-foreground">出现 {knowledge.occurrence_count} 次</span>
+        )}
+      </div>
+      <h4 className="text-sm font-medium">{knowledge.title}</h4>
+      <p className="text-xs text-muted-foreground mt-1">{knowledge.content}</p>
+      <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <span>置信度: {(knowledge.confidence * 100).toFixed(0)}%</span>
+        <span>·</span>
+        <span>{new Date(knowledge.created_at).toLocaleDateString("zh-CN")}</span>
+      </div>
+    </div>
+  );
 }
 
 // ─── 常量 ─────────────────────────────────────────────────
