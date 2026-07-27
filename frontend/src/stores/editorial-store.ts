@@ -97,6 +97,67 @@ export interface DecisionWithTask {
   task_token_budget: number;
 }
 
+export interface SourceCredibility {
+  id: string;
+  source_domain: string;
+  source_name: string;
+  category: string;
+  credibility_score: number;
+  total_uses: number;
+  verified_count: number;
+  refuted_count: number;
+  last_task_id: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ColumnPreference {
+  id: string;
+  column_tag: string;
+  style_slug: string;
+  preferred_length_min: number;
+  preferred_length_max: number;
+  tone: string;
+  forbidden_words: string[];
+  review_criteria: string;
+  acceptance_rate: number;
+  total_tasks: number;
+  published_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EditorialKnowledge {
+  id: string;
+  category: string;
+  column_tag: string;
+  title: string;
+  content: string;
+  source_task_id: string;
+  source_artifact_id: string;
+  confidence: number;
+  occurrence_count: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentReputation {
+  id: string;
+  agent_role: string;
+  total_executions: number;
+  success_count: number;
+  failure_count: number;
+  avg_token_cost: number;
+  avg_quality_score: number;
+  avg_duration_ms: number;
+  last_task_id: string;
+  last_execution_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface EditorialEvent {
   type: string;
   task_id: string;
@@ -116,6 +177,10 @@ interface EditorialState {
   error: string | null;
   events: EditorialEvent[];
   pendingDecisions: DecisionWithTask[];
+  sources: SourceCredibility[];
+  columns: ColumnPreference[];
+  knowledge: EditorialKnowledge[];
+  agentReputation: AgentReputation[];
   expandedArtifactIds: Set<string>;
 
   // Actions
@@ -151,6 +216,11 @@ interface EditorialState {
   fetchStats: () => Promise<void>;
   fetchPendingDecisions: (limit?: number) => Promise<void>;
   resolveDecision: (decisionId: string, status: "approved" | "rejected", rationale: string) => Promise<boolean>;
+  fetchSources: (limit?: number) => Promise<void>;
+  fetchColumns: () => Promise<void>;
+  fetchKnowledge: (category?: string, column?: string) => Promise<void>;
+  fetchAgentReputation: () => Promise<void>;
+  fetchArtifactVersions: (artifactId: string) => Promise<Artifact[] | null>;
   pushEvent: (evt: EditorialEvent) => void;
   toggleArtifactExpand: (id: string) => void;
   clearError: () => void;
@@ -176,6 +246,10 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
   error: null,
   events: [],
   pendingDecisions: [],
+  sources: [],
+  columns: [],
+  knowledge: [],
+  agentReputation: [],
   expandedArtifactIds: new Set(),
 
   fetchTasks: async (status?: string) => {
@@ -406,6 +480,72 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
     } catch (e) {
       set({ error: (e as Error).message });
       return false;
+    }
+  },
+
+  fetchSources: async (limit?: number) => {
+    try {
+      const params = limit ? `?limit=${limit}` : "";
+      const res = await fetch(`${API_BASE}/sources${params}`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch sources");
+      const json = await res.json();
+      const sources = json.data?.sources ?? [];
+      set({ sources });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchColumns: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/columns`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch columns");
+      const json = await res.json();
+      const columns = json.data?.columns ?? [];
+      set({ columns });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchKnowledge: async (category?: string, column?: string) => {
+    try {
+      const params = new URLSearchParams();
+      if (category) params.set("category", category);
+      if (column) params.set("column", column);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const res = await fetch(`${API_BASE}/knowledge${qs}`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch knowledge");
+      const json = await res.json();
+      const knowledge = json.data?.knowledge ?? [];
+      set({ knowledge });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchAgentReputation: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/agent-reputation`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch agent reputation");
+      const json = await res.json();
+      const agentReputation = json.data?.agents ?? [];
+      set({ agentReputation });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchArtifactVersions: async (artifactId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/artifacts/${artifactId}/versions`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch artifact versions");
+      const json = await res.json();
+      const versions = json.data?.versions ?? [];
+      return versions;
+    } catch (e) {
+      set({ error: (e as Error).message });
+      return null;
     }
   },
 

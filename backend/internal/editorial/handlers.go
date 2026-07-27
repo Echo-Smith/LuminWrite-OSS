@@ -41,6 +41,20 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Get("/decisions/pending", h.handleListPendingDecisions)
 		r.Patch("/decisions/{id}/resolve", h.handleResolveDecision)
 
+		// 组织记忆
+		r.Get("/sources", h.handleListSources)
+		r.Get("/sources/{domain}", h.handleGetSource)
+		r.Get("/columns", h.handleListColumns)
+		r.Put("/columns/{tag}", h.handleUpsertColumn)
+		r.Get("/knowledge", h.handleListKnowledge)
+		r.Post("/knowledge", h.handleCreateKnowledge)
+
+		// Agent 信誉
+		r.Get("/agent-reputation", h.handleListAgentReputation)
+
+		// Artifact 版本
+		r.Get("/artifacts/{id}/versions", h.handleListArtifactVersions)
+
 		// 统计
 		r.Get("/stats", h.handleGetStats)
 	})
@@ -284,4 +298,120 @@ func (h *Handlers) handleGetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, stats)
+}
+
+// ─── 组织记忆 ─────────────────────────────────────────────
+
+func (h *Handlers) handleListSources(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	sources, err := h.svc.ListSourceCredibility(r.Context(), limit)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"sources": sources})
+}
+
+func (h *Handlers) handleGetSource(w http.ResponseWriter, r *http.Request) {
+	domain := chi.URLParam(r, "domain")
+	sc, err := h.svc.GetSourceCredibility(r.Context(), domain)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if sc == nil {
+		response.OK(w, map[string]interface{}{"source": nil})
+		return
+	}
+	response.OK(w, map[string]interface{}{"source": sc})
+}
+
+func (h *Handlers) handleListColumns(w http.ResponseWriter, r *http.Request) {
+	cols, err := h.svc.ListColumnPreferences(r.Context())
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"columns": cols})
+}
+
+func (h *Handlers) handleUpsertColumn(w http.ResponseWriter, r *http.Request) {
+	tag := chi.URLParam(r, "tag")
+	var cp ColumnPreference
+	if err := json.NewDecoder(r.Body).Decode(&cp); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	cp.ColumnTag = tag
+	result, err := h.svc.UpsertColumnPreference(r.Context(), cp)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, result)
+}
+
+func (h *Handlers) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
+	category := r.URL.Query().Get("category")
+	columnTag := r.URL.Query().Get("column")
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	knowledge, err := h.svc.ListKnowledge(r.Context(), category, columnTag, limit)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"knowledge": knowledge})
+}
+
+func (h *Handlers) handleCreateKnowledge(w http.ResponseWriter, r *http.Request) {
+	var k EditorialKnowledge
+	if err := json.NewDecoder(r.Body).Decode(&k); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	result, err := h.svc.CreateKnowledge(r.Context(), k)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.Created(w, result)
+}
+
+// ─── Agent 信誉 ───────────────────────────────────────────
+
+func (h *Handlers) handleListAgentReputation(w http.ResponseWriter, r *http.Request) {
+	reps, err := h.svc.ListAgentReputation(r.Context())
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"agents": reps})
+}
+
+// ─── Artifact 版本 ────────────────────────────────────────
+
+func (h *Handlers) handleListArtifactVersions(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	art, err := h.svc.GetArtifact(r.Context(), id)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if art == nil {
+		response.Err(w, http.StatusNotFound, "not_found", "artifact not found")
+		return
+	}
+	versions, err := h.svc.ListArtifacts(r.Context(), art.TaskID)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	// 过滤同类型版本
+	var sameType []Artifact
+	for _, a := range versions {
+		if a.Type == art.Type {
+			sameType = append(sameType, a)
+		}
+	}
+	response.OK(w, map[string]interface{}{"versions": sameType})
 }

@@ -2,6 +2,7 @@ package editorial
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 )
@@ -40,6 +41,29 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput, userID 
 		return nil, err
 	}
 	slog.Info("editorial: task created", "task_id", task.ID, "title", task.Title)
+
+	// 自动创建选题卡 Artifact
+	topicCardContent, _ := json.Marshal(map[string]interface{}{
+		"title":           task.Title,
+		"description":     task.Description,
+		"accept_criteria": task.AcceptCriteria,
+		"style_slug":      task.StyleSlug,
+		"tags":            task.Tags,
+		"priority":        task.Priority,
+		"created_by":      task.CreatedBy,
+	})
+	if _, err := s.store.CreateArtifact(ctx, SubmitArtifactInput{
+		Type:       ArtifactTopicCard,
+		Content:    string(topicCardContent),
+		ProducedBy: "human",
+		TokenCost:  0,
+	}, task.ID); err != nil {
+		slog.Warn("editorial: failed to create topic card artifact", "task_id", task.ID, "error", err)
+	} else {
+		// 自动批准选题卡
+		slog.Info("editorial: topic card artifact created", "task_id", task.ID)
+	}
+
 	return task, nil
 }
 
@@ -212,4 +236,58 @@ func prevStatusForDecision(decType DecisionType) TaskStatus {
 	default:
 		return ""
 	}
+}
+
+// ─── 组织记忆 ─────────────────────────────────────────────
+
+// RecordSourceUsage 记录像源使用情况
+func (s *Service) RecordSourceUsage(ctx context.Context, input RecordSourceInput) error {
+	return s.store.RecordSourceUsage(ctx, input)
+}
+
+// GetSourceCredibility 获取信源可信度
+func (s *Service) GetSourceCredibility(ctx context.Context, domain string) (*SourceCredibility, error) {
+	return s.store.GetSourceCredibility(ctx, domain)
+}
+
+// ListSourceCredibility 列出信源可信度
+func (s *Service) ListSourceCredibility(ctx context.Context, limit int) ([]SourceCredibility, error) {
+	return s.store.ListSourceCredibility(ctx, limit)
+}
+
+// GetColumnPreference 获取栏目偏好
+func (s *Service) GetColumnPreference(ctx context.Context, columnTag string) (*ColumnPreference, error) {
+	return s.store.GetColumnPreference(ctx, columnTag)
+}
+
+// UpsertColumnPreference 创建或更新栏目偏好
+func (s *Service) UpsertColumnPreference(ctx context.Context, cp ColumnPreference) (*ColumnPreference, error) {
+	return s.store.UpsertColumnPreference(ctx, cp)
+}
+
+// ListColumnPreferences 列出所有栏目偏好
+func (s *Service) ListColumnPreferences(ctx context.Context) ([]ColumnPreference, error) {
+	return s.store.ListColumnPreferences(ctx)
+}
+
+// CreateKnowledge 创建编辑部知识
+func (s *Service) CreateKnowledge(ctx context.Context, k EditorialKnowledge) (*EditorialKnowledge, error) {
+	return s.store.CreateKnowledge(ctx, k)
+}
+
+// ListKnowledge 列出编辑部知识
+func (s *Service) ListKnowledge(ctx context.Context, category, columnTag string, limit int) ([]EditorialKnowledge, error) {
+	return s.store.ListKnowledge(ctx, category, columnTag, limit)
+}
+
+// ─── Agent 信誉 ───────────────────────────────────────────
+
+// RecordAgentOutcome 记录 Agent 执行结果
+func (s *Service) RecordAgentOutcome(ctx context.Context, input RecordAgentOutcomeInput) error {
+	return s.store.RecordAgentOutcome(ctx, input)
+}
+
+// ListAgentReputation 列出所有 Agent 信誉
+func (s *Service) ListAgentReputation(ctx context.Context) ([]AgentReputation, error) {
+	return s.store.ListAgentReputation(ctx)
 }

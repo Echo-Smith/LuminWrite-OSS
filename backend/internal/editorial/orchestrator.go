@@ -221,6 +221,23 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 		return fmt.Errorf("research agent executor not registered")
 	}
 
+	// ── 预算检查：如果 Token 预算不足，降级或请求人工 ──
+	if task.TokenBudget > 0 {
+		budgetUsed := float64(task.TokenUsed) / float64(task.TokenBudget)
+		if budgetUsed >= 0.95 {
+			o.requestHumanDecision(ctx, task, DecisionEscalate,
+				fmt.Sprintf("Token 预算已用 %.0f%%，研究 Agent 无法执行，需人工介入", budgetUsed*100))
+			return nil
+		}
+		if budgetUsed >= 0.80 {
+			o.emit(OrchestratorEvent{
+				Type:    "decision.required",
+				TaskID:  task.ID,
+				Payload: map[string]interface{}{"type": "budget_warning", "message": fmt.Sprintf("Token 预算已用 %.0f%%，研究 Agent 将以降级模式运行", budgetUsed*100)},
+			})
+		}
+	}
+
 	// 构建 Agent 上下文
 	ac := NewAgentContext(RoleResearch, task.ID, task.OwnerID)
 
@@ -245,7 +262,13 @@ func (o *Orchestrator) runResearchAgent(ctx context.Context, task *Task) error {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
+		start := time.Now()
 		artifact, err := exec.Execute(execCtx, ac, task)
+		durationMs := time.Since(start).Milliseconds()
+
+		// 记录 Agent 信誉
+		o.recordAgentOutcome(task.ID, RoleResearch, err == nil, artifact, durationMs)
+
 		if err != nil {
 			slog.Error("research agent failed", "task_id", task.ID, "error", err)
 			o.emit(OrchestratorEvent{
@@ -307,6 +330,23 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 
 	// 记录上一个状态，用于失败回退
 	prevStatus := StatusResearch
+
+	// ── 预算检查 ──
+	if task.TokenBudget > 0 {
+		budgetUsed := float64(task.TokenUsed) / float64(task.TokenBudget)
+		if budgetUsed >= 0.95 {
+			o.requestHumanDecision(ctx, task, DecisionEscalate,
+				fmt.Sprintf("Token 预算已用 %.0f%%，写作 Agent 无法执行，需人工介入", budgetUsed*100))
+			return nil
+		}
+		if budgetUsed >= 0.80 {
+			o.emit(OrchestratorEvent{
+				Type:    "decision.required",
+				TaskID:  task.ID,
+				Payload: map[string]interface{}{"type": "budget_warning", "message": fmt.Sprintf("Token 预算已用 %.0f%%，写作 Agent 将以降级模式运行", budgetUsed*100)},
+			})
+		}
+	}
 	if reviewReport != nil {
 		prevStatus = StatusReview // 修改场景，回退到审校
 	}
@@ -321,7 +361,13 @@ func (o *Orchestrator) runWritingAgent(ctx context.Context, task *Task) error {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
+		start := time.Now()
 		artifact, err := exec.Execute(execCtx, ac, task)
+		durationMs := time.Since(start).Milliseconds()
+
+		// 记录 Agent 信誉
+		o.recordAgentOutcome(task.ID, RoleWriting, err == nil, artifact, durationMs)
+
 		if err != nil {
 			slog.Error("writing agent failed", "task_id", task.ID, "error", err)
 			o.emit(OrchestratorEvent{
@@ -383,7 +429,13 @@ func (o *Orchestrator) runReviewAgent(ctx context.Context, task *Task) error {
 		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
+		start := time.Now()
 		artifact, err := exec.Execute(execCtx, ac, task)
+		durationMs := time.Since(start).Milliseconds()
+
+		// 记录 Agent 信誉
+		o.recordAgentOutcome(task.ID, RoleReview, err == nil, artifact, durationMs)
+
 		if err != nil {
 			slog.Error("review agent failed", "task_id", task.ID, "error", err)
 			o.emit(OrchestratorEvent{
@@ -682,5 +734,29 @@ func defaultAssignee(status TaskStatus) AssigneeType {
 		return AssigneeHuman
 	default:
 		return AssigneeHuman
+	}
+}
+
+// recordAgentOutcome 记录 Agent 执行结果到信誉系统
+func (o *Orchestrator) recordAgentOutcome(taskID string, role AgentRole, success bool, artifact *Artifact, durationMs int64) {
+	input := RecordAgentOutcomeInput{
+		AgentRole:  string(role),
+		TaskID:     taskID,
+		Success:    success,
+		DurationMs: durationMs,
+	}
+	if artifact != nil {
+		input.TokenCost = artifact.TokenCost
+		// 质量评分：基于产出交付物的状态和内容
+		input.QualityScore = 0.5 // 基础分
+		if artifact.Status == ArtifactStatusApproved {
+			input.QualityScore = 0.8
+		}
+	} else if !success {
+		input.QualityScore = 0.0
+	}
+
+	if err := o.store.RecordAgentOutcome(context.Background(), input); err != nil {
+		slog.Warn("failed to record agent outcome", "task_id", taskID, "role", role, "error", err)
 	}
 }
