@@ -60,6 +60,7 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Get("/experiments", h.handleListExperiments)
 		r.Get("/experiments/{id}", h.handleGetExperiment)
 		r.Post("/experiments/{id}/run", h.handleRunExperiment)
+		r.Post("/experiments/{id}/cancel", h.handleCancelExperiment)
 
 		// 统计
 		r.Get("/stats", h.handleGetStats)
@@ -471,4 +472,13 @@ func (h *Handlers) handleRunExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, map[string]string{"status": "running"})
+}
+
+func (h *Handlers) handleCancelExperiment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if h.svc.CancelExperiment(id) {
+		response.OK(w, map[string]string{"status": "cancelled"})
+	} else {
+		response.Err(w, http.StatusNotFound, "not_found", "experiment not running or not found")
+	}
 }

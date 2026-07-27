@@ -16,6 +16,8 @@ import {
   type SourceCredibility,
   type AgentReputation,
   type EditorialKnowledge,
+  type Experiment,
+  type ExperimentMetrics,
 } from "@/stores/editorial-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,6 +53,9 @@ import {
   BookOpen,
   BarChart3,
   Star,
+  FlaskConical,
+  Play,
+  Timer,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -83,10 +88,10 @@ const ASSIGNEE_LABELS: Record<string, string> = {
 };
 
 export function EditorialBoard() {
-  const { tasks, loading, fetchTasks, createTask, advanceTask, events, pendingDecisions, fetchPendingDecisions, sources, fetchSources, agentReputation, fetchAgentReputation, knowledge, fetchKnowledge } = useEditorialStore();
+  const { tasks, loading, fetchTasks, createTask, advanceTask, events, pendingDecisions, fetchPendingDecisions, sources, fetchSources, agentReputation, fetchAgentReputation, knowledge, fetchKnowledge, experiments, fetchExperiments, createExperiment, runExperiment, cancelExperiment } = useEditorialStore();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [view, setView] = useState<"dashboard" | "kanban" | "insights">("dashboard");
+  const [view, setView] = useState<"dashboard" | "kanban" | "insights" | "experiments">("dashboard");
 
   useEffect(() => {
     fetchTasks();
@@ -101,6 +106,24 @@ export function EditorialBoard() {
       fetchKnowledge();
     }
   }, [view, fetchSources, fetchAgentReputation, fetchKnowledge]);
+
+  // 实验视图加载时获取数据
+  useEffect(() => {
+    if (view === "experiments") {
+      fetchExperiments();
+    }
+  }, [view, fetchExperiments]);
+
+  // 实验运行中时定时刷新
+  const expRefreshTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  useEffect(() => {
+    if (view === "experiments" && experiments.some((e) => e.status === "running")) {
+      expRefreshTimer.current = setInterval(() => fetchExperiments(), 10_000);
+      return () => {
+        if (expRefreshTimer.current) clearInterval(expRefreshTimer.current);
+      };
+    }
+  }, [view, experiments, fetchExperiments]);
 
   // 定时刷新
   const refreshTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -175,6 +198,15 @@ export function EditorialBoard() {
                 )}
               >
                 洞察
+              </button>
+              <button
+                onClick={() => setView("experiments")}
+                className={cn(
+                  "px-3 py-1 text-sm rounded-md transition-colors",
+                  view === "experiments" ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                实验
               </button>
             </div>
           </div>
@@ -346,6 +378,17 @@ export function EditorialBoard() {
               )}
             </div>
           </div>
+        )}
+
+        {/* 实验视图 */}
+        {view === "experiments" && (
+          <ExperimentsView
+            experiments={experiments}
+            loading={loading}
+            onCreate={createExperiment}
+            onRun={runExperiment}
+            onCancel={cancelExperiment}
+          />
         )}
 
         {/* 看板视图 */}
@@ -949,7 +992,7 @@ function ArtifactContent({ content, type }: { content: string; type: string }) {
 
   if (parsed && typeof parsed === "object") {
     if (type === "review_report" && parsed && typeof parsed === "object") {
-      const report = parsed as { passed?: boolean; severity?: string; issues?: Array<{ problem?: string; evidence?: string; suggestion?: string }> };
+      const report = parsed as { passed?: boolean; severity?: string; issues?: Array<{ severity?: string; type?: string; message?: string }> };
       return (
         <div className="space-y-2 text-sm">
           <div className="flex items-center gap-2">
@@ -968,9 +1011,15 @@ function ArtifactContent({ content, type }: { content: string; type: string }) {
             <div className="space-y-2">
               {report.issues.map((issue, i) => (
                 <div key={i} className="rounded border p-2 text-xs">
-                  {issue.problem && <p className="font-medium">问题: {issue.problem}</p>}
-                  {issue.evidence && <p className="text-muted-foreground mt-1">证据: {issue.evidence}</p>}
-                  {issue.suggestion && <p className="text-blue-600 dark:text-blue-400 mt-1">建议: {issue.suggestion}</p>}
+                  <div className="flex items-center gap-2">
+                    {issue.severity && (
+                      <Badge variant={issue.severity === "high" ? "destructive" : "secondary"} className="text-xs">
+                        {issue.severity}
+                      </Badge>
+                    )}
+                    {issue.type && <span className="font-medium">{issue.type}</span>}
+                  </div>
+                  {issue.message && <p className="text-muted-foreground mt-1">{issue.message}</p>}
                 </div>
               ))}
             </div>
@@ -1319,6 +1368,265 @@ function KnowledgeCard({ knowledge }: { knowledge: EditorialKnowledge }) {
         <span>·</span>
         <span>{new Date(knowledge.created_at).toLocaleDateString("zh-CN")}</span>
       </div>
+    </div>
+  );
+}
+
+// ─── 实验视图 ─────────────────────────────────────────────
+
+function ExperimentsView({
+  experiments,
+  loading,
+  onCreate,
+  onRun,
+  onCancel,
+}: {
+  experiments: Experiment[];
+  loading: boolean;
+  onCreate: (input: { title: string; description: string; style_slug?: string }) => Promise<Experiment | null>;
+  onRun: (id: string) => Promise<boolean>;
+  onCancel: (id: string) => Promise<boolean>;
+}) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [running, setRunning] = useState<string | null>(null);
+
+  const handleCreate = async () => {
+    if (!title.trim()) return;
+    const exp = await onCreate({ title: title.trim(), description: description.trim() });
+    if (exp) {
+      setShowCreate(false);
+      setTitle("");
+      setDescription("");
+    }
+  };
+
+  const handleRun = async (id: string) => {
+    setRunning(id);
+    await onRun(id);
+    // 轮询会在父组件中自动触发
+    setTimeout(() => setRunning(null), 3000);
+  };
+
+  return (
+    <div className="p-6 space-y-4 overflow-y-auto">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+          <FlaskConical className="h-3.5 w-3.5" />
+          对照实验
+        </h2>
+        <Button size="sm" variant="outline" onClick={() => setShowCreate(!showCreate)}>
+          <Plus className="h-4 w-4 mr-1" />
+          新建实验
+        </Button>
+      </div>
+
+      {showCreate && (
+        <div className="rounded-lg border bg-card p-4 space-y-3">
+          <div>
+            <Label htmlFor="exp-title">选题标题</Label>
+            <Input
+              id="exp-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="输入要对比的选题..."
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="exp-desc">选题描述（可选）</Label>
+            <Textarea
+              id="exp-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="补充说明..."
+              className="mt-1"
+              rows={2}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>取消</Button>
+            <Button size="sm" onClick={handleCreate} disabled={!title.trim()}>创建</Button>
+          </div>
+        </div>
+      )}
+
+      {loading && experiments.length === 0 ? (
+        <div className="flex justify-center py-12">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : experiments.length === 0 ? (
+        <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+          <FlaskConical className="h-6 w-6 mx-auto mb-2 text-muted-foreground/50" />
+          暂无实验，点击"新建实验"开始对照对比
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {experiments.map((exp) => (
+            <ExperimentCard
+              key={exp.id}
+              experiment={exp}
+              onRun={() => handleRun(exp.id)}
+              onCancel={() => onCancel(exp.id)}
+              running={running === exp.id}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExperimentCard({
+  experiment,
+  onRun,
+  onCancel,
+  running,
+}: {
+  experiment: Experiment;
+  onRun: () => void;
+  onCancel: () => void;
+  running: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const statusInfo = {
+    pending: { label: "待运行", dotColor: "bg-slate-400", badgeColor: "bg-slate-100 text-slate-600" },
+    running: { label: "运行中", dotColor: "bg-blue-500 animate-pulse", badgeColor: "bg-blue-100 text-blue-700" },
+    completed: { label: "已完成", dotColor: "bg-green-500", badgeColor: "bg-green-100 text-green-700" },
+    failed: { label: "失败", dotColor: "bg-red-500", badgeColor: "bg-red-100 text-red-700" },
+  }[experiment.status] || { label: experiment.status, dotColor: "bg-slate-400", badgeColor: "bg-slate-100 text-slate-600" };
+
+  const hasResults = experiment.status === "completed" && (experiment.pipeline_result || experiment.unified_result || experiment.editorial_result);
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      {/* 头部 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={cn("h-2 w-2 rounded-full", statusInfo.dotColor)} />
+          <span className="text-sm font-medium">{experiment.title}</span>
+          <Badge variant="outline" className="text-xs">{experiment.style_slug}</Badge>
+          <Badge className={cn("text-xs", statusInfo.badgeColor)}>{statusInfo.label}</Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          {experiment.status === "pending" && (
+            <Button size="sm" variant="outline" onClick={onRun} disabled={running}>
+              {running ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 mr-1" />}
+              运行
+            </Button>
+          )}
+          {experiment.status === "running" && (
+            <Button size="sm" variant="outline" onClick={onCancel}>
+              <XCircle className="h-3.5 w-3.5 mr-1" />
+              取消
+            </Button>
+          )}
+          {hasResults && (
+            <Button size="sm" variant="ghost" onClick={() => setExpanded(!expanded)}>
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {expanded ? "收起" : "展开"}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {experiment.description && (
+        <p className="text-xs text-muted-foreground">{experiment.description}</p>
+      )}
+
+      {/* 汇总 */}
+      {hasResults && experiment.summary && (() => {
+        const s = experiment.summary as { best_token_efficiency?: string; best_speed?: string; best_quality?: string };
+        return (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {s.best_token_efficiency && (
+            <Badge variant="secondary" className="text-xs">
+              最省 Token: {s.best_token_efficiency}
+            </Badge>
+          )}
+          {s.best_speed && (
+            <Badge variant="secondary" className="text-xs">
+              最快: {s.best_speed}
+            </Badge>
+          )}
+          {s.best_quality && (
+            <Badge variant="secondary" className="text-xs">
+              质量最高: {s.best_quality}
+            </Badge>
+          )}
+        </div>
+        );
+      })()}
+
+      {/* 详细结果 */}
+      {expanded && hasResults && (
+        <div className="grid grid-cols-3 gap-3 pt-2 border-t">
+          {(["pipeline", "unified", "editorial"] as const).map((mode) => {
+            const result = mode === "pipeline" ? experiment.pipeline_result
+              : mode === "unified" ? experiment.unified_result
+              : experiment.editorial_result;
+            return (
+              <div key={mode} className="rounded-lg border p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-xs">{mode === "pipeline" ? "Pipeline" : mode === "unified" ? "UnifiedAgent" : "Editorial"}</Badge>
+                </div>
+                {result ? (
+                  <MetricsCard metrics={result} />
+                ) : (
+                  <p className="text-xs text-muted-foreground">无结果</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricsCard({ metrics }: { metrics: ExperimentMetrics }) {
+  if (metrics.error) {
+    return (
+      <div className="text-xs space-y-1">
+        <Badge variant="destructive" className="text-xs">失败</Badge>
+        <p className="text-red-500 text-xs">{metrics.error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-xs space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">Token</span>
+        <span className="font-medium tabular-nums">{(metrics.token_cost / 1000).toFixed(1)}k</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground flex items-center gap-1"><Timer className="h-3 w-3" />耗时</span>
+        <span className="font-medium tabular-nums">{(metrics.duration_ms / 1000).toFixed(1)}s</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">字数</span>
+        <span className="font-medium tabular-nums">{metrics.word_count}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">信源</span>
+        <span className="font-medium tabular-nums">{metrics.source_count}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">审校</span>
+        <span className="font-medium">{metrics.review_passed ? "✅ 通过" : "❌ 未通过"}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">质量</span>
+        <span className="font-medium tabular-nums">{(metrics.quality_score * 100).toFixed(0)}/100</span>
+      </div>
+      {metrics.article_title && (
+        <p className="text-muted-foreground truncate pt-1 border-t" title={metrics.article_title}>
+          {metrics.article_title}
+        </p>
+      )}
     </div>
   );
 }

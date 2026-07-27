@@ -402,3 +402,208 @@ frontend/
 | 单篇 Token 成本 | `task.token_used` |
 | 每位编辑每日稿件数 | 按用户聚合 task 计数 |
 | Agent 意见接受/驳回比例 | `decision.status` 统计 |
+
+---
+
+## 8. 组织记忆（已实现）
+
+编辑部系统集成了组织记忆层，在 Agent 执行过程中"静默"注入约束和偏好，无需修改底层 Step 逻辑。
+
+### 8.1 信源可信度（Source Credibility）
+
+系统自动追踪每个信源的历史表现，形成可信度评分：
+
+```go
+type SourceCredibility struct {
+    ID          string
+    Domain      string    // 信源域名
+    TotalUses   int       // 总引用次数
+    VerifiedRate float64  // 事实核查通过率
+    AvgScore    float64   // 编辑评分均值
+    Tier        string    // A | B | C | D
+    UpdatedAt   time.Time
+}
+```
+
+- 研究 Agent 引用信源时，自动读取可信度评分，优先选择高 Tier 信源
+- 审校 Agent 核查后，自动更新信源可信度统计
+- 前端"洞察"视图展示信源排行
+
+### 8.2 栏目偏好（Column Preference）
+
+按栏目维度注入写作约束，由历史录用稿件自动提炼：
+
+```go
+type ColumnPreference struct {
+    ColumnTag     string   // 栏目标识
+    Tone          string   // 语气风格
+    BannedWords   []string // 禁用词
+    WordCountMin  int      // 最小字数
+    WordCountMax  int      // 最大字数
+    UpdateFreq    string   // 更新频率
+}
+```
+
+- 写作 Agent 执行前，自动注入栏目偏好到 `UserInput`
+- 审校 Agent 检查是否符合栏目约束
+- 偏好数据存储在 `editorial_column_preferences` 表
+
+### 8.3 知识沉淀（Editorial Knowledge）
+
+审校发现转化为可复用的编辑部知识：
+
+```go
+type EditorialKnowledge struct {
+    ID          string
+    Category    string  // style | fact | legal | format
+    Title       string
+    Content     string
+    SourceTask  string  // 来源任务 ID
+    Severity    string  // low | medium | high
+    CreatedAt   time.Time
+}
+```
+
+- 审校 Agent 发现的共性问题自动沉淀为知识条目
+- 研究/写作 Agent 执行时检索相关知识条目注入上下文
+- 前端"洞察"视图展示知识库
+
+### 8.4 Agent 信誉（Agent Reputation）
+
+跟踪每个 Agent 角色的执行历史和效果：
+
+```go
+type AgentReputation struct {
+    ID              string
+    AgentRole       string  // research | writing | review
+    TotalExecutions int
+    AvgTokenCost    int
+    AvgDurationMs   int64
+    PassRate        float64 // 产出通过率
+    AvgQualityScore float64
+    LastExecutedAt  time.Time
+}
+```
+
+- 编排器根据 Agent 信誉选择执行策略
+- 信誉低的 Agent 产出会触发额外人工审核
+- 前端"洞察"视图展示 Agent 排行
+
+## 9. 预算降级与动态路由（已实现）
+
+### 9.1 Token 预算管理
+
+每个 Task 携带 Token 预算，Agent 执行过程中实时追踪消耗：
+
+```
+TokenBudget = 300,000 (默认)
+├── 研究 Agent: ~30% (90k)
+├── 写作 Agent: ~50% (150k)
+└── 审校 Agent: ~20% (60k)
+```
+
+- 预算使用超过 80% 时触发预警（前端看板标红）
+- 预算耗尽时，编排器降级为快速模式（跳过可选步骤）
+- 预算信息通过 `task.token_used / task.token_budget` 实时暴露
+
+### 9.2 动态路由
+
+编排器根据 Agent 产出内容动态决定下一步：
+
+```
+研究 Agent 产出
+    │
+    ├─ 包含 source_pack + fact_claims → 直接进入写作
+    ├─ 仅 research_brief（纯文本） → 结构化后进入写作
+    └─ 信源不足 → 回退研究（补充检索）
+
+写作 Agent 产出
+    │
+    ├─ content 字段 + outline → 进入审校
+    └─ 缺失关键字段 → 补充生成
+
+审校 Agent 产出
+    │
+    ├─ review_report.passed = true → 进入待发布
+    ├─ review_report.passed = false → 回退写作（附审查报告）
+    └─ review_report.severity = high → 升级人工审核
+```
+
+关键实现位于 `orchestrator.go` 的 `routeAfterResearch` / `routeAfterWriting` / `routeAfterReview` 方法中。
+
+## 10. 对照实验框架（已实现）
+
+### 10.1 架构
+
+```
+ExperimentRunner
+├── runPipelineMode()   — 固定 Pipeline (QueryPlan→Search→Write→Review)
+├── runUnifiedMode()    — UnifiedAgent (ReAct 单 Agent 动态编排)
+└── runEditorialMode()  — Editorial Multi-Agent (三 Agent 协作)
+```
+
+三组模式并行执行同一选题，采集多维指标：
+
+| 指标 | 字段 |
+|------|------|
+| Token 成本 | `token_cost` |
+| 执行耗时 | `duration_ms` |
+| 文章字数 | `word_count` |
+| 信源数量 | `source_count` |
+| 审校通过 | `review_passed` |
+| 问题数量 | `issue_count` |
+| 质量评分 | `quality_score` (0.0-1.0) |
+| 文章标题 | `article_title` |
+| 文章摘要 | `article_excerpt` |
+
+### 10.2 API
+
+```
+POST   /api/v2/editorial/experiments              创建实验
+GET    /api/v2/editorial/experiments              列出实验
+GET    /api/v2/editorial/experiments/{id}         实验详情
+POST   /api/v2/editorial/experiments/{id}/run     运行实验（三组并行）
+```
+
+### 10.3 前端
+
+编辑部界面"实验"视图支持：
+- 创建实验（输入选题标题和描述）
+- 一键运行实验（三组并行执行）
+- 实时查看运行状态（运行中自动 10s 轮询刷新）
+- 展开查看三组对比指标（Token、耗时、字数、信源、审校、质量）
+- 汇总标签（最省 Token / 最快 / 质量最高）
+
+## 11. 实际文件结构
+
+```
+backend/internal/editorial/
+├── types.go                # 领域模型（Task, Artifact, Decision, Experiment 等）
+├── store.go                # PostgreSQL 存储（Task/Artifact/Decision CRUD）
+├── experiment_store.go     # 实验存储（Experiment CRUD）
+├── memory_store.go         # 组织记忆存储（信源/栏目/知识/Agent 信誉）
+├── service.go              # 编辑部服务（任务编排 + 实验管理 API）
+├── orchestrator.go         # 三 Agent 编排器（动态路由 + 预算管理）
+├── agent_executors.go      # Agent 执行器（记忆注入 + 产出结构化）
+├── experiment_runner.go    # 实验运行器（三组并行 + 指标采集）
+└── handlers.go             # HTTP 处理器
+
+frontend/src/
+├── pages/editorial/
+│   └── editorial-board.tsx  # 编辑部工作台（决策台 + 看板 + 洞察 + 实验）
+├── stores/
+│   └── editorial-store.ts   # 编辑部状态管理（含实验状态）
+```
+
+## 12. 数据库迁移
+
+| 迁移文件 | 说明 |
+|----------|------|
+| `031_editorial_tasks` | 编辑部任务表 |
+| `032_editorial_artifacts` | 交付物表（版本化） |
+| `033_editorial_decisions` | 决策记录表 |
+| `034_editorial_experiments` | 对照实验表 |
+| `035_editorial_source_credibility` | 信源可信度表 |
+| `036_editorial_column_preferences` | 栏目偏好表 |
+| `037_editorial_knowledge` | 编辑部知识沉淀表 |
+| `038_editorial_agent_reputation` | Agent 信誉表 |

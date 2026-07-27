@@ -338,3 +338,11 @@ func (s *Service) RunExperiment(ctx context.Context, id string) error {
 	go experimentRunner.RunExperiment(context.Background(), exp)
 	return nil
 }
+
+// CancelExperiment 取消正在运行的实验
+func (s *Service) CancelExperiment(id string) bool {
+	if experimentRunner == nil {
+		return false
+	}
+	return experimentRunner.CancelExperiment(id)
+}

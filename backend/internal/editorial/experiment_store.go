@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 // ─── 对照实验类型 ─────────────────────────────────────────
@@ -167,6 +165,3 @@ func (s *Store) UpdateExperimentStatus(ctx context.Context, id string, status st
 	}
 	return nil
 }
-
-// _ 防止 unused import
-var _ = pq.Array
