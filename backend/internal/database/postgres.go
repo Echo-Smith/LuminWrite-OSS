@@ -84,6 +84,7 @@ func Migrate(db *DB) error {
 		"037_decision_actor_model",
 		"038_agent_run_events",
 		"039_knowledge_fingerprint",
+		"040_fix_lease_constraint",
 	}
 
 	for _, name := range migrations {

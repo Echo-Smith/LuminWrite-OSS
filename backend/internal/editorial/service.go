@@ -308,12 +308,12 @@ func (s *Service) extractMetrics(artifacts []Artifact) *DecisionMetrics {
 		switch art.Type {
 		case ArtifactResearchBrief, ArtifactFactClaims:
 			var brief struct {
-				Sources []struct{} `json:"sources"`
+				Sources []json.RawMessage `json:"sources"`
 				Claims  []struct {
 					Status   ClaimStatus `json:"status"`
 					Verified bool        `json:"verified,omitempty"`
 				} `json:"claims"`
-				Gaps []struct{} `json:"gaps"`
+				Gaps []json.RawMessage `json:"gaps"`
 			}
 			if json.Unmarshal([]byte(art.Content), &brief) == nil {
 				metrics.SourceCount = max(metrics.SourceCount, len(brief.Sources))

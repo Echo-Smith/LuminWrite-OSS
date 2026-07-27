@@ -39,7 +39,7 @@ func (s *Store) CreateTask(ctx context.Context, input CreateTaskInput, userID st
 		INSERT INTO editorial_tasks (title, description, owner_id, status, accept_criteria, token_budget, priority, tags, style_slug, created_by)
 		VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8, $3)
 		RETURNING id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, conversation_id,
+			allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
 			created_by, created_at, updated_at
 	`,
 		input.Title, input.Description, userID, input.AcceptCriteria,
@@ -61,10 +61,10 @@ func (s *Store) CreateTask(ctx context.Context, input CreateTaskInput, userID st
 func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	var task Task
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, conversation_id,
-			created_by, created_at, updated_at
-		FROM editorial_tasks WHERE id = $1
+	SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
+		allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
+		created_by, created_at, updated_at
+	FROM editorial_tasks WHERE id = $1
 	`, id).Scan(
 		&task.ID, &task.Title, &task.Description, &task.OwnerID, &task.AssigneeType,
 		&task.Deadline, &task.Status, &task.AcceptCriteria,
@@ -89,7 +89,7 @@ func (s *Store) ListTasks(ctx context.Context, status string, ownerID string, li
 
 	query := `
 		SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, conversation_id,
+			allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
 			created_by, created_at, updated_at
 		FROM editorial_tasks
 	`
@@ -413,6 +413,14 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 		decidedBy.String = actor.Role
 	}
 
+	// Compute decided_at in Go to avoid using $9 twice in SQL (causes type inference issues)
+	var decidedAt interface{}
+	if input.Status != DecisionStatusPending {
+		decidedAt = time.Now()
+	} else {
+		decidedAt = nil
+	}
+
 	var d Decision
 	rawRow := s.db.QueryRowContext(ctx, `
 		INSERT INTO editorial_decisions (
@@ -422,13 +430,13 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 			status, rationale, evidence, artifact_id, decided_at,
 			decided_by, decided_by_type
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			CASE WHEN $9 != 'pending' THEN NOW() ELSE NULL END, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING ` + decisionScanColumns,
 		taskID, input.Type,
 		actor.Type, actorUserID, actor.Role, actor.Label,
 		approveTarget, rejectTarget,
 		input.Status, input.Rationale, input.Evidence, artifactID,
+		decidedAt,
 		decidedBy, input.DecidedByType,
 	)
 	if err := scanDecision(rawRow, &d); err != nil {
@@ -605,11 +613,8 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 	if err != nil {
 		return nil, "", fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		}
-	}()
+	// Always rollback — no-op if already committed
+	defer tx.Rollback()
 
 	// 1. Resolve the decision and read its target statuses
 	var approveTarget, rejectTarget string
@@ -654,16 +659,19 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 		}
 
 		// Validate the transition is legal
-		if !currentStatus.CanTransitionTo(nextStatus) {
+		// If the target is the same as current, no transition needed (e.g., reject select_angle stays at research)
+		if currentStatus == nextStatus {
+			// No status change needed, but still commit the decision update
+		} else if !currentStatus.CanTransitionTo(nextStatus) {
 			return nil, "", fmt.Errorf("%w: %s → %s", ErrInvalidTransition, currentStatus, nextStatus)
-		}
-
-		assignee := defaultAssignee(nextStatus)
-		_, err = tx.ExecContext(ctx, `
+		} else {
+			assignee := defaultAssignee(nextStatus)
+			_, err = tx.ExecContext(ctx, `
 			UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
 		`, taskID, nextStatus, assignee)
-		if err != nil {
-			return nil, "", fmt.Errorf("update task status in tx: %w", err)
+			if err != nil {
+				return nil, "", fmt.Errorf("update task status in tx: %w", err)
+			}
 		}
 	}
 
@@ -695,17 +703,14 @@ func (s *Store) TransitionTask(ctx context.Context, cmd TransitionCommand) (*Tas
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		}
-	}()
+	// Always rollback — no-op if already committed
+	defer tx.Rollback()
 
 	// 1. Lock the task row and read current state
 	var task Task
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, conversation_id,
+			allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
 			created_by, created_at, updated_at
 		FROM editorial_tasks WHERE id = $1 FOR UPDATE
 	`, cmd.TaskID).Scan(
@@ -819,12 +824,28 @@ func (s *Store) ListAgentRunEvents(ctx context.Context, taskID string) ([]AgentR
 // Returns ErrLeaseConflict if an active lease already exists.
 // The lease expires after the given duration.
 func (s *Store) AcquireLease(ctx context.Context, taskID string, role AgentRole, ttl time.Duration) error {
-	_, err := s.db.ExecContext(ctx, `
+	ttlStr := fmt.Sprintf("%d seconds", int(ttl.Seconds()))
+
+	// First, try to reactivate an existing non-active lease (handles re-acquire after release)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE editorial_agent_leases
+		SET status = 'active', expired_at = NOW() + $3::interval,
+		    released_at = NULL, acquired_at = NOW()
+		WHERE task_id = $1 AND agent_role = $2 AND status != 'active'
+	`, taskID, string(role), ttlStr)
+	if err == nil {
+		if rows, _ := result.RowsAffected(); rows > 0 {
+			return nil // Successfully reactivated
+		}
+	}
+
+	// No existing non-active lease to reactivate — try to INSERT a new one.
+	// This will fail if an active lease exists (partial unique index).
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO editorial_agent_leases (task_id, agent_role, expired_at)
 		VALUES ($1, $2, NOW() + $3::interval)
-	`, taskID, string(role), fmt.Sprintf("%d seconds", int(ttl.Seconds())))
+	`, taskID, string(role), ttlStr)
 	if err != nil {
-		// Unique index violation means a lease already exists
 		return ErrLeaseConflict
 	}
 	return nil
