@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # ──────────────────────────────────────────────
 
 # Stage 2: Runtime
-FROM alpine:3.20
+FROM golang:1.25-alpine
 
 # Install runtime dependencies:
 # - ca-certificates, tzdata, wget: basic infra
