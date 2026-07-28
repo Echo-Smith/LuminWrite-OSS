@@ -761,12 +761,22 @@ case "agent.paused": {
           timeout: "⏱️ 写作超时，请简化选题后重试",
           budget_exceeded: "💰 Token 预算已用尽，请稍后重试",
           circuit_breaker: "🔌 AI 服务暂时不可用，请稍后重试",
-          concurrent_limit: "⏳ 已有写作任务进行中，请等待完成或取消后再试",
           server_busy: "🔧 服务器繁忙，请稍后重试",
           step_failed: `❌ 步骤执行失败：${errorMsg}`,
           panic: `❌ 内部错误：${errorMsg}`,
         };
-        const friendlyMsg = ERROR_MESSAGES[errorCode] ?? `❌ 错误：${errorMsg}`;
+        let friendlyMsg = ERROR_MESSAGES[errorCode] ?? `❌ 错误：${errorMsg}`;
+
+        // ── Dynamic messages using payload fields ──
+        if (errorCode === "concurrent_limit") {
+          const limit = p.limit as number | undefined;
+          const active = p.active_count as number | undefined;
+          if (limit != null && active != null) {
+            friendlyMsg = `⏳ 当前已有 ${active} 个写作任务进行中（最多同时 ${limit} 个），请等待完成或取消后再试`;
+          } else {
+            friendlyMsg = "⏳ 已有写作任务进行中，请等待完成或取消后再试";
+          }
+        }
 
         // Guest limit reached — auto-open register modal
         if (errorCode === "guest_limit_reached") {

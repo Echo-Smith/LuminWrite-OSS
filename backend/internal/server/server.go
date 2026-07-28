@@ -931,8 +931,10 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			client.SendDirect(&websocket.ServerMessage{
 				Type: websocket.MsgAgentError,
 				Payload: map[string]interface{}{
-					"code":    "concurrent_limit",
-					"message": "已有写作任务进行中，请等待完成或取消后再试",
+					"code":         "concurrent_limit",
+					"message":      fmt.Sprintf("已有 %d 个写作任务进行中（上限 %d），请等待完成或取消后再试", userActive, s.cfg.Agent.MaxConcurrentPerUser),
+					"limit":        s.cfg.Agent.MaxConcurrentPerUser,
+					"active_count": userActive,
 				},
 			})
 			return
