@@ -54,6 +54,7 @@ type AgentStartPayload struct {
 	Style        string   `json:"style,omitempty"`
 	Mode         string   `json:"mode,omitempty"`
 	Model        string   `json:"model,omitempty"`
+	AgentMode    string   `json:"agent_mode,omitempty"` // "pipeline" | "unified" — overrides server default
 	SessionID    string   `json:"session_id,omitempty"`
 	UserMaterials []string `json:"user_materials,omitempty"`
 	WordLimit    int      `json:"word_limit,omitempty"`

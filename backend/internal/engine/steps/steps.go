@@ -19,6 +19,9 @@ import (
 
 // ─── IntentStep ──────────────────────────────────────────
 
+// voiceNormalizationPairs corrects common speech-to-text errors.
+// This is pre-processing, not intent classification — kept as regex
+// because it's fast, deterministic, and handles ASR artifacts well.
 var voiceNormalizationPairs = []struct {
 	pattern *regexp.Regexp
 	replace string
@@ -38,14 +41,6 @@ var voiceNormalizationPairs = []struct {
 
 var intentLabels = []string{"chat", "writing", "polish", "shorten", "expand", "extract_points"}
 
-var (
-	reExtractPoints = regexp.MustCompile(`提炼核心观点|提取核心观点|核心观点|观点提炼`)
-	reShorten       = regexp.MustCompile(`缩写|缩短|压缩|简写|精简到|压到|控制到|摘要`)
-	reExpand        = regexp.MustCompile(`扩写|扩充|展开|补充论证|丰富|拓展`)
-	rePolish        = regexp.MustCompile(`润色|修改|优化|改写|完善|提升|调整|润饰|打磨`)
-	reWriting       = regexp.MustCompile(`写一篇|写一份|写篇|写份|写稿|撰写|拟写|拟稿|撰稿|撰文|成文|出稿|命题|为题|题为`)
-)
-
 type IntentStep struct {
 	llm *tools.LLMClient
 }
@@ -62,85 +57,87 @@ func (s *IntentStep) Critical() bool         { return true }
 func (s *IntentStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	message := execCtx.UserInput
 
-	// Normalize voice input
+	// Normalize voice input (ASR error correction)
 	normalized := message
 	for _, pair := range voiceNormalizationPairs {
 		normalized = pair.pattern.ReplaceAllString(normalized, pair.replace)
 	}
 	execCtx.NormalizedInput = normalized
 
-	// Rule-based scoring
-	scores := make(map[string]int)
-	for _, label := range intentLabels {
-		scores[label] = 0
+	// Fast path: empty input → chat
+	if strings.TrimSpace(normalized) == "" {
+		execCtx.TaskIntent = &engine.TaskIntent{
+			TaskMode:        "chat",
+			Confidence:      0.95,
+			Source:          "rules",
+			NormalizedInput: normalized,
+		}
+		return nil
 	}
 
-	compact := strings.ReplaceAll(normalized, " ", "")
-	compact = strings.TrimSpace(compact)
-
-	if compact == "" {
-		scores["chat"] += 80
-	}
-
+	// Fast path: explicit writing mode override
 	if execCtx.Mode == "writing" {
-		scores["writing"] += 120
-	}
-
-	if reExtractPoints.MatchString(normalized) {
-		scores["extract_points"] += 92
-	}
-	if reShorten.MatchString(normalized) {
-		scores["shorten"] += 88
-	}
-	if reExpand.MatchString(normalized) {
-		scores["expand"] += 84
-	}
-	if rePolish.MatchString(normalized) {
-		scores["polish"] += 68
-	}
-	if reWriting.MatchString(normalized) {
-		scores["writing"] += 95
-	}
-
-	// Determine top intent
-	topLabel := "chat"
-	topScore := 0
-	for _, label := range intentLabels {
-		if scores[label] > topScore {
-			topScore = scores[label]
-			topLabel = label
+		execCtx.TaskIntent = &engine.TaskIntent{
+			TaskMode:        "writing",
+			Confidence:      0.95,
+			Source:          "rules",
+			NormalizedInput: normalized,
 		}
+		return nil
 	}
 
-	// Calculate confidence
-	confidence := 0.35
-	if topScore > 0 {
-		confidence = 0.48 + float64(topScore)/160*0.42
-		if confidence > 0.98 {
-			confidence = 0.98
-		}
-	}
-
-	taskIntent := &engine.TaskIntent{
-		TaskMode:        topLabel,
-		Confidence:      confidence,
-		Source:          "rules",
-		NormalizedInput: normalized,
-	}
-
-	// Use LLM for low-confidence cases
-	if confidence < 0.78 && s.llm != nil {
-		llmIntent, err := s.classifyWithLLM(ctx, normalized, topLabel)
+	// LLM-first intent classification
+	if s.llm != nil {
+		llmIntent, err := s.classifyWithLLM(ctx, normalized)
 		if err == nil && llmIntent != nil {
-			taskIntent = llmIntent
+			execCtx.TaskIntent = llmIntent
+			return nil
 		}
+		slog.Warn("intent LLM classification failed, falling back to rules",
+			"error", err,
+			"trace_id", execCtx.TraceID,
+		)
 	}
 
+	// Fallback: simple keyword matching
+	taskIntent := s.fallbackClassify(normalized)
 	execCtx.TaskIntent = taskIntent
 	return nil
 }
 
-func (s *IntentStep) classifyWithLLM(ctx context.Context, message, fallback string) (*engine.TaskIntent, error) {
+// fallbackClassify provides a simple rule-based intent classification
+// when the LLM is unavailable. This is intentionally minimal — the LLM
+// handles all nuanced cases.
+func (s *IntentStep) fallbackClassify(normalized string) *engine.TaskIntent {
+	taskMode := "chat"
+
+	// Simple keyword checks in priority order
+	switch {
+	case strings.Contains(normalized, "写一篇") || strings.Contains(normalized, "写稿") ||
+		strings.Contains(normalized, "撰写") || strings.Contains(normalized, "基于热搜"):
+		taskMode = "writing"
+	case strings.Contains(normalized, "润色") || strings.Contains(normalized, "优化") ||
+		strings.Contains(normalized, "改写"):
+		taskMode = "polish"
+	case strings.Contains(normalized, "缩写") || strings.Contains(normalized, "缩短") ||
+		strings.Contains(normalized, "精简"):
+		taskMode = "shorten"
+	case strings.Contains(normalized, "扩写") || strings.Contains(normalized, "扩充") ||
+		strings.Contains(normalized, "展开"):
+		taskMode = "expand"
+	case strings.Contains(normalized, "提炼") || strings.Contains(normalized, "提取观点"):
+		taskMode = "extract_points"
+	}
+
+	return &engine.TaskIntent{
+		TaskMode:        taskMode,
+		Confidence:      0.6,
+		Source:          "rules",
+		NormalizedInput: normalized,
+	}
+}
+
+func (s *IntentStep) classifyWithLLM(ctx context.Context, message string) (*engine.TaskIntent, error) {
 	systemMsg := "你是中文写作产品的意图分类器。只返回 JSON，不要解释。taskMode 只能是 chat、writing、polish、shorten、expand、extract_points。confidence 是 0.35-0.96 的数字。"
 	userMsg := fmt.Sprintf(`请判断用户本轮真实意图，尤其要容忍语音识别错字。
 
@@ -189,7 +186,7 @@ func (s *IntentStep) classifyWithLLM(ctx context.Context, message, fallback stri
 		}
 	}
 	if !valid {
-		parsed.TaskMode = fallback
+		parsed.TaskMode = "chat"
 	}
 
 	if parsed.Confidence < 0.35 {
@@ -256,7 +253,23 @@ func (s *QueryPlanStep) Execute(ctx context.Context, execCtx *engine.ExecutionCo
 		return nil
 	}
 
-	// Extract topic from input
+	// Try LLM-based query planning first
+	if s.llm != nil {
+		task, err := s.planWithLLM(ctx, execCtx)
+		if err == nil && task != nil {
+			execCtx.WritingTask = task
+			execCtx.SearchPlan = s.buildSearchPlan(task.SearchQueries)
+			slog.Info("query plan generated by LLM",
+				"topic", task.Topic,
+				"queries", task.SearchQueries,
+				"word_limit", task.WordLimit,
+			)
+			return nil
+		}
+		slog.Warn("LLM query planning failed, falling back to regex", "error", err)
+	}
+
+	// Fallback: regex-based topic extraction
 	topic := extractTopic(execCtx.NormalizedInput)
 	execCtx.WritingTask = &engine.WritingTask{
 		Topic:              topic,
@@ -264,48 +277,98 @@ func (s *QueryPlanStep) Execute(ctx context.Context, execCtx *engine.ExecutionCo
 		SearchQueries:      []string{topic},
 	}
 
-	// Plan search across sources
-	execCtx.SearchPlan = []engine.SearchPlanEntry{
-		{Query: topic, Source: "tavily"},
-		{Query: topic, Source: "zhihu"},
-		{Query: topic, Source: "ima"},
-	}
-
+	execCtx.SearchPlan = s.buildSearchPlan([]string{topic})
 	return nil
 }
 
+// planWithLLM uses the LLM to analyze user input and generate a structured query plan.
+func (s *QueryPlanStep) planWithLLM(ctx context.Context, execCtx *engine.ExecutionContext) (*engine.WritingTask, error) {
+	systemMsg := `你是一个搜索规划助手。根据用户的写作请求，提取核心话题并生成多个搜索查询。
+只返回 JSON，格式如下：
+{
+  "topic": "核心话题（简洁，如"长鑫存储"）",
+  "primary_query": "最佳搜索关键词（如"长鑫存储 国产替代 进展"）",
+  "queries": ["查询1", "查询2", "查询3"],
+  "word_limit": 0
+}
+要求：
+- topic: 2-10个字，只保留核心实体名
+- primary_query: 最可能搜到高质量结果的查询词
+- queries: 3-5个不同角度的查询词，覆盖话题的多个方面（如：实体本身、近期进展、政策背景、行业影响）
+- word_limit: 从用户输入中提取建议字数，无则填0
+- 不要解释，只返回JSON`
+
+	userMsg := fmt.Sprintf("用户请求：\n%s", execCtx.NormalizedInput)
+
+	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+		{Role: "system", Content: systemMsg},
+		{Role: "user", Content: userMsg},
+	}, tools.WithTemperature(0.1))
+	if err != nil {
+		return nil, fmt.Errorf("LLM query planning failed: %w", err)
+	}
+
+	jsonStr := tools.ExtractJSONObject(resp)
+	if jsonStr == "" {
+		return nil, fmt.Errorf("no JSON in LLM response")
+	}
+
+	var result struct {
+		Topic        string   `json:"topic"`
+		PrimaryQuery string   `json:"primary_query"`
+		Queries      []string `json:"queries"`
+		WordLimit    int      `json:"word_limit"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM query plan: %w", err)
+	}
+
+	if result.Topic == "" {
+		return nil, fmt.Errorf("LLM returned empty topic")
+	}
+
+	if result.PrimaryQuery == "" {
+		result.PrimaryQuery = result.Topic
+	}
+	if len(result.Queries) == 0 {
+		result.Queries = []string{result.PrimaryQuery}
+	}
+
+	return &engine.WritingTask{
+		Topic:              result.Topic,
+		PrimarySearchQuery: result.PrimaryQuery,
+		SearchQueries:      result.Queries,
+		WordLimit:          result.WordLimit,
+	}, nil
+}
+
+// buildSearchPlan creates search plan entries from multiple queries.
+// Distributes queries across available sources for broader coverage.
+func (s *QueryPlanStep) buildSearchPlan(queries []string) []engine.SearchPlanEntry {
+	sources := []string{"tavily", "zhihu", "ima"}
+	var plan []engine.SearchPlanEntry
+	for i, q := range queries {
+		source := sources[i%len(sources)]
+		plan = append(plan, engine.SearchPlanEntry{Query: q, Source: source})
+	}
+	return plan
+}
+
+// extractTopic is a minimal fallback for topic extraction when LLM is unavailable.
+// It tries to extract content from common bracket formats, falling back to the first line.
 func extractTopic(message string) string {
-	// Remove common prefixes
-	topic := message
-	prefixes := []string{
-		"请基于热搜写一篇关于", "基于热搜写一篇关于",
-		"请写一篇关于", "写一篇关于",
-		"请写一篇", "写一篇",
-		"请帮我写一篇关于", "帮我写一篇关于",
-		"帮我写一篇", "请帮我写一篇",
-		"写一篇评论关于", "写一篇评论",
+	firstLine := message
+	if idx := strings.IndexByte(message, '\n'); idx >= 0 {
+		firstLine = message[:idx]
 	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(topic, prefix) {
-			topic = strings.TrimPrefix(topic, prefix)
-			break
-		}
+	firstLine = strings.TrimSpace(firstLine)
+
+	// Try bracket formats: 「...」『...」...
+	if m := regexp.MustCompile(`[「『"](.+?)[」』"]`).FindStringSubmatch(firstLine); len(m) > 1 {
+		return strings.TrimSpace(m[1])
 	}
 
-	// Remove common suffixes
-	suffixes := []string{"的评论", "的文章", "评论", "文章", "的时评", "时评"}
-	for _, suffix := range suffixes {
-		if strings.HasSuffix(topic, suffix) {
-			topic = strings.TrimSuffix(topic, suffix)
-			break
-		}
-	}
-
-	topic = strings.TrimSpace(topic)
-	if topic == "" {
-		topic = message
-	}
-	return topic
+	return firstLine
 }
 
 // ─── SearchStep ──────────────────────────────────────────
@@ -357,20 +420,43 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 
 	// Use real search client if available
 	if s.search != nil && s.search.HasSources() {
-		query := ""
+		queries := []string{}
 		if execCtx.WritingTask != nil {
-			query = execCtx.WritingTask.PrimarySearchQuery
-			if query == "" && len(execCtx.WritingTask.SearchQueries) > 0 {
-				query = execCtx.WritingTask.SearchQueries[0]
+			if execCtx.WritingTask.PrimarySearchQuery != "" {
+				queries = append(queries, execCtx.WritingTask.PrimarySearchQuery)
+			}
+			for _, q := range execCtx.WritingTask.SearchQueries {
+				if q != "" && !containsString(queries, q) {
+					queries = append(queries, q)
+				}
 			}
 		}
-		if query == "" {
-			query = execCtx.UserInput
+		if len(queries) == 0 {
+			queries = []string{execCtx.UserInput}
 		}
 
-		// P2: Increased from 9 to 20 results to leverage 1M context window
-		results := s.search.Search(ctx, query, 20)
-		execCtx.SearchResults = results
+		// Distribute maxTotal across queries; ensure at least 5 per query
+		maxPerQuery := 20 / len(queries)
+		if maxPerQuery < 5 {
+			maxPerQuery = 5
+		}
+
+		var allResults []engine.SearchResult
+		seenURLs := make(map[string]bool)
+		for _, q := range queries {
+			results := s.search.Search(ctx, q, maxPerQuery)
+			for _, r := range results {
+				if r.URL != "" {
+					if seenURLs[r.URL] {
+						continue
+					}
+					seenURLs[r.URL] = true
+				}
+				allResults = append(allResults, r)
+			}
+			slog.Info("search completed", "query", q, "results", len(results), "cumulative", len(allResults))
+		}
+		execCtx.SearchResults = allResults
 		return nil
 	}
 
@@ -2398,4 +2484,14 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
 		"jiaozhen_checked", jiaozhenCount)
 
 	return sb.String()
+}
+
+// containsString checks if a string exists in a slice (case-sensitive).
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

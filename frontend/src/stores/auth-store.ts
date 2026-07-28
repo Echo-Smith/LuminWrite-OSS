@@ -13,6 +13,7 @@ import { create } from "zustand";
 
 export interface AuthUser {
   userId: string;
+  username: string;
   role: "guest" | "user" | "admin";
 }
 
@@ -33,7 +34,7 @@ interface AuthState {
 
   // Actions
   init: () => Promise<void>;
-  login: (token: string, userId: string, role: string, expiresIn: number) => void;
+  login: (token: string, userId: string, username: string, role: string, expiresIn: number) => void;
   logout: () => void;
   refreshToken: () => Promise<boolean>;
   isAuthenticated: () => boolean;
@@ -48,6 +49,7 @@ const STORAGE_KEY = "luminbuddy_auth";
 interface StoredAuth {
   token: string;
   userId: string;
+  username: string;
   role: string;
   expiresAt: number;
 }
@@ -71,7 +73,7 @@ function loadFromStorage(): { token: string; user: AuthUser; expiresAt: number }
 
     return {
       token: stored.token,
-      user: { userId: stored.userId, role: stored.role as "user" | "admin" },
+      user: { userId: stored.userId, username: stored.username || "", role: stored.role as "user" | "admin" },
       expiresAt: stored.expiresAt,
     };
   } catch {
@@ -79,8 +81,8 @@ function loadFromStorage(): { token: string; user: AuthUser; expiresAt: number }
   }
 }
 
-function saveToStorage(token: string, userId: string, role: string, expiresAt: number) {
-  const data: StoredAuth = { token, userId, role, expiresAt };
+function saveToStorage(token: string, userId: string, username: string, role: string, expiresAt: number) {
+  const data: StoredAuth = { token, userId, username, role, expiresAt };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
@@ -93,6 +95,7 @@ function clearStorage() {
 async function callRefreshAPI(currentToken: string): Promise<{
   token: string;
   user_id: string;
+  username: string;
   role: string;
   expires_in: number;
 } | null> {
@@ -114,7 +117,7 @@ async function callRefreshAPI(currentToken: string): Promise<{
 }
 
 async function callLoginAPI(body: Record<string, unknown>): Promise<{
-  data: { token: string; user_id: string; role: string; expires_in: number };
+  data: { token: string; user_id: string; username: string; role: string; expires_in: number };
 } | { error: { code: string; message: string } }> {
   try {
     const res = await fetch("/api/v2/auth/login", {
@@ -137,6 +140,7 @@ async function callLoginAPI(body: Record<string, unknown>): Promise<{
 async function callGuestAPI(): Promise<{
   token: string;
   user_id: string;
+  username: string;
   role: string;
   expires_in: number;
 } | null> {
@@ -155,7 +159,7 @@ async function callGuestAPI(): Promise<{
 }
 
 async function callRegisterAPI(body: Record<string, unknown>): Promise<{
-  data: { token: string; user_id: string; role: string; expires_in: number };
+  data: { token: string; user_id: string; username: string; role: string; expires_in: number };
 } | { error: { code: string; message: string } }> {
   try {
     const res = await fetch("/api/v2/auth/register", {
@@ -204,6 +208,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // 设置定时器，在过期前 5 分钟自动刷新
       scheduleAutoRefresh(stored.expiresAt, () => get().refreshToken());
+
+      // 从云端加载用户偏好设置
+      import("@/stores/settings-store").then((m) => m.useSettingsStore.getState().loadFromServer());
       return;
     }
 
@@ -213,27 +220,34 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const expiresAt = Math.floor(Date.now() / 1000) + guestResult.expires_in;
       const user: AuthUser = {
         userId: guestResult.user_id,
+        username: guestResult.username || "",
         role: guestResult.role as AuthUser["role"],
       };
-      saveToStorage(guestResult.token, guestResult.user_id, guestResult.role, expiresAt);
+      saveToStorage(guestResult.token, guestResult.user_id, guestResult.username || "", guestResult.role, expiresAt);
       set({ token: guestResult.token, user, expiresAt, initialized: true });
       scheduleAutoRefresh(expiresAt, () => get().refreshToken());
+
+      // 游客也加载偏好（游客有自己的 user_id）
+      import("@/stores/settings-store").then((m) => m.useSettingsStore.getState().loadFromServer());
     } else {
       // Fallback: mark as initialized even if guest creation fails
       set({ initialized: true });
     }
   },
 
-  login: (token, userId, role, expiresIn) => {
+  login: (token, userId, username, role, expiresIn) => {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresIn;
-    const user: AuthUser = { userId, role: role as AuthUser["role"] };
+    const user: AuthUser = { userId, username, role: role as AuthUser["role"] };
 
-    saveToStorage(token, userId, role, expiresAt);
+    saveToStorage(token, userId, username, role, expiresAt);
 
     set({ token, user, expiresAt, initialized: true });
 
     // 设置自动刷新
     scheduleAutoRefresh(expiresAt, () => get().refreshToken());
+
+    // 从云端加载用户偏好设置
+    import("@/stores/settings-store").then((m) => m.useSettingsStore.getState().loadFromServer());
   },
 
   logout: () => {
@@ -241,6 +255,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ token: null, user: null, expiresAt: null });
     // 清理选题缓存，避免下一个用户看到上一个用户的数据
     import("@/stores/topic-cache-store").then((m) => m.useTopicCacheStore.getState().clearCache());
+    // 重置偏好设置状态
+    import("@/stores/settings-store").then((m) => m.useSettingsStore.setState({ agentMode: "unified", loaded: false }));
   },
 
   refreshToken: async () => {
@@ -255,11 +271,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     const expiresAt = Math.floor(Date.now() / 1000) + result.expires_in;
-    saveToStorage(result.token, result.user_id, result.role, expiresAt);
+    saveToStorage(result.token, result.user_id, result.username || "", result.role, expiresAt);
 
     set({
       token: result.token,
-      user: { userId: result.user_id, role: result.role as AuthUser["role"] },
+      user: { userId: result.user_id, username: result.username || "", role: result.role as AuthUser["role"] },
       expiresAt,
     });
 
@@ -313,7 +329,7 @@ export const authStore = {
     if ("error" in result) {
       return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
     }
-    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.role, result.data.expires_in);
+    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in);
     return { ok: true };
   },
 
@@ -322,7 +338,7 @@ export const authStore = {
     if ("error" in result) {
       return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
     }
-    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.role, result.data.expires_in);
+    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in);
     return { ok: true };
   },
 

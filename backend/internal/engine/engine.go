@@ -167,6 +167,21 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 				continue
 			}
 
+			// ── Quota exceeded: hard stop, no retry ──
+			if isQuotaExceeded(err) {
+				slog.Error("LLM API quota exceeded, stopping pipeline",
+					"trace_id", execCtx.TraceID,
+					"step", stepName,
+					"error", err,
+				)
+				e.emitter.Error("quota_exceeded",
+					"AI 模型服务额度不足，请联系管理员充值",
+						stepName)
+				execCtx.Status = StatusFailed
+				updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())
+				return ErrQuotaExceeded
+				}
+
 			// ── Circuit breaker: record LLM failure ──
 			if isLLMError(err) {
 				if execCtx.RecordLLMFailure() {
@@ -199,11 +214,11 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 		execCtx.RecordLLMSuccess()
 
 		// Step succeeded — get the result from execCtx based on step name
-		result := getStepResult(stepName, execCtx)
-		updateLastStepRecord(execCtx, stepName, "complete", result, durationMs, "")
+	result := GetStepResult(stepName, execCtx)
+	updateLastStepRecord(execCtx, stepName, "complete", result, durationMs, "")
 
-		// Emit step.complete
-		e.emitter.StepComplete(stepName, result, durationMs)
+	// Emit step.complete
+	e.emitter.StepComplete(stepName, result, durationMs)
 
 		slog.Info("step completed",
 			"trace_id", execCtx.TraceID,
@@ -264,8 +279,8 @@ func updateLastStepRecord(execCtx *ExecutionContext, step StepName, status strin
 	}
 }
 
-// getStepResult extracts the result for a given step from the context.
-func getStepResult(step StepName, execCtx *ExecutionContext) interface{} {
+// GetStepResult extracts the result for a given step from the context.
+func GetStepResult(step StepName, execCtx *ExecutionContext) interface{} {
 	switch step {
 	case StepIntent:
 		return execCtx.TaskIntent
@@ -338,4 +353,17 @@ func isLLMError(err error) bool {
 		strings.Contains(msg, "rate limit") ||
 		strings.Contains(msg, "deepseek") ||
 		strings.Contains(msg, "chat completions")
+}
+
+// isQuotaExceeded checks whether an error indicates the LLM API quota/balance
+// is exhausted (HTTP 402 or 429 after retries). This is a hard stop — no amount
+// of retrying will fix it; the user must top up their account.
+func isQuotaExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "quota exceeded") ||
+		strings.Contains(msg, "rate limit exhausted") ||
+		strings.Contains(msg, "insufficient balance")
 }

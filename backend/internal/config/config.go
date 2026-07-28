@@ -30,6 +30,7 @@ type Config struct {
 	Weibo      WeiboConfig
 	ExtraHot   ExtraHotConfig
 	Bing       BingConfig
+	AnySearch  AnySearchConfig
 	WebAuthn  WebAuthnConfig
 	Jiaozhen  JiaozhenConfig
 	Log       LogConfig
@@ -152,6 +153,12 @@ type BingConfig struct {
 	Timeout time.Duration
 }
 
+type AnySearchConfig struct {
+	APIKey   string
+	Endpoint string
+	Timeout  time.Duration
+}
+
 type HotTopicsConfig struct {
 	FetchInterval time.Duration
 }
@@ -272,6 +279,11 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			Enabled: getEnvBool("BING_ENABLED", true),
 			BaseURL: getEnv("BING_BASE_URL", "https://cn.bing.com"),
 			Timeout: getEnvDuration("BING_TIMEOUT", 15*time.Second),
+		},
+		AnySearch: AnySearchConfig{
+			APIKey:   getEnv("ANYSEARCH_API_KEY", ""),
+			Endpoint: getEnv("ANYSEARCH_ENDPOINT", "https://api.anysearch.com/v1/search"),
+			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 15*time.Second),
 		},
 WebAuthn: WebAuthnConfig{
 RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),

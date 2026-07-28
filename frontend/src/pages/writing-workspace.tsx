@@ -6,7 +6,7 @@
  * 使用 useAgentWebSocket Hook 自动管理 WS 连接
  */
 import { useState, useEffect } from "react";
-import { PanelRightOpen, WifiOff } from "lucide-react";
+import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";

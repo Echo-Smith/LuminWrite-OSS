@@ -1,7 +1,7 @@
 # ─── Frontend Dockerfile — Multi-stage build (Vite + Nginx) ───
 
 # Stage 1: Build
-FROM node:22-alpine AS builder
+FROM --platform=${BUILDPLATFORM} node:22-alpine AS builder
 
 WORKDIR /build
 

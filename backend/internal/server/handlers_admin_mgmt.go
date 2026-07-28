@@ -345,6 +345,12 @@ func (s *Server) handleAdminTestAPIKey(w http.ResponseWriter, r *http.Request) {
 			status = "fail"
 			errMsg = err.Error()
 		}
+	case "anysearch":
+		err := s.testAnySearchConnectivity(r.Context(), baseURL, keyValue)
+		if err != nil {
+			status = "fail"
+			errMsg = err.Error()
+		}
 	default:
 		// Generic check — just verify key is non-empty
 		if keyValue == "" {
@@ -409,6 +415,34 @@ func (s *Server) testTavilyConnectivity(ctx context.Context, apiKey string) erro
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Tavily API returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *Server) testAnySearchConnectivity(ctx context.Context, baseURL, apiKey string) error {
+	if baseURL == "" {
+		baseURL = "https://api.anysearch.com/v1/search"
+	}
+	body := `{"query":"test","max_results":1}`
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("AnySearch API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

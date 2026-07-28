@@ -45,24 +45,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "invalid API key")
 			return
 		}
-		s.issueToken(w, userID, role)
+		username := s.lookupUsername(r.Context(), userID)
+		s.issueToken(w, userID, role, username)
 		return
 	}
 
 	// Mode 2: Username/password authentication
 	if req.Username != "" && req.Password != "" {
-		userID, role, ok := s.authenticatePassword(req.Username, req.Password)
+		userID, role, username, ok := s.authenticatePassword(req.Username, req.Password)
 		if !ok {
 			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 			return
 		}
-		s.issueToken(w, userID, role)
+		s.issueToken(w, userID, role, username)
 		return
 	}
 
 	// Mode 3: Anonymous/guest login (for public API access with rate limits)
 	if req.UserID != "" {
-		s.issueToken(w, req.UserID, "user")
+		username := s.lookupUsername(r.Context(), req.UserID)
+		s.issueToken(w, req.UserID, "user", username)
 		return
 	}
 
@@ -102,8 +104,11 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Look up username for the user
+	username := s.lookupUsername(r.Context(), payload.Sub)
+
 	// Issue a new token with fresh expiry
-	s.issueToken(w, payload.Sub, payload.Role)
+	s.issueToken(w, payload.Sub, payload.Role, username)
 }
 
 // handleVerifyToken returns the user info from a valid JWT.
@@ -117,8 +122,11 @@ func (s *Server) handleVerifyToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	username := s.lookupUsername(r.Context(), user.Sub)
+
 	response.OK(w, map[string]interface{}{
 		"user_id":    user.Sub,
+		"username":   username,
 		"role":       user.Role,
 		"issued_at":  user.Iat,
 		"expires_at": user.Exp,
@@ -129,7 +137,7 @@ func (s *Server) handleVerifyToken(w http.ResponseWriter, r *http.Request) {
 // ─── Auth Helpers ───────────────────────────────────────
 
 // issueToken generates a JWT and sends it in the response.
-func (s *Server) issueToken(w http.ResponseWriter, userID, role string) {
+func (s *Server) issueToken(w http.ResponseWriter, userID, role, username string) {
 	token, err := s.GenerateJWT(userID, role)
 	if err != nil {
 		slog.Error("failed to generate JWT", "error", err, "user_id", userID)
@@ -142,9 +150,26 @@ func (s *Server) issueToken(w http.ResponseWriter, userID, role string) {
 		"token_type": "Bearer",
 		"expires_in": int(s.cfg.JWT.Expiry.Seconds()),
 		"user_id":    userID,
+		"username":   username,
 		"role":       role,
 		"issued_at":  time.Now().Format(time.RFC3339),
 	})
+}
+
+// lookupUsername retrieves the display name (uid) for a given user ID from the database.
+// Returns "" if the database is unavailable or the user is not found.
+func (s *Server) lookupUsername(ctx context.Context, userID string) string {
+	if s.adminRepo == nil || s.adminRepo.DB() == nil {
+		return ""
+	}
+	var name string
+	err := s.adminRepo.DB().QueryRowContext(ctx, `
+		SELECT COALESCE(uid, '') FROM users WHERE id = $1
+	`, userID).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 // authenticateAPIKey validates an API key against the database.
@@ -172,14 +197,15 @@ func (s *Server) authenticateAPIKey(apiKey string) (userID, role string, ok bool
 }
 
 // authenticatePassword validates username/password credentials using bcrypt.
-func (s *Server) authenticatePassword(username, password string) (userID, role string, ok bool) {
+// Returns userID, role, display name, and success flag.
+func (s *Server) authenticatePassword(username, password string) (userID, role, displayName string, ok bool) {
 	// Check admin credentials from config
 	if username == "admin" && password == s.cfg.Admin.Token {
-		return AdminUserID, "admin", true
+		return AdminUserID, "admin", "admin", true
 	}
 
 	if s.adminRepo == nil || s.adminRepo.DB() == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	// Look up user by name (uid) in users table
@@ -190,25 +216,26 @@ func (s *Server) authenticatePassword(username, password string) (userID, role s
 		id       string
 		roleVal  string
 		hashStr  string
+		nameVal  string
 	)
 	err := s.adminRepo.DB().QueryRowContext(ctx, `
-		SELECT id::text, COALESCE(role, 'user'), password_hash
+		SELECT id::text, COALESCE(role, 'user'), password_hash, COALESCE(uid, '')
 		FROM users
 		WHERE name = $1 AND password_hash IS NOT NULL
 		LIMIT 1
-	`, username).Scan(&id, &roleVal, &hashStr)
+	`, username).Scan(&id, &roleVal, &hashStr, &nameVal)
 	if err != nil {
 		slog.Debug("password auth: user not found or no password set", "username", username, "error", err)
-		return "", "", false
+		return "", "", "", false
 	}
 
 	// Verify bcrypt hash
 	if bcrypt.CompareHashAndPassword([]byte(hashStr), []byte(password)) != nil {
 		slog.Warn("password auth: invalid password", "username", username)
-		return "", "", false
+		return "", "", "", false
 	}
 
-	return id, roleVal, true
+	return id, roleVal, nameVal, true
 }
 
 // handleGuestLogin creates a new guest user and returns a JWT with role='guest'.
@@ -239,7 +266,7 @@ func (s *Server) handleGuestLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("guest user created", "uid", guestUID, "user_id", userID)
-	s.issueToken(w, userID, "guest")
+	s.issueToken(w, userID, "guest", guestUID)
 }
 
 // handleRegister creates a new user account or upgrades a guest account.
@@ -331,7 +358,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 
 		slog.Info("guest upgraded to registered user", "username", req.Username, "user_id", payload.Sub)
-		s.issueToken(w, payload.Sub, "user")
+		s.issueToken(w, payload.Sub, "user", req.Username)
 		return
 	}
 
@@ -349,7 +376,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("user registered", "username", req.Username, "user_id", userID)
-	s.issueToken(w, userID, "user")
+	s.issueToken(w, userID, "user", req.Username)
 }
 
 

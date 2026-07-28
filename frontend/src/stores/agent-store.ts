@@ -761,6 +761,7 @@ case "agent.paused": {
           timeout: "⏱️ 写作超时，请简化选题后重试",
           budget_exceeded: "💰 Token 预算已用尽，请稍后重试",
           circuit_breaker: "🔌 AI 服务暂时不可用，请稍后重试",
+          quota_exceeded: "💳 AI 模型服务额度不足，请联系管理员充值后重试",
           server_busy: "🔧 服务器繁忙，请稍后重试",
           step_failed: `❌ 步骤执行失败：${errorMsg}`,
           panic: `❌ 内部错误：${errorMsg}`,

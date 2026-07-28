@@ -80,6 +80,7 @@ export interface AgentStartPayload {
   style?: string;
   mode?: WriteMode;
   model?: string;
+  agent_mode?: "pipeline" | "unified";
   session_id?: string;
   user_materials?: string[];
   word_limit?: number;

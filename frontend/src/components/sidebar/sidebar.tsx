@@ -126,14 +126,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <PopoverTrigger asChild>
             <button
               className="flex h-9 w-9 items-center justify-center transition-transform-precise hover:scale-105"
-              title={isGuest ? "登录/注册账号" : (user?.userId ?? "用户")}
+              title={isGuest ? "登录/注册账号" : (user?.username ?? user?.userId ?? "用户")}
             >
               <Avatar className="h-8 w-8">
                 <AvatarFallback className={cn(
                   "text-xs font-medium",
                   isGuest ? "bg-amber-100 text-amber-700" : "bg-muted text-foreground"
                 )}>
-                  {isGuest ? "客" : (user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
+                  {isGuest ? "客" : (user?.username?.slice(0, 2).toUpperCase() ?? user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
                 </AvatarFallback>
               </Avatar>
             </button>
@@ -254,7 +254,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   "text-xs font-medium",
                   isGuest ? "bg-amber-100 text-amber-700" : "bg-muted text-foreground"
                 )}>
-                  {isGuest ? "客" : (user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
+                  {isGuest ? "客" : (user?.username?.slice(0, 2).toUpperCase() ?? user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0 text-left">
@@ -265,7 +265,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   </>
                 ) : (
                   <>
-                    <p className="text-sm font-medium truncate">{user?.userId ?? "用户"}</p>
+                    <p className="text-sm font-medium truncate">{user?.username ?? user?.userId ?? "用户"}</p>
                     <p className="text-[11px] text-muted-foreground font-mono-sm">
                       {isAdmin ? "admin" : "user"}
                     </p>
