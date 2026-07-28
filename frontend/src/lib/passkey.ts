@@ -204,6 +204,7 @@ export async function loginWithPasskey(options?: {
 }): Promise<{
   token: string;
   user_id: string;
+  username: string;
   role: string;
   expires_in: number;
 }> {
@@ -253,6 +254,7 @@ export async function loginWithPasskey(options?: {
   return apiCall<{
     token: string;
     user_id: string;
+    username: string;
     role: string;
     expires_in: number;
   }>("/api/v2/auth/passkey/login/complete", authData);

@@ -1,8 +1,11 @@
 /**
- * 右侧面板 — Trace 时间线 / 检索素材 / 风格信息
+ * 右侧面板 — Agent 协同流程 / 检索素材 / 风格信息
+ *
+ * 删除了冗余的"预览"Tab（文章已在主区域展示）
+ * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
 import { useState } from "react";
-import { ChevronRight, Clock, Globe, Palette, FileText } from "lucide-react";
+import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +13,6 @@ import { Separator } from "@/components/ui/separator";
 import { useAgentStore } from "@/stores/agent-store";
 import type { ToolCallPart } from "@/stores/agent-store";
 import { cn } from "@/lib/utils";
-import { MarkdownContent } from "@/components/assistant-ui/markdown-content";
 import { StaggerItem } from "@/components/animation";
 import { AgentStepCard } from "@/components/tools/agent-step-card";
 
@@ -18,8 +20,70 @@ interface DetailPanelProps {
   onClose?: () => void;
 }
 
+// ─── Agent 角色映射 ──────────────────────────────────────
+
+interface AgentRole {
+  name: string;
+  icon: LucideIcon;
+  color: string;
+  bgColor: string;
+  steps: string[];
+}
+
+const AGENT_ROLES: AgentRole[] = [
+  {
+    name: "意图理解",
+    icon: Brain,
+    color: "text-blue-600 dark:text-blue-400",
+    bgColor: "bg-blue-50 dark:bg-blue-950/30",
+    steps: ["intent"],
+  },
+  {
+    name: "记忆检索",
+    icon: Database,
+    color: "text-cyan-600 dark:text-cyan-400",
+    bgColor: "bg-cyan-50 dark:bg-cyan-950/30",
+    steps: ["memory_gate"],
+  },
+  {
+    name: "素材研究",
+    icon: Search,
+    color: "text-amber-600 dark:text-amber-400",
+    bgColor: "bg-amber-50 dark:bg-amber-950/30",
+    steps: ["query_plan", "search", "relevance", "compress"],
+  },
+  {
+    name: "结构规划",
+    icon: Bot,
+    color: "text-purple-600 dark:text-purple-400",
+    bgColor: "bg-purple-50 dark:bg-purple-950/30",
+    steps: ["outline"],
+  },
+  {
+    name: "写作生成",
+    icon: PenLine,
+    color: "text-indigo-600 dark:text-indigo-400",
+    bgColor: "bg-indigo-50 dark:bg-indigo-950/30",
+    steps: ["write", "chat"],
+  },
+  {
+    name: "质量保障",
+    icon: ShieldCheck,
+    color: "text-green-600 dark:text-green-400",
+    bgColor: "bg-green-50 dark:bg-green-950/30",
+    steps: ["post_review", "auto_fix"],
+  },
+  {
+    name: "学习沉淀",
+    icon: Sparkles,
+    color: "text-pink-600 dark:text-pink-400",
+    bgColor: "bg-pink-50 dark:bg-pink-950/30",
+    steps: ["memory_extract"],
+  },
+];
+
 export function DetailPanel({ onClose }: DetailPanelProps) {
-  const [activeTab, setActiveTab] = useState("preview");
+  const [activeTab, setActiveTab] = useState("trace");
 
   const session = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
   const messages = session?.messages ?? [];
@@ -34,10 +98,6 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   const searchStep = toolCallParts.find((p) => p.toolName === "search");
   const searchResults = searchStep?.result as { results?: Array<Record<string, unknown>> } | undefined;
   const results = searchResults?.results ?? [];
-
-  // 从消息中提取文章文本
-  const textParts = lastAssistant?.parts.filter((p) => p.type === "text") as { text: string }[] ?? [];
-  const articleText = textParts.map((p) => p.text).join("");
 
   return (
     <div className="flex h-full w-80 flex-col border-l bg-surface anim-slide-left">
@@ -59,10 +119,6 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-2 pt-2">
           <TabsList className="w-full">
-            <TabsTrigger value="preview" className="flex-1">
-              <FileText className="h-3.5 w-3.5 mr-1" />
-              预览
-            </TabsTrigger>
             <TabsTrigger value="trace" className="flex-1">
               <Clock className="h-3.5 w-3.5 mr-1" />
               流程
@@ -79,11 +135,8 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
         </div>
 
         <ScrollArea className="flex-1">
-          <TabsContent value="preview" className="p-3 m-0">
-            <ArticlePreview article={articleText} />
-          </TabsContent>
           <TabsContent value="trace" className="p-3 m-0">
-            <TraceTimeline parts={toolCallParts} />
+            <AgentCollaborationFlow parts={toolCallParts} />
           </TabsContent>
           <TabsContent value="sources" className="p-3 m-0">
             <SourcesList results={results} />
@@ -97,32 +150,13 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   );
 }
 
-/**
- * 文章预览
- */
-function ArticlePreview({ article }: { article: string }) {
-  if (!article || !article.trim()) {
-    return (
-      <div className="text-center text-xs text-muted-foreground py-8">
-        文章生成后将在此预览
-      </div>
-    );
-  }
-  return (
-    <div className="prose prose-sm max-w-none dark:prose-invert">
-      <MarkdownContent content={article} />
-    </div>
-  );
-}
+// ─── 多 Agent 协同流程 ──────────────────────────────────
 
-/**
- * 流程时间线 — 使用完整的 AgentStepCard 展示详细信息
- */
-function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
+function AgentCollaborationFlow({ parts }: { parts: ToolCallPart[] }) {
   if (parts.length === 0) {
     return (
       <div className="text-center text-xs text-muted-foreground py-8">
-        开始写作后这里将显示 Agent 流程
+        开始写作后这里将显示 Agent 协同流程
       </div>
     );
   }
@@ -132,8 +166,18 @@ function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
   const completedCount = parts.filter((p) => p.status === "complete").length;
   const degradedCount = parts.filter((p) => p.status === "degraded").length;
 
+  // 按Agent角色分组
+  const roleGroups: { role: AgentRole; parts: ToolCallPart[] }[] = [];
+  for (const role of AGENT_ROLES) {
+    const roleParts = parts.filter((p) => role.steps.includes(p.toolName));
+    if (roleParts.length > 0) {
+      roleGroups.push({ role, parts: roleParts });
+    }
+  }
+
   return (
     <div className="space-y-3">
+      {/* 总览统计 */}
       <div className="flex items-center justify-between text-xs">
         <span className="text-muted-foreground">
           {runningCount > 0 ? `${completedCount}/${parts.length} 步骤完成` : `${parts.length} 步骤`}
@@ -146,12 +190,73 @@ function TraceTimeline({ parts }: { parts: ToolCallPart[] }) {
 
       <Separator />
 
-      <div className="space-y-2">
-        {parts.map((part, i) => (
-          <StaggerItem key={i} index={i} interval={60} animation="fade-up">
-            <AgentStepCard part={part} defaultOpen={part.status === "running"} />
-          </StaggerItem>
-        ))}
+      {/* Agent 协同流程图 */}
+      <div className="space-y-1">
+        {roleGroups.map((group, gi) => {
+          const Icon = group.role.icon;
+          const isAnyRunning = group.parts.some((p) => p.status === "running");
+          const isAllComplete = group.parts.every((p) => p.status === "complete" || p.status === "degraded");
+          const groupDuration = group.parts.reduce((sum, p) => sum + (p.durationMs ?? 0), 0);
+
+          return (
+            <div key={gi}>
+              {/* 连接线 */}
+              {gi > 0 && (
+                <div className="flex justify-center py-0.5">
+                  <div className={cn(
+                    "h-4 w-px",
+                    isAllComplete ? "bg-emerald-300 dark:bg-emerald-700" : "bg-border"
+                  )} />
+                </div>
+              )}
+
+              {/* Agent 角色头部 */}
+              <div className={cn(
+                "flex items-center gap-2 rounded-lg px-2.5 py-1.5 mb-1.5 transition-all",
+                group.role.bgColor,
+                isAnyRunning && "ring-1 ring-primary/30"
+              )}>
+                <div className={cn(
+                  "flex h-6 w-6 items-center justify-center rounded-md shrink-0",
+                  isAnyRunning ? "bg-background" : "bg-background/50"
+                )}>
+                  {isAnyRunning ? (
+                    <div className="h-2.5 w-2.5 rounded-full bg-primary anim-pulse" />
+                  ) : isAllComplete ? (
+                    <Icon className={cn("h-3.5 w-3.5", group.role.color)} />
+                  ) : (
+                    <Icon className={cn("h-3.5 w-3.5 text-muted-foreground")} />
+                  )}
+                </div>
+                <span className={cn(
+                  "text-xs font-medium flex-1",
+                  isAllComplete ? group.role.color : "text-muted-foreground"
+                )}>
+                  {group.role.name}
+                </span>
+                {groupDuration > 0 && (
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    {(groupDuration / 1000).toFixed(1)}s
+                  </span>
+                )}
+                {group.parts.length > 1 && (
+                  <Badge variant="outline" className="text-[10px] py-0 px-1.5">
+                    {group.parts.length}
+                  </Badge>
+                )}
+              </div>
+
+              {/* 该角色下的步骤卡片 */}
+              <div className="space-y-1.5 pl-2 border-l-2 border-dashed border-border/50 ml-[13px]">
+                {group.parts.map((part, pi) => (
+                  <StaggerItem key={`${gi}-${pi}`} index={pi} interval={40} animation="fade-up">
+                    <AgentStepCard part={part} defaultOpen={part.status === "running"} />
+                  </StaggerItem>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

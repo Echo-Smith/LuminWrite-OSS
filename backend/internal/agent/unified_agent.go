@@ -65,7 +65,10 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 		Content: fmt.Sprintf("用户请求：%s\n\n当前状态：\n%s\n\n请选择下一步要执行的工具，或如果已经完成则直接回复完成。", execCtx.UserInput, initialState),
 	})
 
-	toolDefs := a.buildToolDefs()
+	// Build initial tool defs; will be rebuilt each iteration to exclude
+	// already-executed non-repeatable tools (prevents LLM from calling e.g.
+	// "intent" again after it was already done).
+	toolDefs := a.buildToolDefs(execCtx)
 	if len(toolDefs) == 0 {
 		return fmt.Errorf("no tools registered in registry")
 	}
@@ -110,6 +113,49 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 			return engine.ErrCircuitBreaker
 		}
 
+		// ── Rule-based next step: bypass LLM for deterministic paths ──
+		// This prevents the LLM planner from skipping critical steps
+		// (e.g. post_review after write) or calling tools in wrong order.
+		if forced, ok := a.determineNextStep(execCtx); ok {
+			slog.Info("unified agent: rule-engine forced step",
+				"trace_id", execCtx.TraceID,
+				"iteration", iteration,
+				"step", forced,
+			)
+
+			a.emitter.StepStart(engine.StepName(forced), iteration)
+			startTime := time.Now()
+
+			result, err := a.registry.ExecuteTool(ctx, string(forced), map[string]any{}, execCtx, a.emitter)
+			durationMs := time.Since(startTime).Milliseconds()
+
+			if err != nil {
+				slog.Warn("unified agent: forced step failed",
+					"trace_id", execCtx.TraceID,
+					"step", forced,
+					"error", err,
+				)
+			} else if result != nil {
+				stepResult := engine.GetStepResult(engine.StepName(forced), execCtx)
+					if stepResult == nil {
+						stepResult = map[string]interface{}{
+							"summary": result.Summary,
+						}
+					}
+					a.emitter.StepComplete(engine.StepName(forced), stepResult, durationMs)
+				slog.Info("unified agent: forced step completed",
+					"trace_id", execCtx.TraceID,
+					"step", forced,
+					"duration_ms", durationMs,
+				)
+				if result.Done && a.canFinish(execCtx) {
+					a.finish(execCtx)
+					return nil
+				}
+			}
+			continue
+		}
+
 		slog.Info("unified agent iteration",
 			"trace_id", execCtx.TraceID,
 			"iteration", iteration,
@@ -119,9 +165,26 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 		resp, llmResp, err := a.llm.Chat(ctx, conversation,
 			tools.WithThinking(true),
 			tools.WithReasoningEffort("high"),
-			tools.WithTools(toolDefs),
+			tools.WithTools(a.buildToolDefs(execCtx)),
 		)
 		if err != nil {
+			// ── Quota exceeded: hard stop, no retry ──
+			errMsg := strings.ToLower(err.Error())
+			if strings.Contains(errMsg, "quota exceeded") ||
+				strings.Contains(errMsg, "rate limit exhausted") ||
+				strings.Contains(errMsg, "insufficient balance") {
+				slog.Error("unified agent: LLM API quota exceeded",
+					"trace_id", execCtx.TraceID,
+					"iteration", iteration,
+					"error", err,
+				)
+				a.emitter.Error("quota_exceeded",
+					"AI 模型服务额度不足，请联系管理员充值",
+					execCtx.CurrentStep)
+				execCtx.Status = engine.StatusFailed
+				return engine.ErrQuotaExceeded
+			}
+
 			// ── Circuit breaker: record LLM failure ──
 			if execCtx.RecordLLMFailure() {
 				a.emitter.Error("circuit_breaker",
@@ -147,6 +210,20 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			// LLM wants to finish — but check if critical steps are missing
+			if !a.canFinish(execCtx) {
+				slog.Info("unified agent: LLM tried to finish but steps missing",
+					"trace_id", execCtx.TraceID,
+					"iteration", iteration,
+				)
+				conversation = append(conversation, assistantMsg)
+				conversation = append(conversation, tools.LLMMessage{
+					Role:    "user",
+					Content: "文章已生成但尚未经过质量评审。请调用 post_review 工具进行质量评审。",
+				})
+				continue
+			}
+
 			slog.Info("unified agent finished by LLM",
 				"trace_id", execCtx.TraceID,
 				"iteration", iteration,
@@ -193,9 +270,15 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 				)
 			} else if result != nil {
 				toolResult = result.Summary
-				a.emitter.StepComplete(engine.StepName(toolName), map[string]interface{}{
-					"summary": result.Summary,
-				}, durationMs)
+				// Send the full structured result data (not just the summary)
+				// so the frontend can render search results, review scores, etc.
+				stepResult := engine.GetStepResult(engine.StepName(toolName), execCtx)
+				if stepResult == nil {
+					stepResult = map[string]interface{}{
+						"summary": result.Summary,
+					}
+				}
+				a.emitter.StepComplete(engine.StepName(toolName), stepResult, durationMs)
 				slog.Info("unified agent tool completed",
 					"trace_id", execCtx.TraceID,
 					"tool", toolName,
@@ -262,38 +345,31 @@ func (a *UnifiedAgent) finish(execCtx *engine.ExecutionContext) {
 
 func (a *UnifiedAgent) buildPlannerPrompt() string {
 	var sb strings.Builder
-	sb.WriteString("你是一个写作 Agent 的编排器。你的职责是根据用户请求和当前执行状态，选择下一步要执行的工具。\n\n")
-	sb.WriteString("可用工具说明：\n")
-	sb.WriteString("- intent: 意图分类（第一步，必须执行）\n")
-	sb.WriteString("- memory_gate: 检索用户写作偏好记忆\n")
-	sb.WriteString("- query_plan: 生成搜索计划（仅写作模式需要）\n")
-	sb.WriteString("- search: 执行多源搜索（知乎/IMA/Tavily/腾讯新闻/微博）\n")
-	sb.WriteString("- relevance: 搜索结果相关性过滤和语义去重\n")
-	sb.WriteString("- compress: 将搜索结果压缩为结构化研究简报\n")
-	sb.WriteString("- outline: 生成文章提纲（仅引导模式）\n")
-	sb.WriteString("- write: 按风格 Profile 生成文章\n")
-	sb.WriteString("- post_review: 质量评审和敏感检查\n")
-	sb.WriteString("- auto_fix: 自动修正质量问题\n")
-	sb.WriteString("- chat: 对话回复（仅聊天模式）\n")
-	sb.WriteString("- memory_extract: 提取写作偏好记忆（异步，最后执行）\n")
+	sb.WriteString(`你是写作 Agent 的编排大脑。你的职责是根据用户请求和当前执行状态，自主选择下一步要执行的工具。
+
+设计理念：
+- 你有充分的自主权来决定工具调用顺序
+- 不需要遵循固定流程，根据实际情况灵活决策
+- 每次只调用一个工具，根据执行结果决定下一步
+- 如果当前状态已满足用户需求，直接回复完成（不调用工具）
+
+可用工具：`)
 	for _, tool := range a.registry.All() {
-		if strings.HasPrefix(tool.Name(), "mcp__") {
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description()))
-		}
+		sb.WriteString(fmt.Sprintf("\n- %s: %s", tool.Name(), tool.Description()))
 	}
-	sb.WriteString("\n决策规则：\n")
-	sb.WriteString("1. 第一步永远是 intent（意图分类）\n")
-	sb.WriteString("2. 根据意图选择后续步骤：\n")
-	sb.WriteString("   - chat 意图: memory_gate → chat → memory_extract → 完成\n")
-	sb.WriteString("   - writing 意图: memory_gate + (query_plan → search → relevance → compress) 并行 → outline(引导模式) → write → post_review → auto_fix(如有问题) → memory_extract → 完成\n")
-	sb.WriteString("   - polish/shorten/expand 意图: memory_gate → write → post_review → memory_extract → 完成\n")
-	sb.WriteString("3. 如果 post_review 发现问题且 auto_fix 可以修复，调用 auto_fix\n")
-	sb.WriteString("4. 如果 auto_fix 后仍有严重问题，可以再次调用 post_review\n")
-	sb.WriteString("5. 文章生成并评审通过后，调用 memory_extract，然后结束\n")
-	sb.WriteString("6. auto_fix 最多执行 2 次，超过后不再修复，直接完成\n")
-	sb.WriteString("7. 可以使用 MCP 工具（mcp__ 开头）获取额外信息，如事实核查、文件读取等\n")
-	sb.WriteString("8. 每次只调用一个工具，根据执行结果决定下一步\n")
-	sb.WriteString("\n重要：如果当前状态已经满足用户需求，直接回复完成（不调用工具）。\n")
+	sb.WriteString(`
+
+决策原则：
+1. 第一步调用 intent 进行意图分类
+2. 根据意图和当前状态，选择最有价值的下一步
+3. 写作类意图通常需要：素材准备（query_plan → search → relevance → compress）→ 写作 → 质量评审 → 记忆提取
+   - 但你可以根据情况调整，例如搜索结果质量很高时可以跳过 compress
+   - 评审发现问题时可以调用 auto_fix 修复
+   - auto_fix 最多执行 2 次
+4. 对话类意图通常更简单：记忆检索 → 对话回复 → 记忆提取
+5. 审查通过后，调用 memory_extract 提取写作偏好，然后结束
+
+重要：文章生成后必须经过 post_review 质量评审才能结束。`)
 	return sb.String()
 }
 
@@ -310,6 +386,14 @@ func (a *UnifiedAgent) buildStateSummary(execCtx *engine.ExecutionContext) strin
 	} else {
 		sb.WriteString("- 记忆: 未检索\n")
 	}
+	if execCtx.WritingTask != nil {
+		sb.WriteString(fmt.Sprintf("- 写作任务: 话题「%s」, 主查询「%s」, %d 个查询词",
+			execCtx.WritingTask.Topic, execCtx.WritingTask.PrimarySearchQuery, len(execCtx.WritingTask.SearchQueries)))
+		if execCtx.WritingTask.WordLimit > 0 {
+			sb.WriteString(fmt.Sprintf(", 建议字数: %d", execCtx.WritingTask.WordLimit))
+		}
+		sb.WriteString("\n")
+	}
 	if len(execCtx.SearchResults) > 0 {
 		sb.WriteString(fmt.Sprintf("- 搜索: %d 条结果\n", len(execCtx.SearchResults)))
 	} else {
@@ -317,10 +401,14 @@ func (a *UnifiedAgent) buildStateSummary(execCtx *engine.ExecutionContext) strin
 	}
 	if execCtx.CompressedContext != "" {
 		sb.WriteString(fmt.Sprintf("- 素材压缩: 已完成 (%d 字)\n", len(execCtx.CompressedContext)))
+	} else {
+		sb.WriteString("- 素材压缩: 未执行\n")
 	}
 	if execCtx.Outline != nil {
 		sb.WriteString(fmt.Sprintf("- 提纲: 已生成 (标题: %s, %d 个要点)\n",
 			execCtx.Outline.Title, len(execCtx.Outline.Outline)))
+	} else {
+		sb.WriteString("- 提纲: 未生成\n")
 	}
 	if execCtx.Article != "" {
 		sb.WriteString(fmt.Sprintf("- 文章: 已生成 (%d 字, 标题: %s)\n",
@@ -332,6 +420,29 @@ func (a *UnifiedAgent) buildStateSummary(execCtx *engine.ExecutionContext) strin
 		sb.WriteString(fmt.Sprintf("- 评审: %s (问题: %d 个)\n",
 			map[bool]string{true: "通过", false: "未通过"}[execCtx.ReviewResult.Passed],
 			len(execCtx.ReviewResult.Issues)))
+	} else {
+		sb.WriteString("- 评审: 未执行\n")
+	}
+	// Auto-fix count
+	fixCount := 0
+	for _, rec := range execCtx.StepHistory {
+		if rec.Step == engine.StepAutoFix {
+			fixCount++
+		}
+	}
+	if fixCount > 0 {
+		sb.WriteString(fmt.Sprintf("- 自动修正: 已执行 %d 次 (上限 2 次)\n", fixCount))
+	}
+	// Memory extract status
+	memoryExtracted := false
+	for _, rec := range execCtx.StepHistory {
+		if rec.Step == engine.StepMemoryExtract {
+			memoryExtracted = true
+			break
+		}
+	}
+	if memoryExtracted {
+		sb.WriteString("- 记忆提取: 已完成\n")
 	}
 	if execCtx.StyleSlug != "" {
 		sb.WriteString(fmt.Sprintf("- 风格: %s\n", execCtx.StyleSlug))
@@ -345,10 +456,33 @@ func (a *UnifiedAgent) buildStateSummary(execCtx *engine.ExecutionContext) strin
 	return sb.String()
 }
 
-func (a *UnifiedAgent) buildToolDefs() []tools.ToolDef {
+// nonRepeatableTools are tools that should only be executed once per session.
+// After execution, they are excluded from the LLM's tool list to prevent
+// redundant calls (e.g. calling "intent" again after it was already done).
+var nonRepeatableTools = map[string]bool{
+	"intent":         true,
+	"memory_gate":    true,
+	"query_plan":     true,
+	"outline":        true,
+	"memory_extract": true,
+}
+
+func (a *UnifiedAgent) buildToolDefs(execCtx *engine.ExecutionContext) []tools.ToolDef {
+	// Build a set of already-executed tool names from step history
+	executed := make(map[string]bool)
+	for _, rec := range execCtx.StepHistory {
+		if nonRepeatableTools[string(rec.Step)] {
+			executed[string(rec.Step)] = true
+		}
+	}
+
 	all := a.registry.All()
 	defs := make([]tools.ToolDef, 0, len(all))
 	for _, t := range all {
+		// Skip non-repeatable tools that have already been executed
+		if executed[t.Name()] {
+			continue
+		}
 		defs = append(defs, tools.ToolDef{
 			Type: "function",
 			Function: tools.ToolDefFunction{
@@ -359,4 +493,54 @@ func (a *UnifiedAgent) buildToolDefs() []tools.ToolDef {
 		})
 	}
 	return defs
+}
+
+// determineNextStep enforces minimal critical invariants only.
+// The LLM planner is free to choose tool ordering for everything else.
+//
+// Invariants:
+//  1. intent must run first (before any other tool)
+//  2. post_review must run before finishing (if an article was produced)
+//
+// All other ordering decisions (memory_gate, query_plan, search, relevance,
+// compress, outline, write, auto_fix, memory_extract) are left to the LLM.
+func (a *UnifiedAgent) determineNextStep(execCtx *engine.ExecutionContext) (string, bool) {
+	// Invariant 1: intent classification must happen first
+	if execCtx.TaskIntent == nil {
+		return "intent", true
+	}
+
+	// Invariant 2: post_review must run before the agent can finish
+	if execCtx.Article != "" && execCtx.ReviewResult == nil && a.hasTool("post_review") {
+		// Only force if the LLM hasn't already started a different step
+		// (i.e. no step is currently in progress)
+		return "post_review", true
+	}
+
+	// Let the LLM decide everything else
+	return "", false
+}
+
+// canFinish checks whether the agent is in a valid state to finish.
+// Prevents finishing without post_review when article was produced.
+func (a *UnifiedAgent) canFinish(execCtx *engine.ExecutionContext) bool {
+	// No article → can finish (e.g. chat mode or error)
+	if execCtx.Article == "" {
+		return true
+	}
+	// Article exists → must have post_review
+	if execCtx.ReviewResult == nil {
+		return false
+	}
+	return true
+}
+
+// hasTool checks if a tool is registered in the registry.
+func (a *UnifiedAgent) hasTool(name string) bool {
+	for _, t := range a.registry.All() {
+		if t.Name() == name {
+			return true
+		}
+	}
+	return false
 }

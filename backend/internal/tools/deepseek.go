@@ -342,7 +342,7 @@ func (c *LLMClient) ChatWithTools(
 	executor ToolExecutor,
 	opts ...ChatOption,
 ) (string, int, error) {
-	const maxIterations = 5
+	const maxIterations = 3
 	totalTokens := 0
 
 	// Work on a copy of messages so we can append tool call/result turns
@@ -399,10 +399,12 @@ func (c *LLMClient) ChatWithTools(
 		}
 	}
 
-	// Exhausted iterations — do a final streaming request without tools
+	// Exhausted iterations — do a final streaming request without tools.
+	// Use the ORIGINAL messages (not the tool-call-laden conversation) to avoid
+	// confusing the model with a long history of failed/irrelevant tool results.
 	slog.Warn("agent loop: max iterations reached, doing final stream", "iterations", maxIterations)
 	finalOpts := append([]ChatOption{}, opts...)
-	return c.ChatStreamWithReasoning(ctx, conversation, onDelta, onReasoning, finalOpts...)
+	return c.ChatStreamWithReasoning(ctx, messages, onDelta, onReasoning, finalOpts...)
 }
 
 // flushChunked sends content to the callback in rune-sized chunks,
@@ -647,6 +649,18 @@ func (c *LLMClient) doRequest(ctx context.Context, req *LLMRequest) ([]byte, err
 			}
 		}
 
+		// 402 Payment Required — quota exhausted, no point retrying
+		if resp.StatusCode == http.StatusPaymentRequired {
+			slog.Error("LLM API quota exceeded", "status", 402, "body", string(body))
+			return nil, fmt.Errorf("LLM API quota exceeded (402): %s", string(body))
+		}
+
+		// 429 after exhausting retries — also likely a quota/billing issue
+		if resp.StatusCode == http.StatusTooManyRequests {
+			slog.Error("LLM API rate limit exhausted after retries", "status", 429, "body", string(body))
+			return nil, fmt.Errorf("LLM API rate limit exhausted (429): %s", string(body))
+		}
+
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 		}
@@ -681,6 +695,19 @@ func (c *LLMClient) doStreamRequest(ctx context.Context, req *LLMRequest) (io.Re
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+
+		// 402 Payment Required — quota exhausted
+		if resp.StatusCode == http.StatusPaymentRequired {
+			slog.Error("LLM API quota exceeded (stream)", "status", 402, "body", string(body))
+			return nil, fmt.Errorf("LLM API quota exceeded (402): %s", string(body))
+		}
+
+		// 429 rate limit (stream has no retry — treat as quota issue)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			slog.Error("LLM API rate limited (stream)", "status", 429, "body", string(body))
+			return nil, fmt.Errorf("LLM API rate limit exhausted (429): %s", string(body))
+		}
+
 		return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 

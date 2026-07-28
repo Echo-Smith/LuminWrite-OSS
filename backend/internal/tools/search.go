@@ -27,6 +27,7 @@ type SearchClient struct {
 	weibo             *WeiboClient
 	extraHot          *ExtraHotClient
 	bing              *BingClient
+	anysearch         *AnySearchClient
 	credibilityLookup engine.CredibilityLookup // optional: enrich results with source credibility
 }
 
@@ -39,6 +40,7 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	extraHotEnabled bool, extraHotBaseURL string, extraHotTimeout time.Duration,
 	bingEnabled bool, bingBaseURL string, bingTimeout time.Duration,
 	tencentCLIPath string, tencentCLITimeout time.Duration,
+	anysearchAPIKey, anysearchEndpoint string, anysearchTimeout time.Duration,
 ) *SearchClient {
 	c := &SearchClient{}
 
@@ -74,6 +76,9 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		c.bing = NewBingClient(bingBaseURL, bingTimeout)
 	}
 
+	// AnySearch: always init (anonymous tier works without API key)
+	c.anysearch = NewAnySearchClient(anysearchAPIKey, anysearchEndpoint, anysearchTimeout)
+
 	return c
 }
 
@@ -86,7 +91,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil
+	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -215,6 +220,21 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 		}()
 	}
 
+	if c.anysearch != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := c.anysearch.Search(ctx, query, maxPerSource)
+			if err != nil {
+				slog.Warn("anysearch failed", "error", err, "query", query)
+				return
+			}
+			mu.Lock()
+			results = append(results, r...)
+			mu.Unlock()
+		}()
+	}
+
 	wg.Wait()
 
 	// Enrich with credibility scores if a lookup is configured
@@ -307,6 +327,12 @@ func (c *SearchClient) activeSources() []string {
 	}
 	if c.bing != nil {
 		sources = append(sources, "bing")
+	}
+	if c.extraHot != nil {
+		sources = append(sources, "extra_hot")
+	}
+	if c.anysearch != nil {
+		sources = append(sources, "anysearch")
 	}
 	return sources
 }

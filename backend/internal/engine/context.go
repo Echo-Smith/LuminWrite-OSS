@@ -12,6 +12,7 @@ var (
 	ErrClientDisconnected = errors.New("client disconnected")
 	ErrBudgetExceeded     = errors.New("token budget exceeded")
 	ErrCircuitBreaker     = errors.New("circuit breaker tripped: consecutive LLM failures")
+	ErrQuotaExceeded      = errors.New("LLM API quota exceeded: insufficient balance or credits")
 )
 
 // ExecutionStatus represents the current status of an execution.

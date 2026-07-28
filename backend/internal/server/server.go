@@ -83,20 +83,6 @@ func New(cfg *config.Config) (*Server, error) {
 		slog.Warn("AI_API_KEY not set, LLM features will be limited")
 	}
 
-	searchClient := tools.NewSearchClient(
-		cfg.Tavily.APIKey, cfg.Tavily.Endpoint, cfg.Tavily.Timeout,
-		cfg.Zhihu.Enabled, cfg.Zhihu.BaseURL, cfg.Zhihu.AccessSecret, cfg.Zhihu.Timeout,
-		cfg.IMA.BaseURL, cfg.IMA.ClientID, cfg.IMA.APIKey, cfg.IMA.KBID, cfg.IMA.Timeout,
-		cfg.Tencent.Enabled, cfg.Tencent.BaseURL, cfg.Tencent.Timeout,
-		cfg.Weibo.Enabled, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
-		cfg.ExtraHot.Enabled, cfg.ExtraHot.BaseURL, cfg.ExtraHot.Timeout,
-		cfg.Bing.Enabled, cfg.Bing.BaseURL, cfg.Bing.Timeout,
-		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
-	)
-	if !searchClient.HasSources() {
-		slog.Warn("no search sources configured")
-	}
-
 	// Create embedding client (OpenAI-compatible — supports DashScope MaaS, SiliconFlow, Ollama, etc.)
 	embeddingClient := tools.NewEmbeddingClient(
 		cfg.Dashscope.APIKey,
@@ -146,6 +132,50 @@ func New(cfg *config.Config) (*Server, error) {
 			slog.Error("database migration failed — refusing to start with incomplete schema", "error", err)
 			return nil, fmt.Errorf("database migration failed: %w", err)
 		}
+	}
+
+	// ── Override search config with database-stored API keys ──
+	// If admin has configured API keys via the frontend, they override env vars.
+	// This allows runtime configuration without restarting the server.
+	if dbAvail && adminRepo != nil {
+		ctx := context.Background()
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "tavily"); err == nil && key != "" {
+			cfg.Tavily.APIKey = key
+			if baseURL != "" {
+				cfg.Tavily.Endpoint = baseURL
+			}
+			slog.Info("search config overridden from DB", "provider", "tavily")
+		}
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "anysearch"); err == nil && key != "" {
+			cfg.AnySearch.APIKey = key
+			if baseURL != "" {
+				cfg.AnySearch.Endpoint = baseURL
+			}
+			slog.Info("search config overridden from DB", "provider", "anysearch")
+		}
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "zhihu"); err == nil && key != "" {
+			cfg.Zhihu.AccessSecret = key
+			if baseURL != "" {
+				cfg.Zhihu.BaseURL = baseURL
+			}
+			cfg.Zhihu.Enabled = true
+			slog.Info("search config overridden from DB", "provider", "zhihu")
+		}
+	}
+
+	searchClient := tools.NewSearchClient(
+		cfg.Tavily.APIKey, cfg.Tavily.Endpoint, cfg.Tavily.Timeout,
+		cfg.Zhihu.Enabled, cfg.Zhihu.BaseURL, cfg.Zhihu.AccessSecret, cfg.Zhihu.Timeout,
+		cfg.IMA.BaseURL, cfg.IMA.ClientID, cfg.IMA.APIKey, cfg.IMA.KBID, cfg.IMA.Timeout,
+		cfg.Tencent.Enabled, cfg.Tencent.BaseURL, cfg.Tencent.Timeout,
+		cfg.Weibo.Enabled, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
+		cfg.ExtraHot.Enabled, cfg.ExtraHot.BaseURL, cfg.ExtraHot.Timeout,
+		cfg.Bing.Enabled, cfg.Bing.BaseURL, cfg.Bing.Timeout,
+		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
+		cfg.AnySearch.APIKey, cfg.AnySearch.Endpoint, cfg.AnySearch.Timeout,
+	)
+	if !searchClient.HasSources() {
+		slog.Warn("no search sources configured")
 	}
 
 	profileLoader := profile.NewLoader()
@@ -370,6 +400,10 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 	r.Post("/memories", s.handleCreateMemory)
 	r.Delete("/memories/{id}", s.handleDeleteMemory)
 	r.Post("/memories/{id}/dismiss", s.handleDismissMemory)
+
+		// User Preferences (cloud-synced settings)
+		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
+		r.With(s.jwtAuthMiddleware).Put("/preferences", s.handleUpdatePreferences)
 
 		// Workbuddy Adoption Callback
 		r.Post("/workbuddy/adopt", s.handleWorkbuddyAdoption)
@@ -1031,66 +1065,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	// Create emitter
 	emitter := NewWSEmitter(s.hub, traceID)
 
-	// Create steps
-	var engineSteps []engine.Step
-
-	// ── Short-term memory: load conversation history before intent classification ──
-	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		engineSteps = append(engineSteps, steps.NewShortTermMemoryStep(
-			s.memorySvc,
-			&embedderAdapter{svc: s.memorySvc},
-			memory.DefaultDynamicWindowConfig(),
-		))
-	}
-
-	engineSteps = append(engineSteps,
-		steps.NewIntentStep(llmClient),
-	)
-
-	// ── Parallel Group: Memory retrieval ∥ Search chain ──
-	// After IntentStep, these two branches have no data dependency:
-	//   Branch A (MemoryGateStep) → writes execCtx.MemoryContext
-	//   Branch B (QueryPlan → Search → Relevance → Compress) → writes execCtx.SearchPlan/SearchResults/CompressedContext
-	// Non-overlapping fields → safe concurrent execution.
-	// For chat intent: Branch B steps all self-skip, so only Branch A runs.
-	// For writing intent: both branches run concurrently, saving ~2-5s latency.
-	searchBranch := []engine.Step{
-		steps.NewQueryPlanStep(llmClient),
-		steps.NewSearchStep(llmClient, s.search),
-		steps.NewRelevanceStepWithEmbedding(s.embedding),
-		steps.NewCompressStep(llmClient),
-	}
-
-	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		memoryBranch := []engine.Step{
-			steps.NewMemoryGateStepWithEntityGraph(s.memorySvc, &embedderAdapter{svc: s.memorySvc}),
-		}
-		engineSteps = append(engineSteps, engine.NewParallelGroup(
-			"parallel_pre_write",
-			memoryBranch,
-			searchBranch,
-		))
-	} else {
-		// No memory service — just run the search chain sequentially
-		engineSteps = append(engineSteps, searchBranch...)
-	}
-
-	// ── Working memory: incremental summarization after search/relevance ──
-	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		engineSteps = append(engineSteps, steps.NewWorkingMemoryStep(
-			&workingMemoryLLMAdapter{llm: llmClient},
-			memory.DefaultSummarizerConfig(),
-		))
-	}
-
-	// ChatStep: handles chat intent (skips itself for non-chat intents)
-	engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
-
-	if execCtx.Mode == "guided" {
-		engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
-	}
-
-	// Load style profile for WriteStep
+	// Load style profile (needed by both pipeline and unified modes)
 	var styleProfile *profile.StyleProfile
 	if s.profiles != nil {
 		if p, ok := s.profiles.Get(execCtx.StyleSlug); ok {
@@ -1098,35 +1073,92 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 	}
 
- engineSteps = append(engineSteps,
- steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
- s.newPostReviewStepWithLLM(llmClient, styleProfile),
- steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
- )
-
-	// Memory extract: extract patterns after article completion (async)
-	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memorySvc))
-		// Short-term memory: store conversation messages after completion
-		engineSteps = append(engineSteps, steps.NewShortTermStoreStep(
-			s.memorySvc,
-			&embedderAdapter{svc: s.memorySvc},
-		))
+	// Create and run engine
+	// Mode selection: payload agent_mode > server config AGENT_MODE
+	// "unified" uses LLM-driven ReAct loop, "pipeline" uses fixed steps
+	agentMode := s.cfg.Agent.Mode
+	if p.AgentMode == "unified" || p.AgentMode == "pipeline" {
+		agentMode = p.AgentMode
 	}
 
-	// Create and run engine
-	// Mode selection: "unified" uses LLM-driven ReAct loop, "pipeline" uses fixed steps
 	var agentRunner interface {
 		Run(context.Context, *engine.ExecutionContext) error
 	}
 
-	if s.cfg.Agent.Mode == "unified" {
+	if agentMode == "unified" {
 		// Build tool registry with all steps + built-in tools + MCP tools
 		registry := s.buildToolRegistry(llmClient, styleProfile, execCtx)
 
 		agentRunner = agent.NewUnifiedAgent(registry, llmClient, emitter)
 		slog.Info("using unified agent (ReAct loop)", "trace_id", traceID)
 	} else {
+		// Pipeline mode: build fixed step array
+		var engineSteps []engine.Step
+
+		// ── Short-term memory: load conversation history before intent classification ──
+		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+			engineSteps = append(engineSteps, steps.NewShortTermMemoryStep(
+				s.memorySvc,
+				&embedderAdapter{svc: s.memorySvc},
+				memory.DefaultDynamicWindowConfig(),
+			))
+		}
+
+		engineSteps = append(engineSteps,
+			steps.NewIntentStep(llmClient),
+		)
+
+		// ── Parallel Group: Memory retrieval ∥ Search chain ──
+		searchBranch := []engine.Step{
+			steps.NewQueryPlanStep(llmClient),
+			steps.NewSearchStep(llmClient, s.search),
+			steps.NewRelevanceStepWithEmbedding(s.embedding),
+			steps.NewCompressStep(llmClient),
+		}
+
+		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+			memoryBranch := []engine.Step{
+				steps.NewMemoryGateStepWithEntityGraph(s.memorySvc, &embedderAdapter{svc: s.memorySvc}),
+			}
+			engineSteps = append(engineSteps, engine.NewParallelGroup(
+				"parallel_pre_write",
+				memoryBranch,
+				searchBranch,
+			))
+		} else {
+			engineSteps = append(engineSteps, searchBranch...)
+		}
+
+		// ── Working memory: incremental summarization after search/relevance ──
+		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+			engineSteps = append(engineSteps, steps.NewWorkingMemoryStep(
+				&workingMemoryLLMAdapter{llm: llmClient},
+				memory.DefaultSummarizerConfig(),
+			))
+		}
+
+		// ChatStep: handles chat intent (skips itself for non-chat intents)
+		engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
+
+		if execCtx.Mode == "guided" {
+			engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
+		}
+
+		engineSteps = append(engineSteps,
+			steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+			s.newPostReviewStepWithLLM(llmClient, styleProfile),
+			steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+		)
+
+		// Memory extract: extract patterns after article completion (async)
+		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+			engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memorySvc))
+			engineSteps = append(engineSteps, steps.NewShortTermStoreStep(
+				s.memorySvc,
+				&embedderAdapter{svc: s.memorySvc},
+			))
+		}
+
 		agentRunner = engine.NewAgentEngine(emitter, engineSteps)
 		slog.Info("using fixed pipeline engine", "trace_id", traceID)
 	}
@@ -1506,7 +1538,7 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 	))
 	registry.Register(engine.NewStepTool(
 		steps.NewQueryPlanStep(llmClient),
-		"检索规划：从用户输入提取话题和搜索查询（仅写作模式需要）",
+		"检索规划：LLM 分析用户输入，提取核心话题并生成多角度搜索查询（仅写作模式需要）",
 		false,
 	))
 	registry.Register(engine.NewStepTool(

@@ -34,6 +34,10 @@ const MCP_PROVIDERS = [
   { value: "zhihu", label: "知乎" },
   { value: "ima", label: "IMA" },
   { value: "dashscope", label: "DashScope (Embedding)" },
+  { value: "anysearch", label: "AnySearch" },
+  { value: "tencent", label: "腾讯新闻" },
+  { value: "weibo", label: "微博" },
+  { value: "bing", label: "Bing" },
 ];
 
 const STATUS_ICONS: Record<string, ReactElement> = {

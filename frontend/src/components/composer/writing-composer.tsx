@@ -13,14 +13,13 @@ import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
 import { useAgentStore } from "@/stores/agent-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import type { WriteMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 
 export function WritingComposer() {
   const [message, setMessage] = useState("");
-  const [style, setStyle] = useState("yinyue");
-  const [mode, setMode] = useState<WriteMode>("auto");
   const [model, setModel] = useState("deepseek-v4-flash");
   const [materials, setMaterials] = useState<string[]>([]);
   const [showMaterials, setShowMaterials] = useState(false);
@@ -31,6 +30,42 @@ export function WritingComposer() {
   const pauseWriting = useAgentStore((s) => s.pauseWriting);
   const resumeWriting = useAgentStore((s) => s.resumeWriting);
   const cancelWriting = useAgentStore((s) => s.cancelWriting);
+  const agentMode = useSettingsStore((s) => s.agentMode);
+
+  // Sync mode & style from active session so external callers (e.g. topic center)
+  // can set them via startWriting() and the composer reflects the change.
+  const sessionMode = useAgentStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return (session?.mode as WriteMode) ?? "auto";
+  });
+  const sessionStyle = useAgentStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return session?.style ?? "yinyue";
+  });
+  const [mode, setMode] = useState<WriteMode>(sessionMode);
+  const [style, setStyle] = useState(sessionStyle);
+
+  // Update local state when session changes (e.g. new session from topic center)
+  useEffect(() => { setMode(sessionMode); }, [sessionMode]);
+  useEffect(() => { setStyle(sessionStyle); }, [sessionStyle]);
+
+  // Propagate local changes back to session
+  const handleModeChange = useCallback((m: WriteMode) => {
+    setMode(m);
+    useAgentStore.setState((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === s.activeSessionId ? { ...sess, mode: m } : sess
+      ),
+    }));
+  }, []);
+  const handleStyleChange = useCallback((st: string) => {
+    setStyle(st);
+    useAgentStore.setState((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === s.activeSessionId ? { ...sess, style: st } : sess
+      ),
+    }));
+  }, []);
 
   const sessionStatus = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
@@ -56,11 +91,12 @@ export function WritingComposer() {
       style,
       mode,
       model,
+      agent_mode: agentMode,
       user_materials: materials.length > 0 ? materials : undefined,
     });
 
     setMessage("");
-  }, [message, style, mode, model, materials, isRunning, startWriting]);
+  }, [message, style, mode, model, materials, isRunning, startWriting, agentMode]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -187,10 +223,10 @@ export function WritingComposer() {
           </button>
 
           {/* 左侧：引导模式 */}
-          <ModePicker value={mode} onChange={setMode} />
+          <ModePicker value={mode} onChange={handleModeChange} />
 
           {/* 左侧：风格选择（紧挨模式右侧） */}
-          <StylePicker value={style} onChange={setStyle} />
+          <StylePicker value={style} onChange={handleStyleChange} />
 
           {/* 右侧弹性间距 */}
           <div className="flex-1" />

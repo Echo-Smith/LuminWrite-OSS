@@ -1083,8 +1083,11 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 		role = "admin"
 	}
 
+	// Look up username
+	username := s.lookupUsername(r.Context(), userID)
+
 	// Issue JWT
-	s.issueToken(w, userID, role)
+	s.issueToken(w, userID, role, username)
 
 	slog.Info("passkey login successful", "user_id", userID)
 }

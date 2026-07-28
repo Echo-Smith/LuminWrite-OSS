@@ -1,7 +1,7 @@
 # ─── Backend Dockerfile — Multi-stage Go build ───
 
 # Stage 1: Build
-FROM golang:1.25-alpine AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -14,15 +14,17 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+# Build static binary (uses TARGETARCH from buildx for native arch)
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags='-s -w -extldflags "-static"' \
     -o /bin/server ./cmd/server/
 
 # ──────────────────────────────────────────────
 
 # Stage 2: Runtime
-FROM golang:1.25-alpine
+FROM --platform=${TARGETPLATFORM} golang:1.25-alpine
 
 # Install runtime dependencies:
 # - ca-certificates, tzdata, wget: basic infra

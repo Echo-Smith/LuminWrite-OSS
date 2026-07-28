@@ -106,6 +106,7 @@ export function LoginPage() {
       useAuthStore.getState().login(
         result.token,
         result.user_id,
+        result.username || "",
         result.role,
         result.expires_in
       );
