@@ -1,16 +1,14 @@
 # ─── Writing Agent V2 — Docker Compose ──────────────────
 # Quick start:
 #   cp .env.docker.example .env.docker  # fill in API keys
-#   docker compose up -d
-#
-# With WeKnora (optional):
-#   docker compose --profile weknora up -d
+#   docker compose up -d                # starts ALL services including WeKnora
 #
 # Development (hot reload):
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 services:
-  # ── PostgreSQL + pgvector ──────────────────────────────
+  # ── PostgreSQL + pgvector (shared) ────────────────────
+  # Used by both writing-agent (writing_agent_v2 db) and WeKnora (weknora db)
   postgres:
     image: pgvector/pgvector:pg16
     container_name: writing-agent-pg
@@ -22,6 +20,8 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      # Auto-create the WeKnora database on first init
+      - ./config/weknora/init-weknora-db.sh:/docker-entrypoint-initdb.d/init-weknora-db.sh:ro
     networks:
       - internal
     healthcheck:
@@ -36,6 +36,119 @@ services:
           memory: 512M
     restart: unless-stopped
 
+  # ── Redis (for WeKnora) ───────────────────────────────
+  weknora-redis:
+    image: redis:7-alpine
+    container_name: writing-agent-weknora-redis
+    volumes:
+      - weknora_redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    restart: unless-stopped
+
+  # ── WeKnora App (main API, port 8080) ────────────────
+  weknora-app:
+    image: wechatopenai/weknora-app:latest
+    container_name: writing-agent-weknora-app
+    env_file:
+      - .env.docker
+    environment:
+      # Database (shares our PostgreSQL instance, separate database)
+      DB_DRIVER: postgres
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      DB_NAME: weknora
+      # Redis
+      REDIS_ADDR: weknora-redis:6379
+      # Storage & retrieval (simplified — no MinIO/Qdrant/Milvus needed)
+      STORAGE_TYPE: local
+      LOCAL_STORAGE_BASE_DIR: /data/files
+      RETRIEVE_DRIVER: postgres
+      # Docreader
+      DOCREADER_ADDR: weknora-docreader:50051
+      DOCREADER_TRANSPORT: grpc
+      # LLM (reuse DeepSeek — vars LLM_* are in .env.docker via env_file)
+      # Runtime
+      GIN_MODE: release
+      TZ: Asia/Shanghai
+      AUTO_MIGRATE: "true"
+    ports:
+      - "${WEKNORA_PORT:-8081}:8080"
+    volumes:
+      - weknora_data:/data/files
+      - weknora_docreader_tmp:/tmp/docreader
+      - ./config/weknora/config.yaml:/app/config/config.yaml:ro
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      weknora-redis:
+        condition: service_healthy
+      weknora-docreader:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    init: true
+    restart: unless-stopped
+
+  # ── WeKnora Docreader (document parsing, port 50051) ─
+  weknora-docreader:
+    image: wechatopenai/weknora-docreader:latest
+    container_name: writing-agent-weknora-docreader
+    environment:
+      GRPC_TLS_ENABLED: "false"
+    volumes:
+      - weknora_docreader_tmp:/tmp/docreader
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  # ── WeKnora UI (web management, port 80) ─────────────
+  weknora-ui:
+    image: wechatopenai/weknora-ui:latest
+    container_name: writing-agent-weknora-ui
+    environment:
+      APP_HOST: weknora-app
+      APP_PORT: "8080"
+      APP_SCHEME: http
+      MAX_FILE_SIZE_MB: "50"
+    ports:
+      - "${WEKNORA_UI_PORT:-8082}:80"
+    networks:
+      - internal
+    depends_on:
+      weknora-app:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    restart: unless-stopped
+
   # ── Backend (Go) ───────────────────────────────────────
   backend:
     build:
@@ -46,6 +159,8 @@ services:
       - .env.docker
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/writing_agent_v2?sslmode=disable
+      # Point WeKnora client at the weknora-app container
+      WEKNORA_BASE_URL: http://weknora-app:8080/api/v1
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     networks:
@@ -53,6 +168,8 @@ services:
       - frontend
     depends_on:
       postgres:
+        condition: service_healthy
+      weknora-app:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
@@ -93,38 +210,9 @@ services:
     init: true
     restart: unless-stopped
 
-  # ── WeKnora (optional — enable with --profile weknora) ─
-  # WeKnora is an enterprise-grade RAG engine with hybrid retrieval
-  # (BM25 + Dense + GraphRAG). Deploy separately or use this service.
-  weknora:
-    image: registry.cn-hangzhou.aliyuncs.com/weknora/weknora:latest
-    container_name: writing-agent-weknora
-    profiles: ["weknora"]
-    environment:
-      # WeKnora reads its own env; see WeKnora docs for full config
-      WEKNORA_DB_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/weknora?sslmode=disable
-    ports:
-      - "${WEKNORA_PORT:-8081}:8080"
-    networks:
-      - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-    restart: unless-stopped
-
 # ── Networks ────────────────────────────────────────────
 networks:
-  # Internal network: DB + backend (frontend doesn't need DB access)
+  # Internal network: all backend services (DB, Redis, WeKnora, backend)
   internal:
     driver: bridge
   # Frontend network: frontend + backend (Nginx proxies to backend)
@@ -134,4 +222,10 @@ networks:
 # ── Volumes ─────────────────────────────────────────────
 volumes:
   pg_data:
+    driver: local
+  weknora_data:
+    driver: local
+  weknora_redis_data:
+    driver: local
+  weknora_docreader_tmp:
     driver: local
