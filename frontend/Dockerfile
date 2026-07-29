@@ -20,6 +20,9 @@ RUN npm run build
 # Listens on port 8080 by default (not 80).
 FROM nginxinc/nginx-unprivileged:alpine
 
+# Switch to root to remove default files and copy new ones
+USER root
+
 # Remove default nginx static assets and config
 RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 
@@ -29,7 +32,10 @@ COPY --link --from=builder /build/dist /usr/share/nginx/html
 # Copy custom nginx config (must listen on 8080 for unprivileged image)
 COPY --link nginx.conf /etc/nginx/conf.d/default.conf
 
-# Ensure non-root user can read files
+# Ensure non-root user owns the files
+RUN chown -R 101:101 /usr/share/nginx/html /etc/nginx/conf.d/default.conf
+
+# Switch back to non-root user (UID 101)
 USER 101
 
 # OCI labels
