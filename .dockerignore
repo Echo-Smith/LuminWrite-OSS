@@ -1,3 +1,6 @@
+# ─── Root .dockerignore ─────────────────────────────────
+# Applied when building from project root context
+
 # Git
 .git
 .gitignore
@@ -8,7 +11,35 @@ docs/
 # IDE
 .vscode
 .idea
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+
+# Environment (never leak secrets into images)
+.env
+.env.*
+!.env.example
+
+# Frontend (built in its own stage)
+frontend/node_modules/
+frontend/dist/
+frontend/.tsbuildinfo
+
+# Backend (built in its own stage)
+backend/bin/
+
+# Skills binaries
+skills/**/tencent-news-cli
+skills/**/*.zip
+
+# Logs
+*.log
+logs/
+tmp/

@@ -1,11 +1,9 @@
+# ─── Backend .dockerignore ──────────────────────────────
+# Minimizes build context when running: docker build ./backend
+
 # Build artifacts
 bin/
 *.exe
-*.dll
-*.so
-*.dylib
-
-# Test
 *.test
 
 # IDE
@@ -18,6 +16,20 @@ bin/
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment (never leak secrets into images)
 .env
-.env.local
+.env.*
+.env.docker
+.env.docker.example
+
+# Git
+.git
+.gitignore
+
+# Docs
+docs/
+
+# Logs
+*.log
+logs/
+tmp/

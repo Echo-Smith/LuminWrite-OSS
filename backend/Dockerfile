@@ -1,61 +1,71 @@
 # ─── Backend Dockerfile — Multi-stage Go build ───
+# Build:  docker build -t writing-agent-backend ./backend
+# Run:    docker run -p 8080:8080 --env-file .env.docker writing-agent-backend
 
-# Stage 1: Build
+# ── Stage 1: Build ──────────────────────────────────────
 FROM --platform=${BUILDPLATFORM} golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /build
 
-# Cache module downloads
-COPY go.mod go.sum ./
+# Cache module downloads (only re-runs when go.mod/go.sum change)
+COPY --link go.mod go.sum ./
 RUN go mod download
 
 # Copy source
-COPY . .
+COPY --link . .
 
-# Build static binary (uses TARGETARCH from buildx for native arch)
+# Build static binary (CGO_ENABLED=0 → no libc dependency → scratch/alpine compatible)
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags='-s -w -extldflags "-static"' \
+    -trimpath \
     -o /bin/server ./cmd/server/
 
-# ──────────────────────────────────────────────
+# ── Stage 2: Runtime (minimal Alpine) ──────────────────
+# golang:1.25-alpine is ~350MB; alpine:3.20 is ~7MB.
+# The static binary doesn't need the Go toolchain at runtime.
+FROM alpine:3.20
 
-# Stage 2: Runtime
-FROM --platform=${TARGETPLATFORM} golang:1.25-alpine
-
-# Install runtime dependencies:
-# - ca-certificates, tzdata, wget: basic infra
+# Runtime dependencies:
+# - ca-certificates: TLS for HTTPS calls to LLM/embedding APIs
+# - tzdata: Asia/Shanghai timezone
+# - wget: health checks
 # - nodejs, npm: required for IMA skill scripts (ima_api.cjs)
 # - curl: required for tencent-news-cli setup script
-RUN apk --no-cache add ca-certificates tzdata wget nodejs npm curl
+RUN apk add --no-cache ca-certificates tzdata wget nodejs npm curl && \
+    rm -rf /var/cache/apk/*
 
 ENV TZ=Asia/Shanghai
 
 WORKDIR /app
 
-# Copy binary
-COPY --from=builder /bin/server /app/server
-COPY --from=builder /build/.env.example /app/.env.example
+# Copy binary from builder
+COPY --link --from=builder /bin/server /app/server
+COPY --link --from=builder /build/.env.example /app/.env.example
 
 # Copy CLI init script
-COPY scripts/init-cli.sh /app/init-cli.sh
+COPY --link scripts/init-cli.sh /app/init-cli.sh
 RUN chmod +x /app/init-cli.sh
 
 # ── Install tencent-news-cli (for news search + jiaozhen fact-checking) ──
-# The setup script downloads the correct binary for the platform/arch.
 RUN curl -fsSL https://mat1.gtimg.com/qqcdn/qqnews/cli/hub/tencent-news/setup.sh | sh || \
     echo "WARN: tencent-news-cli setup failed, CLI features will be disabled"
 
-# Make CLI available on PATH
 ENV PATH="${PATH}:/root/.tencent-news-cli/bin"
+
+# OCI labels for image metadata
+LABEL org.opencontainers.image.title="writing-agent-backend" \
+      org.opencontainers.image.description="Writing Agent V2 — Backend (Go)" \
+      org.opencontainers.image.source="https://github.com/luminbuddy/luminbuddy-writing-agent-v2" \
+      org.opencontainers.image.licenses="MIT"
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
-# Startup: init CLI API key then start server
+# Startup: init CLI API key → start server
 CMD ["/bin/sh", "-c", "/app/init-cli.sh && /app/server"]

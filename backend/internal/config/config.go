@@ -31,6 +31,7 @@ type Config struct {
 	ExtraHot   ExtraHotConfig
 	Bing       BingConfig
 	AnySearch  AnySearchConfig
+	WeKnora   WeKnoraConfig
 	WebAuthn  WebAuthnConfig
 	Jiaozhen  JiaozhenConfig
 	Log       LogConfig
@@ -159,6 +160,17 @@ type AnySearchConfig struct {
 	Timeout  time.Duration
 }
 
+// WeKnoraConfig holds configuration for the WeKnora knowledge base integration.
+// WeKnora provides hybrid search (BM25 + Dense + GraphRAG), multi-source data sync,
+// and document management capabilities.
+type WeKnoraConfig struct {
+	Enabled bool
+	BaseURL string
+	APIKey  string
+	KBID    string
+	Timeout time.Duration
+}
+
 type HotTopicsConfig struct {
 	FetchInterval time.Duration
 }
@@ -285,19 +297,26 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			Endpoint: getEnv("ANYSEARCH_ENDPOINT", "https://api.anysearch.com/v1/search"),
 			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 15*time.Second),
 		},
-WebAuthn: WebAuthnConfig{
-RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),
-RPName:   getEnv("WEBAUTHN_RP_NAME", "笔润智谈"),
-RPOrigin: getEnv("WEBAUTHN_RP_ORIGIN", "http://localhost:5173"),
-},
-Jiaozhen: JiaozhenConfig{
-Enabled:     getEnvBool("JIAOZHEN_ENABLED", true),
-CLIPath:     getEnv("JIAOZHEN_CLI_PATH", getEnv("TENCENT_NEWS_CLI_PATH", "")),
-CommandArgs: splitArgs(getEnv("JIAOZHEN_COMMAND_ARGS", "jiaozhen")),
-APIKey:      getEnv("JIAOZHEN_API_KEY", getEnv("TENCENT_NEWS_API_KEY", "")),
-Timeout:     getEnvDuration("JIAOZHEN_TIMEOUT", 30*time.Second),
-MaxClaims:   getEnvInt("JIAOZHEN_MAX_CLAIMS", 2),
-},
+		WeKnora: WeKnoraConfig{
+			Enabled: getEnvBool("WEKNORA_ENABLED", false),
+			BaseURL: getEnv("WEKNORA_BASE_URL", "http://localhost:8080/api/v1"),
+			APIKey:  getEnv("WEKNORA_API_KEY", ""),
+			KBID:    getEnv("WEKNORA_KB_ID", ""),
+			Timeout: getEnvDuration("WEKNORA_TIMEOUT", 30*time.Second),
+		},
+		WebAuthn: WebAuthnConfig{
+			RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),
+			RPName:   getEnv("WEBAUTHN_RP_NAME", "笔润智谈"),
+			RPOrigin: getEnv("WEBAUTHN_RP_ORIGIN", "http://localhost:5173"),
+		},
+		Jiaozhen: JiaozhenConfig{
+			Enabled:     getEnvBool("JIAOZHEN_ENABLED", true),
+			CLIPath:     getEnv("JIAOZHEN_CLI_PATH", getEnv("TENCENT_NEWS_CLI_PATH", "")),
+			CommandArgs: splitArgs(getEnv("JIAOZHEN_COMMAND_ARGS", "jiaozhen")),
+			APIKey:      getEnv("JIAOZHEN_API_KEY", getEnv("TENCENT_NEWS_API_KEY", "")),
+			Timeout:     getEnvDuration("JIAOZHEN_TIMEOUT", 30*time.Second),
+			MaxClaims:   getEnvInt("JIAOZHEN_MAX_CLAIMS", 2),
+		},
 		Log: LogConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),

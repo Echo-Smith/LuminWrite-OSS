@@ -22,6 +22,7 @@ type SearchClient struct {
 	tavily            *TavilyClient
 	zhihu             *ZhihuClient
 	ima               *IMAClient
+	weknora           *WeKnoraClient
 	tencent           *TencentNewsClient
 	tencentCLI        *TencentNewsCLIClient
 	weibo             *WeiboClient
@@ -56,7 +57,6 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		!isPlaceholderKey(imaClientID) && !isPlaceholderKey(imaAPIKey) && !isPlaceholderKey(imaKBID) {
 		c.ima = NewIMAClient(imaBaseURL, imaClientID, imaAPIKey, imaKBID, imaTimeout)
 	}
-
 	if tencentEnabled {
 		c.tencent = NewTencentNewsClient(tencentBaseURL, tencentTimeout)
 	}
@@ -82,6 +82,20 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	return c
 }
 
+// SetWeKnoraClient attaches a WeKnora client for hybrid search (BM25 + Dense + GraphRAG).
+// This is called separately after NewSearchClient to avoid changing the constructor signature.
+func (c *SearchClient) SetWeKnoraClient(wk *WeKnoraClient) {
+	if wk != nil && wk.IsConfigured() {
+		c.weknora = wk
+		slog.Info("weknora search source enabled", "kb_id", wk.kbID)
+	}
+}
+
+// WeKnoraClient returns the WeKnora client (for knowledge base sync).
+func (c *SearchClient) WeKnoraClient() *WeKnoraClient {
+	return c.weknora
+}
+
 // SetCredibilityLookup sets an optional credibility lookup provider.
 // When set, search results will be enriched with credibility scores
 // and sorted by combined relevance × credibility.
@@ -91,7 +105,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.weknora != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -151,6 +165,21 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 			r, err := c.ima.Search(ctx, query, maxPerSource)
 			if err != nil {
 				slog.Warn("ima search failed", "error", err, "query", query)
+				return
+			}
+			mu.Lock()
+			results = append(results, r...)
+			mu.Unlock()
+		}()
+	}
+
+	if c.weknora != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := c.weknora.Search(ctx, query, maxPerSource)
+			if err != nil {
+				slog.Warn("weknora search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()

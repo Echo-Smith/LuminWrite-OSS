@@ -1,35 +1,46 @@
 # ─── Frontend Dockerfile — Multi-stage build (Vite + Nginx) ───
+# Build:  docker build -t writing-agent-frontend ./frontend
+# Run:    docker run -p 3000:8080 writing-agent-frontend
 
-# Stage 1: Build
+# ── Stage 1: Build (Node + Vite) ───────────────────────
 FROM --platform=${BUILDPLATFORM} node:22-alpine AS builder
 
 WORKDIR /build
 
-# Cache npm install
-COPY package.json package-lock.json* ./
+# Cache npm install (only re-runs when package.json changes)
+COPY --link package.json package-lock.json* ./
 RUN npm ci --ignore-scripts --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source and build
-COPY . .
+COPY --link . .
 RUN npm run build
 
-# ──────────────────────────────────────────────
+# ── Stage 2: Runtime (Nginx Unprivileged) ─────────────
+# nginxinc/nginx-unprivileged runs as non-root (UID 101) for better security.
+# Listens on port 8080 by default (not 80).
+FROM nginxinc/nginx-unprivileged:alpine
 
-# Stage 2: Runtime (Nginx)
-FROM nginx:alpine
+# Remove default nginx static assets and config
+RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 
-# Remove default nginx static assets
-RUN rm -rf /usr/share/nginx/html/*
+# Copy built assets from builder
+COPY --link --from=builder /build/dist /usr/share/nginx/html
 
-# Copy built assets
-COPY --from=builder /build/dist /usr/share/nginx/html
+# Copy custom nginx config (must listen on 8080 for unprivileged image)
+COPY --link nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Ensure non-root user can read files
+USER 101
 
-EXPOSE 80
+# OCI labels
+LABEL org.opencontainers.image.title="writing-agent-frontend" \
+      org.opencontainers.image.description="Writing Agent V2 — Frontend (React + Nginx)" \
+      org.opencontainers.image.source="https://github.com/luminbuddy/luminbuddy-writing-agent-v2" \
+      org.opencontainers.image.licenses="MIT"
+
+EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=3s --retries=3 \
-    CMD wget -qO- http://127.0.0.1/health || exit 1
+    CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
