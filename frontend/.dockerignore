@@ -1,8 +1,12 @@
-# Dependencies
+# ─── Frontend .dockerignore ─────────────────────────────
+# Minimizes build context when running: docker build ./frontend
+
+# Dependencies (installed in Docker build stage)
 node_modules/
 
-# Build output
+# Build output (rebuilt in Docker)
 dist/
+.tsbuildinfo
 
 # IDE
 .vscode
@@ -16,4 +20,11 @@ Thumbs.db
 
 # Environment
 .env
-.env.local
+.env.*
+
+# Git
+.git
+.gitignore
+
+# Logs
+*.log

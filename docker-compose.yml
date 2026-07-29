@@ -1,8 +1,16 @@
-# ─── Writing Agent V2 — Docker Compose ───
-# One-command startup: docker compose up -d
+# ─── Writing Agent V2 — Docker Compose ──────────────────
+# Quick start:
+#   cp .env.docker.example .env.docker  # fill in API keys
+#   docker compose up -d
+#
+# With WeKnora (optional):
+#   docker compose --profile weknora up -d
+#
+# Development (hot reload):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 services:
-  # ── PostgreSQL + pgvector ──
+  # ── PostgreSQL + pgvector ──────────────────────────────
   postgres:
     image: pgvector/pgvector:pg16
     container_name: writing-agent-pg
@@ -11,18 +19,24 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: writing_agent_v2
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    networks:
+      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d writing_agent_v2"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     restart: unless-stopped
 
-  # ── Backend (Go) ──
+  # ── Backend (Go) ───────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -33,7 +47,10 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/writing_agent_v2?sslmode=disable
     ports:
-      - "8080:8080"
+      - "${BACKEND_PORT:-8080}:8080"
+    networks:
+      - internal
+      - frontend
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,27 +60,78 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    init: true
     restart: unless-stopped
 
-  # ── Frontend (React + Nginx) ──
+  # ── Frontend (React + Nginx) ──────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: writing-agent-frontend
     ports:
-      - "3000:80"
+      - "${FRONTEND_PORT:-3000}:8080"
+    networks:
+      - frontend
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    init: true
     restart: unless-stopped
 
+  # ── WeKnora (optional — enable with --profile weknora) ─
+  # WeKnora is an enterprise-grade RAG engine with hybrid retrieval
+  # (BM25 + Dense + GraphRAG). Deploy separately or use this service.
+  weknora:
+    image: registry.cn-hangzhou.aliyuncs.com/weknora/weknora:latest
+    container_name: writing-agent-weknora
+    profiles: ["weknora"]
+    environment:
+      # WeKnora reads its own env; see WeKnora docs for full config
+      WEKNORA_DB_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/weknora?sslmode=disable
+    ports:
+      - "${WEKNORA_PORT:-8081}:8080"
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    restart: unless-stopped
+
+# ── Networks ────────────────────────────────────────────
+networks:
+  # Internal network: DB + backend (frontend doesn't need DB access)
+  internal:
+    driver: bridge
+  # Frontend network: frontend + backend (Nginx proxies to backend)
+  frontend:
+    driver: bridge
+
+# ── Volumes ─────────────────────────────────────────────
 volumes:
   pg_data:
     driver: local

@@ -161,6 +161,14 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.Zhihu.Enabled = true
 			slog.Info("search config overridden from DB", "provider", "zhihu")
 		}
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "weknora"); err == nil && key != "" {
+			cfg.WeKnora.APIKey = key
+			if baseURL != "" {
+				cfg.WeKnora.BaseURL = baseURL
+			}
+			cfg.WeKnora.Enabled = true
+			slog.Info("search config overridden from DB", "provider", "weknora")
+		}
 	}
 
 	searchClient := tools.NewSearchClient(
@@ -174,6 +182,19 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
 		cfg.AnySearch.APIKey, cfg.AnySearch.Endpoint, cfg.AnySearch.Timeout,
 	)
+
+	// Attach WeKnora as a hybrid search source (BM25 + Dense + GraphRAG)
+	if cfg.WeKnora.Enabled && cfg.WeKnora.APIKey != "" && cfg.WeKnora.KBID != "" {
+		wkClient := tools.NewWeKnoraClient(cfg.WeKnora.BaseURL, cfg.WeKnora.APIKey, cfg.WeKnora.KBID, cfg.WeKnora.Timeout)
+		if wkClient.IsConfigured() {
+			searchClient.SetWeKnoraClient(wkClient)
+			slog.Info("weknora knowledge base integrated",
+				"base_url", cfg.WeKnora.BaseURL,
+				"kb_id", cfg.WeKnora.KBID,
+			)
+		}
+	}
+
 	if !searchClient.HasSources() {
 		slog.Warn("no search sources configured")
 	}
@@ -419,6 +440,15 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Post("/kb", s.handleKBAdd)
 		r.Delete("/kb/{id}", s.handleKBDelete)
 		r.Post("/kb/search", s.handleKBSemanticSearch)
+
+		// WeKnora Knowledge Base (Hybrid Search + Document Management)
+		r.Get("/weknora/kbs", s.handleWeKnoraListKBs)
+		r.Get("/weknora/knowledge", s.handleWeKnoraListKnowledge)
+		r.Post("/weknora/knowledge", s.handleWeKnoraAddKnowledge)
+		r.Post("/weknora/knowledge/url", s.handleWeKnoraAddFromURL)
+		r.Post("/weknora/knowledge/upload", s.handleWeKnoraUploadFile)
+		r.Delete("/weknora/knowledge/{id}", s.handleWeKnoraDeleteKnowledge)
+		r.Post("/weknora/search", s.handleWeKnoraSearch)
 
 		// Evaluation
 		r.Get("/evaluation/sets", s.handleListEvalSets)

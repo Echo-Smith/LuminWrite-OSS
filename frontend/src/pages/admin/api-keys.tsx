@@ -33,6 +33,7 @@ const MCP_PROVIDERS = [
   { value: "tavily", label: "Tavily Search" },
   { value: "zhihu", label: "知乎" },
   { value: "ima", label: "IMA" },
+  { value: "weknora", label: "WeKnora 知识库" },
   { value: "dashscope", label: "DashScope (Embedding)" },
   { value: "anysearch", label: "AnySearch" },
   { value: "tencent", label: "腾讯新闻" },

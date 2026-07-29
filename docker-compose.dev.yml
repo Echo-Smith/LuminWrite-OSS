@@ -1,0 +1,39 @@
+# ─── Writing Agent V2 — Development Overrides ───────────
+# Hot reload: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Backend:  air hot reload (file watcher → go build → restart)
+# Frontend: Vite dev server with HMR (host network for browser access)
+#
+# Prerequisites:
+#   - backend/.air.toml (air config)
+#   - Install air: go install github.com/air-verse/air@latest
+
+services:
+  backend:
+    build:
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./backend:/app
+      - go_cache:/root/.cache/go-build
+      - go_mod:/go/pkg/mod
+    environment:
+      # Enable hot reload
+      AIR_ENABLED: "true"
+    command: ["air", "-c", ".air.toml"]
+
+  frontend:
+    build:
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend/src:/build/src
+      - ./frontend/index.html:/build/index.html
+      - ./frontend/vite.config.ts:/build/vite.config.ts
+      - ./frontend/tsconfig.json:/build/tsconfig.json
+      - ./frontend/package.json:/build/package.json
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    ports:
+      - "5173:5173"
+
+volumes:
+  go_cache:
+  go_mod:
