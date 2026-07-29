@@ -7,8 +7,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 services:
-  # ── PostgreSQL + pgvector (shared) ────────────────────
-  # Used by both writing-agent (writing_agent_v2 db) and WeKnora (weknora db)
+  # ── PostgreSQL + pgvector (for writing-agent) ───────
   postgres:
     image: pgvector/pgvector:pg16
     container_name: writing-agent-pg
@@ -20,12 +19,34 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      # Auto-create the WeKnora database on first init
-      - ./config/weknora/init-weknora-db.sh:/docker-entrypoint-initdb.d/init-weknora-db.sh:ro
     networks:
       - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d writing_agent_v2"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  # ── WeKnora PostgreSQL (uses paradedb for full extension support) ──
+  weknora-postgres:
+    image: paradedb/paradedb:v0.22.2-pg17
+    container_name: writing-agent-weknora-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${WEKNORA_DB_PASSWORD:-weknora123}
+      POSTGRES_DB: weknora
+    volumes:
+      - weknora_pg_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d weknora"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -62,12 +83,12 @@ services:
     env_file:
       - .env.docker
     environment:
-      # Database (shares our PostgreSQL instance, separate database)
+      # Database (dedicated WeKnora PostgreSQL instance)
       DB_DRIVER: postgres
-      DB_HOST: postgres
+      DB_HOST: weknora-postgres
       DB_PORT: "5432"
       DB_USER: postgres
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      DB_PASSWORD: ${WEKNORA_DB_PASSWORD:-weknora123}
       DB_NAME: weknora
       # Redis
       REDIS_ADDR: weknora-redis:6379
@@ -92,7 +113,7 @@ services:
     networks:
       - internal
     depends_on:
-      postgres:
+      weknora-postgres:
         condition: service_healthy
       weknora-redis:
         condition: service_healthy
@@ -222,6 +243,8 @@ networks:
 # ── Volumes ─────────────────────────────────────────────
 volumes:
   pg_data:
+    driver: local
+  weknora_pg_data:
     driver: local
   weknora_data:
     driver: local
