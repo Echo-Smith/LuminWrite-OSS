@@ -1,8 +1,10 @@
 /**
- * TopicDetailDialog — 选题详情弹窗（含 AI 写作角度、趋势图、相关文章）
+ * TopicDetailDialog — 选题详情弹窗（含 AI 写作角度、趋势图、相关文章、关联素材）
  */
+import { useState, useEffect, useCallback } from "react";
 import {
   Star, TrendingUp, Lightbulb, ArrowRight, Loader2,
+  Database, Plus, Trash2, Zap, FileText, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +15,12 @@ import {
 import { platformLabel, platformColor, styleLabel } from "@/lib/topic-helpers";
 import type { Topic, WritingAngle, RelatedArticle, TrendPoint } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import {
+  type TopicMaterialAssociation,
+  type UserMaterial,
+  listTopicMaterials, removeMaterialAssociation, autoAssociateMaterials,
+  listMaterials, associateMaterial,
+} from "@/lib/material-api";
 
 interface TopicDetailDialogProps {
   topic: Topic | null;
@@ -24,6 +32,181 @@ interface TopicDetailDialogProps {
   onToggleFavorite: () => void;
   onClose: () => void;
   onStartWriting: (angle?: WritingAngle) => void;
+}
+
+// ─── Topic Materials Section ────────────────────────────
+
+function TopicMaterialsSection({ topicId, topicTitle }: { topicId: string; topicTitle: string }) {
+  const [associations, setAssociations] = useState<TopicMaterialAssociation[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [availableMaterials, setAvailableMaterials] = useState<UserMaterial[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+
+  const loadAssociations = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { associations } = await listTopicMaterials(topicId);
+      setAssociations(associations);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  }, [topicId]);
+
+  useEffect(() => {
+    loadAssociations();
+  }, [loadAssociations]);
+
+  const handleAutoAssociate = async () => {
+    setAutoLoading(true);
+    try {
+      await autoAssociateMaterials(topicId, topicTitle, 5);
+      await loadAssociations();
+    } catch {
+      // ignore
+    } finally {
+      setAutoLoading(false);
+    }
+  };
+
+  const handleRemoveAssociation = async (materialId: string) => {
+    try {
+      await removeMaterialAssociation(topicId, materialId);
+      await loadAssociations();
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleShowPicker = async () => {
+    setShowPicker(!showPicker);
+    if (!showPicker) {
+      setPickerLoading(true);
+      try {
+        const { materials } = await listMaterials(1, 50);
+        const associatedIds = new Set(associations.map((a) => a.material_id));
+        setAvailableMaterials(materials.filter((m) => !associatedIds.has(m.id)));
+      } catch {
+        // ignore
+      } finally {
+        setPickerLoading(false);
+      }
+    }
+  };
+
+  const handleManualAssociate = async (materialId: string) => {
+    try {
+      await associateMaterial(topicId, materialId);
+      await loadAssociations();
+      setShowPicker(false);
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+          <Database className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          关联素材 ({associations.length})
+        </h3>
+        <div className="flex gap-1">
+          <Button size="sm" variant="ghost" onClick={handleAutoAssociate} disabled={autoLoading} title="自动关联">
+            {autoLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+            自动
+          </Button>
+          <Button size="sm" variant="ghost" onClick={handleShowPicker} title="手动关联">
+            <Plus className="h-3.5 w-3.5" />
+            手动
+          </Button>
+        </div>
+      </div>
+
+      {/* Associated Materials */}
+      {loading ? (
+        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> 加载中...
+        </div>
+      ) : associations.length === 0 ? (
+        <div className="py-3 text-center text-sm text-muted-foreground">
+          <Database className="mx-auto mb-1 h-6 w-6 opacity-20" />
+          暂无关联素材
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {associations.map((assoc) => (
+            <div key={assoc.id} className="flex items-start gap-2 rounded-lg border p-2">
+              <FileText className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-medium truncate">
+                    {assoc.material?.title || "未知素材"}
+                  </span>
+                  <Badge variant="outline" className="text-xs">
+                    {assoc.association_type === "auto" ? "自动" : "手动"}
+                  </Badge>
+                  {assoc.relevance_score ? (
+                    <span className="text-xs text-muted-foreground">
+                      {(assoc.relevance_score * 100).toFixed(0)}%
+                    </span>
+                  ) : null}
+                </div>
+                {assoc.material?.content_preview && (
+                  <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">
+                    {assoc.material.content_preview}
+                  </p>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="flex-shrink-0 h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                onClick={() => handleRemoveAssociation(assoc.material_id)}
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Material Picker */}
+      {showPicker && (
+        <div className="mt-2 rounded-lg border bg-muted/30 p-2 space-y-1.5 max-h-48 overflow-y-auto">
+          {pickerLoading ? (
+            <div className="text-center py-2">
+              <Loader2 className="h-4 w-4 animate-spin mx-auto text-muted-foreground" />
+            </div>
+          ) : availableMaterials.length === 0 ? (
+            <p className="text-center text-xs text-muted-foreground py-2">
+              没有可选素材，请先在「我的素材库」中上传
+            </p>
+          ) : (
+            availableMaterials.map((mat) => (
+              <button
+                key={mat.id}
+                onClick={() => handleManualAssociate(mat.id)}
+                className="w-full flex items-center gap-2 rounded-md p-2 text-left hover:bg-accent transition-colors"
+              >
+                <FileText className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium truncate block">{mat.title}</span>
+                  <span className="text-xs text-muted-foreground truncate block">
+                    {mat.content_preview || mat.file_name || "—"}
+                  </span>
+                </div>
+                <Plus className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function TopicDetailDialog({
@@ -138,6 +321,11 @@ export function TopicDetailDialog({
                 <Lightbulb className="mx-auto mb-2 h-8 w-8 opacity-20" />
                 暂无 AI 写作角度建议
               </div>
+            )}
+
+            {/* Topic-Material Association Section */}
+            {!loading && topic.id && (
+              <TopicMaterialsSection topicId={topic.id} topicTitle={topic.title} />
             )}
           </div>
         </ScrollArea>

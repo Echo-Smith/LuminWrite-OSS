@@ -1,9 +1,9 @@
 /**
  * WeKnora 知识库管理 — Admin Dashboard 主页面
- * 组合子组件：未配置提示 / 添加知识面板 / 知识列表表格 / 检索面板
+ * 组合子组件：未配置提示 / 添加知识面板 / 知识列表表格 / 检索面板 / WeKnora UI 嵌入
  */
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Database, CheckCircle, BookOpen } from "lucide-react";
+import { Plus, Database, CheckCircle, BookOpen, ExternalLink, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,8 @@ export function WeKnoraKBPage() {
   const [kbs, setKBs] = useState<WeKnoraKB[]>([]);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [weknoraUIURL, setWeknoraUIURL] = useState<string>("");
+  const [schemeB, setSchemeB] = useState(false);
 
   // ─── Data Loading ──────────────────────────────────────
 
@@ -39,6 +41,18 @@ export function WeKnoraKBPage() {
     const { configured, kbs } = await checkConfig();
     setConfigured(configured);
     setKBs(kbs);
+
+    // Fetch WeKnora status (Scheme B info + UI URL)
+    try {
+      const res = await fetch("/api/v2/weknora/status");
+      const json = await res.json();
+      if (json.success && json.data) {
+        setWeknoraUIURL(json.data.ui_url || "");
+        setSchemeB(json.data.scheme_b || false);
+      }
+    } catch {
+      // ignore
+    }
   }, []);
 
   const loadEntries = useCallback(async () => {
@@ -112,14 +126,24 @@ export function WeKnoraKBPage() {
                 <CheckCircle className="h-3 w-3 mr-1" /> 已连接
               </Badge>
             )}
+            {schemeB && (
+              <Badge className="bg-blue-100 text-blue-700">
+                Scheme B 已启用
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-muted-foreground mt-1">
             混合检索（BM25 + Dense + GraphRAG）· 多格式文档解析 · 知识管理
           </p>
         </div>
-        <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
-          <Plus className="h-4 w-4 mr-2" /> 添加知识
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={doCheckConfig} title="刷新状态">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
+            <Plus className="h-4 w-4 mr-2" /> 添加知识
+          </Button>
+        </div>
       </div>
 
       {/* KB Info Cards */}
@@ -152,6 +176,7 @@ export function WeKnoraKBPage() {
         <TabsList>
           <TabsTrigger value="knowledge">知识列表</TabsTrigger>
           <TabsTrigger value="search">混合检索</TabsTrigger>
+          <TabsTrigger value="weknora-ui">WeKnora 管理面板</TabsTrigger>
         </TabsList>
 
         <TabsContent value="knowledge">
@@ -169,6 +194,56 @@ export function WeKnoraKBPage() {
 
         <TabsContent value="search">
           <WeKnoraSearchPanel onSearch={handleSearch} />
+        </TabsContent>
+
+        <TabsContent value="weknora-ui">
+          <Card>
+            <CardContent className="p-0">
+              {weknoraUIURL ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-4 border-b">
+                    <div>
+                      <p className="text-sm font-medium">WeKnora 原生管理面板</p>
+                      <p className="text-xs text-muted-foreground">
+                        通过 iframe 嵌入 WeKnora 完整管理界面，可直接管理知识库、文档、配置等
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const url = weknoraUIURL.startsWith("/")
+                          ? `${window.location.origin}${weknoraUIURL}`
+                          : weknoraUIURL;
+                        window.open(url, "_blank", "noopener,noreferrer");
+                      }}
+                    >
+                      <ExternalLink className="h-4 w-4 mr-1" /> 新窗口打开
+                    </Button>
+                  </div>
+                  <div className="p-1">
+                    <iframe
+                      src={weknoraUIURL}
+                      className="w-full border-0 rounded-md"
+                      style={{ height: "calc(100vh - 320px)", minHeight: "600px" }}
+                      title="WeKnora Management UI"
+                      allow="fullscreen"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="p-12 text-center space-y-3">
+                  <Database className="h-10 w-10 text-muted-foreground mx-auto" />
+                  <div>
+                    <p className="text-sm font-medium">WeKnora UI 未配置</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      请在环境变量中设置 <code className="bg-muted px-1 py-0.5 rounded">WEKNORA_UI_URL</code> 以启用嵌入面板
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

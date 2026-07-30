@@ -104,8 +104,9 @@ services:
       GIN_MODE: release
       TZ: Asia/Shanghai
       AUTO_MIGRATE: "true"
-    ports:
-      - "${WEKNORA_PORT:-8081}:8080"
+    # No external port — only accessible on internal Docker network
+    # Backend accesses WeKnora API via http://weknora-app:8080/api/v1 (internal)
+    # Admin panel accesses WeKnora UI via nginx proxy /weknora-ui/ (internal)
     volumes:
       - weknora_data:/data/files
       - weknora_docreader_tmp:/tmp/docreader
@@ -157,8 +158,8 @@ services:
       APP_PORT: "8080"
       APP_SCHEME: http
       MAX_FILE_SIZE_MB: "50"
-    ports:
-      - "${WEKNORA_UI_PORT:-8082}:80"
+    # No external port — only accessible on internal Docker network
+    # Admin panel embeds WeKnora UI via nginx proxy at /weknora-ui/ (same origin)
     networks:
       - internal
     depends_on:
@@ -182,6 +183,8 @@ services:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/writing_agent_v2?sslmode=disable
       # Point WeKnora client at the weknora-app container
       WEKNORA_BASE_URL: http://weknora-app:8080/api/v1
+      # WeKnora UI URL (relative path for browser iframe via nginx proxy)
+      WEKNORA_UI_URL: /weknora-ui
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     networks:
@@ -215,6 +218,7 @@ services:
       - "${FRONTEND_PORT:-3000}:8080"
     networks:
       - frontend
+      - internal  # Need internal network to reach weknora-ui for nginx proxy
     depends_on:
       backend:
         condition: service_healthy
