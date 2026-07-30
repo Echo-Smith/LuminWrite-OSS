@@ -39,7 +39,7 @@ interface APIResponse<T> {
 
 // ─── API Functions ──────────────────────────────────────
 
-const BASE = "/api/weknora";
+const BASE = "/api/v2/weknora";
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<APIResponse<T>> {
   const res = await fetch(url, init);

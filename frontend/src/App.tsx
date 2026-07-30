@@ -14,6 +14,7 @@ import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
 import { EditorialBoard } from "@/pages/editorial/editorial-board";
 import { MyStylesPage } from "@/pages/my-styles";
+import { MyMaterialsPage } from "@/pages/my-materials";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
 
@@ -73,6 +74,15 @@ export function App() {
             element={
               <ProtectedRoute>
                 <MyStylesPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/materials"
+            element={
+              <ProtectedRoute>
+                <MyMaterialsPage />
               </ProtectedRoute>
             }
           />

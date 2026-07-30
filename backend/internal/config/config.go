@@ -163,12 +163,20 @@ type AnySearchConfig struct {
 // WeKnoraConfig holds configuration for the WeKnora knowledge base integration.
 // WeKnora provides hybrid search (BM25 + Dense + GraphRAG), multi-source data sync,
 // and document management capabilities.
+//
+// Scheme B: Admin credentials are used to obtain a JWT token, which is then used
+// to create per-user knowledge bases. Users never interact with WeKnora directly.
 type WeKnoraConfig struct {
-	Enabled bool
-	BaseURL string
-	APIKey  string
-	KBID    string
-	Timeout time.Duration
+	Enabled       bool
+	BaseURL       string
+	APIKey        string // JWT token (legacy: static API key)
+	KBID          string // Default KB ID (for shared/global KB)
+	Timeout       time.Duration
+	// Scheme B: Admin credentials for per-user KB management
+	AdminEmail    string
+	AdminPassword string
+	// WeKnora UI URL for iframe embedding in admin panel
+	UIURL         string
 }
 
 type HotTopicsConfig struct {
@@ -298,11 +306,14 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 15*time.Second),
 		},
 		WeKnora: WeKnoraConfig{
-			Enabled: getEnvBool("WEKNORA_ENABLED", false),
-			BaseURL: getEnv("WEKNORA_BASE_URL", "http://localhost:8080/api/v1"),
-			APIKey:  getEnv("WEKNORA_API_KEY", ""),
-			KBID:    getEnv("WEKNORA_KB_ID", ""),
-			Timeout: getEnvDuration("WEKNORA_TIMEOUT", 30*time.Second),
+			Enabled:       getEnvBool("WEKNORA_ENABLED", false),
+			BaseURL:       getEnv("WEKNORA_BASE_URL", "http://localhost:8080/api/v1"),
+			APIKey:        getEnv("WEKNORA_API_KEY", ""),
+			KBID:          getEnv("WEKNORA_KB_ID", ""),
+			Timeout:       getEnvDuration("WEKNORA_TIMEOUT", 30*time.Second),
+			AdminEmail:    getEnv("WEKNORA_ADMIN_EMAIL", ""),
+			AdminPassword: getEnv("WEKNORA_ADMIN_PASSWORD", ""),
+			UIURL:         getEnv("WEKNORA_UI_URL", "http://localhost:8082"),
 		},
 		WebAuthn: WebAuthnConfig{
 			RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),

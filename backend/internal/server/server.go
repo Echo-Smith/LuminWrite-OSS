@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -65,6 +66,9 @@ type Server struct {
 
 	userStyleStore  *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
+
+	// WeKnora Manager (Scheme B: per-user KB management)
+	weknoraMgr *services.WeKnoraManager
 }
 
 // New creates a new Server.
@@ -184,9 +188,22 @@ func New(cfg *config.Config) (*Server, error) {
 	)
 
 	// Attach WeKnora as a hybrid search source (BM25 + Dense + GraphRAG)
-	if cfg.WeKnora.Enabled && cfg.WeKnora.APIKey != "" && cfg.WeKnora.KBID != "" {
-		wkClient := tools.NewWeKnoraClient(cfg.WeKnora.BaseURL, cfg.WeKnora.APIKey, cfg.WeKnora.KBID, cfg.WeKnora.Timeout)
-		if wkClient.IsConfigured() {
+	if cfg.WeKnora.Enabled && cfg.WeKnora.KBID != "" {
+		var wkClient *tools.WeKnoraClient
+		if cfg.WeKnora.APIKey != "" {
+			// Legacy: use static API key
+			wkClient = tools.NewWeKnoraClient(cfg.WeKnora.BaseURL, cfg.WeKnora.APIKey, cfg.WeKnora.KBID, cfg.WeKnora.Timeout)
+		} else if cfg.WeKnora.AdminEmail != "" && cfg.WeKnora.AdminPassword != "" {
+			// Scheme B: login to get fresh JWT token for search integration
+			token, _, err := tools.WeKnoraLogin(cfg.WeKnora.BaseURL, cfg.WeKnora.AdminEmail, cfg.WeKnora.AdminPassword, cfg.WeKnora.Timeout)
+			if err != nil {
+				slog.Warn("weknora admin login failed for search integration", "error", err)
+			} else {
+				wkClient = tools.NewWeKnoraClient(cfg.WeKnora.BaseURL, token, cfg.WeKnora.KBID, cfg.WeKnora.Timeout)
+				slog.Info("weknora search source authenticated via Scheme B admin login")
+			}
+		}
+		if wkClient != nil && wkClient.IsConfigured() {
 			searchClient.SetWeKnoraClient(wkClient)
 			slog.Info("weknora knowledge base integrated",
 				"base_url", cfg.WeKnora.BaseURL,
@@ -319,6 +336,33 @@ func New(cfg *config.Config) (*Server, error) {
 		s.styleBuilder = services.NewStyleBuilderService(llm)
 	}
 
+	// ── WeKnora Manager (Scheme B: per-user KB management) ──
+	if cfg.WeKnora.Enabled && cfg.WeKnora.AdminEmail != "" && cfg.WeKnora.AdminPassword != "" {
+		var mgrDB *sql.DB
+		if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
+			mgrDB = adminRepo.DB().DB
+		}
+		if mgrDB != nil {
+			s.weknoraMgr = services.NewWeKnoraManager(
+				cfg.WeKnora.BaseURL,
+				cfg.WeKnora.AdminEmail,
+				cfg.WeKnora.AdminPassword,
+				cfg.WeKnora.Timeout,
+				mgrDB,
+			)
+			s.weknoraMgr.SetAdminKBID(cfg.WeKnora.KBID)
+			slog.Info("weknora manager initialized (Scheme B)",
+				"base_url", cfg.WeKnora.BaseURL,
+				"admin_email", cfg.WeKnora.AdminEmail,
+				"kb_id", cfg.WeKnora.KBID,
+			)
+		} else {
+			slog.Warn("weknora manager skipped: database not available")
+		}
+	} else if cfg.WeKnora.Enabled {
+		slog.Warn("weknora enabled but admin credentials not set — Scheme B requires WEKNORA_ADMIN_EMAIL and WEKNORA_ADMIN_PASSWORD")
+	}
+
 	// ── Editorial system initialization ──
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
 		edStore := editorial.NewStore(adminRepo.DB().DB)
@@ -449,6 +493,20 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Post("/weknora/knowledge/upload", s.handleWeKnoraUploadFile)
 		r.Delete("/weknora/knowledge/{id}", s.handleWeKnoraDeleteKnowledge)
 		r.Post("/weknora/search", s.handleWeKnoraSearch)
+		r.Get("/weknora/status", s.handleWeKnoraStatus)
+
+		// User Materials (Scheme B: per-user WeKnora KB)
+		r.With(s.jwtAuthMiddleware).Get("/materials", s.handleUserMaterialList)
+		r.With(s.jwtAuthMiddleware).Post("/materials", s.handleUserMaterialCreate)
+		r.With(s.jwtAuthMiddleware).Post("/materials/upload", s.handleUserMaterialUpload)
+		r.With(s.jwtAuthMiddleware).Delete("/materials/{id}", s.handleUserMaterialDelete)
+		r.With(s.jwtAuthMiddleware).Post("/materials/search", s.handleUserMaterialSearch)
+
+		// Topic-Material Association
+		r.With(s.jwtAuthMiddleware).Get("/topics/{topicId}/materials", s.handleTopicMaterialList)
+		r.With(s.jwtAuthMiddleware).Post("/topics/{topicId}/materials/{materialId}", s.handleTopicMaterialAssociate)
+		r.With(s.jwtAuthMiddleware).Delete("/topics/{topicId}/materials/{materialId}", s.handleTopicMaterialRemove)
+		r.With(s.jwtAuthMiddleware).Post("/topics/{topicId}/materials/auto", s.handleTopicMaterialAuto)
 
 		// Evaluation
 		r.Get("/evaluation/sets", s.handleListEvalSets)

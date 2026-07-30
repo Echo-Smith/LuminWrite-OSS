@@ -20,14 +20,19 @@ import (
 // It provides hybrid search (BM25 + Dense + GraphRAG), document upload,
 // and knowledge management capabilities.
 //
-// Key endpoints used:
-//   - POST /api/v1/knowledge_bases/{kb_id}/search         — hybrid search
-//   - GET  /api/v1/knowledge_bases                         — list knowledge bases
-//   - POST /api/v1/knowledge_bases/{kb_id}/knowledge       — create knowledge (text/markdown)
-//   - POST /api/v1/knowledge_bases/{kb_id}/knowledge/url   — create from URL
-//   - POST /api/v1/knowledge_bases/{kb_id}/knowledge/upload — upload file
-//   - GET  /api/v1/knowledge_bases/{kb_id}/knowledge       — list knowledge entries
-//   - DELETE /api/v1/knowledge_bases/{kb_id}/knowledge/{kid} — delete knowledge
+// Key endpoints used (verified against WeKnora v0.x API):
+//   - POST /api/v1/auth/login                     — JWT login (email + password)
+//   - GET  /api/v1/knowledge-bases                 — list knowledge bases
+//   - POST /api/v1/knowledge-bases                 — create knowledge base
+//   - DELETE /api/v1/knowledge-bases/{kb_id}       — delete knowledge base
+//   - POST /api/v1/knowledge-bases/{kb_id}/hybrid-search — hybrid search
+//   - GET  /api/v1/knowledge-bases/{kb_id}/knowledge    — list knowledge entries
+//   - POST /api/v1/knowledge-bases/{kb_id}/knowledge    — create knowledge (text/markdown)
+//   - DELETE /api/v1/knowledge-bases/{kb_id}/knowledge/{kid} — delete knowledge
+//   - POST /api/v1/knowledge-search                — global search across KBs
+//
+// Auth: JWT Bearer token (obtained via /auth/login, refreshed via /auth/refresh)
+// Note: WeKnora API paths use kebab-case (knowledge-bases), NOT snake_case.
 
 const (
 	weknoraMaxResponseSize = 10 * 1024 * 1024 // 10MB
@@ -35,14 +40,15 @@ const (
 )
 
 type WeKnoraClient struct {
-	baseURL string
-	apiKey  string
-	kbID    string
-	timeout time.Duration
-	client  *http.Client
+	baseURL  string
+	apiKey   string // JWT token (or API key if available)
+	kbID     string
+	timeout  time.Duration
+	client   *http.Client
 }
 
 // NewWeKnoraClient creates a new WeKnora API client.
+// apiKey should be a JWT token obtained via Login(), or a long-lived API key if available.
 func NewWeKnoraClient(baseURL, apiKey, kbID string, timeout time.Duration) *WeKnoraClient {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -72,6 +78,52 @@ func (c *WeKnoraClient) IsConfigured() bool {
 	return true
 }
 
+// ─── Auth ───────────────────────────────────────────────
+
+// Login authenticates with WeKnora using email+password and returns a JWT token.
+// The token can be used as the apiKey in NewWeKnoraClient().
+func WeKnoraLogin(baseURL, email, password string, timeout time.Duration) (token string, tenantID int, err error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+
+	body := map[string]string{"email": email, "password": password}
+	data, _ := json.Marshal(body)
+
+	url := strings.TrimSuffix(baseURL, "/") + "/auth/login"
+	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("WeKnora login request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, weknoraMaxResponseSize))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read login response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("WeKnora login failed (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var result weknoraLoginResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", 0, fmt.Errorf("failed to decode login response: %w", err)
+	}
+	if !result.Success || result.Token == "" {
+		return "", 0, fmt.Errorf("WeKnora login unsuccessful: %s", string(respBody))
+	}
+
+	return result.Token, result.ActiveTenant.ID, nil
+}
+
 // ─── Internal HTTP helpers ──────────────────────────────
 
 // doJSON sends a JSON request and decodes the WeKnora API envelope.
@@ -89,7 +141,7 @@ func (c *WeKnoraClient) doJSON(ctx context.Context, method, path string, body an
 	return nil
 }
 
-// doRequest sends an HTTP request with the API key header and returns raw response body.
+// doRequest sends an HTTP request with the JWT token header and returns raw response body.
 func (c *WeKnoraClient) doRequest(ctx context.Context, method, path string, body any) ([]byte, int, error) {
 	var reqBody io.Reader
 	if body != nil {
@@ -125,10 +177,10 @@ func (c *WeKnoraClient) doRequest(ctx context.Context, method, path string, body
 	return respBody, resp.StatusCode, nil
 }
 
-// checkAPIError validates the WeKnora envelope code field.
-func checkAPIError(code int, msg string) error {
-	if code != 0 {
-		return fmt.Errorf("WeKnora API error code %d: %s", code, msg)
+// checkAPIError validates the WeKnora envelope error field.
+func checkAPIError(err *weknoraAPIError) error {
+	if err != nil {
+		return fmt.Errorf("WeKnora API error code %d: %s", err.Code, err.Message)
 	}
 	return nil
 }
@@ -146,17 +198,15 @@ func (c *WeKnoraClient) Search(ctx context.Context, query string, limit int) ([]
 	}
 
 	body := map[string]any{
-		"query":         query,
-		"top_k":         limit,
-		"retrieve_type": "hybrid",
-		"rerank":        true,
+		"query_text": query,
+		"top_k":      limit,
 	}
 
 	var resp weknoraAPIResponse[weknoraSearchData]
-	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge_bases/%s/search", c.kbID), body, &resp); err != nil {
+	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge-bases/%s/hybrid-search", c.kbID), body, &resp); err != nil {
 		return nil, err
 	}
-	if err := checkAPIError(resp.Code, resp.Msg); err != nil {
+	if err := checkAPIError(resp.Error); err != nil {
 		return nil, err
 	}
 
@@ -179,6 +229,34 @@ func (c *WeKnoraClient) Search(ctx context.Context, query string, limit int) ([]
 	return results, nil
 }
 
+// SearchRaw performs a hybrid search and returns the raw WeKnoraSearchResult items
+// (with ID, Content, Score, Title, Source, Knowledge fields).
+// This is used by the user material service which needs the document IDs.
+func (c *WeKnoraClient) SearchRaw(ctx context.Context, query string, limit int) ([]WeKnoraSearchResult, error) {
+	if !c.IsConfigured() {
+		return nil, fmt.Errorf("WeKnora client not configured")
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+
+	body := map[string]any{
+		"query_text": query,
+		"top_k":      limit,
+	}
+
+	var resp weknoraAPIResponse[weknoraSearchData]
+	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge-bases/%s/hybrid-search", c.kbID), body, &resp); err != nil {
+		return nil, err
+	}
+	if err := checkAPIError(resp.Error); err != nil {
+		return nil, err
+	}
+
+	slog.Debug("weknora raw search done", "query", query, "count", len(resp.Data.Results))
+	return resp.Data.Results, nil
+}
+
 // ─── Knowledge Management ────────────────────────────────
 
 // CreateKnowledge creates a new knowledge entry from text/markdown content.
@@ -193,10 +271,10 @@ func (c *WeKnoraClient) CreateKnowledge(ctx context.Context, title, content stri
 	}
 
 	var resp weknoraAPIResponse[weknoraCreateData]
-	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge_bases/%s/knowledge", c.kbID), body, &resp); err != nil {
+	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge-bases/%s/knowledge", c.kbID), body, &resp); err != nil {
 		return "", err
 	}
-	if err := checkAPIError(resp.Code, resp.Msg); err != nil {
+	if err := checkAPIError(resp.Error); err != nil {
 		return "", err
 	}
 
@@ -216,10 +294,10 @@ func (c *WeKnoraClient) CreateKnowledgeFromURL(ctx context.Context, url, title s
 	}
 
 	var resp weknoraAPIResponse[weknoraCreateData]
-	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge_bases/%s/knowledge/url", c.kbID), body, &resp); err != nil {
+	if err := c.doJSON(ctx, "POST", fmt.Sprintf("/knowledge-bases/%s/knowledge", c.kbID), body, &resp); err != nil {
 		return "", err
 	}
-	if err := checkAPIError(resp.Code, resp.Msg); err != nil {
+	if err := checkAPIError(resp.Error); err != nil {
 		return "", err
 	}
 
@@ -234,16 +312,24 @@ func (c *WeKnoraClient) ListKnowledge(ctx context.Context, page, pageSize int) (
 	}
 	page, pageSize = clampPagination(page, pageSize, 20, 100)
 
-	path := fmt.Sprintf("/knowledge_bases/%s/knowledge?page=%d&page_size=%d", c.kbID, page, pageSize)
-	var resp weknoraAPIResponse[weknoraKnowledgeListData]
-	if err := c.doJSON(ctx, "GET", path, nil, &resp); err != nil {
+	path := fmt.Sprintf("/knowledge-bases/%s/knowledge?page=%d&page_size=%d", c.kbID, page, pageSize)
+
+	// WeKnora returns {"data": [...], "total": N, "page": P, "page_size": S, "success": true}
+	// We need to parse data as a raw array and total separately.
+	var raw struct {
+		Data    []WeKnoraKnowledge `json:"data"`
+		Total   int                `json:"total"`
+		Success bool               `json:"success"`
+		Error   *weknoraAPIError   `json:"error,omitempty"`
+	}
+	if err := c.doJSON(ctx, "GET", path, nil, &raw); err != nil {
 		return nil, 0, err
 	}
-	if err := checkAPIError(resp.Code, resp.Msg); err != nil {
+	if err := checkAPIError(raw.Error); err != nil {
 		return nil, 0, err
 	}
 
-	return resp.Data.List, resp.Data.Total, nil
+	return raw.Data, raw.Total, nil
 }
 
 // DeleteKnowledge deletes a knowledge entry from the WeKnora knowledge base.
@@ -253,7 +339,7 @@ func (c *WeKnoraClient) DeleteKnowledge(ctx context.Context, knowledgeID string)
 	}
 
 	respBody, statusCode, err := c.doRequest(ctx, "DELETE",
-		fmt.Sprintf("/knowledge_bases/%s/knowledge/%s", c.kbID, knowledgeID), nil)
+		fmt.Sprintf("/knowledge-bases/%s/knowledge/%s", c.kbID, knowledgeID), nil)
 	if err != nil {
 		return err
 	}
@@ -293,7 +379,7 @@ func (c *WeKnoraClient) UploadFile(ctx context.Context, filename string, fileCon
 		return "", fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
-	url := c.baseURL + fmt.Sprintf("/knowledge_bases/%s/knowledge/upload", c.kbID)
+	url := c.baseURL + fmt.Sprintf("/knowledge-bases/%s/knowledge", c.kbID)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
 	if err != nil {
 		return "", fmt.Errorf("failed to create upload request: %w", err)
@@ -319,7 +405,7 @@ func (c *WeKnoraClient) UploadFile(ctx context.Context, filename string, fileCon
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("failed to decode WeKnora upload response: %w", err)
 	}
-	if err := checkAPIError(result.Code, result.Msg); err != nil {
+	if err := checkAPIError(result.Error); err != nil {
 		return "", err
 	}
 
@@ -329,21 +415,69 @@ func (c *WeKnoraClient) UploadFile(ctx context.Context, filename string, fileCon
 
 // ─── Knowledge Base Management ──────────────────────────
 
-// ListKnowledgeBases lists all knowledge bases in the WeKnora instance.
+// ListKnowledgeBases lists all knowledge bases accessible to the authenticated user.
 func (c *WeKnoraClient) ListKnowledgeBases(ctx context.Context) ([]WeKnoraKBInfo, error) {
 	if c.apiKey == "" || c.baseURL == "" {
 		return nil, fmt.Errorf("WeKnora client not configured")
 	}
 
-	var resp weknoraAPIResponse[weknoraKBListData]
-	if err := c.doJSON(ctx, "GET", "/knowledge_bases", nil, &resp); err != nil {
+	// WeKnora returns {"data": [...KB objects...], "success": true}
+	var raw struct {
+		Data    []WeKnoraKBInfo  `json:"data"`
+		Success bool             `json:"success"`
+		Error   *weknoraAPIError `json:"error,omitempty"`
+	}
+	if err := c.doJSON(ctx, "GET", "/knowledge-bases", nil, &raw); err != nil {
 		return nil, err
 	}
-	if err := checkAPIError(resp.Code, resp.Msg); err != nil {
+	if err := checkAPIError(raw.Error); err != nil {
 		return nil, err
 	}
 
-	return resp.Data.List, nil
+	return raw.Data, nil
+}
+
+// CreateKnowledgeBase creates a new knowledge base in WeKnora.
+// Returns the KB ID of the newly created knowledge base.
+func (c *WeKnoraClient) CreateKnowledgeBase(ctx context.Context, name, description string) (string, error) {
+	if c.apiKey == "" || c.baseURL == "" {
+		return "", fmt.Errorf("WeKnora client not configured")
+	}
+
+	body := CreateKBRequest{
+		Name:        name,
+		Description: description,
+	}
+
+	var resp weknoraAPIResponse[CreateKBResponse]
+	if err := c.doJSON(ctx, "POST", "/knowledge-bases", body, &resp); err != nil {
+		return "", err
+	}
+	if err := checkAPIError(resp.Error); err != nil {
+		return "", err
+	}
+
+	slog.Info("weknora knowledge base created", "id", resp.Data.ID, "name", name)
+	return resp.Data.ID, nil
+}
+
+// DeleteKnowledgeBase deletes a knowledge base from WeKnora.
+func (c *WeKnoraClient) DeleteKnowledgeBase(ctx context.Context, kbID string) error {
+	if c.apiKey == "" || c.baseURL == "" {
+		return fmt.Errorf("WeKnora client not configured")
+	}
+
+	respBody, statusCode, err := c.doRequest(ctx, "DELETE",
+		fmt.Sprintf("/knowledge-bases/%s", kbID), nil)
+	if err != nil {
+		return err
+	}
+	if statusCode != http.StatusOK && statusCode != http.StatusNoContent {
+		return fmt.Errorf("WeKnora delete KB failed (HTTP %d): %s", statusCode, string(respBody))
+	}
+
+	slog.Info("weknora knowledge base deleted", "id", kbID)
+	return nil
 }
 
 // ─── Batch Fetch (for Cron Sync) ────────────────────────

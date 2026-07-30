@@ -5,7 +5,11 @@ import "time"
 // ─── WeKnora API Types ──────────────────────────────────
 // These types map to the WeKnora REST API response structures.
 // WeKnora API base path: /api/v1
-// Auth: Bearer token (API Key with scoped permissions)
+// Auth: JWT Bearer token (obtained via /auth/login)
+//
+// Response envelope:
+//   Success: {"data": <T>, "success": true}
+//   Error:   {"error": {"code": N, "message": "...", "details": null}, "success": false}
 
 // WeKnoraKnowledge represents a knowledge entry in WeKnora.
 type WeKnoraKnowledge struct {
@@ -23,7 +27,7 @@ type WeKnoraKBInfo struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
 	Description   string    `json:"description,omitempty"`
-	DocumentCount int       `json:"document_count,omitempty"`
+	DocumentCount int       `json:"knowledge_count,omitempty"`
 	CreatedAt     time.Time `json:"created_at,omitempty"`
 }
 
@@ -38,12 +42,19 @@ type WeKnoraSearchResult struct {
 }
 
 // ─── WeKnora API Envelope ───────────────────────────────
-// All WeKnora API responses share a common { code, msg, data } envelope.
+// All WeKnora API responses share a common { success, data } envelope.
+// Error responses include an "error" object with code/message/details.
 
 type weknoraAPIResponse[T any] struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Data T      `json:"data"`
+	Data    T                 `json:"data"`
+	Success bool              `json:"success"`
+	Error   *weknoraAPIError  `json:"error,omitempty"`
+}
+
+type weknoraAPIError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Details any    `json:"details"`
 }
 
 // Search response data payload.
@@ -53,8 +64,9 @@ type weknoraSearchData struct {
 }
 
 // Knowledge list response data payload.
+// WeKnora returns data as a direct array with separate total/page/page_size fields.
 type weknoraKnowledgeListData struct {
-	List  []WeKnoraKnowledge `json:"list"`
+	List  []WeKnoraKnowledge `json:"-"`
 	Total int                `json:"total"`
 }
 
@@ -63,8 +75,38 @@ type weknoraCreateData struct {
 	ID string `json:"id"`
 }
 
-// KB list response data payload.
+// KB list response: data is a direct array of KB objects.
 type weknoraKBListData struct {
-	List  []WeKnoraKBInfo `json:"list"`
-	Total int             `json:"total"`
+	List  []WeKnoraKBInfo `json:"-"`
+	Total int             `json:"-"`
+}
+
+// ─── Auth Types ─────────────────────────────────────────
+
+type weknoraLoginResponse struct {
+	Success bool   `json:"success"`
+	Token   string `json:"token"`
+	User    struct {
+		ID       string `json:"id"`
+		Email    string `json:"email"`
+		Username string `json:"username"`
+	} `json:"user"`
+	ActiveTenant struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	} `json:"active_tenant"`
+}
+
+// CreateKBRequest is the body for creating a new knowledge base.
+type CreateKBRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// CreateKBResponse is the response from creating a knowledge base.
+type CreateKBResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	TenantID    int    `json:"tenant_id"`
 }

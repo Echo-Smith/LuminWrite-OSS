@@ -18,9 +18,10 @@ Thumbs.db
 
 # Environment (never leak secrets into images)
 .env
-.env.*
 .env.docker
 .env.docker.example
+# Keep .env.example — it's copied into the image as a template
+!.env.example
 
 # Git
 .git

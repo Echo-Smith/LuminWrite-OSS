@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -14,12 +15,11 @@ import (
 // These endpoints proxy to the WeKnora REST API for knowledge base operations
 // that go beyond simple text entries: URL import, file upload, hybrid search, etc.
 
-// weknoraMiddleware checks if WeKnora is configured and injects the client into the request context.
-// If WeKnora is not configured, it returns a 503 error.
+// weknoraMiddleware checks if WeKnora is configured (either legacy client or Scheme B manager).
+// If neither is available, it returns a 503 error.
 func (s *Server) weknoraMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		wk := s.getWeKnoraClient()
-		if wk == nil {
+		if !s.isWeKnoraAvailable() {
 			response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured",
 				"WeKnora knowledge base is not configured")
 			return
@@ -28,7 +28,16 @@ func (s *Server) weknoraMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// isWeKnoraAvailable returns true if either the legacy WeKnora client or the Scheme B manager is configured.
+func (s *Server) isWeKnoraAvailable() bool {
+	if s.getWeKnoraClient() != nil {
+		return true
+	}
+	return s.weknoraMgr != nil && s.weknoraMgr.IsConfigured()
+}
+
 // getWeKnoraClient returns the WeKnora client from the search client, or nil if not configured.
+// Note: If Scheme B manager is available, prefer using getWeKnoraClientForRequest() instead.
 func (s *Server) getWeKnoraClient() *tools.WeKnoraClient {
 	if s.search == nil {
 		return nil
@@ -40,9 +49,42 @@ func (s *Server) getWeKnoraClient() *tools.WeKnoraClient {
 	return wk
 }
 
+// getWeKnoraClientForRequest returns a WeKnora client for KB-specific operations.
+// It tries the Scheme B manager first (if configured), then falls back to the legacy client.
+// This ensures fresh admin JWT tokens are used when Scheme B is enabled.
+func (s *Server) getWeKnoraClientForRequest(r *http.Request) (*tools.WeKnoraClient, error) {
+	// Try Scheme B manager first (provides fresh admin JWT)
+	if s.weknoraMgr != nil && s.weknoraMgr.IsConfigured() {
+		return s.weknoraMgr.GetAdminClientWithKB(r.Context())
+	}
+	// Fall back to legacy client
+	if wk := s.getWeKnoraClient(); wk != nil {
+		return wk, nil
+	}
+	return nil, fmt.Errorf("weknora not configured")
+}
+
+// getWeKnoraAdminClientForRequest returns a WeKnora client for admin-level operations (no KB ID needed).
+// It tries the Scheme B manager first (if configured), then falls back to the legacy client.
+func (s *Server) getWeKnoraAdminClientForRequest(r *http.Request) (*tools.WeKnoraClient, error) {
+	// Try Scheme B manager first (provides fresh admin JWT)
+	if s.weknoraMgr != nil && s.weknoraMgr.IsConfigured() {
+		return s.weknoraMgr.GetAdminClient(r.Context())
+	}
+	// Fall back to legacy client
+	if wk := s.getWeKnoraClient(); wk != nil {
+		return wk, nil
+	}
+	return nil, fmt.Errorf("weknora not configured")
+}
+
 // handleWeKnoraSearch performs a hybrid search (BM25 + Dense + GraphRAG) on the WeKnora KB.
 func (s *Server) handleWeKnoraSearch(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	var req struct {
 		Query string `json:"query"`
@@ -70,7 +112,11 @@ func (s *Server) handleWeKnoraSearch(w http.ResponseWriter, r *http.Request) {
 
 // handleWeKnoraAddKnowledge creates a new knowledge entry in WeKnora from text/markdown.
 func (s *Server) handleWeKnoraAddKnowledge(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	var req struct {
 		Title    string         `json:"title"`
@@ -98,7 +144,11 @@ func (s *Server) handleWeKnoraAddKnowledge(w http.ResponseWriter, r *http.Reques
 
 // handleWeKnoraAddFromURL imports a web page into WeKnora by URL.
 func (s *Server) handleWeKnoraAddFromURL(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	var req struct {
 		URL   string `json:"url"`
@@ -125,7 +175,11 @@ func (s *Server) handleWeKnoraAddFromURL(w http.ResponseWriter, r *http.Request)
 
 // handleWeKnoraUploadFile handles file upload to WeKnora (PDF, Word, images, etc.).
 func (s *Server) handleWeKnoraUploadFile(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	if err := r.ParseMultipartForm(50 << 20); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "failed to parse multipart form: "+err.Error())
@@ -152,7 +206,11 @@ func (s *Server) handleWeKnoraUploadFile(w http.ResponseWriter, r *http.Request)
 
 // handleWeKnoraListKnowledge lists knowledge entries in the WeKnora KB.
 func (s *Server) handleWeKnoraListKnowledge(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 20)
@@ -169,7 +227,11 @@ func (s *Server) handleWeKnoraListKnowledge(w http.ResponseWriter, r *http.Reque
 
 // handleWeKnoraDeleteKnowledge deletes a knowledge entry from WeKnora.
 func (s *Server) handleWeKnoraDeleteKnowledge(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	knowledgeID := chi.URLParam(r, "id")
 	if knowledgeID == "" {
@@ -188,7 +250,11 @@ func (s *Server) handleWeKnoraDeleteKnowledge(w http.ResponseWriter, r *http.Req
 
 // handleWeKnoraListKBs lists all knowledge bases in the WeKnora instance.
 func (s *Server) handleWeKnoraListKBs(w http.ResponseWriter, r *http.Request) {
-	wk := s.getWeKnoraClient()
+	wk, err := s.getWeKnoraAdminClientForRequest(r)
+	if err != nil {
+		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", err.Error())
+		return
+	}
 
 	kbs, err := wk.ListKnowledgeBases(r.Context())
 	if err != nil {
