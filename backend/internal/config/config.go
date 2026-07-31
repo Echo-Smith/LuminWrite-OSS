@@ -32,7 +32,6 @@ type Config struct {
 	ExtraHot   ExtraHotConfig
 	Bing       BingConfig
 	AnySearch  AnySearchConfig
-	WeKnora   WeKnoraConfig
 	WebAuthn  WebAuthnConfig
 	Jiaozhen  JiaozhenConfig
 	Log       LogConfig
@@ -159,20 +158,6 @@ type AnySearchConfig struct {
 	APIKey   string
 	Endpoint string
 	Timeout  time.Duration
-}
-
-// WeKnoraConfig holds legacy configuration for the WeKnora knowledge base integration.
-// DEPRECATED: WeKnora has been merged into V2. These fields are kept for backward
-// compatibility during the transition period and are no longer used.
-type WeKnoraConfig struct {
-	Enabled       bool
-	BaseURL       string
-	APIKey        string
-	KBID          string
-	Timeout       time.Duration
-	AdminEmail    string
-	AdminPassword string
-	UIURL         string
 }
 
 // KbInternalConfig holds configuration for the internal knowledge base
@@ -315,16 +300,6 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			APIKey:   getEnv("ANYSEARCH_API_KEY", ""),
 			Endpoint: getEnv("ANYSEARCH_ENDPOINT", "https://api.anysearch.com/v1/search"),
 			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 15*time.Second),
-		},
-		WeKnora: WeKnoraConfig{
-			Enabled:       getEnvBool("WEKNORA_ENABLED", false),
-			BaseURL:       getEnv("WEKNORA_BASE_URL", "http://localhost:8080/api/v1"),
-			APIKey:        getEnv("WEKNORA_API_KEY", ""),
-			KBID:          getEnv("WEKNORA_KB_ID", ""),
-			Timeout:       getEnvDuration("WEKNORA_TIMEOUT", 30*time.Second),
-			AdminEmail:    getEnv("WEKNORA_ADMIN_EMAIL", ""),
-			AdminPassword: getEnv("WEKNORA_ADMIN_PASSWORD", ""),
-			UIURL:         getEnv("WEKNORA_UI_URL", "http://localhost:8082"),
 		},
 		Kb: KbInternalConfig{
 			DocreaderAddr:     getEnv("DOCREADER_ADDR", "docreader:50051"),

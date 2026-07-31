@@ -1,6 +1,6 @@
 /**
  * Knowledge Base API Service — 本地知识库 API 调用
- * 路径前缀: /api/v2/kb (primary) 和 /api/v2/weknora (compat)
+ * 路径前缀: /api/v2/kb
  */
 
 // ─── Types ───────────────────────────────────────────────
@@ -54,7 +54,6 @@ interface APIResponse<T> {
 // ─── API Functions ──────────────────────────────────────
 
 const BASE = "/api/v2/kb";
-const BASE_COMPAT = "/api/v2/weknora"; // compat alias
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<APIResponse<T>> {
   const res = await fetch(url, init);
@@ -75,13 +74,7 @@ export async function checkConfig(): Promise<{ configured: boolean; kbs: KBInfo[
     const json = await fetchJSON<{ knowledge_bases: KBInfo[] }>(`${BASE}/kbs`);
     return { configured: json.success, kbs: json.data?.knowledge_bases ?? [] };
   } catch {
-    // Fallback to compat path
-    try {
-      const json2 = await fetchJSON<{ knowledge_bases: KBInfo[] }>(`${BASE_COMPAT}/kbs`);
-      return { configured: json2.success, kbs: json2.data?.knowledge_bases ?? [] };
-    } catch {
-      return { configured: false, kbs: [] };
-    }
+    return { configured: false, kbs: [] };
   }
 }
 
