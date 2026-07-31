@@ -147,7 +147,7 @@ func (m *KbManager) AddDocument(ctx context.Context, userID, title, content, sou
 		args = []interface{}{nullIfEmpty(userID), sourceType, sourceType, title, content, contentHash, string(metaJSON), embeddingVec, embeddingModel, embeddingDim}
 	}
 
-	err := m.db.QueryRowContext(ctx, query+" RETURNING id::text, user_id, source, source_type, title, content, metadata, (embedding IS NOT NULL), created_at, updated_at", args...).Scan(
+	err := m.db.QueryRowContext(ctx, query+" RETURNING id::text, COALESCE(user_id, ''), source, source_type, title, content, metadata, (embedding IS NOT NULL), created_at, updated_at", args...).Scan(
 		&doc.ID, &doc.UserID, &doc.Source, &doc.SourceType, &doc.Title, &doc.Content,
 		&metaResult, &doc.HasEmbedding, &doc.CreatedAt, &doc.UpdatedAt,
 	)
@@ -1372,9 +1372,13 @@ func (m *KbManager) HybridSearchInKB(ctx context.Context, userID, kbID, query st
 	if mode == SearchModeDense || mode == SearchModeHybrid {
 		if m.embedding != nil && m.embedding.IsConfigured() {
 			vec, _, err := m.embedding.EmbedSingle(ctx, query)
-			if err == nil {
+			if err != nil {
+				slog.Warn("failed to generate query embedding for KB search", "error", err, "query", query)
+			} else {
 				queryVec = tools.FormatVectorForPG(vec)
 			}
+		} else {
+			slog.Warn("embedding client not configured for KB search")
 		}
 	}
 
@@ -1395,11 +1399,13 @@ func (m *KbManager) HybridSearchInKB(ctx context.Context, userID, kbID, query st
 }
 
 // bm25SearchInKB performs BM25 search scoped to a knowledge base.
+// Falls back to PostgreSQL FTS if paradedb BM25 index is not available.
 func (m *KbManager) bm25SearchInKB(ctx context.Context, userID, kbID, query string, limit int) []*KbSearchResult {
 	if m.db == nil {
 		return nil
 	}
 
+	// Try paradedb BM25 search first (only if index exists)
 	q := `
 		SELECT kc.id::text, kc.doc_id::text, COALESCE(kc.title, ''),
 		       LEFT(kc.content, 500), paradedb.score(kc),
@@ -1437,11 +1443,11 @@ func (m *KbManager) ftsSearchInKB(ctx context.Context, userID, kbID, query strin
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT kc.id::text, kc.doc_id::text, COALESCE(kc.title, ''),
 		       LEFT(kc.content, 500),
-		       ts_rank(kc.content_ts, plainto_tsquery('chinese', $1)) as score,
+		       ts_rank(to_tsvector('simple', kc.content), plainto_tsquery('simple', $1)) as score,
 		       COALESCE(kb.source, ''), COALESCE(kc.user_id, '')
 		FROM knowledge_chunks kc
 		JOIN knowledge_base kb ON kc.doc_id = kb.id
-		WHERE kc.content_ts @@ plainto_tsquery('chinese', $1)
+		WHERE to_tsvector('simple', kc.content) @@ plainto_tsquery('simple', $1)
 		  AND kc.kb_id = $2
 		  AND (kc.user_id = $3 OR kc.user_id IS NULL)
 		ORDER BY score DESC
