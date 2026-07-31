@@ -46,6 +46,8 @@ type Structure struct {
 	Body           string      `json:"body"`
 	Conclusion     string      `json:"conclusion"`
 	ArgumentPattern string     `json:"argument_pattern"`
+	ArgumentVariations []string `json:"argument_variations"`
+	ArgumentInstruction string  `json:"argument_instruction"`
 	ArgumentCount  CountRange  `json:"argument_count"`
 }
 

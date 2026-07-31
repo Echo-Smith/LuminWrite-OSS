@@ -624,6 +624,8 @@ func (s *Server) executeCronJob(job *database.CronJob) error {
 		return s.cronIMASync(ctx, job)
 	case "weknora_sync":
 		return s.cronWeKnoraSync(ctx, job)
+	case "kb_auto_import":
+		return s.cronKbAutoImport(ctx, job)
 	default:
 		slog.Info("cron: unknown task type", "job", job.Name, "type", job.TaskType)
 		return nil
