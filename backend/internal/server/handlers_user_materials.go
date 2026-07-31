@@ -2,8 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -12,9 +15,10 @@ import (
 )
 
 // ─── User Material Handlers ─────────────────────────────
-// These endpoints provide personal material management backed by WeKnora.
-// Each user gets their own WeKnora KB (auto-created on first use).
-// Material metadata is stored locally; actual content is indexed in WeKnora.
+// These endpoints provide personal material management backed by the
+// local knowledge base (replaces WeKnora Scheme B).
+// Each user's materials are isolated by user_id in the knowledge_base table.
+// Material metadata is stored in user_materials; actual content is in knowledge_base.
 
 // getUserID extracts user ID from JWT context.
 func (s *Server) getUserID(r *http.Request) string {
@@ -26,8 +30,8 @@ func (s *Server) getUserID(r *http.Request) string {
 
 // handleUserMaterialList lists the authenticated user's materials.
 func (s *Server) handleUserMaterialList(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -40,7 +44,7 @@ func (s *Server) handleUserMaterialList(w http.ResponseWriter, r *http.Request) 
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 20)
 
-	materials, total, err := s.weknoraMgr.ListMaterials(r.Context(), userID, page, pageSize)
+	materials, total, err := s.kbMgr.ListMaterials(r.Context(), userID, page, pageSize)
 	if err != nil {
 		slog.Warn("list user materials failed", "error", err, "user_id", userID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list materials")
@@ -57,8 +61,8 @@ func (s *Server) handleUserMaterialList(w http.ResponseWriter, r *http.Request) 
 
 // handleUserMaterialCreate creates a new material from text/markdown.
 func (s *Server) handleUserMaterialCreate(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -81,16 +85,31 @@ func (s *Server) handleUserMaterialCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Upload to WeKnora
-	docID, err := s.weknoraMgr.AddKnowledgeToUserKB(r.Context(), userID, req.Title, req.Content)
+	// Add document directly to local knowledge base
+	doc, err := s.kbMgr.AddDocument(r.Context(), userID, req.Title, req.Content, "text", map[string]interface{}{
+		"source": "text",
+	})
 	if err != nil {
-		slog.Warn("add material to weknora failed", "error", err, "user_id", userID)
+		slog.Warn("add document to local KB failed", "error", err, "user_id", userID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to add material")
 		return
 	}
 
-	// Get the KB ID for local storage
-	kbID, _ := s.weknoraMgr.GetOrCreateUserKB(r.Context(), userID)
+	// Chunk the content and store chunks
+	chunkConfig := services.DefaultChunkConfig()
+	chunks := services.ChunkText(req.Content, chunkConfig)
+	for _, chunk := range chunks {
+		_, chunkErr := s.kbMgr.AddChunk(r.Context(), doc.ID, userID, chunk.Index, chunk.Title, chunk.Content, map[string]interface{}{
+			"start_pos": chunk.StartPos,
+			"end_pos":   chunk.EndPos,
+		})
+		if chunkErr != nil {
+			slog.Warn("failed to add chunk", "index", chunk.Index, "error", chunkErr)
+		}
+	}
+	if err := s.kbMgr.UpdateChunkCount(r.Context(), doc.ID, len(chunks)); err != nil {
+		slog.Warn("failed to update chunk count", "error", err)
+	}
 
 	// Save metadata locally
 	mat := &services.UserMaterial{
@@ -99,25 +118,25 @@ func (s *Server) handleUserMaterialCreate(w http.ResponseWriter, r *http.Request
 		Title:          req.Title,
 		ContentPreview: truncateStr(req.Content, 500),
 		SourceType:     "text",
-		WeKnoraDocID:   docID,
-		WeKnoraKBID:    kbID,
+		DocID:          doc.ID,
+		ChunkCount:     len(chunks),
 		Status:         "active",
 	}
-	if err := s.weknoraMgr.SaveMaterial(r.Context(), mat); err != nil {
+	if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {
 		slog.Warn("save material metadata failed", "error", err, "user_id", userID)
 	}
 
 	response.Created(w, map[string]any{
-		"id":            mat.ID,
-		"weknora_doc_id": docID,
-		"title":         req.Title,
+		"id":     mat.ID,
+		"doc_id": doc.ID,
+		"title":  req.Title,
 	})
 }
 
 // handleUserMaterialUpload uploads a file as a material.
 func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -144,17 +163,78 @@ func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request
 		title = header.Filename
 	}
 
-	// Upload to WeKnora
-	docID, err := s.weknoraMgr.UploadFileToUserKB(r.Context(), userID, header.Filename, file, title)
-	if err != nil {
-		slog.Warn("upload material to weknora failed", "error", err, "user_id", userID)
-		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to upload material")
+	// Parse file and import to knowledge base
+	// For simple text formats, read directly; for complex formats, use docreader sidecar
+	ext := filepath.Ext(header.Filename)
+	var docID string
+	var chunkCount int
+
+	if isDirectReadFormat(ext) {
+		// Read directly for text formats
+		content, err := readFileContent(file)
+		if err != nil {
+			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to read file")
+			return
+		}
+
+		doc, err := s.kbMgr.AddDocument(r.Context(), userID, title, content, "file", map[string]interface{}{
+			"source":     "file",
+			"file_name":  header.Filename,
+			"file_size":  header.Size,
+			"file_format": ext,
+		})
+		if err != nil {
+			slog.Warn("add document failed", "error", err, "user_id", userID)
+			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to add material")
+			return
+		}
+		docID = doc.ID
+
+		// Chunk and store
+		chunkConfig := services.DefaultChunkConfig()
+		chunks := services.ChunkText(content, chunkConfig)
+		for _, chunk := range chunks {
+			s.kbMgr.AddChunk(r.Context(), docID, userID, chunk.Index, chunk.Title, chunk.Content, nil)
+		}
+		chunkCount = len(chunks)
+	} else {
+		// For complex formats (PDF, Word, etc.), use docreader gRPC sidecar
+		chunkConfig := services.DefaultChunkConfig()
+		parser := services.NewFileParser(s.kbMgr, chunkConfig, s.cfg.Kb.DocreaderAddr)
+		docID, err := parser.ParseAndImport(r.Context(), userID, header.Filename, file, title)
+		if err != nil {
+			slog.Warn("docreader file parsing failed", "error", err, "filename", header.Filename)
+			response.Err(w, http.StatusInternalServerError, "internal_error", "文件解析失败: "+err.Error())
+			return
+		}
+		mat := &services.UserMaterial{
+			ID:             uuid.NewString(),
+			UserID:         userID,
+			Title:          title,
+			ContentPreview: "上传文件: " + header.Filename,
+			SourceType:     "file",
+			FileName:       header.Filename,
+			FileSize:       header.Size,
+			DocID:          docID,
+			ChunkCount:     0, // will be updated by parser
+			Status:         "active",
+		}
+		if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {
+			slog.Warn("save material metadata failed", "error", err, "user_id", userID)
+		}
+
+		response.Created(w, map[string]any{
+			"id":       mat.ID,
+			"doc_id":   docID,
+			"filename": header.Filename,
+			"title":    title,
+		})
 		return
 	}
 
-	// Reset file reader for preview (already consumed by WeKnora upload)
-	// We'll use the filename as preview since we can't re-read
-	kbID, _ := s.weknoraMgr.GetOrCreateUserKB(r.Context(), userID)
+	if err := s.kbMgr.UpdateChunkCount(r.Context(), docID, chunkCount); err != nil {
+		slog.Warn("failed to update chunk count", "error", err)
+	}
 
 	mat := &services.UserMaterial{
 		ID:             uuid.NewString(),
@@ -164,26 +244,26 @@ func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request
 		SourceType:     "file",
 		FileName:       header.Filename,
 		FileSize:       header.Size,
-		WeKnoraDocID:   docID,
-		WeKnoraKBID:    kbID,
+		DocID:          docID,
+		ChunkCount:     chunkCount,
 		Status:         "active",
 	}
-	if err := s.weknoraMgr.SaveMaterial(r.Context(), mat); err != nil {
+	if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {
 		slog.Warn("save material metadata failed", "error", err, "user_id", userID)
 	}
 
 	response.Created(w, map[string]any{
-		"id":            mat.ID,
-		"weknora_doc_id": docID,
-		"filename":      header.Filename,
-		"title":         title,
+		"id":        mat.ID,
+		"doc_id":    docID,
+		"filename":  header.Filename,
+		"title":     title,
 	})
 }
 
-// handleUserMaterialDelete deletes a material (from WeKnora + locally).
+// handleUserMaterialDelete deletes a material (from local KB + metadata).
 func (s *Server) handleUserMaterialDelete(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -199,7 +279,7 @@ func (s *Server) handleUserMaterialDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.weknoraMgr.DeleteMaterial(r.Context(), userID, materialID); err != nil {
+	if err := s.kbMgr.DeleteMaterial(r.Context(), userID, materialID); err != nil {
 		slog.Warn("delete material failed", "error", err, "material_id", materialID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to delete material")
 		return
@@ -208,10 +288,10 @@ func (s *Server) handleUserMaterialDelete(w http.ResponseWriter, r *http.Request
 	response.OK(w, map[string]any{"message": "material deleted", "id": materialID})
 }
 
-// handleUserMaterialSearch searches the user's WeKnora KB using hybrid search.
+// handleUserMaterialSearch searches the user's knowledge base using hybrid search.
 func (s *Server) handleUserMaterialSearch(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -237,18 +317,17 @@ func (s *Server) handleUserMaterialSearch(w http.ResponseWriter, r *http.Request
 		req.Limit = 10
 	}
 
-	results, err := s.weknoraMgr.SearchInUserKB(r.Context(), userID, req.Query, req.Limit)
+	results, err := s.kbMgr.HybridSearch(r.Context(), userID, req.Query, req.Limit)
 	if err != nil {
 		slog.Warn("user material search failed", "error", err, "user_id", userID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "search failed")
 		return
 	}
 
-	// Convert to SearchResult format
 	response.OK(w, map[string]any{
 		"results": results,
 		"query":   req.Query,
-		"source":  "weknora",
+		"source":  "local_kb",
 	})
 }
 
@@ -256,8 +335,8 @@ func (s *Server) handleUserMaterialSearch(w http.ResponseWriter, r *http.Request
 
 // handleTopicMaterialList lists materials associated with a topic.
 func (s *Server) handleTopicMaterialList(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -273,7 +352,7 @@ func (s *Server) handleTopicMaterialList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	associations, err := s.weknoraMgr.ListTopicMaterials(r.Context(), topicID, userID)
+	associations, err := s.kbMgr.ListTopicMaterials(r.Context(), topicID, userID)
 	if err != nil {
 		slog.Warn("list topic materials failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list topic materials")
@@ -282,13 +361,13 @@ func (s *Server) handleTopicMaterialList(w http.ResponseWriter, r *http.Request)
 
 	// Enrich with material details
 	type AssocWithMaterial struct {
-		services.TopicMaterial
+		*services.TopicMaterial
 		Material *services.UserMaterial `json:"material"`
 	}
 
 	enriched := make([]AssocWithMaterial, 0, len(associations))
 	for _, assoc := range associations {
-		mat, _ := s.weknoraMgr.GetMaterial(r.Context(), userID, assoc.MaterialID)
+		mat, _ := s.kbMgr.GetMaterial(r.Context(), userID, assoc.MaterialID)
 		enriched = append(enriched, AssocWithMaterial{
 			TopicMaterial: assoc,
 			Material:      mat,
@@ -303,8 +382,8 @@ func (s *Server) handleTopicMaterialList(w http.ResponseWriter, r *http.Request)
 
 // handleTopicMaterialAssociate manually associates a material with a topic.
 func (s *Server) handleTopicMaterialAssociate(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -322,7 +401,7 @@ func (s *Server) handleTopicMaterialAssociate(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := s.weknoraMgr.AssociateMaterialWithTopic(r.Context(), topicID, materialID, userID, "manual", 0); err != nil {
+	if err := s.kbMgr.AssociateMaterialWithTopic(r.Context(), topicID, materialID, userID, "manual", 0); err != nil {
 		slog.Warn("associate material with topic failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to associate material")
 		return
@@ -333,8 +412,8 @@ func (s *Server) handleTopicMaterialAssociate(w http.ResponseWriter, r *http.Req
 
 // handleTopicMaterialRemove removes a material association from a topic.
 func (s *Server) handleTopicMaterialRemove(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -347,7 +426,7 @@ func (s *Server) handleTopicMaterialRemove(w http.ResponseWriter, r *http.Reques
 	topicID := chi.URLParam(r, "topicId")
 	materialID := chi.URLParam(r, "materialId")
 
-	if err := s.weknoraMgr.RemoveTopicMaterial(r.Context(), topicID, materialID, userID); err != nil {
+	if err := s.kbMgr.RemoveTopicMaterial(r.Context(), topicID, materialID, userID); err != nil {
 		slog.Warn("remove topic material failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to remove association")
 		return
@@ -356,10 +435,10 @@ func (s *Server) handleTopicMaterialRemove(w http.ResponseWriter, r *http.Reques
 	response.OK(w, map[string]any{"message": "association removed", "topic_id": topicID, "material_id": materialID})
 }
 
-// handleTopicMaterialAuto auto-associates materials with a topic using WeKnora hybrid search.
+// handleTopicMaterialAuto auto-associates materials with a topic using local hybrid search.
 func (s *Server) handleTopicMaterialAuto(w http.ResponseWriter, r *http.Request) {
-	if s.weknoraMgr == nil {
-		response.Err(w, http.StatusServiceUnavailable, "weknora_not_configured", "WeKnora is not configured")
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
 		return
 	}
 
@@ -385,7 +464,6 @@ func (s *Server) handleTopicMaterialAuto(w http.ResponseWriter, r *http.Request)
 
 	// If no query provided, use the topic title as search query
 	if req.Query == "" {
-		// Fetch topic from DB
 		var title string
 		if s.dbAvail && s.adminRepo != nil {
 			s.adminRepo.DB().DB.QueryRowContext(r.Context(),
@@ -399,8 +477,8 @@ func (s *Server) handleTopicMaterialAuto(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Search in user's WeKnora KB
-	results, err := s.weknoraMgr.SearchInUserKB(r.Context(), userID, req.Query, req.Limit)
+	// Search in user's local knowledge base
+	results, err := s.kbMgr.HybridSearch(r.Context(), userID, req.Query, req.Limit)
 	if err != nil {
 		slog.Warn("auto-associate search failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "search failed")
@@ -410,11 +488,11 @@ func (s *Server) handleTopicMaterialAuto(w http.ResponseWriter, r *http.Request)
 	// Create associations for each result
 	associated := 0
 	for _, result := range results {
-		if result.ID == "" {
+		if result.DocID == "" {
 			continue
 		}
-		// Try to find the local material by WeKnora doc ID
-		mat, _ := s.weknoraMgr.GetMaterialByDocID(r.Context(), userID, result.ID)
+		// Try to find the local material by doc ID
+		mat, _ := s.kbMgr.GetMaterial(r.Context(), userID, result.DocID)
 		if mat == nil {
 			// Create a lightweight material record from search result
 			mat = &services.UserMaterial{
@@ -423,13 +501,13 @@ func (s *Server) handleTopicMaterialAuto(w http.ResponseWriter, r *http.Request)
 				Title:          result.Title,
 				ContentPreview: truncateStr(result.Content, 500),
 				SourceType:     "auto",
-				WeKnoraDocID:   result.ID,
+				DocID:          result.DocID,
 				Status:         "active",
 			}
-			s.weknoraMgr.SaveMaterial(r.Context(), mat)
+			s.kbMgr.SaveMaterial(r.Context(), mat)
 		}
 
-		if err := s.weknoraMgr.AssociateMaterialWithTopic(r.Context(), topicID, mat.ID, userID, "auto", result.Score); err == nil {
+		if err := s.kbMgr.AssociateMaterialWithTopic(r.Context(), topicID, mat.ID, userID, "auto", result.Score); err == nil {
 			associated++
 		}
 	}
@@ -443,20 +521,7 @@ func (s *Server) handleTopicMaterialAuto(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// ─── WeKnora Config Status ──────────────────────────────
-
-// handleWeKnoraStatus returns WeKnora configuration status (for admin panel).
-func (s *Server) handleWeKnoraStatus(w http.ResponseWriter, r *http.Request) {
-	status := map[string]any{
-		"enabled":       s.cfg.WeKnora.Enabled,
-		"base_url":      s.cfg.WeKnora.BaseURL,
-		"ui_url":        s.cfg.WeKnora.UIURL,
-		"admin_email":   s.cfg.WeKnora.AdminEmail,
-		"kb_id":         s.cfg.WeKnora.KBID,
-		"scheme_b":      s.weknoraMgr != nil && s.weknoraMgr.IsConfigured(),
-	}
-	response.OK(w, status)
-}
+// ─── Knowledge Base Status ──────────────────────────────
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -467,4 +532,36 @@ func truncateStr(s string, max int) string {
 	return s[:max] + "..."
 }
 
+// isDirectReadFormat returns true for file formats that can be read as plain text.
+func isDirectReadFormat(ext string) bool {
+	switch ext {
+	case ".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm", ".xml", ".yaml", ".yml", ".log":
+		return true
+	}
+	return false
+}
 
+// readFileContent reads the content of a text file.
+func readFileContent(file interface{ Read([]byte) (int, error) }) (string, error) {
+	buf := make([]byte, 0, 512)
+	tmp := make([]byte, 4096)
+	for {
+		n, err := file.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "", err
+		}
+		if len(buf) > 10*1024*1024 { // 10MB limit
+			break
+		}
+	}
+	return string(buf), nil
+}
+
+// Ensure os import is used (for future file handling)
+var _ = os.Open

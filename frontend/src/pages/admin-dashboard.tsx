@@ -18,7 +18,7 @@ import { APIKeysPage } from "./admin/api-keys";
 import { TokenUsagePage } from "./admin/token-usage";
 import { CronJobsPage } from "./admin/cron-jobs";
 import { PendingStylesPage } from "./admin/pending-styles";
-import { WeKnoraKBPage } from "./admin/weknora-kb";
+import { KnowledgeBasePage } from "./admin/knowledge-base";
 
 type AdminPage =
   | "overview"
@@ -32,7 +32,7 @@ type AdminPage =
   | "feedback"
   | "usage"
   | "sensitive"
-  | "weknora";
+  | "kb";
 
 const NAV_ITEMS: { key: AdminPage; label: string; icon: string }[] = [
   { key: "overview", label: "概览", icon: "📊" },
@@ -46,7 +46,7 @@ const NAV_ITEMS: { key: AdminPage; label: string; icon: string }[] = [
   { key: "feedback", label: "反馈分析", icon: "💬" },
   { key: "usage", label: "用量统计", icon: "📈" },
   { key: "sensitive", label: "敏感词库", icon: "🛡️" },
-  { key: "weknora", label: "WeKnora 知识库", icon: "📚" },
+  { key: "kb", label: "知识库", icon: "📚" },
 ];
 
 export function AdminDashboard() {
@@ -117,7 +117,7 @@ export function AdminDashboard() {
         {activePage === "evaluation" && <EvaluationPage />}
         {activePage === "usage" && <TokenUsagePage />}
         {activePage === "sensitive" && <SensitiveWordsPage />}
-        {activePage === "weknora" && <WeKnoraKBPage />}
+        {activePage === "kb" && <KnowledgeBasePage />}
       </main>
     </div>
   );

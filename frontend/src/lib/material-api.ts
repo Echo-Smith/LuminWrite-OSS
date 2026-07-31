@@ -15,8 +15,10 @@ export interface UserMaterial {
   source_url?: string;
   file_name?: string;
   file_size?: number;
-  weknora_doc_id: string;
-  weknora_kb_id: string;
+  doc_id?: string;
+  chunk_count?: number;
+  weknora_doc_id?: string; // DEPRECATED: use doc_id
+  weknora_kb_id?: string; // DEPRECATED
   metadata?: Record<string, unknown>;
   status: string;
   created_at: string;
@@ -24,9 +26,13 @@ export interface UserMaterial {
 }
 
 export interface MaterialSearchResult {
+  doc_id?: string;
+  chunk_id?: string;
   id: string;
   content: string;
   score: number;
+  bm25_score?: number;
+  dense_score?: number;
   title: string;
   source: string;
   knowledge_id?: string;
