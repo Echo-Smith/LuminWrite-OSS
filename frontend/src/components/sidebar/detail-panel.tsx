@@ -359,7 +359,7 @@ function StyleInfo({ slug }: { slug: string }) {
         </div>
         <div className="flex justify-between text-xs">
           <span className="text-muted-foreground">递进模式</span>
-          <span className="font-medium">首在-重在-贵在</span>
+          <span className="font-medium">灵活变式</span>
         </div>
         <div className="flex justify-between text-xs">
           <span className="text-muted-foreground">修辞要求</span>

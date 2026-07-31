@@ -1108,6 +1108,14 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		if s.profile.Structure.ArgumentPattern != "" {
 			promptBuilder.WriteString(fmt.Sprintf("论证模式：%s\n", s.profile.Structure.ArgumentPattern))
 		}
+		// If argument variations are provided, list them as flexible options
+		if len(s.profile.Structure.ArgumentVariations) > 0 {
+			promptBuilder.WriteString(fmt.Sprintf("可选递进变式：%s\n", strings.Join(s.profile.Structure.ArgumentVariations, " / ")))
+		}
+		// If argument instruction is provided, add it as guidance
+		if s.profile.Structure.ArgumentInstruction != "" {
+			promptBuilder.WriteString(fmt.Sprintf("论述要求：%s\n", s.profile.Structure.ArgumentInstruction))
+		}
 	}
 
 	// Add rhetoric requirements from profile (writing only)
