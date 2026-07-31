@@ -23,6 +23,7 @@ type Config struct {
 	RateLimit RateLimitConfig
 	DeepSeek  DeepSeekConfig
 	Dashscope DashscopeConfig
+	Kb        KbInternalConfig
 	IMA       IMAConfig
 	Zhihu     ZhihuConfig
 	Tavily    TavilyConfig
@@ -160,23 +161,33 @@ type AnySearchConfig struct {
 	Timeout  time.Duration
 }
 
-// WeKnoraConfig holds configuration for the WeKnora knowledge base integration.
-// WeKnora provides hybrid search (BM25 + Dense + GraphRAG), multi-source data sync,
-// and document management capabilities.
-//
-// Scheme B: Admin credentials are used to obtain a JWT token, which is then used
-// to create per-user knowledge bases. Users never interact with WeKnora directly.
+// WeKnoraConfig holds legacy configuration for the WeKnora knowledge base integration.
+// DEPRECATED: WeKnora has been merged into V2. These fields are kept for backward
+// compatibility during the transition period and are no longer used.
 type WeKnoraConfig struct {
 	Enabled       bool
 	BaseURL       string
-	APIKey        string // JWT token (legacy: static API key)
-	KBID          string // Default KB ID (for shared/global KB)
+	APIKey        string
+	KBID          string
 	Timeout       time.Duration
-	// Scheme B: Admin credentials for per-user KB management
 	AdminEmail    string
 	AdminPassword string
-	// WeKnora UI URL for iframe embedding in admin panel
 	UIURL         string
+}
+
+// KbInternalConfig holds configuration for the internal knowledge base
+// (replaces the external WeKnora integration).
+type KbInternalConfig struct {
+	// Docreader gRPC sidecar address (for PDF/Word/image parsing)
+	DocreaderAddr     string
+	DocreaderTransport string
+	// Chunking configuration
+	ChunkSize  int
+	ChunkOverlap int
+	// Hybrid search weights (BM25 + Dense + GraphRAG)
+	BM25Weight   float64
+	DenseWeight  float64
+	GraphWeight  float64
 }
 
 type HotTopicsConfig struct {
@@ -314,6 +325,15 @@ Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			AdminEmail:    getEnv("WEKNORA_ADMIN_EMAIL", ""),
 			AdminPassword: getEnv("WEKNORA_ADMIN_PASSWORD", ""),
 			UIURL:         getEnv("WEKNORA_UI_URL", "http://localhost:8082"),
+		},
+		Kb: KbInternalConfig{
+			DocreaderAddr:     getEnv("DOCREADER_ADDR", "docreader:50051"),
+			DocreaderTransport: getEnv("DOCREADER_TRANSPORT", "grpc"),
+			ChunkSize:         getEnvInt("KB_CHUNK_SIZE", 512),
+			ChunkOverlap:      getEnvInt("KB_CHUNK_OVERLAP", 50),
+			BM25Weight:       getEnvFloat("KB_BM25_WEIGHT", 0.3),
+			DenseWeight:      getEnvFloat("KB_DENSE_WEIGHT", 0.5),
+			GraphWeight:      getEnvFloat("KB_GRAPH_WEIGHT", 0.2),
 		},
 		WebAuthn: WebAuthnConfig{
 			RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),

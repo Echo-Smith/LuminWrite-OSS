@@ -1,15 +1,22 @@
 # ─── Writing Agent V2 — Docker Compose ──────────────────
 # Quick start:
 #   cp .env.docker.example .env.docker  # fill in API keys
-#   docker compose up -d                # starts ALL services including WeKnora
+#   docker compose up -d                # starts all services
 #
 # Development (hot reload):
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# WeKnora has been fully merged into V2. The PostgreSQL image now uses
+# paradedb (includes pgvector + BM25 full-text search). The weknora-app,
+# weknora-ui, weknora-postgres, and weknora-redis containers have been removed.
+# Only weknora-docreader is retained as a sidecar for document parsing.
 
 services:
-  # ── PostgreSQL + pgvector (for writing-agent) ───────
+  # ── PostgreSQL + pgvector + paradedb (BM25) ──────────
+  # Replaces both the old pgvector image and the separate weknora-postgres.
+  # paradedb includes: pgvector, pg_bm25 (BM25 full-text search), and more.
   postgres:
-    image: pgvector/pgvector:pg16
+    image: paradedb/paradedb:v0.22.2-pg17
     container_name: writing-agent-pg
     environment:
       POSTGRES_USER: postgres
@@ -30,145 +37,25 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
-    restart: unless-stopped
-
-  # ── WeKnora PostgreSQL (uses paradedb for full extension support) ──
-  weknora-postgres:
-    image: paradedb/paradedb:v0.22.2-pg17
-    container_name: writing-agent-weknora-pg
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${WEKNORA_DB_PASSWORD:-weknora123}
-      POSTGRES_DB: weknora
-    volumes:
-      - weknora_pg_data:/var/lib/postgresql/data
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d weknora"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    restart: unless-stopped
-
-  # ── Redis (for WeKnora) ───────────────────────────────
-  weknora-redis:
-    image: redis:7-alpine
-    container_name: writing-agent-weknora-redis
-    volumes:
-      - weknora_redis_data:/data
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-    restart: unless-stopped
-
-  # ── WeKnora App (main API, port 8080) ────────────────
-  weknora-app:
-    image: wechatopenai/weknora-app:latest
-    container_name: writing-agent-weknora-app
-    env_file:
-      - .env.docker
-    environment:
-      # Database (dedicated WeKnora PostgreSQL instance)
-      DB_DRIVER: postgres
-      DB_HOST: weknora-postgres
-      DB_PORT: "5432"
-      DB_USER: postgres
-      DB_PASSWORD: ${WEKNORA_DB_PASSWORD:-weknora123}
-      DB_NAME: weknora
-      # Redis
-      REDIS_ADDR: weknora-redis:6379
-      # Storage & retrieval (simplified — no MinIO/Qdrant/Milvus needed)
-      STORAGE_TYPE: local
-      LOCAL_STORAGE_BASE_DIR: /data/files
-      RETRIEVE_DRIVER: postgres
-      # Docreader
-      DOCREADER_ADDR: weknora-docreader:50051
-      DOCREADER_TRANSPORT: grpc
-      # LLM (reuse DeepSeek — vars LLM_* are in .env.docker via env_file)
-      # Runtime
-      GIN_MODE: release
-      TZ: Asia/Shanghai
-      AUTO_MIGRATE: "true"
-    # No external port — only accessible on internal Docker network
-    # Backend accesses WeKnora API via http://weknora-app:8080/api/v1 (internal)
-    # Admin panel accesses WeKnora UI via nginx proxy /weknora-ui/ (internal)
-    volumes:
-      - weknora_data:/data/files
-      - weknora_docreader_tmp:/tmp/docreader
-      - ./config/weknora/config.yaml:/app/config/config.yaml:ro
-    networks:
-      - internal
-    depends_on:
-      weknora-postgres:
-        condition: service_healthy
-      weknora-redis:
-        condition: service_healthy
-      weknora-docreader:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
           memory: 1G
-    init: true
     restart: unless-stopped
 
-  # ── WeKnora Docreader (document parsing, port 50051) ─
-  weknora-docreader:
+  # ── Docreader (document parsing sidecar, gRPC port 50051) ──
+  # Retained from WeKnora for high-quality PDF/Word/image parsing.
+  # The Go backend calls it via gRPC for file-based knowledge import.
+  docreader:
     image: wechatopenai/weknora-docreader:latest
-    container_name: writing-agent-weknora-docreader
+    container_name: writing-agent-docreader
     environment:
       GRPC_TLS_ENABLED: "false"
     volumes:
-      - weknora_docreader_tmp:/tmp/docreader
+      - docreader_tmp:/tmp/docreader
     networks:
       - internal
     deploy:
       resources:
         limits:
           memory: 512M
-    restart: unless-stopped
-
-  # ── WeKnora UI (web management, port 80) ─────────────
-  weknora-ui:
-    image: wechatopenai/weknora-ui:latest
-    container_name: writing-agent-weknora-ui
-    environment:
-      APP_HOST: weknora-app
-      APP_PORT: "8080"
-      APP_SCHEME: http
-      MAX_FILE_SIZE_MB: "50"
-    # No external port — only accessible on internal Docker network
-    # Admin panel embeds WeKnora UI via nginx proxy at /weknora-ui/ (same origin)
-    networks:
-      - internal
-    depends_on:
-      weknora-app:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 64M
     restart: unless-stopped
 
   # ── Backend (Go) ───────────────────────────────────────
@@ -181,10 +68,9 @@ services:
       - .env.docker
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/writing_agent_v2?sslmode=disable
-      # Point WeKnora client at the weknora-app container
-      WEKNORA_BASE_URL: http://weknora-app:8080/api/v1
-      # WeKnora UI URL (relative path for browser iframe via nginx proxy)
-      WEKNORA_UI_URL: /weknora-ui
+      # Docreader gRPC address (sidecar for document parsing)
+      DOCREADER_ADDR: docreader:50051
+      DOCREADER_TRANSPORT: grpc
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     networks:
@@ -193,8 +79,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      weknora-app:
-        condition: service_healthy
+      docreader:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
@@ -218,7 +104,7 @@ services:
       - "${FRONTEND_PORT:-3000}:8080"
     networks:
       - frontend
-      - internal  # Need internal network to reach weknora-ui for nginx proxy
+      - internal
     depends_on:
       backend:
         condition: service_healthy
@@ -237,7 +123,7 @@ services:
 
 # ── Networks ────────────────────────────────────────────
 networks:
-  # Internal network: all backend services (DB, Redis, WeKnora, backend)
+  # Internal network: all backend services (DB, docreader, backend)
   internal:
     driver: bridge
   # Frontend network: frontend + backend (Nginx proxies to backend)
@@ -248,11 +134,5 @@ networks:
 volumes:
   pg_data:
     driver: local
-  weknora_pg_data:
-    driver: local
-  weknora_data:
-    driver: local
-  weknora_redis_data:
-    driver: local
-  weknora_docreader_tmp:
+  docreader_tmp:
     driver: local

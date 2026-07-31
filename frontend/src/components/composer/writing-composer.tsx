@@ -8,7 +8,7 @@
  *   - 控件行与输入框整合在同一个容器内
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Pause, Play, Square, Plus, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, PenLine, type LucideIcon } from "lucide-react";
+import { Pause, Play, Square, Plus, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, PenLine, Paperclip, Loader2, type LucideIcon } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
@@ -24,7 +24,9 @@ export function WritingComposer() {
   const [materials, setMaterials] = useState<string[]>([]);
   const [showMaterials, setShowMaterials] = useState(false);
   const [materialInput, setMaterialInput] = useState("");
+  const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const startWriting = useAgentStore((s) => s.startWriting);
   const pauseWriting = useAgentStore((s) => s.pauseWriting);
@@ -112,6 +114,33 @@ export function WritingComposer() {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("title", file.name);
+      const res = await fetch("/api/v2/materials/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${localStorage.getItem("token") || ""}` },
+        body: fd,
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        // Add as material tag — agent will search KB for this user's chunks
+        const tag = `📎 ${file.name}`;
+        setMaterials([...materials, tag]);
+      }
+    } catch (err) {
+      console.error("file upload failed", err);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="px-4 pb-4 pt-2">
       {/* 暂停状态提示栏 */}
@@ -182,6 +211,27 @@ export function WritingComposer() {
                 className="rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent"
               >
                 添加
+              </button>
+              {/* 文件上传按钮 — 调用 docreader 解析 PDF/Word/图片 */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.bmp,.html"
+                onChange={handleFileUpload}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent disabled:opacity-50"
+                title="上传文件（PDF/Word/图片等，自动解析）"
+              >
+                {uploading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Paperclip className="h-3.5 w-3.5" />
+                )}
+                {uploading ? "解析中..." : "文件"}
               </button>
             </div>
           </div>

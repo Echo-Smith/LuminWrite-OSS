@@ -1,6 +1,6 @@
 /**
  * 我的素材库 — 用户端个人素材管理页面
- * 基于 WeKnora Scheme B（每用户独立 KB，后端代理）
+ * 基于内置知识引擎（本地 PostgreSQL + pgvector + paradedb BM25 混合检索）
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
@@ -157,7 +157,7 @@ export function MyMaterialsPage() {
               <h1 className="text-xl font-semibold">我的素材库</h1>
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              基于 WeKnora 混合检索（BM25 + Dense + GraphRAG）· 支持 文本/文件 上传 · 仅可见自己的素材
+              内置知识引擎（BM25 + Dense + GraphRAG）· 支持 文本/文件 上传 · 仅可见自己的素材
             </p>
           </div>
           <Button size="sm" onClick={() => setShowAdd(!showAdd)}>

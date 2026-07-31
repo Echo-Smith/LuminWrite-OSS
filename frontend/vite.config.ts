@@ -17,13 +17,6 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
-      // WeKnora UI proxy (for iframe embedding in admin panel — same origin)
-      "/weknora-ui": {
-        target: "http://localhost:8082",
-        changeOrigin: true,
-        ws: true,
-        rewrite: (path) => path.replace(/^\/weknora-ui/, ""),
-      },
     },
   },
 });

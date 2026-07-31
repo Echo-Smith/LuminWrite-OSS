@@ -30,16 +30,27 @@ func NewPostgres(url string, maxOpen, maxIdle int) (*DB, error) {
 	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	// Retry connection — handles Docker startup race condition where
+	// the backend starts before PostgreSQL is fully ready.
+	maxRetries := 5
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := db.PingContext(ctx)
+		cancel()
+		if err == nil {
+			slog.Info("database connected", "url", maskURL(url), "attempt", attempt)
+			return &DB{db}, nil
+		}
+		lastErr = err
+		slog.Warn("database connection retry", "attempt", attempt, "max", maxRetries, "error", err)
+		if attempt < maxRetries {
+			time.Sleep(2 * time.Second)
+		}
 	}
 
-	slog.Info("database connected", "url", maskURL(url))
-	return &DB{db}, nil
+	db.Close()
+	return nil, fmt.Errorf("failed to ping database after %d attempts: %w", maxRetries, lastErr)
 }
 
 // Migrate runs all pending SQL migrations using the new migration engine.

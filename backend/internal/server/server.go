@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -67,8 +66,11 @@ type Server struct {
 	userStyleStore  *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
 
-	// WeKnora Manager (Scheme B: per-user KB management)
-	weknoraMgr *services.WeKnoraManager
+	// WeKnora Manager (legacy — removed, kept as comment for reference)
+	// weknoraMgr *services.WeKnoraManager
+
+	// Knowledge Manager (replaces WeKnora — operates directly on local PG)
+	kbMgr *services.KbManager
 }
 
 // New creates a new Server.
@@ -187,30 +189,14 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.AnySearch.APIKey, cfg.AnySearch.Endpoint, cfg.AnySearch.Timeout,
 	)
 
-	// Attach WeKnora as a hybrid search source (BM25 + Dense + GraphRAG)
-	if cfg.WeKnora.Enabled && cfg.WeKnora.KBID != "" {
-		var wkClient *tools.WeKnoraClient
-		if cfg.WeKnora.APIKey != "" {
-			// Legacy: use static API key
-			wkClient = tools.NewWeKnoraClient(cfg.WeKnora.BaseURL, cfg.WeKnora.APIKey, cfg.WeKnora.KBID, cfg.WeKnora.Timeout)
-		} else if cfg.WeKnora.AdminEmail != "" && cfg.WeKnora.AdminPassword != "" {
-			// Scheme B: login to get fresh JWT token for search integration
-			token, _, err := tools.WeKnoraLogin(cfg.WeKnora.BaseURL, cfg.WeKnora.AdminEmail, cfg.WeKnora.AdminPassword, cfg.WeKnora.Timeout)
-			if err != nil {
-				slog.Warn("weknora admin login failed for search integration", "error", err)
-			} else {
-				wkClient = tools.NewWeKnoraClient(cfg.WeKnora.BaseURL, token, cfg.WeKnora.KBID, cfg.WeKnora.Timeout)
-				slog.Info("weknora search source authenticated via Scheme B admin login")
-			}
-		}
-		if wkClient != nil && wkClient.IsConfigured() {
-			searchClient.SetWeKnoraClient(wkClient)
-			slog.Info("weknora knowledge base integrated",
-				"base_url", cfg.WeKnora.BaseURL,
-				"kb_id", cfg.WeKnora.KBID,
-			)
-		}
-	}
+	// ── WeKnora external search integration (DEPRECATED) ──
+	// WeKnora has been merged into V2. The local KbManager now handles
+	// all knowledge base operations. This block is kept for backward
+	// compatibility but will never execute because WEKNORA_ENABLED
+	// defaults to false and the external WeKnora containers are removed.
+	// To use local KB search in the agent pipeline, the KbManager
+	// is wired separately via the tool registry.
+	_ = cfg.WeKnora // suppress unused field warning
 
 	if !searchClient.HasSources() {
 		slog.Warn("no search sources configured")
@@ -336,31 +322,32 @@ func New(cfg *config.Config) (*Server, error) {
 		s.styleBuilder = services.NewStyleBuilderService(llm)
 	}
 
-	// ── WeKnora Manager (Scheme B: per-user KB management) ──
-	if cfg.WeKnora.Enabled && cfg.WeKnora.AdminEmail != "" && cfg.WeKnora.AdminPassword != "" {
-		var mgrDB *sql.DB
-		if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
-			mgrDB = adminRepo.DB().DB
-		}
-		if mgrDB != nil {
-			s.weknoraMgr = services.NewWeKnoraManager(
-				cfg.WeKnora.BaseURL,
-				cfg.WeKnora.AdminEmail,
-				cfg.WeKnora.AdminPassword,
-				cfg.WeKnora.Timeout,
-				mgrDB,
+	// ── Knowledge Manager (replaces WeKnora — operates directly on local PG) ──
+	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
+		s.kbMgr = services.NewKbManager(adminRepo.DB().DB, embeddingClient)
+
+		// Wire GraphRAG — entity extraction + relation graph (replaces WeKnora's graph pipeline)
+		if llm != nil {
+			graphRAG := services.NewGraphRAGManager(adminRepo.DB().DB, embeddingClient, llm)
+			s.kbMgr.SetGraphRAG(graphRAG)
+			slog.Info("GraphRAG entity extraction wired into knowledge base",
+				"entity_types", "person/organization/location/event/concept/product",
+				"relation_types", "Author/Alias/Member_of/Located_in/Participated_in/Created/Related_to/Caused/Target_of",
 			)
-			s.weknoraMgr.SetAdminKBID(cfg.WeKnora.KBID)
-			slog.Info("weknora manager initialized (Scheme B)",
-				"base_url", cfg.WeKnora.BaseURL,
-				"admin_email", cfg.WeKnora.AdminEmail,
-				"kb_id", cfg.WeKnora.KBID,
-			)
-		} else {
-			slog.Warn("weknora manager skipped: database not available")
 		}
-	} else if cfg.WeKnora.Enabled {
-		slog.Warn("weknora enabled but admin credentials not set — Scheme B requires WEKNORA_ADMIN_EMAIL and WEKNORA_ADMIN_PASSWORD")
+
+		slog.Info("knowledge manager initialized (local PG, no external WeKnora dependency)",
+			"docreader_addr", cfg.Kb.DocreaderAddr,
+			"chunk_size", cfg.Kb.ChunkSize,
+			"chunk_overlap", cfg.Kb.ChunkOverlap,
+		)
+
+		// Wire local KB into the multi-source search pipeline
+		// This replaces the old WeKnora HTTP search integration
+		searchClient.SetKnowledgeSearcher(services.NewKbSearchAdapter(s.kbMgr))
+		slog.Info("local knowledge base wired into search pipeline (BM25 + Dense + RRF)")
+	} else {
+		slog.Warn("knowledge manager skipped: database not available")
 	}
 
 	// ── Editorial system initialization ──
@@ -479,21 +466,38 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Post("/reputation/{userId}/recalculate", s.handleRecalculateReputation)
 		r.Get("/reputation/{userId}/history", s.handleReputationHistory)
 
-		// Knowledge Base (Semantic Search)
+		// Knowledge Base (legacy simple KB — list/add/delete on knowledge_base table)
 		r.Get("/kb", s.handleKBList)
 		r.Post("/kb", s.handleKBAdd)
 		r.Delete("/kb/{id}", s.handleKBDelete)
-		r.Post("/kb/search", s.handleKBSemanticSearch)
 
-		// WeKnora Knowledge Base (Hybrid Search + Document Management)
-		r.Get("/weknora/kbs", s.handleWeKnoraListKBs)
-		r.Get("/weknora/knowledge", s.handleWeKnoraListKnowledge)
-		r.Post("/weknora/knowledge", s.handleWeKnoraAddKnowledge)
-		r.Post("/weknora/knowledge/url", s.handleWeKnoraAddFromURL)
-		r.Post("/weknora/knowledge/upload", s.handleWeKnoraUploadFile)
-		r.Delete("/weknora/knowledge/{id}", s.handleWeKnoraDeleteKnowledge)
-		r.Post("/weknora/search", s.handleWeKnoraSearch)
-		r.Get("/weknora/status", s.handleWeKnoraStatus)
+		// Knowledge Base (Hybrid Search + Document Management)
+		// Primary paths: /kb/* (new — operates on knowledge_chunks with BM25+Dense+RRF)
+		r.Get("/kb/kbs", s.handleKBListKBs)
+		r.Post("/kb/manage", s.handleKBCreate)
+		r.Put("/kb/manage/{id}", s.handleKBUpdate)
+		r.Delete("/kb/manage/{id}", s.handleKBDeleteKB)
+		r.Get("/kb/knowledge", s.handleKBListKnowledge)
+		r.Post("/kb/knowledge", s.handleKBAddKnowledge)
+		r.Post("/kb/knowledge/url", s.handleKBAddFromURL)
+		r.Post("/kb/knowledge/upload", s.handleKBUploadFile)
+		r.Delete("/kb/knowledge/{id}", s.handleKBDeleteKnowledge)
+		r.Post("/kb/search", s.handleKBSearch)
+		r.Get("/kb/status", s.handleKBStatus)
+		r.Get("/kb/stats", s.handleKBStats)
+		r.Get("/kb/documents/{id}/chunks", s.handleKBGetDocumentChunks)
+		r.Get("/kb/documents/{id}/entities", s.handleKBGetDocumentEntities)
+		r.Get("/kb/graph", s.handleKBGetGraph)
+
+		// Compat alias: /weknora/* (kept for frontend transition)
+		r.Get("/weknora/kbs", s.handleKBListKBs)
+		r.Get("/weknora/knowledge", s.handleKBListKnowledge)
+		r.Post("/weknora/knowledge", s.handleKBAddKnowledge)
+		r.Post("/weknora/knowledge/url", s.handleKBAddFromURL)
+		r.Post("/weknora/knowledge/upload", s.handleKBUploadFile)
+		r.Delete("/weknora/knowledge/{id}", s.handleKBDeleteKnowledge)
+		r.Post("/weknora/search", s.handleKBSearch)
+		r.Get("/weknora/status", s.handleKBStatus)
 
 		// User Materials (Scheme B: per-user WeKnora KB)
 		r.With(s.jwtAuthMiddleware).Get("/materials", s.handleUserMaterialList)

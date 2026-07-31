@@ -17,12 +17,19 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
 
+// KnowledgeSearcher is the interface for local knowledge base search.
+// It replaces the concrete WeKnoraClient, allowing the search pipeline
+// to use the local KbManager (in services package) without circular imports.
+type KnowledgeSearcher interface {
+	SearchKB(ctx context.Context, query string, limit int) ([]engine.SearchResult, error)
+}
+
 // SearchClient manages multi-source search with concurrent execution.
 type SearchClient struct {
 	tavily            *TavilyClient
 	zhihu             *ZhihuClient
 	ima               *IMAClient
-	weknora           *WeKnoraClient
+	kbSearcher        KnowledgeSearcher // replaces weknora — local KB search
 	tencent           *TencentNewsClient
 	tencentCLI        *TencentNewsCLIClient
 	weibo             *WeiboClient
@@ -82,18 +89,12 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	return c
 }
 
-// SetWeKnoraClient attaches a WeKnora client for hybrid search (BM25 + Dense + GraphRAG).
-// This is called separately after NewSearchClient to avoid changing the constructor signature.
-func (c *SearchClient) SetWeKnoraClient(wk *WeKnoraClient) {
-	if wk != nil && wk.IsConfigured() {
-		c.weknora = wk
-		slog.Info("weknora search source enabled", "kb_id", wk.kbID)
-	}
-}
-
-// WeKnoraClient returns the WeKnora client (for knowledge base sync).
-func (c *SearchClient) WeKnoraClient() *WeKnoraClient {
-	return c.weknora
+// SetKnowledgeSearcher attaches a local knowledge base searcher.
+// This replaces the old SetWeKnoraClient and enables in-process hybrid search
+// (BM25 + Dense + RRF) directly on the local PostgreSQL.
+func (c *SearchClient) SetKnowledgeSearcher(s KnowledgeSearcher) {
+	c.kbSearcher = s
+	slog.Info("local knowledge base search source enabled")
 }
 
 // SetCredibilityLookup sets an optional credibility lookup provider.
@@ -105,7 +106,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.weknora != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.kbSearcher != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -173,13 +174,13 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 		}()
 	}
 
-	if c.weknora != nil {
+	if c.kbSearcher != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := c.weknora.Search(ctx, query, maxPerSource)
+			r, err := c.kbSearcher.SearchKB(ctx, query, maxPerSource)
 			if err != nil {
-				slog.Warn("weknora search failed", "error", err, "query", query)
+				slog.Warn("local KB search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -344,6 +345,9 @@ func (c *SearchClient) activeSources() []string {
 	}
 	if c.ima != nil {
 		sources = append(sources, "ima")
+	}
+	if c.kbSearcher != nil {
+		sources = append(sources, "local_kb")
 	}
 	if c.tencent != nil {
 		sources = append(sources, "tencent")
