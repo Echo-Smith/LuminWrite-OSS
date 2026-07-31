@@ -82,7 +82,7 @@ func (s *Server) cronKbAutoImport(ctx context.Context, job *database.CronJob) er
 		default:
 		}
 
-		_, err := importer.ImportURL(ctx, "", a.URL, a.Title)
+		_, err := importer.ImportURLToKB(ctx, "", kbID, a.URL, a.Title)
 		if err != nil {
 			slog.Warn("cron: kb_auto_import — import failed",
 				"url", a.URL, "title", a.Title, "error", err)
@@ -162,13 +162,10 @@ func extractArticleLinks(html string) []columnArticle {
 
 	// Match <a href="...content_XXX.htm" ...>Title</a>
 	linkRe := regexp.MustCompile(`<a\s+href="([^"]*content_\d+\.htm)"[^>]*>\s*([^<]+)</a>`)
-	dateRe := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`)
 
 	links := linkRe.FindAllStringSubmatch(html, -1)
-	dates := dateRe.FindAllStringSubmatch(html, -1)
 
 	seen := make(map[string]bool)
-	dateIdx := 0
 	for i, m := range links {
 		url := strings.TrimSpace(m[1])
 		title := strings.TrimSpace(m[2])
@@ -177,17 +174,22 @@ func extractArticleLinks(html string) []columnArticle {
 		}
 		seen[url] = true
 
-		// Skip summary lines (usually shorter and are duplicates of the same URL)
-		// The first link for each URL is the title
-		if i+1 < len(links) && strings.TrimSpace(links[i+1][1]) == url {
-			// This is a title link (next one is summary)
-		}
-
+		// Extract date from surrounding text — look for a date pattern
+		// near this link in the original HTML
 		date := ""
-		if dateIdx < len(dates) {
-			date = dates[dateIdx][1]
+		// Find the position of this link in the HTML and look for a date nearby
+		linkPos := strings.Index(html, m[0])
+		if linkPos >= 0 {
+			// Search in a 500-char window after the link for a date
+			searchArea := html[linkPos:]
+			if len(searchArea) > 500 {
+				searchArea = searchArea[:500]
+			}
+			dateRe := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`)
+			if dm := dateRe.FindStringSubmatch(searchArea); dm != nil {
+				date = dm[1]
+			}
 		}
-		dateIdx++
 
 		articles = append(articles, columnArticle{
 			Title: title,
@@ -206,12 +208,13 @@ func (s *Server) filterImportedArticles(ctx context.Context, articles []columnAr
 		return articles, nil
 	}
 
-	// Query existing source_urls from knowledge_documents
+	// Query existing source_urls from knowledge_documents in the specified KB
 	rows, err := s.adminRepo.DB().DB.QueryContext(ctx, `
 		SELECT metadata->>'source_url' AS url
-		FROM knowledge_documents
+		FROM knowledge_base
 		WHERE metadata->>'source_url' IS NOT NULL
-	`)
+		  AND COALESCE(kb_id, 'default') = $1
+	`, kbID)
 	if err != nil {
 		return nil, err
 	}

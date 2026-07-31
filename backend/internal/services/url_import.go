@@ -37,8 +37,14 @@ func NewURLImporter(kbManager *KbManager, chunkConfig ChunkConfig) *URLImporter 
 }
 
 // ImportURL fetches a web page, extracts text, chunks it, and stores
-// it in the knowledge base.
+// it in the knowledge base (default KB).
 func (u *URLImporter) ImportURL(ctx context.Context, userID, url, title string) (string, error) {
+	return u.ImportURLToKB(ctx, userID, "default", url, title)
+}
+
+// ImportURLToKB fetches a web page, extracts text, chunks it, and stores
+// it in the specified knowledge base.
+func (u *URLImporter) ImportURLToKB(ctx context.Context, userID, kbID, url, title string) (string, error) {
 	if u.kbManager == nil || !u.kbManager.IsConfigured() {
 		return "", fmt.Errorf("knowledge base not configured")
 	}
@@ -68,7 +74,7 @@ func (u *URLImporter) ImportURL(ctx context.Context, userID, url, title string) 
 		"imported_at": time.Now().Format(time.RFC3339),
 	}
 
-	doc, err := u.kbManager.AddDocument(ctx, userID, title, content, "url", metadata)
+	doc, err := u.kbManager.AddDocumentToKB(ctx, userID, kbID, title, content, "url", metadata)
 	if err != nil {
 		return "", fmt.Errorf("failed to add document: %w", err)
 	}

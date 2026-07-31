@@ -212,6 +212,7 @@ func (s *Server) handleKBAddFromURL(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL   string `json:"url"`
 		Title string `json:"title"`
+		KBID  string `json:"kb_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
@@ -223,7 +224,7 @@ func (s *Server) handleKBAddFromURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	importer := services.NewURLImporter(s.kbMgr, services.DefaultChunkConfig())
-	docID, err := importer.ImportURL(r.Context(), "", req.URL, req.Title)
+	docID, err := importer.ImportURLToKB(r.Context(), "", req.KBID, req.URL, req.Title)
 	if err != nil {
 		slog.Warn("KB add from URL failed", "error", err, "url", req.URL)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to import URL")
