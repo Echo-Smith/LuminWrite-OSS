@@ -7,6 +7,10 @@ FROM --platform=${BUILDPLATFORM} golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
+# Use Chinese Go module proxy for reliable downloads behind GFW
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+
 WORKDIR /build
 
 # Cache module downloads (only re-runs when go.mod/go.sum change)

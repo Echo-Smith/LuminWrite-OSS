@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 // ─── URL Import Service ───────────────────────────────
@@ -135,11 +138,23 @@ func (u *URLImporter) fetchAndExtract(ctx context.Context, url string) (string, 
 
 // decodeBody handles character encoding detection.
 func (u *URLImporter) decodeBody(body []byte, resp *http.Response) string {
-	contentType := resp.Header.Get("Content-Type")
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 
 	// Check charset from Content-Type header
-	if strings.Contains(contentType, "charset=gbk") || strings.Contains(contentType, "charset=GB2312") {
-		// Try GBK decoding
+	if strings.Contains(contentType, "gbk") || strings.Contains(contentType, "gb2312") {
+		if gbkText, err := decodeGBK(body); err == nil {
+			return gbkText
+		}
+	}
+
+	// Check for charset declaration in HTML meta tag (first 1024 bytes)
+	headLen := len(body)
+	if headLen > 1024 {
+		headLen = 1024
+	}
+	head := strings.ToLower(string(body[:headLen]))
+	if strings.Contains(head, "charset=gbk") || strings.Contains(head, "charset=gb2312") ||
+		strings.Contains(head, `charset="gbk`) || strings.Contains(head, `charset="gb2312`) {
 		if gbkText, err := decodeGBK(body); err == nil {
 			return gbkText
 		}
@@ -148,7 +163,7 @@ func (u *URLImporter) decodeBody(body []byte, resp *http.Response) string {
 	// Default UTF-8
 	text := string(body)
 
-	// Check for GBK meta tag in HTML
+	// Check for replacement characters (indicates decoding failure)
 	if strings.Contains(text, "\ufffd") {
 		if gbkText, err := decodeGBK(body); err == nil {
 			return gbkText
@@ -247,12 +262,14 @@ func (u *URLImporter) decodeHTMLEntities(text string) string {
 	return text
 }
 
-// decodeGBK attempts to decode GBK-encoded bytes to UTF-8.
+// decodeGBK decodes GBK/GB2312-encoded bytes to UTF-8.
 func decodeGBK(body []byte) (string, error) {
-	// Use golang.org/x/text/encoding/simplifiedchinese for GBK decoding
-	// For now, we use a simple approach — most modern Chinese sites use UTF-8
-	// This is a placeholder that can be enhanced with proper GBK support
-	return string(body), nil
+	reader := transform.NewReader(bytes.NewReader(body), simplifiedchinese.GBK.NewDecoder())
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return string(body), err
+	}
+	return string(decoded), nil
 }
 
 // Ensure tools import is used

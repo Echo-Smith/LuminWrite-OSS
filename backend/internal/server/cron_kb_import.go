@@ -69,8 +69,8 @@ func (s *Server) cronKbAutoImport(ctx context.Context, job *database.CronJob) er
 
 	// Step 3: Import each article
 	importer := services.NewURLImporter(s.kbMgr, services.ChunkConfig{
-		ChunkSize: 512,
-		Overlap:   50,
+		Size:    512,
+		Overlap: 50,
 	})
 
 	imported := 0
@@ -166,7 +166,7 @@ func extractArticleLinks(html string) []columnArticle {
 	links := linkRe.FindAllStringSubmatch(html, -1)
 
 	seen := make(map[string]bool)
-	for i, m := range links {
+	for _, m := range links {
 		url := strings.TrimSpace(m[1])
 		title := strings.TrimSpace(m[2])
 		if seen[url] {
