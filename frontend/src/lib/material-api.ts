@@ -1,7 +1,6 @@
 /**
  * User Material API Service — 个人素材库 API 调用
  * 路径前缀: /api/v2/materials
- * 基于 WeKnora Scheme B（每用户独立 KB）
  */
 
 // ─── Types ───────────────────────────────────────────────
@@ -17,8 +16,6 @@ export interface UserMaterial {
   file_size?: number;
   doc_id?: string;
   chunk_count?: number;
-  weknora_doc_id?: string; // DEPRECATED: use doc_id
-  weknora_kb_id?: string; // DEPRECATED
   metadata?: Record<string, unknown>;
   status: string;
   created_at: string;

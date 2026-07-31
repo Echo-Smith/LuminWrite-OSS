@@ -3,13 +3,7 @@
 #   cp .env.docker.example .env.docker  # fill in API keys
 #   docker compose up -d                # starts all services
 #
-# Development (hot reload):
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-#
-# WeKnora has been fully merged into V2. The PostgreSQL image now uses
-# paradedb (includes pgvector + BM25 full-text search). The weknora-app,
-# weknora-ui, weknora-postgres, and weknora-redis containers have been removed.
-# Only weknora-docreader is retained as a sidecar for document parsing.
+# Services: postgres (paradedb+pgvector) · docreader · backend (Go) · frontend (Nginx)
 
 services:
   # ── PostgreSQL + pgvector + paradedb (BM25) ──────────
@@ -41,8 +35,7 @@ services:
     restart: unless-stopped
 
   # ── Docreader (document parsing sidecar, gRPC port 50051) ──
-  # Retained from WeKnora for high-quality PDF/Word/image parsing.
-  # The Go backend calls it via gRPC for file-based knowledge import.
+  # High-quality PDF/Word/image parsing. Called by backend via gRPC.
   docreader:
     image: wechatopenai/weknora-docreader:latest
     container_name: writing-agent-docreader

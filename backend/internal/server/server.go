@@ -66,10 +66,7 @@ type Server struct {
 	userStyleStore  *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
 
-	// WeKnora Manager (legacy — removed, kept as comment for reference)
-	// weknoraMgr *services.WeKnoraManager
-
-	// Knowledge Manager (replaces WeKnora — operates directly on local PG)
+	// Knowledge Manager (operates directly on local PG)
 	kbMgr *services.KbManager
 }
 
@@ -167,14 +164,6 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.Zhihu.Enabled = true
 			slog.Info("search config overridden from DB", "provider", "zhihu")
 		}
-		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "weknora"); err == nil && key != "" {
-			cfg.WeKnora.APIKey = key
-			if baseURL != "" {
-				cfg.WeKnora.BaseURL = baseURL
-			}
-			cfg.WeKnora.Enabled = true
-			slog.Info("search config overridden from DB", "provider", "weknora")
-		}
 	}
 
 	searchClient := tools.NewSearchClient(
@@ -188,15 +177,6 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
 		cfg.AnySearch.APIKey, cfg.AnySearch.Endpoint, cfg.AnySearch.Timeout,
 	)
-
-	// ── WeKnora external search integration (DEPRECATED) ──
-	// WeKnora has been merged into V2. The local KbManager now handles
-	// all knowledge base operations. This block is kept for backward
-	// compatibility but will never execute because WEKNORA_ENABLED
-	// defaults to false and the external WeKnora containers are removed.
-	// To use local KB search in the agent pipeline, the KbManager
-	// is wired separately via the tool registry.
-	_ = cfg.WeKnora // suppress unused field warning
 
 	if !searchClient.HasSources() {
 		slog.Warn("no search sources configured")
@@ -322,7 +302,7 @@ func New(cfg *config.Config) (*Server, error) {
 		s.styleBuilder = services.NewStyleBuilderService(llm)
 	}
 
-	// ── Knowledge Manager (replaces WeKnora — operates directly on local PG) ──
+	// ── Knowledge Manager (operates directly on local PG) ──
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
 		s.kbMgr = services.NewKbManager(adminRepo.DB().DB, embeddingClient)
 
@@ -336,14 +316,13 @@ func New(cfg *config.Config) (*Server, error) {
 			)
 		}
 
-		slog.Info("knowledge manager initialized (local PG, no external WeKnora dependency)",
+		slog.Info("knowledge manager initialized",
 			"docreader_addr", cfg.Kb.DocreaderAddr,
 			"chunk_size", cfg.Kb.ChunkSize,
 			"chunk_overlap", cfg.Kb.ChunkOverlap,
 		)
 
 		// Wire local KB into the multi-source search pipeline
-		// This replaces the old WeKnora HTTP search integration
 		searchClient.SetKnowledgeSearcher(services.NewKbSearchAdapter(s.kbMgr))
 		slog.Info("local knowledge base wired into search pipeline (BM25 + Dense + RRF)")
 	} else {
