@@ -22,10 +22,14 @@ if echo "$CURRENT" | grep -qE "未设置|not set"; then
     # Key is NOT set, so set it now
     echo "[init-cli] Setting tencent-news-cli API key..."
     RESULT=$("$CLI_PATH" apikey-set "$TENCENT_NEWS_API_KEY" 2>&1)
-    if [ $? -eq 0 ]; then
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -eq 0 ] && ! echo "$RESULT" | grep -qiE "error|无效|invalid|失败"; then
         echo "[init-cli] API key set successfully"
     else
-        echo "[init-cli] WARN: Failed to set API key: $RESULT"
+        echo "[init-cli] ERROR: Failed to set tencent-news-cli API key!"
+        echo "[init-cli] The API key may be invalid or expired."
+        echo "[init-cli] Get a valid key from: https://news.qq.com/exchange?scene=appkey"
+        echo "[init-cli] Detail: $RESULT"
     fi
 else
     echo "[init-cli] API key already configured"
