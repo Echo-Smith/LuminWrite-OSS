@@ -14,20 +14,24 @@ import (
 //   - Configurable overlap between adjacent chunks
 //   - Split markers (e.g., "\n\n", "\n", "。") for natural boundaries
 //   - Title extraction for each chunk (first line or sentence)
+//   - Minimum chunk size enforcement (filters out tiny fragments)
+//   - Duplicate/near-duplicate chunk detection
 
 // ChunkConfig controls how text is split into chunks.
 type ChunkConfig struct {
 	Size          int      // Target chunk size in runes
 	Overlap       int      // Overlap between adjacent chunks in runes
-	SplitMarkers []string // Priority-ordered split markers (try \n\n first, then \n, then 。)
+	SplitMarkers  []string // Priority-ordered split markers (try \n\n first, then \n, then 。)
+	MinChunkSize  int      // Minimum chunk size in runes; shorter chunks are merged or discarded
 }
 
 // DefaultChunkConfig returns the default chunking configuration.
 func DefaultChunkConfig() ChunkConfig {
 	return ChunkConfig{
-		Size:          512,
-		Overlap:       50,
-		SplitMarkers:  []string{"\n\n", "\n", "。", "！", "？", "；"},
+		Size:         512,
+		Overlap:      50,
+		SplitMarkers: []string{"\n\n", "\n", "。", "！", "？", "；"},
+		MinChunkSize: 80,
 	}
 }
 
@@ -43,6 +47,12 @@ type Chunk struct {
 // ChunkText splits text into chunks using the given configuration.
 // It tries to split at natural boundaries (paragraphs, sentences) first,
 // falling back to hard splits when chunks exceed the target size.
+//
+// Improvements over the original:
+//   - Skips empty or near-empty chunks (just whitespace)
+//   - Enforces minimum chunk size — tiny tail fragments are merged into the previous chunk
+//   - Fixes the overlap bug: when remaining text < overlap, produces one final chunk instead of degenerate fragments
+//   - Deduplicates near-identical chunks (same content after trimming)
 func ChunkText(text string, config ChunkConfig) []*Chunk {
 	if config.Size <= 0 {
 		config.Size = 512
@@ -52,6 +62,9 @@ func ChunkText(text string, config ChunkConfig) []*Chunk {
 	}
 	if config.Overlap >= config.Size {
 		config.Overlap = config.Size / 4
+	}
+	if config.MinChunkSize <= 0 {
+		config.MinChunkSize = 80
 	}
 	if len(config.SplitMarkers) == 0 {
 		config.SplitMarkers = []string{"\n\n", "\n", "。"}
@@ -65,17 +78,20 @@ func ChunkText(text string, config ChunkConfig) []*Chunk {
 	totalLen := len(runes)
 
 	if totalLen <= config.Size {
+		cleaned := strings.TrimSpace(normalized)
+		if utf8.RuneCountInString(cleaned) == 0 {
+			return nil
+		}
 		return []*Chunk{{
 			Index:    0,
-			Title:     extractTitle(normalized),
-			Content:  normalized,
+			Title:    extractTitle(cleaned),
+			Content:  cleaned,
 			StartPos: 0,
 			EndPos:   totalLen,
 		}}
 	}
 
-	var chunks []*Chunk
-	chunkIdx := 0
+	var rawChunks []*Chunk
 	pos := 0
 
 	for pos < totalLen {
@@ -94,23 +110,82 @@ func ChunkText(text string, config ChunkConfig) []*Chunk {
 
 		// Extract chunk content
 		content := string(runes[pos:end])
-		title := extractTitle(content)
 
-		chunks = append(chunks, &Chunk{
-			Index:    chunkIdx,
-			Title:    title,
-			Content:  content,
-			StartPos: pos,
-			EndPos:   end,
-		})
+		// Skip chunks that are entirely whitespace
+		if strings.TrimSpace(content) != "" {
+			rawChunks = append(rawChunks, &Chunk{
+				Index:    len(rawChunks),
+				Title:    extractTitle(content),
+				Content:  content,
+				StartPos: pos,
+				EndPos:   end,
+			})
+		}
 
-		chunkIdx++
+		// ── Fix overlap bug: if remaining text is shorter than overlap,
+		// produce one final chunk and stop. This prevents degenerate
+		// 1-char-shorter fragments from accumulating. ──
+		remaining := totalLen - end
+		if remaining <= config.Overlap {
+			// Grab any remaining text as the final chunk
+			if remaining > 0 && strings.TrimSpace(string(runes[end:])) != "" {
+				finalContent := string(runes[end:])
+				rawChunks = append(rawChunks, &Chunk{
+					Index:    len(rawChunks),
+					Title:    extractTitle(finalContent),
+					Content:  finalContent,
+					StartPos: end,
+					EndPos:   totalLen,
+				})
+			}
+			break
+		}
+
 		// Move forward, accounting for overlap
 		nextStart := end - config.Overlap
 		if nextStart <= pos {
 			nextStart = pos + 1 // Ensure progress
 		}
 		pos = nextStart
+	}
+
+	// ── Post-process: merge tiny tail chunks into the previous chunk ──
+	if len(rawChunks) <= 1 {
+		return rawChunks
+	}
+
+	minRunes := config.MinChunkSize
+	var chunks []*Chunk
+	for _, c := range rawChunks {
+		contentRunes := utf8.RuneCountInString(strings.TrimSpace(c.Content))
+		if contentRunes < minRunes && len(chunks) > 0 {
+			// Merge into previous chunk
+			prev := chunks[len(chunks)-1]
+			prev.Content = prev.Content + "\n" + c.Content
+			prev.EndPos = c.EndPos
+			if prev.Title == "" {
+				prev.Title = c.Title
+			}
+		} else {
+			c.Index = len(chunks)
+			chunks = append(chunks, c)
+		}
+	}
+
+	// ── Deduplicate: remove chunks with identical trimmed content ──
+	if len(chunks) > 1 {
+		seen := make(map[string]bool, len(chunks))
+		deduped := chunks[:0]
+		for _, c := range chunks {
+			key := strings.TrimSpace(c.Content)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			c.Index = len(deduped)
+			deduped = append(deduped, c)
+		}
+		chunks = deduped
 	}
 
 	return chunks

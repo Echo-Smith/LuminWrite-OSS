@@ -174,15 +174,15 @@ func (u *URLImporter) decodeBody(body []byte, resp *http.Response) string {
 }
 
 // extractTextFromHTML removes HTML tags and extracts clean text.
+// It also filters out common website boilerplate (navigation, footers, ads, etc.)
 func (u *URLImporter) extractTextFromHTML(html string) string {
-	// Remove script and style blocks
-	scriptRe := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
-	html = scriptRe.ReplaceAllString(html, "")
+	// Remove script, style, nav, header, footer, aside blocks
+	for _, tag := range []string{"script", "style", "nav", "header", "footer", "aside", "noscript", "iframe"} {
+		re := regexp.MustCompile(`(?is)<` + tag + `[^>]*>.*?</` + tag + `>`)
+		html = re.ReplaceAllString(html, "")
+	}
 
-	styleRe := regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
-	html = styleRe.ReplaceAllString(html, "")
-
-	// Extract title
+	// Extract title before removing tags
 	title := u.extractTitle(html)
 
 	// Remove all HTML tags
@@ -201,12 +201,68 @@ func (u *URLImporter) extractTextFromHTML(html string) string {
 	multiNlRe := regexp.MustCompile(`\n{3,}`)
 	text = multiNlRe.ReplaceAllString(text, "\n\n")
 
-	// Prepend title if found
-	if title != "" {
+	// ── Filter out website boilerplate line by line ──
+	text = cleanBoilerplate(text)
+
+	// Prepend title if found and not already at the top
+	if title != "" && !strings.HasPrefix(strings.TrimSpace(text), title) {
 		text = title + "\n\n" + strings.TrimSpace(text)
 	}
 
 	return strings.TrimSpace(text)
+}
+
+// boilerplatePatterns are regex patterns for lines that are almost certainly
+// website navigation, footer, or ad content — not article body text.
+var boilerplatePatterns = []*regexp.Regexp{
+	// Navigation menus: "首页 | 新闻 | 原创 | 议事厅 | 论坛"
+	regexp.MustCompile(`(?i)(首页|主页|网站首页)\s*[|｜]\s*(新闻|原创|议事厅|论坛|视频|图片|专题|专栏|博客|微博|微信)`),
+	// App download prompts
+	regexp.MustCompile(`(?i)立即下载|扫码下载|APP下载|关注微信|扫一扫|二维码`),
+	// Contact / copyright / license lines
+	regexp.MustCompile(`(?i)联系电话|联系方式|客服电话|新闻热线|投稿邮箱|广告合作|商务合作`),
+	regexp.MustCompile(`(?i)增值电信业务经营许可证|ICP[备证]号|京公网安备|互联网新闻信息服务许可证`),
+	regexp.MustCompile(`(?i)版权所有|Copyright|All\s+Rights\s+Reserved|©`),
+	// Site map / navigation links
+	regexp.MustCompile(`(?i)网站地图|关于我们|联系我们|加入我们|招贤纳士|友情链接|站点地图`),
+	// Social media follows
+	regexp.MustCompile(`(?i)关注|下载客户端|移动端|PC端`),
+	// Short navigation-only lines (e.g., "杭网首页 | 新闻 | 原创")
+	regexp.MustCompile(`^[\s|｜A-Za-z\u4e00-\u9fff]{0,30}$`),
+}
+
+// cleanBoilerplate removes lines that match common boilerplate patterns.
+// It also removes consecutive blank lines that result from the filtering.
+func cleanBoilerplate(text string) string {
+	lines := strings.Split(text, "\n")
+	var kept []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			// Keep blank lines as paragraph separators (will be collapsed later)
+			kept = append(kept, "")
+			continue
+		}
+
+		isBoilerplate := false
+		for _, p := range boilerplatePatterns {
+			if p.MatchString(trimmed) {
+				isBoilerplate = true
+				break
+			}
+		}
+
+		if !isBoilerplate {
+			kept = append(kept, line)
+		}
+	}
+
+	// Collapse multiple consecutive blank lines into one
+	result := strings.Join(kept, "\n")
+	multiNlRe := regexp.MustCompile(`\n{3,}`)
+	result = multiNlRe.ReplaceAllString(result, "\n\n")
+
+	return result
 }
 
 // extractTitle extracts the page title from HTML.

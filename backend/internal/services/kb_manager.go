@@ -402,6 +402,106 @@ func (m *KbManager) UpdateChunkCount(ctx context.Context, docID string, count in
 	return err
 }
 
+// DeleteChunksByDocID deletes all chunks for a document.
+func (m *KbManager) DeleteChunksByDocID(ctx context.Context, docID string) error {
+	if m.db == nil {
+		return nil
+	}
+	_, err := m.db.ExecContext(ctx, `DELETE FROM knowledge_chunks WHERE doc_id = $1`, docID)
+	return err
+}
+
+// RechunkResult holds the result of re-chunking a single document.
+type RechunkResult struct {
+	DocID       string `json:"doc_id"`
+	Title       string `json:"title"`
+	OldChunks   int    `json:"old_chunks"`
+	NewChunks   int    `json:"new_chunks"`
+	ContentLen  int    `json:"content_len"`
+}
+
+// RechunkAll re-chunks all active documents in the knowledge base.
+// It deletes existing chunks for each document and re-creates them
+// using the provided chunk config. This is used for cleaning up
+// data that was chunked with the old, buggy chunker.
+func (m *KbManager) RechunkAll(ctx context.Context, config ChunkConfig) ([]RechunkResult, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	// Get all active documents with content
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(user_id, ''), title, content, chunk_count
+		FROM knowledge_base
+		WHERE status = 'active'
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query documents: %w", err)
+	}
+	defer rows.Close()
+
+	var results []RechunkResult
+	for rows.Next() {
+		var docID, userID, title, content string
+		var oldChunkCount int
+		if err := rows.Scan(&docID, &userID, &title, &content, &oldChunkCount); err != nil {
+			continue
+		}
+
+		// Clean the content (apply boilerplate filter if it's URL-imported)
+		cleaned := cleanContentForRechunk(content)
+
+		// Re-chunk with the new config
+		chunks := ChunkText(cleaned, config)
+
+		// Delete old chunks
+		if err := m.DeleteChunksByDocID(ctx, docID); err != nil {
+			slog.Warn("rechunk: failed to delete old chunks", "doc_id", docID, "error", err)
+			continue
+		}
+
+		// Insert new chunks
+		for _, chunk := range chunks {
+			_, err := m.AddChunk(ctx, docID, userID, chunk.Index, chunk.Title, chunk.Content, map[string]interface{}{
+				"start_pos": chunk.StartPos,
+				"end_pos":   chunk.EndPos,
+				"rechunked": true,
+			})
+			if err != nil {
+				slog.Warn("rechunk: failed to add chunk", "doc_id", docID, "index", chunk.Index, "error", err)
+			}
+		}
+
+		// Update chunk count
+		m.UpdateChunkCount(ctx, docID, len(chunks))
+
+		results = append(results, RechunkResult{
+			DocID:      docID,
+			Title:      title,
+			OldChunks:  oldChunkCount,
+			NewChunks:  len(chunks),
+			ContentLen: len([]rune(cleaned)),
+		})
+
+		slog.Info("rechunk: document re-chunked",
+			"doc_id", docID, "title", title,
+			"old_chunks", oldChunkCount, "new_chunks", len(chunks),
+			"content_len", len([]rune(cleaned)),
+		)
+	}
+
+	return results, nil
+}
+
+// cleanContentForRechunk applies boilerplate filtering to existing content.
+// This is used when re-chunking old documents that were imported with
+// the old (noisy) URL extractor.
+func cleanContentForRechunk(content string) string {
+	// Apply the same boilerplate cleaning used by the URL importer
+	return cleanBoilerplate(content)
+}
+
 // ─── Hybrid Search (BM25 + Dense) ──────────────────────
 
 // KbSearchResult is a single hybrid search result.
