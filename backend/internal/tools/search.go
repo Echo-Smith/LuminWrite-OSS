@@ -28,8 +28,7 @@ type KnowledgeSearcher interface {
 type SearchClient struct {
 	tavily            *TavilyClient
 	zhihu             *ZhihuClient
-	ima               *IMAClient
-	kbSearcher        KnowledgeSearcher // replaces weknora — local KB search
+	kbSearcher        KnowledgeSearcher // local KB search (replaces IMA)
 	tencent           *TencentNewsClient
 	tencentCLI        *TencentNewsCLIClient
 	weibo             *WeiboClient
@@ -42,7 +41,6 @@ type SearchClient struct {
 // NewSearchClient creates a new search client.
 func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Duration,
 	zhihuEnabled bool, zhihuBaseURL, zhihuAccessSecret string, zhihuTimeout time.Duration,
-	imaBaseURL, imaClientID, imaAPIKey, imaKBID string, imaTimeout time.Duration,
 	tencentEnabled bool, tencentBaseURL string, tencentTimeout time.Duration,
 	weiboEnabled bool, weiboBaseURL string, weiboTimeout time.Duration,
 	extraHotEnabled bool, extraHotBaseURL string, extraHotTimeout time.Duration,
@@ -60,10 +58,6 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		c.zhihu = NewZhihuClient(zhihuBaseURL, zhihuAccessSecret, zhihuTimeout)
 	}
 
-	if imaClientID != "" && imaAPIKey != "" && imaKBID != "" &&
-		!isPlaceholderKey(imaClientID) && !isPlaceholderKey(imaAPIKey) && !isPlaceholderKey(imaKBID) {
-		c.ima = NewIMAClient(imaBaseURL, imaClientID, imaAPIKey, imaKBID, imaTimeout)
-	}
 	if tencentEnabled {
 		c.tencent = NewTencentNewsClient(tencentBaseURL, tencentTimeout)
 	}
@@ -106,7 +100,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.ima != nil || c.kbSearcher != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.tavily != nil || c.zhihu != nil || c.kbSearcher != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -151,21 +145,6 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 			r, err := c.zhihu.Search(ctx, query, maxPerSource)
 			if err != nil {
 				slog.Warn("zhihu search failed", "error", err, "query", query)
-				return
-			}
-			mu.Lock()
-			results = append(results, r...)
-			mu.Unlock()
-		}()
-	}
-
-	if c.ima != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r, err := c.ima.Search(ctx, query, maxPerSource)
-			if err != nil {
-				slog.Warn("ima search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -343,9 +322,6 @@ func (c *SearchClient) activeSources() []string {
 	if c.zhihu != nil {
 		sources = append(sources, "zhihu")
 	}
-	if c.ima != nil {
-		sources = append(sources, "ima")
-	}
 	if c.kbSearcher != nil {
 		sources = append(sources, "local_kb")
 	}
@@ -510,11 +486,6 @@ func normalizeTencentCLITopics(items []map[string]interface{}, limit int) []map[
 		topics = append(topics, topic)
 	}
 	return topics
-}
-
-// IMAClient returns the IMA client (for knowledge base sync).
-func (c *SearchClient) IMAClient() *IMAClient {
-	return c.ima
 }
 
 // ─── Tavily Client ───────────────────────────────────────
@@ -713,233 +684,11 @@ func (c *ZhihuClient) doZhihuSearch(ctx context.Context, searchURL, source strin
 	return results, nil
 }
 
-// ─── IMA Client ──────────────────────────────────────────
-
-type IMAClient struct {
-	baseURL  string
-	clientID string
-	apiKey   string
-	kbID     string
-	timeout  time.Duration
-	client   *http.Client
-}
-
-// IsConfigured returns true if all required fields are set and look like real values
-// (not placeholder strings like "your-ima-api-key").
-func (c *IMAClient) IsConfigured() bool {
-	if c == nil {
-		return false
-	}
-	if c.clientID == "" || c.apiKey == "" || c.kbID == "" {
-		return false
-	}
-	// Reject common placeholder values
-	for _, v := range []string{c.clientID, c.apiKey, c.kbID} {
-		if isPlaceholderKey(v) {
-			return false
-		}
-	}
-	return true
-}
-
-func NewIMAClient(baseURL, clientID, apiKey, kbID string, timeout time.Duration) *IMAClient {
-	return &IMAClient{
-		baseURL:  strings.TrimSuffix(baseURL, "/"),
-		clientID: clientID,
-		apiKey:   apiKey,
-		kbID:     kbID,
-		timeout:  timeout,
-		client:   &http.Client{Timeout: timeout},
-	}
-}
-
-func (c *IMAClient) Search(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
-	if c.kbID == "" {
-		return nil, fmt.Errorf("IMA KB ID not configured")
-	}
-
-	body := map[string]interface{}{
-		"knowledge_base_id": c.kbID,
-		"query":             query,
-	}
-
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-
-	url := c.baseURL + "/openapi/wiki/v1/search_knowledge"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("ima-openapi-clientid", c.clientID)
-	req.Header.Set("ima-openapi-apikey", c.apiKey)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Code int `json:"code"`
-		Msg  string `json:"msg"`
-		Data struct {
-			InfoList []struct {
-				Title            string `json:"title"`
-				HighlightContent string `json:"highlight_content"`
-				MediaID          string `json:"media_id"`
-				URL              string `json:"url"`
-			} `json:"info_list"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	if result.Code != 0 {
-		return nil, fmt.Errorf("IMA API error code %d: %s", result.Code, result.Msg)
-	}
-
-	results := make([]engine.SearchResult, 0, len(result.Data.InfoList))
-	for _, item := range result.Data.InfoList {
-		title := item.Title
-		if title == "" {
-			title = "无标题"
-		}
-		snippet := title + "：" + item.HighlightContent
-		results = append(results, engine.SearchResult{
-			Title:   title,
-			Snippet: snippet,
-			URL:     item.URL,
-			Source:  "ima",
-		})
-		if len(results) >= limit {
-			break
-		}
-	}
-
-	slog.Debug("ima search done", "query", query, "count", len(results))
-	return results, nil
-}
-
-// IMADocument represents a single document fetched from IMA knowledge base.
-type IMADocument struct {
-	DocID    string
-	Title    string
-	Content  string
-	URL      string
-	Category string
-}
-
-// FetchDocuments pulls documents from the IMA knowledge base in batch.
-// It uses the IMA openapi list_documents endpoint to retrieve all documents
-// in the knowledge base, paginating through results.
-// This is used by the cron sync job to pull incremental content into pgvector.
-func (c *IMAClient) FetchDocuments(ctx context.Context, pageSize int) ([]IMADocument, error) {
-	if c == nil || !c.IsConfigured() {
-		return nil, fmt.Errorf("IMA client not configured")
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	var allDocs []IMADocument
-	page := 1
-
-	for {
-		// IMA openapi: list documents in a knowledge base
-		body := map[string]interface{}{
-			"knowledge_base_id": c.kbID,
-			"page":              page,
-			"page_size":         pageSize,
-		}
-
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-
-		url := c.baseURL + "/openapi/wiki/v1/list_documents"
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("ima-openapi-clientid", c.clientID)
-		req.Header.Set("ima-openapi-apikey", c.apiKey)
-
-		resp, err := c.client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("IMA list_documents request failed: %w", err)
-		}
-
-		var result struct {
-			Code int `json:"code"`
-			Msg  string `json:"msg"`
-			Data struct {
-				Total    int `json:"total"`
-				Page     int `json:"page"`
-				PageSize int `json:"page_size"`
-				List []struct {
-					DocID    string `json:"doc_id"`
-					Title    string `json:"title"`
-					Content  string `json:"content"`
-					URL      string `json:"url"`
-					Category string `json:"category"`
-				} `json:"list"`
-			} `json:"data"`
-		}
-
-		err = json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode IMA response: %w", err)
-		}
-
-		if result.Code != 0 {
-			return nil, fmt.Errorf("IMA API error code %d: %s", result.Code, result.Msg)
-		}
-
-		for _, item := range result.Data.List {
-			doc := IMADocument{
-				DocID:    item.DocID,
-				Title:    item.Title,
-				Content:  item.Content,
-				URL:      item.URL,
-				Category: item.Category,
-			}
-			if doc.Title == "" {
-				doc.Title = "无标题"
-			}
-			allDocs = append(allDocs, doc)
-		}
-
-		// Check if we've fetched all pages
-		fetched := page * pageSize
-		if fetched >= result.Data.Total || len(result.Data.List) == 0 {
-			break
-		}
-		page++
-
-		// Safety: don't fetch more than 20 pages (1000 docs)
-		if page > 20 {
-			break
-		}
-	}
-
-	slog.Info("ima fetch documents completed", "total", len(allDocs))
-	return allDocs, nil
-}
-
 // isPlaceholderKey checks if the given string is a common placeholder value
 // that indicates the key was not actually configured.
 func isPlaceholderKey(s string) bool {
 	switch s {
-	case "", "your-ima-client-id", "your-ima-api-key", "your-ima-kb-id",
-		"your-dashscope-api-key", "your-deepseek-api-key":
+	case "", "your-dashscope-api-key", "your-deepseek-api-key":
 		return true
 	}
 	// Also check for strings that start with "your-" or "placeholder"

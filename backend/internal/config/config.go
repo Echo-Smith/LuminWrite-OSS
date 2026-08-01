@@ -24,7 +24,6 @@ type Config struct {
 	DeepSeek  DeepSeekConfig
 	Dashscope DashscopeConfig
 	Kb        KbInternalConfig
-	IMA       IMAConfig
 	Zhihu     ZhihuConfig
 	Tavily    TavilyConfig
 	Tencent   TencentConfig
@@ -94,12 +93,13 @@ type RateLimitConfig struct {
 }
 
 type DeepSeekConfig struct {
-	BaseURL      string
-	APIKey       string
-	DefaultModel string
-	Timeout      time.Duration
-	MaxTokens    int
-	Temperature  float64
+	BaseURL            string
+	APIKey             string
+	DefaultModel       string
+	Timeout            time.Duration
+	MaxTokens          int
+	Temperature        float64
+	ResponsesAPIRatio  float64 // A/B test ratio for Responses API (0.0=off, 1.0=full)
 }
 
 type DashscopeConfig struct {
@@ -107,14 +107,6 @@ type DashscopeConfig struct {
 	BaseURL   string // OpenAI-compatible base URL (e.g. https://xxx.maas.aliyuncs.com/compatible-mode/v1)
 	Model     string
 	Dimension int
-}
-
-type IMAConfig struct {
-	BaseURL   string
-	ClientID  string
-	APIKey    string
-	KBID      string
-	Timeout   time.Duration
 }
 
 type ZhihuConfig struct {
@@ -245,25 +237,19 @@ EncryptionKey: getEnv("API_KEY_ENCRYPTION_KEY", ""),
 			Window:   getEnvDuration("RATE_LIMIT_WINDOW", time.Minute),
 		},
 DeepSeek: DeepSeekConfig{
-BaseURL:      getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-APIKey:       getEnv("AI_API_KEY", ""),
-DefaultModel: getEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-v4-flash"),
-Timeout:      getEnvDuration("DEEPSEEK_TIMEOUT", 120*time.Second),
-MaxTokens:    getEnvInt("DEEPSEEK_MAX_TOKENS", 16384),
-Temperature:  getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
+BaseURL:           getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+APIKey:            getEnv("AI_API_KEY", ""),
+DefaultModel:      getEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-v4-flash"),
+Timeout:           getEnvDuration("DEEPSEEK_TIMEOUT", 120*time.Second),
+MaxTokens:         getEnvInt("DEEPSEEK_MAX_TOKENS", 16384),
+Temperature:       getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
+ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 },
 		Dashscope: DashscopeConfig{
 			APIKey:    getEnv("DASHSCOPE_API_KEY", ""),
 			BaseURL:   getEnv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 			Model:     getEnv("DASHSCOPE_MODEL", "text-embedding-v3"),
 			Dimension: getEnvInt("DASHSCOPE_DIMENSION", 1024),
-		},
-		IMA: IMAConfig{
-			BaseURL:  getEnv("IMA_BASE_URL", "https://ima.qq.com"),
-			ClientID: getEnv("IMA_CLIENT_ID", ""),
-			APIKey:   getEnv("IMA_API_KEY", ""),
-			KBID:     getEnv("IMA_KB_ID", ""),
-			Timeout:  getEnvDuration("IMA_TIMEOUT", 15*time.Second),
 		},
 		Zhihu: ZhihuConfig{
 			Enabled:      getEnvBool("ZHIHU_ENABLED", false),

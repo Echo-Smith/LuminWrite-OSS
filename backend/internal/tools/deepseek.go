@@ -7,19 +7,25 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
 )
 
+// ModelV4Pro is the DeepSeek V4 Pro model name, used for high-reasoning steps.
+const ModelV4Pro = "deepseek-v4-pro"
+
 // LLMClient is a client for the DeepSeek (OpenAI-compatible) API.
 type LLMClient struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	maxTokens  int
-	temperature float64
-	httpClient *http.Client
+	baseURL           string
+	apiKey            string
+	model             string
+	maxTokens         int
+	temperature       float64
+	httpClient        *http.Client
+	responsesAPIRatio float64    // 0.0~1.0, proportion of traffic routed to Responses API
+	abMetrics         *ABMetrics // A/B test metrics collector (nil if A/B disabled)
 }
 
 // LLMMessage represents a single message in the conversation.
@@ -46,15 +52,16 @@ type ToolCallFunction struct {
 
 // LLMRequest is the request body for the chat completions API.
 type LLMRequest struct {
-	Model           string          `json:"model"`
-	Messages        []LLMMessage    `json:"messages"`
-	Stream          bool            `json:"stream"`
-	Temperature     float64         `json:"temperature,omitempty"`
-	MaxTokens       int             `json:"max_tokens"`
-	Thinking        *Thinking       `json:"thinking,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
-	Tools           []ToolDef       `json:"tools,omitempty"`
-	ResponseFormat  *ResponseFormat `json:"response_format,omitempty"`
+	Model            string          `json:"model"`
+	Messages         []LLMMessage    `json:"messages"`
+	Stream           bool            `json:"stream"`
+	Temperature      float64         `json:"temperature,omitempty"`
+	MaxTokens        int             `json:"max_tokens"`
+	Thinking         *Thinking       `json:"thinking,omitempty"`
+	ReasoningEffort  string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
+	Tools            []ToolDef       `json:"tools,omitempty"`
+	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`
+	Instructions     string          `json:"-"` // Static system prompt for Responses API (higher cache hit rate)
 }
 
 // ResponseFormat controls the output format of the model.
@@ -77,6 +84,8 @@ type LLMResponse struct {
 		PromptTokens          int `json:"prompt_tokens"`
 		CompletionTokens      int `json:"completion_tokens"`
 		TotalTokens           int `json:"total_tokens"`
+		CacheHitTokens        int `json:"prompt_cache_hit_tokens"`
+		CacheMissTokens       int `json:"prompt_cache_miss_tokens"`
 		CompletionTokensDetails struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
@@ -123,6 +132,8 @@ type StreamChunk struct {
 		PromptTokens          int `json:"prompt_tokens"`
 		CompletionTokens      int `json:"completion_tokens"`
 		TotalTokens           int `json:"total_tokens"`
+		CacheHitTokens        int `json:"prompt_cache_hit_tokens"`
+		CacheMissTokens       int `json:"prompt_cache_miss_tokens"`
 		CompletionTokensDetails struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
@@ -141,32 +152,53 @@ func NewLLMClient(baseURL, apiKey, model string, maxTokens int, temperature floa
 	}
 }
 
+// SetResponsesAPIRatio configures the A/B test ratio for Responses API.
+// 0.0 = all traffic goes to Chat Completions API (default)
+// 1.0 = all traffic goes to Responses API
+// 0.5 = 50/50 split
+func (c *LLMClient) SetResponsesAPIRatio(ratio float64) {
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	c.responsesAPIRatio = ratio
+	if ratio > 0 && c.abMetrics == nil {
+		c.abMetrics = NewABMetrics()
+	}
+	slog.Info("A/B test configured", "responses_api_ratio", ratio)
+}
+
+// GetABMetrics returns a snapshot of A/B test metrics, or nil if A/B is disabled.
+func (c *LLMClient) GetABMetrics() *ABMetricsSnapshot {
+	if c.abMetrics == nil {
+		return nil
+	}
+	return c.abMetrics.Snapshot()
+}
+
 // Chat calls the LLM API and returns the full response text.
+// If A/B testing is enabled, traffic is split between Chat Completions and Responses API.
 func (c *LLMClient) Chat(ctx context.Context, messages []LLMMessage, opts ...ChatOption) (string, *LLMResponse, error) {
 	req := c.buildRequest(messages, false, opts...)
 
-	body, err := c.doRequest(ctx, req)
-	if err != nil {
-		return "", nil, err
+	// A/B routing: if ratio is set, randomly route to Responses API
+	if c.responsesAPIRatio > 0 && rand.Float64() < c.responsesAPIRatio {
+		start := time.Now()
+		text, resp, err := c.responsesChat(ctx, req)
+		if c.abMetrics != nil {
+			c.abMetrics.RecordResponsesAPI(resp, time.Since(start))
+		}
+		return text, resp, err
 	}
 
-	var resp LLMResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", nil, fmt.Errorf("failed to decode response: %w", err)
+	start := time.Now()
+	text, resp, err := c.chatCompletions(ctx, req)
+	if c.abMetrics != nil {
+		c.abMetrics.RecordChatCompletions(resp, time.Since(start))
 	}
-
-	if len(resp.Choices) == 0 {
-		return "", &resp, fmt.Errorf("no choices in response")
-	}
-
-	slog.Debug("LLM chat completed",
-		"model", req.Model,
-		"prompt_tokens", resp.Usage.PromptTokens,
-		"completion_tokens", resp.Usage.CompletionTokens,
-		"total_tokens", resp.Usage.TotalTokens,
-	)
-
-	return resp.Choices[0].Message.Content, &resp, nil
+	return text, resp, err
 }
 
 // ChatStream calls the LLM API with streaming and calls onDelta for each content chunk.
@@ -182,83 +214,22 @@ func (c *LLMClient) ChatStream(ctx context.Context, messages []LLMMessage, onDel
 func (c *LLMClient) ChatStreamWithReasoning(ctx context.Context, messages []LLMMessage, onDelta func(string), onReasoning func(string), opts ...ChatOption) (string, int, error) {
 	req := c.buildRequest(messages, true, opts...)
 
-	resp, err := c.doStreamRequest(ctx, req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer resp.Close()
-
-	var fullText strings.Builder
-	var reasoningText strings.Builder
-	totalTokens := 0
-
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 4096)
-	for {
-		n, err := resp.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			// Process complete lines
-			for {
-				idx := bytes.IndexByte(buf, '\n')
-				if idx < 0 {
-					break
-				}
-				line := string(buf[:idx])
-				buf = buf[idx+1:]
-
-				line = strings.TrimSpace(line)
-				if line == "" || !strings.HasPrefix(line, "data: ") {
-					continue
-				}
-				data := strings.TrimPrefix(line, "data: ")
-				if data == "[DONE]" {
-					goto done
-				}
-
-				var chunk StreamChunk
-				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-					continue
-				}
-
-				for _, choice := range chunk.Choices {
-					if choice.Delta.ReasoningContent != "" {
-						reasoningText.WriteString(choice.Delta.ReasoningContent)
-						if onReasoning != nil {
-							onReasoning(choice.Delta.ReasoningContent)
-						}
-					}
-					if choice.Delta.Content != "" {
-						fullText.WriteString(choice.Delta.Content)
-						if onDelta != nil {
-							onDelta(choice.Delta.Content)
-						}
-					}
-				}
-
-				if chunk.Usage != nil {
-					totalTokens = chunk.Usage.TotalTokens
-				}
-			}
+	// A/B routing for streaming
+	if c.responsesAPIRatio > 0 && rand.Float64() < c.responsesAPIRatio {
+		start := time.Now()
+		text, tokens, err := c.responsesStream(ctx, req, onDelta, onReasoning)
+		if c.abMetrics != nil {
+			c.abMetrics.RecordResponsesAPIStream(tokens, time.Since(start))
 		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			slog.Error("stream read error", "error", err)
-			break
-		}
+		return text, tokens, err
 	}
 
-done:
-	slog.Debug("LLM stream completed",
-		"model", req.Model,
-		"content_length", fullText.Len(),
-		"reasoning_length", reasoningText.Len(),
-		"total_tokens", totalTokens,
-	)
-
-	return fullText.String(), totalTokens, nil
+	start := time.Now()
+	text, tokens, err := c.chatCompletionsStream(ctx, req, onDelta, onReasoning)
+	if c.abMetrics != nil {
+		c.abMetrics.RecordChatCompletionsStream(tokens, time.Since(start))
+	}
+	return text, tokens, err
 }
 
 // ChatOption configures a chat request.
@@ -305,6 +276,17 @@ func WithTools(tools []ToolDef) ChatOption {
 func WithJSONResponse() ChatOption {
 	return func(r *LLMRequest) {
 		r.ResponseFormat = &ResponseFormat{Type: "json_object"}
+	}
+}
+
+// WithInstructions sets a static system prompt that is cached server-side.
+// When using the Responses API, this is sent as the top-level `instructions` parameter
+// (enabling prefix caching). When using Chat Completions, it is prepended as a system message.
+// Static instructions should NOT contain dynamic content (dates, profile rules, etc.) —
+// those belong in the user message to maximize cache hit rate.
+func WithInstructions(instructions string) ChatOption {
+	return func(r *LLMRequest) {
+		r.Instructions = instructions
 	}
 }
 
@@ -589,6 +571,22 @@ func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...Cha
 	}
 	for _, opt := range opts {
 		opt(req)
+	}
+	// If Instructions is set and there's no system message yet, prepend it.
+	// This enables cache-friendly prompting for both APIs:
+	// - Chat Completions: instructions becomes the first system message
+	// - Responses API: instructions is sent as the top-level parameter
+	if req.Instructions != "" {
+		hasSystem := false
+		for _, m := range req.Messages {
+			if m.Role == "system" {
+				hasSystem = true
+				break
+			}
+		}
+		if !hasSystem {
+			req.Messages = append([]LLMMessage{{Role: "system", Content: req.Instructions}}, req.Messages...)
+		}
 	}
 	return req
 }
