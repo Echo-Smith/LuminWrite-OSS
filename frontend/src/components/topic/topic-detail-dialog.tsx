@@ -1,7 +1,7 @@
 /**
  * TopicDetailDialog — 选题详情弹窗（含 AI 写作角度、趋势图、相关文章、关联素材）
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Star, TrendingUp, Lightbulb, ArrowRight, Loader2,
   Database, Plus, Trash2, Zap, FileText, Search,
@@ -49,12 +49,30 @@ function TopicMaterialsSection({ topicId, topicTitle }: { topicId: string; topic
     try {
       const { associations } = await listTopicMaterials(topicId);
       setAssociations(associations);
+      // 如果当前无关联素材且未触发过自动关联，自动触发一次
+      if (associations.length === 0 && !autoTriggeredRef.current) {
+        autoTriggeredRef.current = true;
+        setLoading(false);
+        setAutoLoading(true);
+        try {
+          await autoAssociateMaterials(topicId, topicTitle, 5);
+          const { associations: updated } = await listTopicMaterials(topicId);
+          setAssociations(updated);
+        } catch {
+          // 忽略自动关联失败
+        } finally {
+          setAutoLoading(false);
+        }
+        return;
+      }
     } catch {
       // ignore
     } finally {
       setLoading(false);
     }
-  }, [topicId]);
+  }, [topicId, topicTitle]);
+
+  const autoTriggeredRef = useRef(false);
 
   useEffect(() => {
     loadAssociations();

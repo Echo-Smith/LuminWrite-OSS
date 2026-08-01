@@ -4,7 +4,7 @@
  * 删除了冗余的"预览"Tab（文章已在主区域展示）
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -99,6 +99,18 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   const searchResults = searchStep?.result as { results?: Array<Record<string, unknown>> } | undefined;
   const results = searchResults?.results ?? [];
 
+  // 从 memory_gate step 提取记忆检索结果
+  const memoryStep = toolCallParts.find((p) => p.toolName === "memory_gate");
+  const memoryResult = memoryStep?.result as { memories?: Array<Record<string, unknown>>; hit?: boolean; reason?: string } | undefined;
+  const memories = memoryResult?.memories ?? [];
+  const memoryHit = memoryResult?.hit ?? false;
+
+  // 从 query_plan step 提取查询计划
+  const queryPlanStep = toolCallParts.find((p) => p.toolName === "query_plan");
+  const queryPlanResult = queryPlanStep?.result as { queries?: string[]; keywords?: string[] } | undefined;
+  const queries = queryPlanResult?.queries ?? [];
+  const keywords = queryPlanResult?.keywords ?? [];
+
   return (
     <div className="flex h-full w-80 flex-col border-l bg-surface anim-slide-left">
       {/* 头部 — 高度与主 header 一致，无分割线 */}
@@ -139,7 +151,7 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
             <AgentCollaborationFlow parts={toolCallParts} />
           </TabsContent>
           <TabsContent value="sources" className="p-3 m-0">
-            <SourcesList results={results} />
+            <SourcesList results={results} memories={memories} memoryHit={memoryHit} queries={queries} keywords={keywords} />
           </TabsContent>
           <TabsContent value="style" className="p-3 m-0">
             <StyleInfo slug={session?.style ?? "yinyue"} />
@@ -263,10 +275,24 @@ function AgentCollaborationFlow({ parts }: { parts: ToolCallPart[] }) {
 }
 
 /**
- * 检索素材列表
+ * 检索素材列表 — 包含 KB 检索结果 + 记忆系统 + 查询计划
  */
-function SourcesList({ results }: { results: Array<Record<string, unknown>> }) {
-  if (results.length === 0) {
+function SourcesList({
+  results,
+  memories,
+  memoryHit,
+  queries,
+  keywords,
+}: {
+  results: Array<Record<string, unknown>>;
+  memories: Array<Record<string, unknown>>;
+  memoryHit: boolean;
+  queries: string[];
+  keywords: string[];
+}) {
+  const hasAnything = results.length > 0 || memories.length > 0 || queries.length > 0 || keywords.length > 0;
+
+  if (!hasAnything) {
     return (
       <div className="text-center text-xs text-muted-foreground py-8">
         写作开始后将显示检索到的素材
@@ -282,54 +308,150 @@ function SourcesList({ results }: { results: Array<Record<string, unknown>> }) {
   };
 
   return (
-    <div className="space-y-2">
-      <p className="text-xs text-muted-foreground font-mono-sm">{results.length} 条素材</p>
-      {results.map((r, i) => (
-        <StaggerItem key={i} index={i} interval={40} animation="fade-up">
-          <div className="rounded-lg border p-2.5 space-y-1 hover:bg-accent/50 transition-ui ">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="text-xs shrink-0">
-                {String(r.source ?? "web")}
-              </Badge>
-              {r.relevance != null && (
-                <Badge variant={(relevanceColor[String(r.relevance)] as "success" | "secondary" | "outline" | "destructive") ?? "outline"} className="text-xs">
-                  {String(r.relevance)}
-                </Badge>
-              )}
+    <div className="space-y-4">
+      {/* 查询计划 */}
+      {(queries.length > 0 || keywords.length > 0) && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Search className="h-3.5 w-3.5" />
+            检索计划
+          </div>
+          {queries.length > 0 && (
+            <div className="space-y-1">
+              {queries.map((q, i) => (
+                <div key={i} className="rounded-md border border-border/40 bg-card/50 px-2.5 py-1.5 text-xs">
+                  <span className="text-muted-foreground/60 mr-1">Q{i + 1}:</span>
+                  {q}
+                </div>
+              ))}
             </div>
-            <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
-            {r.snippet != null && String(r.snippet) && (
-              <p className="text-xs text-muted-foreground line-clamp-2">{String(r.snippet)}</p>
-            )}
-            {r.url != null && String(r.url) && (
-              <a
-                href={String(r.url)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-primary hover:underline"
-              >
-                查看原文 →
-              </a>
+          )}
+          {keywords.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {keywords.map((kw, i) => (
+                <Badge key={i} variant="outline" className="text-[10px]">{kw}</Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 记忆系统 */}
+      {memories.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Database className="h-3.5 w-3.5" />
+            记忆检索
+            {memoryHit ? (
+              <Badge variant="success" className="text-[10px] py-0 px-1.5">命中</Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px] py-0 px-1.5">未命中</Badge>
             )}
           </div>
-        </StaggerItem>
-      ))}
+          {memories.map((m, i) => (
+            <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+              <div className="rounded-lg border border-cyan-200/50 dark:border-cyan-900/30 bg-cyan-50/30 dark:bg-cyan-950/10 p-2.5 space-y-1 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20 transition-ui">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-xs shrink-0 text-cyan-700 dark:text-cyan-400">
+                    {String(m.type ?? "memory")}
+                  </Badge>
+                  {m.score != null && (
+                    <span className="text-[10px] text-muted-foreground tabular-nums">
+                      相关度 {(Number(m.score) * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground line-clamp-3">{String(m.content ?? m.summary ?? "")}</p>
+              </div>
+            </StaggerItem>
+          ))}
+        </div>
+      )}
+
+      {/* KB 检索结果 */}
+      {results.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Globe className="h-3.5 w-3.5" />
+            知识库素材
+            <span className="font-mono-sm">{results.length} 条</span>
+          </div>
+          {results.map((r, i) => (
+            <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+              <div className="rounded-lg border p-2.5 space-y-1 hover:bg-accent/50 transition-ui">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-xs shrink-0">
+                    {String(r.source ?? "web")}
+                  </Badge>
+                  {r.relevance != null && (
+                    <Badge variant={(relevanceColor[String(r.relevance)] as "success" | "secondary" | "outline" | "destructive") ?? "outline"} className="text-xs">
+                      {String(r.relevance)}
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
+                {r.snippet != null && String(r.snippet) && (
+                  <p className="text-xs text-muted-foreground line-clamp-2">{String(r.snippet)}</p>
+                )}
+                {r.url != null && String(r.url) && (
+                  <a
+                    href={String(r.url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-primary hover:underline"
+                  >
+                    查看原文 →
+                  </a>
+                )}
+              </div>
+            </StaggerItem>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 /**
- * 风格信息
+ * 风格信息 — 从 API 动态获取
  */
 function StyleInfo({ slug }: { slug: string }) {
-  // 静态展示（未来从 API 加载）
-  const styleMap: Record<string, { name: string; desc: string; range: string; tags: string[] }> = {
-    yinyue: { name: "预设评论风格", desc: "植根于杭州时评专栏的深度评论风格", range: "1000-1500 字", tags: ["政论", "民生", "深度评论"] },
-    shenlun: { name: "应用文风格", desc: "[style description removed]", range: "800-1200 字", tags: ["申论", "公考"] },
-    xiaohongshu: { name: "小红书风格", desc: "轻松种草风格", range: "300-800 字", tags: ["社交媒体", "种草"] },
-  };
+  const [info, setInfo] = useState<{
+    name: string;
+    description: string;
+    word_range: { min: number; max: number };
+    tags: string[];
+    structure?: { type?: string; argument_pattern?: string; argument_variations?: string[] };
+    rhetoric?: { required_metaphor?: boolean; required_parallelism?: boolean; required_rhetorical_question?: boolean };
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const info = styleMap[slug];
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/v2/styles/${encodeURIComponent(slug)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const p = data?.data ?? data;
+        if (p && p.name) {
+          setInfo(p);
+        } else {
+          setInfo(null);
+        }
+      })
+      .catch(() => { if (!cancelled) setInfo(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [slug]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
+      </div>
+    );
+  }
 
   if (!info) {
     return (
@@ -339,11 +461,22 @@ function StyleInfo({ slug }: { slug: string }) {
     );
   }
 
+  const structureTypeMap: Record<string, string> = {
+    three_part: "三段式",
+    free_form: "自由式",
+    custom: "自定义",
+  };
+
+  const rhetoricItems: string[] = [];
+  if (info.rhetoric?.required_metaphor) rhetoricItems.push("比喻");
+  if (info.rhetoric?.required_parallelism) rhetoricItems.push("排比");
+  if (info.rhetoric?.required_rhetorical_question) rhetoricItems.push("设问");
+
   return (
     <div className="space-y-4">
       <div>
         <h4 className="text-sm font-medium mb-1">{info.name}</h4>
-        <p className="text-xs text-muted-foreground">{info.desc}</p>
+        <p className="text-xs text-muted-foreground">{info.description}</p>
       </div>
 
       <Separator />
@@ -351,32 +484,49 @@ function StyleInfo({ slug }: { slug: string }) {
       <div className="space-y-2">
         <div className="flex justify-between text-xs">
           <span className="text-muted-foreground">篇幅范围</span>
-          <span className="font-medium">{info.range}</span>
+          <span className="font-medium">{info.word_range?.min ?? "?"}-{info.word_range?.max ?? "?"} 字</span>
         </div>
         <div className="flex justify-between text-xs">
           <span className="text-muted-foreground">结构类型</span>
-          <span className="font-medium">三段式闭环</span>
+          <span className="font-medium">{structureTypeMap[info.structure?.type ?? ""] ?? info.structure?.type ?? "—"}</span>
         </div>
-        <div className="flex justify-between text-xs">
-          <span className="text-muted-foreground">递进模式</span>
-          <span className="font-medium">灵活变式</span>
-        </div>
-        <div className="flex justify-between text-xs">
-          <span className="text-muted-foreground">修辞要求</span>
-          <span className="font-medium">比喻+排比+设问</span>
-        </div>
+        {info.structure?.argument_pattern && (
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">递进模式</span>
+            <span className="font-medium text-right max-w-[60%]">{info.structure.argument_pattern}</span>
+          </div>
+        )}
+        {info.structure?.argument_variations && info.structure.argument_variations.length > 0 && (
+          <div className="space-y-1">
+            <span className="text-xs text-muted-foreground">变式选项</span>
+            <div className="flex flex-wrap gap-1">
+              {info.structure.argument_variations.map((v, i) => (
+                <Badge key={i} variant="outline" className="text-[10px]">{v}</Badge>
+              ))}
+            </div>
+          </div>
+        )}
+        {rhetoricItems.length > 0 && (
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">修辞要求</span>
+            <span className="font-medium">{rhetoricItems.join(" + ")}</span>
+          </div>
+        )}
       </div>
 
-      <Separator />
-
-      <div>
-        <p className="text-xs text-muted-foreground mb-2">标签</p>
-        <div className="flex flex-wrap gap-1.5">
-          {info.tags.map((tag) => (
-            <Badge key={tag} variant="secondary">{tag}</Badge>
-          ))}
-        </div>
-      </div>
+      {info.tags && info.tags.length > 0 && (
+        <>
+          <Separator />
+          <div>
+            <p className="text-xs text-muted-foreground mb-2">标签</p>
+            <div className="flex flex-wrap gap-1.5">
+              {info.tags.map((tag) => (
+                <Badge key={tag} variant="secondary">{tag}</Badge>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

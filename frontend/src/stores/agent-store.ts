@@ -80,6 +80,7 @@ export interface WritingSession {
   mode: string;
   createdAt: number;
   awaitInputAt: number | null; // timestamp when await_input was received (for timeout countdown)
+  injectedMaterials?: string[]; // 从选题关联注入的素材标签
 }
 
 // ─── Store 定义 ──────────────────────────────────────────
@@ -445,6 +446,7 @@ articleTitle: d.article_title,
               mode: payload.mode || sess.mode,
               status: "running",
               messages: [...sess.messages, userMessage, assistantMessage],
+              injectedMaterials: payload.user_materials,
             }
           : sess
       ),

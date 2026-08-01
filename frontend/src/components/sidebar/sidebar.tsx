@@ -9,7 +9,7 @@ import {
   Plus, MessageSquare, Trash2, Compass,
   Settings, Sun, Moon, LogOut, UserPlus,
   PanelLeftClose, PanelLeftOpen, Pen,
-  ChevronRight, User, AlertTriangle, Newspaper, Database,
+  ChevronRight, User, AlertTriangle, Newspaper,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -111,14 +111,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </button>
 
         <button
-          onClick={() => navigate("/materials")}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-          title="我的素材库"
-        >
-          <Database className="h-4 w-4" />
-        </button>
-
-        <button
           onClick={() => navigate("/editorial")}
           className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
           title="编辑部"
@@ -183,8 +175,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </button>
       </div>
 
-      <Separator />
-
       {/* 新建写作 */}
       <div className="p-3">
         <Button
@@ -196,7 +186,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </Button>
       </div>
 
-      {/* 导航入口（选题中心 + 素材库） */}
+      {/* 导航入口 */}
       <div className="px-3 pb-2 space-y-1">
         <Button
           variant="ghost"
@@ -205,16 +195,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           onClick={() => navigate("/topics")}
         >
           <Compass className="h-4 w-4" />
-          选题中心
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => navigate("/materials")}
-        >
-          <Database className="h-4 w-4" />
-          我的素材库
+          选题与素材
         </Button>
       </div>
 

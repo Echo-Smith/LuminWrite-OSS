@@ -37,32 +37,30 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
   const remainingAttempts = maxAttempts - attempt;
   const isLastAttempt = remainingAttempts <= 0;
 
-  // WebSocket timeout countdown (10 min = 600s, matches backend readTimeout)
-  const WS_TIMEOUT_SECONDS = 600;
+  // WebSocket 保持提醒（不再倒计时，避免给用户压力）
   const awaitInputAt = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.awaitInputAt ?? null;
   });
-  const [remainingSeconds, setRemainingSeconds] = useState(WS_TIMEOUT_SECONDS);
+  const [waitingDuration, setWaitingDuration] = useState(0);
 
   useEffect(() => {
     if (!awaitInputAt) {
-      setRemainingSeconds(WS_TIMEOUT_SECONDS);
+      setWaitingDuration(0);
       return;
     }
     const update = () => {
       const elapsed = Math.floor((Date.now() - (awaitInputAt ?? Date.now())) / 1000);
-      setRemainingSeconds(Math.max(0, WS_TIMEOUT_SECONDS - elapsed));
+      setWaitingDuration(elapsed);
     };
     update();
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [awaitInputAt]);
 
-  const minutes = Math.floor(remainingSeconds / 60);
-  const seconds = remainingSeconds % 60;
+  const minutes = Math.floor(waitingDuration / 60);
+  const seconds = waitingDuration % 60;
   const timeStr = `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  const isUrgent = remainingSeconds <= 60 && remainingSeconds > 0;
 
   // ── 编辑操作 ──
   const handleTitleChange = (value: string) => {
@@ -166,23 +164,14 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
           引导模式 — 请确认或修改提纲
         </h3>
         <div className="flex items-center gap-3">
-          {!isRegenerating && (
-            <span className={cn(
-              "flex items-center gap-1 text-xs tabular-nums",
-              isUrgent ? "text-red-600 font-medium" : "text-muted-foreground"
-            )}>
+          {!isRegenerating && awaitInputAt && (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
               <Clock className="h-3 w-3" />
-              {timeStr}
+              已等待 {timeStr}
             </span>
           )}
         </div>
       </div>
-
-      {isUrgent && !isRegenerating && (
-        <p className="text-xs text-red-600">
-          ⚠ 连接即将超时（剩余 {timeStr}），请尽快确认提纲，否则需要重新开始。
-        </p>
-      )}
 
       {/* 标题 */}
       <div className="flex items-center gap-2">
