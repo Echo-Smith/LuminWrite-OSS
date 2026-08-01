@@ -173,8 +173,9 @@ func (u *URLImporter) decodeBody(body []byte, resp *http.Response) string {
 	return text
 }
 
-// extractTextFromHTML removes HTML tags and extracts clean text.
-// It also filters out common website boilerplate (navigation, footers, ads, etc.)
+// extractTextFromHTML removes HTML tags and extracts clean article content.
+// Uses a whitelist approach: only keeps title, author, and body text paragraphs.
+// Everything else (navigation, breadcrumbs, timestamps, related articles, copyright, etc.) is discarded.
 func (u *URLImporter) extractTextFromHTML(html string) string {
 	// Remove script, style, nav, header, footer, aside blocks
 	for _, tag := range []string{"script", "style", "nav", "header", "footer", "aside", "noscript", "iframe"} {
@@ -201,8 +202,8 @@ func (u *URLImporter) extractTextFromHTML(html string) string {
 	multiNlRe := regexp.MustCompile(`\n{3,}`)
 	text = multiNlRe.ReplaceAllString(text, "\n\n")
 
-	// ── Filter out website boilerplate line by line ──
-	text = cleanBoilerplate(text)
+	// Extract only the article content (title, author, body)
+	text = extractArticleContent(text)
 
 	// Prepend title if found and not already at the top
 	if title != "" && !strings.HasPrefix(strings.TrimSpace(text), title) {
@@ -212,67 +213,197 @@ func (u *URLImporter) extractTextFromHTML(html string) string {
 	return strings.TrimSpace(text)
 }
 
-// boilerplatePatterns are regex patterns for lines that are almost certainly
-// website navigation, footer, or ad content — not article body text.
-var boilerplatePatterns = []*regexp.Regexp{
-	// Breadcrumb navigation: "当前位置：杭州网 > 杭网评论 > 预设评论风格"
-	regexp.MustCompile(`(?i)当前位置[：:]`),
-	// Navigation menus: "首页 | 新闻 | 原创 | 议事厅 | 论坛"
-	regexp.MustCompile(`(?i)(首页|主页|网站首页)\s*[|｜]\s*(新闻|原创|议事厅|论坛|视频|图片|专题|专栏|博客|微博|微信)`),
-	// App download prompts
-	regexp.MustCompile(`(?i)立即下载|扫码下载|APP下载|关注微信|扫一扫|二维码`),
-	// Contact / copyright / license lines
-	regexp.MustCompile(`(?i)联系电话|联系方式|客服电话|新闻热线|投稿邮箱|广告合作|商务合作`),
-	regexp.MustCompile(`(?i)增值电信业务经营许可证|ICP[备证]号|京公网安备|互联网新闻信息服务许可证`),
-	regexp.MustCompile(`(?i)版权所有|Copyright|All\s+Rights\s+Reserved|©`),
-	// Site map / navigation links
-	regexp.MustCompile(`(?i)网站地图|关于我们|联系我们|加入我们|招贤纳士|友情链接|站点地图`),
-	// Social media follows / app prompts
-	regexp.MustCompile(`(?i)你关心的|下载客户端|移动端|PC端`),
-	// Author / editor attribution lines: "作者：xxx 编辑：xxx"
-	regexp.MustCompile(`(?i)^作者[：:].*编辑[：:]`),
-	regexp.MustCompile(`(?i)^编辑[：:]`),
-	// Short navigation-only lines (e.g., "杭网首页 | 新闻 | 原创")
-	// Matches lines that are short and contain only Chinese chars, pipes, spaces, letters
-	regexp.MustCompile(`^[\s|｜A-Za-z\x{4e00}-\x{9fff}]{0,30}$`),
-	// Article source lines: "来源：xxx" or "稿件来源：xxx"
-	regexp.MustCompile(`(?i)^(稿件)?来源[：:]`),
-	// Related/recommended article section headers
-	regexp.MustCompile(`(?i)相关(阅读|推荐|新闻|链接)|热门(阅读|推荐|新闻)|延伸阅读`),
-}
+// ─── Article Content Extraction (Whitelist Approach) ──────────────
+// Instead of trying to filter out every possible boilerplate pattern (blacklist),
+// we use a whitelist: only keep paragraphs that look like actual article body text.
+//
+// A paragraph is considered "body text" if:
+//   - It has more than 100 runes of content
+//   - It contains Chinese sentence-ending punctuation (。！？) or is very long (>200 runes)
+//   - It does not match known non-body patterns (URLs, timestamps, navigation)
+//
+// Additionally, we extract the author from "作者：xxx" patterns.
+// Trailing noise (image URLs, "/enpproperty-->", numeric garbage) is stripped from body paragraphs.
 
-// cleanBoilerplate removes lines that match common boilerplate patterns.
-// It also removes consecutive blank lines that result from the filtering.
-func cleanBoilerplate(text string) string {
-	lines := strings.Split(text, "\n")
-	var kept []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			// Keep blank lines as paragraph separators (will be collapsed later)
-			kept = append(kept, "")
-			continue
+// authorRe extracts author name from patterns like "作者：杨欢欢、印钰" or "作者:张三"
+var authorRe = regexp.MustCompile(`(?:作者[：:]\s*)([^\s编辑]+?)(?:\s*(?:编辑[：:]|$|\n))`)
+
+// sourceAuthorRe handles "来源：杭州网 作者：杨欢欢、印钰 编辑：王帆"
+var sourceAuthorRe = regexp.MustCompile(`作者[：:]\s*([^\s]+(?:[、，,]\s*[^\s]+)*)`)
+
+// noiseTrailingRe matches trailing noise attached to the end of body paragraphs:
+// - Image URLs: https://xxx.com/pinglun/images/...
+// - "/enpproperty-->"
+// - Numeric garbage: "91543692025-12-31 15:48:16:0"
+// - Mixed article IDs and metadata appended after body text
+var noiseTrailingRe = regexp.MustCompile(`(\d{6,}[\s\d\-:]+.*|https?://\S+$|/enpproperty-->.*$|null.*$)`)
+
+// urlLineRe matches lines that are just URLs
+var urlLineRe = regexp.MustCompile(`^https?://\S+$`)
+
+// timestampRe matches timestamp patterns like "2025-12-31 15:48:16" or "时间：2025-12-31"
+var timestampRe = regexp.MustCompile(`^(时间[：:])?\s*\d{4}[-/]\d{2}[-/]\d{2}.*`)
+
+// isBodyParagraph checks if a paragraph is actual article body text.
+func isBodyParagraph(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+
+	// Must be at least 100 runes
+	runes := []rune(trimmed)
+	if len(runes) < 100 {
+		return false
+	}
+
+	// Reject lines that are just URLs
+	if urlLineRe.MatchString(trimmed) {
+		return false
+	}
+
+	// Reject timestamp lines
+	if timestampRe.MatchString(trimmed) {
+		return false
+	}
+
+	// Reject lines that contain mostly navigation characters (|, ｜, spaces)
+	nonNavChars := 0
+	for _, r := range runes {
+		if r != ' ' && r != '|' && r != '｜' && r != '\t' {
+			nonNavChars++
 		}
+	}
+	if nonNavChars < len(runes)/2 {
+		return false
+	}
 
-		isBoilerplate := false
-		for _, p := range boilerplatePatterns {
-			if p.MatchString(trimmed) {
-				isBoilerplate = true
-				break
-			}
-		}
-
-		if !isBoilerplate {
-			kept = append(kept, line)
+	// Check for Chinese sentence-ending punctuation (。！？) — body text must have at least one
+	hasSentenceEnd := false
+	for _, r := range runes {
+		if r == '。' || r == '！' || r == '？' || r == '.' || r == '!' || r == '?' {
+			hasSentenceEnd = true
+			break
 		}
 	}
 
-	// Collapse multiple consecutive blank lines into one
-	result := strings.Join(kept, "\n")
-	multiNlRe := regexp.MustCompile(`\n{3,}`)
-	result = multiNlRe.ReplaceAllString(result, "\n\n")
+	// If > 200 runes, accept even without sentence-ending punctuation
+	// (some body paragraphs might be lists or code)
+	if !hasSentenceEnd && len(runes) < 200 {
+		return false
+	}
 
-	return result
+	return true
+}
+
+// extractAuthor finds the author name in the text.
+func extractAuthor(text string) string {
+	// Try "来源：xxx 作者：xxx 编辑：xxx" pattern first
+	if m := sourceAuthorRe.FindStringSubmatch(text); len(m) > 1 {
+		author := strings.TrimSpace(m[1])
+		// Clean up: remove trailing "编辑" if captured
+		author = regexp.MustCompile(`\s*编辑.*`).ReplaceAllString(author, "")
+		if author != "" && len([]rune(author)) <= 50 {
+			return author
+		}
+	}
+
+	// Try simple "作者：xxx" pattern
+	if m := authorRe.FindStringSubmatch(text); len(m) > 1 {
+		author := strings.TrimSpace(m[1])
+		if author != "" && len([]rune(author)) <= 50 {
+			return author
+		}
+	}
+
+	return ""
+}
+
+// cleanBodyParagraph removes trailing noise from a body paragraph.
+// This handles cases where the body text runs directly into metadata
+// (e.g., "精彩的一笔。91543692025-12-31 15:48:16:0杨欢欢...")
+func cleanBodyParagraph(text string) string {
+	trimmed := strings.TrimSpace(text)
+
+	// Strip "/enpproperty-->" and everything after it
+	if idx := strings.Index(trimmed, "/enpproperty"); idx >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+
+	// Strip "null" and everything after it (common in scraped content)
+	if idx := strings.Index(trimmed, "null"); idx >= 0 && idx > len([]rune(trimmed))/2 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+
+	// Find the last sentence-ending punctuation and cut after it
+	// This removes trailing noise like "91543692025-12-31..."
+	runes := []rune(trimmed)
+	lastSentenceEnd := -1
+	for i, r := range runes {
+		if r == '。' || r == '！' || r == '？' || r == '.' || r == '!' || r == '?' {
+			lastSentenceEnd = i
+		}
+	}
+
+	if lastSentenceEnd >= 0 && lastSentenceEnd < len(runes)-1 {
+		// Check if there's noise after the last sentence end
+		afterEnd := strings.TrimSpace(string(runes[lastSentenceEnd+1:]))
+		if afterEnd != "" {
+			// Check if the trailing part looks like noise (starts with digits, URLs, etc.)
+			if regexp.MustCompile(`^[\d]|^https?://|^null`).MatchString(afterEnd) {
+				trimmed = string(runes[:lastSentenceEnd+1])
+			}
+		}
+	}
+
+	return trimmed
+}
+
+// extractArticleContent uses a whitelist approach to extract only:
+//   - Author (from "作者：xxx" patterns)
+//   - Body text paragraphs (> 100 chars with sentence-ending punctuation)
+//
+// Title and URL are handled separately (stored in DB columns).
+// Returns formatted text: "作者：xxx\n\n正文段落1\n\n正文段落2..."
+func extractArticleContent(text string) string {
+	// Normalize line endings
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+
+	// Extract author before processing body
+	author := extractAuthor(text)
+
+	// Split into paragraphs
+	paragraphs := strings.Split(text, "\n")
+
+	var bodyParagraphs []string
+	for _, para := range paragraphs {
+		trimmed := strings.TrimSpace(para)
+		if trimmed == "" {
+			continue
+		}
+
+		if isBodyParagraph(trimmed) {
+			// Clean trailing noise from the paragraph
+			cleaned := cleanBodyParagraph(trimmed)
+			if cleaned != "" && len([]rune(cleaned)) >= 50 {
+				bodyParagraphs = append(bodyParagraphs, cleaned)
+			}
+		}
+	}
+
+	if len(bodyParagraphs) == 0 {
+		return ""
+	}
+
+	// Build the result: author (if found) + body paragraphs
+	var parts []string
+	if author != "" {
+		parts = append(parts, "作者："+author)
+	}
+	parts = append(parts, bodyParagraphs...)
+
+	return strings.Join(parts, "\n\n")
 }
 
 // extractTitle extracts the page title from HTML.
