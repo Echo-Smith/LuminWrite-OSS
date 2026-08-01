@@ -567,3 +567,42 @@ func (s *Server) handleKBGenerateEmbeddings(w http.ResponseWriter, r *http.Reque
 		"message":   "embeddings generated for entries missing vectors",
 	})
 }
+
+// handleKBRechunk re-chunks all documents in the knowledge base.
+// It deletes existing chunks and re-creates them using the improved
+// chunking algorithm with boilerplate filtering.
+func (s *Server) handleKBRechunk(w http.ResponseWriter, r *http.Request) {
+	if !s.kbAvailable() {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "knowledge base is not configured")
+		return
+	}
+
+	config := services.DefaultChunkConfig()
+	results, err := s.kbMgr.RechunkAll(r.Context(), config)
+	if err != nil {
+		slog.Warn("KB rechunk failed", "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to rechunk: "+err.Error())
+		return
+	}
+
+	// Summarize
+	var totalOld, totalNew int
+	for _, r := range results {
+		totalOld += r.OldChunks
+		totalNew += r.NewChunks
+	}
+
+	response.OK(w, map[string]interface{}{
+		"documents":   results,
+		"total_docs":  len(results),
+		"old_chunks":  totalOld,
+		"new_chunks":  totalNew,
+		"reduction":   totalOld - totalNew,
+		"reduction_pct": func() float64 {
+			if totalOld == 0 {
+				return 0
+			}
+			return float64(totalOld-totalNew) / float64(totalOld) * 100
+		}(),
+	})
+}
