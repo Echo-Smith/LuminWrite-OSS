@@ -609,6 +609,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             // Knowledge Base Admin
             r.Post("/kb/generate-embeddings", s.handleKBGenerateEmbeddings)
             r.Post("/kb/rechunk", s.handleKBRechunk)
+            r.Post("/kb/reimport", s.handleKBReimport)
 
             // SSE Push (admin only)
             r.Post("/sse/push", s.handleSSEPushTopic)

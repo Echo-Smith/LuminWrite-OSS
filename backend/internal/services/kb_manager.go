@@ -525,6 +525,92 @@ func cleanContentForRechunk(content string) string {
 	return extractArticleContent(content)
 }
 
+// ReimportAllURLs re-fetches all URL-imported documents from their original URLs,
+// updates the content with the improved extractor, and re-chunks them.
+// This is used to recover data lost by overly-aggressive cleaning.
+func (m *KbManager) ReimportAllURLs(ctx context.Context, config ChunkConfig) ([]RechunkResult, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	// Get all active URL documents with their source URLs
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(user_id, ''), title, metadata->>'source_url'
+		FROM knowledge_base
+		WHERE status = 'active' AND source_type = 'url'
+		  AND metadata->>'source_url' IS NOT NULL
+		  AND metadata->>'source_url' != ''
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query URL documents: %w", err)
+	}
+	defer rows.Close()
+
+	importer := NewURLImporter(m, config)
+	var results []RechunkResult
+
+	for rows.Next() {
+		var docID, userID, title, url string
+		if err := rows.Scan(&docID, &userID, &title, &url); err != nil {
+			continue
+		}
+
+		// Re-fetch the URL
+		content, err := importer.fetchAndExtract(ctx, url)
+		if err != nil {
+			slog.Warn("reimport: failed to fetch URL", "doc_id", docID, "url", url, "error", err)
+			continue
+		}
+
+		if len([]rune(content)) < 50 {
+			slog.Warn("reimport: content too short", "doc_id", docID, "url", url, "len", len([]rune(content)))
+			continue
+		}
+
+		// Update the document's content
+		if _, err := m.db.ExecContext(ctx, `UPDATE knowledge_base SET content = $2, updated_at = NOW() WHERE id = $1`, docID, content); err != nil {
+			slog.Warn("reimport: failed to update content", "doc_id", docID, "error", err)
+			continue
+		}
+
+		// Re-chunk with the new config
+		chunks := ChunkText(content, config)
+
+		// Delete old chunks
+		m.DeleteChunksByDocID(ctx, docID)
+
+		// Insert new chunks
+		for _, chunk := range chunks {
+			_, err := m.AddChunk(ctx, docID, userID, chunk.Index, chunk.Title, chunk.Content, map[string]interface{}{
+				"start_pos":   chunk.StartPos,
+				"end_pos":     chunk.EndPos,
+				"source_url":  url,
+				"reimported":  true,
+			})
+			if err != nil {
+				slog.Warn("reimport: failed to add chunk", "doc_id", docID, "index", chunk.Index, "error", err)
+			}
+		}
+
+		m.UpdateChunkCount(ctx, docID, len(chunks))
+
+		results = append(results, RechunkResult{
+			DocID:      docID,
+			Title:      title,
+			NewChunks:  len(chunks),
+			ContentLen: len([]rune(content)),
+		})
+
+		slog.Info("reimport: document re-imported",
+			"doc_id", docID, "title", title, "url", url,
+			"chunks", len(chunks), "content_len", len([]rune(content)),
+		)
+	}
+
+	return results, nil
+}
+
 // ─── Hybrid Search (BM25 + Dense) ──────────────────────
 
 // KbSearchResult is a single hybrid search result.
