@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -111,6 +112,68 @@ func (s *Server) handleDeleteUserSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	response.OK(w, map[string]interface{}{"deleted": true})
+}
+
+// handleGetSessionArtifacts retrieves all writing process artifacts for a session.
+//
+// GET /api/v2/sessions/{traceId}/artifacts
+// Header: Authorization: Bearer <jwt>
+//
+// Returns the full chain of intermediate products (search results, research
+// brief, outline, draft, review report, etc.) recorded during the writing
+// process, providing complete traceability.
+func (s *Server) handleGetSessionArtifacts(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	if s.traces == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	// Look up the editorial task ID linked to this trace
+	taskID, err := s.traces.GetEditorialTaskID(r.Context(), traceID)
+	if err != nil || taskID == "" {
+		response.OK(w, map[string]interface{}{
+			"artifacts": []interface{}{},
+			"task_id":   "",
+		})
+		return
+	}
+
+	// Fetch all artifacts for the task
+	if s.editorialSvc == nil {
+		response.OK(w, map[string]interface{}{
+			"artifacts": []interface{}{},
+			"task_id":   taskID,
+		})
+		return
+	}
+
+	artifacts, err := s.editorialSvc.ListArtifacts(r.Context(), taskID)
+	if err != nil {
+		slog.Warn("failed to list session artifacts", "error", err, "trace_id", traceID, "task_id", taskID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list artifacts")
+		return
+	}
+
+	if artifacts == nil {
+		artifacts = []editorial.Artifact{}
+	}
+
+	response.OK(w, map[string]interface{}{
+		"artifacts": artifacts,
+		"task_id":   taskID,
+	})
 }
 
 // handleChangePassword allows an authenticated user to change their password.

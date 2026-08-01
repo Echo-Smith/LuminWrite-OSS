@@ -539,6 +539,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/sessions", s.handleListUserSessions)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}", s.handleGetUserSession)
 		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}", s.handleDeleteUserSession)
+		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/artifacts", s.handleGetSessionArtifacts)
 		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 
 		// Admin (protected by admin token)
@@ -1123,6 +1124,31 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		s.traces.CreateTrace(context.Background(), execCtx)
 	}
 
+	// Create editorial task for writing process traceability
+	// All intermediate artifacts (search results, research brief, outline,
+	// draft, review report, etc.) will be recorded against this task.
+	if s.editorialSvc != nil {
+		taskOwnerID := userID
+		if taskOwnerID == "" || taskOwnerID == "anonymous" {
+			taskOwnerID = AdminUserID
+		}
+		taskTitle := p.Message
+		if len([]rune(taskTitle)) > 200 {
+			taskTitle = string([]rune(taskTitle)[:200])
+		}
+		task, err := s.editorialSvc.CreateTask(context.Background(), editorial.CreateTaskInput{
+			Title:     taskTitle,
+			StyleSlug: execCtx.StyleSlug,
+			Priority:  3,
+		}, taskOwnerID)
+		if err != nil {
+			slog.Warn("failed to create editorial task for trace", "error", err, "trace_id", traceID)
+		} else if s.traces != nil {
+			s.traces.LinkEditorialTask(context.Background(), traceID, task.ID)
+			slog.Info("editorial task created for trace", "trace_id", traceID, "task_id", task.ID)
+		}
+	}
+
 	// Emit agent.created
 	client.SendDirect(&websocket.ServerMessage{
 		Type: websocket.MsgAgentCreated,
@@ -1279,6 +1305,17 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			if s.metrics != nil {
 				s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "completed")
 				s.metrics.AgentDuration.Observe(time.Since(start), execCtx.StyleSlug)
+			}
+
+			// Record writing process artifacts for traceability
+			if s.editorialSvc != nil {
+				taskID, _ := s.traces.GetEditorialTaskID(ctx, traceID)
+				if taskID != "" {
+					recorder := editorial.NewArtifactRecorder(s.editorialSvc.Store())
+					if err := recorder.RecordWritingArtifacts(ctx, execCtx, taskID); err != nil {
+						slog.Warn("failed to record writing artifacts", "error", err, "trace_id", traceID)
+					}
+				}
 			}
 		}
 		// Cleanup

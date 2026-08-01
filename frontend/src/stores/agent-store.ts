@@ -14,6 +14,7 @@ import type {
   OutlineData,
   SearchResult,
   WSServerMessage,
+  WritingArtifact,
 } from "@/lib/types";
 import { useAuthStore } from "@/stores/auth-store";
 import type { MemoryEntry } from "@/stores/memory-store";
@@ -82,6 +83,7 @@ export interface WritingSession {
   awaitInputAt: number | null; // timestamp when await_input was received (for timeout countdown)
   injectedMaterials?: string[]; // 从选题关联注入的素材标签
   articleTitle?: string | null; // AI 生成的文章标题（完成后才有）
+  artifacts?: WritingArtifact[]; // 写作流程交付物（加载详情时获取）
 }
 
 // ─── Store 定义 ──────────────────────────────────────────
@@ -104,6 +106,7 @@ interface AgentStore {
   deleteSession: (id: string) => void;
   loadSessions: () => Promise<void>;
   loadSessionDetail: (traceId: string) => Promise<void>;
+  loadSessionArtifacts: (traceId: string) => Promise<void>;
 
   connectWS: () => void;
   sendWS: (type: string, payload: Record<string, unknown>) => void;
@@ -357,6 +360,28 @@ articleTitle: d.article_title,
       }));
     } catch (e) {
       console.error("Failed to load session detail:", e);
+    }
+
+    // 同时加载写作流程交付物
+    get().loadSessionArtifacts(traceId);
+  },
+  loadSessionArtifacts: async (traceId) => {
+    try {
+      const token = useAuthStore.getState().token;
+      const res = await fetch(`/api/v2/sessions/${traceId}/artifacts`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const json = await res.json();
+      if (!json.success || !json.data) return;
+
+      const artifacts = (json.data.artifacts || []) as WritingArtifact[];
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.traceId === traceId ? { ...s, artifacts } : s
+        ),
+      }));
+    } catch (e) {
+      console.error("Failed to load session artifacts:", e);
     }
   },
 

@@ -206,3 +206,61 @@ export interface FeedbackSegment {
   feedback_type: FeedbackType;
   comment: string;
 }
+
+// ─── 写作流程交付物 (Editorial Artifacts) ────────────────
+
+export type ArtifactType =
+  | "topic_card"
+  | "research_brief"
+  | "source_pack"
+  | "fact_claims"
+  | "outline"
+  | "draft"
+  | "review_report"
+  | "revised_draft"
+  | "memory_context";
+
+export type ArtifactStatus = "draft" | "submitted" | "approved" | "rejected" | "superseded";
+
+export interface WritingArtifact {
+  id: string;
+  task_id: string;
+  type: ArtifactType;
+  version: number;
+  content: string; // JSON string, parse on demand
+  status: ArtifactStatus;
+  produced_by: string;
+  reviewed_by?: string;
+  review_note?: string;
+  parent_id?: string;
+  token_cost: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ─── Artifact Content Schemas (for parsing) ──────────────
+
+export interface SourcePackContent {
+  count: number;
+  results: SearchResult[];
+  query: string;
+}
+
+export interface ResearchBriefContent {
+  topic?: string;
+  search_queries?: string[];
+  primary_search_query?: string;
+  word_limit?: number;
+  compressed_context?: string;
+  search_plan?: Array<{ query: string; source: string }>;
+  intent?: { taskMode: string; confidence: number; source: string };
+  user_materials?: string[];
+}
+
+export interface DraftContent {
+  title: string;
+  content: string;
+  word_count: number;
+  fix_attempts?: number;
+  note?: string;
+}
