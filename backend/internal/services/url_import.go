@@ -247,11 +247,6 @@ var timestampRe = regexp.MustCompile(`^(时间[：:])?\s*\d{4}[-/]\d{2}[-/]\d{2}
 // urlInTextRe matches URLs embedded within text (not just lines that are entirely URLs)
 var urlInTextRe = regexp.MustCompile(`https?://\S+`)
 
-// relatedArticlesRe detects lines that are concatenations of multiple article titles
-// (common in "related articles" sections): "标题1 标题2 标题3 标题4"
-// These lines have multiple short segments separated by spaces, each looking like a title
-var relatedArticlesRe = regexp.MustCompile(`^[^\n]{60,}$`)
-
 // isBodyParagraph checks if a paragraph is actual article body text.
 func isBodyParagraph(text string) bool {
 	trimmed := strings.TrimSpace(text)
@@ -275,11 +270,6 @@ func isBodyParagraph(text string) bool {
 		return false
 	}
 
-	// Reject lines containing URLs (URL fragments embedded in text)
-	if urlInTextRe.MatchString(trimmed) {
-		return false
-	}
-
 	// Reject lines that contain mostly navigation characters (|, ｜, spaces)
 	nonNavChars := 0
 	for _, r := range runes {
@@ -295,7 +285,6 @@ func isBodyParagraph(text string) bool {
 	// These typically have no sentence-ending punctuation (。！？) and contain multiple
 	// space-separated segments each < 30 chars
 	hasSentenceEnd := false
-	spaceCount := 0
 	shortSegmentCount := 0
 	currentSegmentLen := 0
 	for _, r := range runes {
@@ -303,7 +292,6 @@ func isBodyParagraph(text string) bool {
 			hasSentenceEnd = true
 		}
 		if r == ' ' {
-			spaceCount++
 			if currentSegmentLen > 0 && currentSegmentLen < 30 {
 				shortSegmentCount++
 			}
@@ -323,7 +311,6 @@ func isBodyParagraph(text string) bool {
 	}
 
 	// If > 200 runes, accept even without sentence-ending punctuation
-	// (some body paragraphs might be lists or code)
 	if !hasSentenceEnd && len(runes) < 200 {
 		return false
 	}
@@ -365,7 +352,11 @@ func cleanBodyParagraph(text string) string {
 		trimmed = strings.TrimSpace(trimmed[:idx])
 	}
 
+	// Strip all URLs from the text (image URLs, article URLs, etc.)
+	trimmed = urlInTextRe.ReplaceAllString(trimmed, "")
+
 	// Strip "null" and everything after it (common in scraped content)
+	// Only if null appears after the halfway point (to avoid cutting legitimate text)
 	if idx := strings.Index(trimmed, "null"); idx >= 0 && idx > len([]rune(trimmed))/2 {
 		trimmed = strings.TrimSpace(trimmed[:idx])
 	}
@@ -384,14 +375,14 @@ func cleanBodyParagraph(text string) string {
 		// Check if there's noise after the last sentence end
 		afterEnd := strings.TrimSpace(string(runes[lastSentenceEnd+1:]))
 		if afterEnd != "" {
-			// Check if the trailing part looks like noise (starts with digits, URLs, etc.)
-			if regexp.MustCompile(`^[\d]|^https?://|^null`).MatchString(afterEnd) {
+			// Check if the trailing part looks like noise (starts with digits, etc.)
+			if regexp.MustCompile(`^[\d]`).MatchString(afterEnd) {
 				trimmed = string(runes[:lastSentenceEnd+1])
 			}
 		}
 	}
 
-	return trimmed
+	return strings.TrimSpace(trimmed)
 }
 
 // extractArticleContent uses a whitelist approach to extract only:
@@ -419,9 +410,10 @@ func extractArticleContent(text string) string {
 		}
 
 		if isBodyParagraph(trimmed) {
-			// Clean trailing noise from the paragraph
+			// Clean trailing noise from the paragraph (URLs, /enpproperty, numeric garbage)
 			cleaned := cleanBodyParagraph(trimmed)
-			if cleaned != "" && len([]rune(cleaned)) >= 50 {
+			// After cleaning, check if it's still long enough to be meaningful
+			if cleaned != "" && len([]rune(cleaned)) >= 80 {
 				bodyParagraphs = append(bodyParagraphs, cleaned)
 			}
 		}
