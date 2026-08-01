@@ -984,9 +984,8 @@ func (s *OutlineStep) generateOutline(ctx context.Context, execCtx *engine.Execu
 }`, execCtx.WritingTask.Topic)
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
-		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
+	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
 	}
@@ -1281,6 +1280,7 @@ messages = append(messages, tools.LLMMessage{
 	var streamOpts []tools.ChatOption
 	if taskMode == "writing" {
 		streamOpts = []tools.ChatOption{
+			tools.WithModel(tools.ModelV4Pro),
 			tools.WithThinking(true),
 			tools.WithReasoningEffort("high"),
 		}
@@ -1741,9 +1741,8 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 }`, execCtx.Article, profileRules.String(), factCheckSection)
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
-		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
 		// If review fails, pass by default
 		execCtx.ReviewResult = &engine.ReviewResult{
@@ -2352,9 +2351,8 @@ issue type 约定：title_length（字数不合规）、title_generic（过于�
 }`, execCtx.ArticleTitle, execCtx.Article, titleRules.String())
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
-		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
 		return nil, err
 	}

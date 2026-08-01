@@ -32,7 +32,6 @@ interface APIKey {
 const MCP_PROVIDERS = [
   { value: "tavily", label: "Tavily Search" },
   { value: "zhihu", label: "知乎" },
-  { value: "ima", label: "IMA" },
   { value: "weknora", label: "知识库" },
   { value: "dashscope", label: "DashScope (Embedding)" },
   { value: "anysearch", label: "AnySearch" },

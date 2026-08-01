@@ -476,6 +476,66 @@ func (s *Server) handleAdminTokenUsage(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, stats)
 }
 
+// handleAdminABMetrics returns A/B test metrics comparing Chat Completions vs Responses API.
+func (s *Server) handleAdminABMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.llm == nil {
+		response.OK(w, map[string]interface{}{
+			"enabled": false,
+			"message": "LLM client not configured",
+		})
+		return
+	}
+
+	snapshot := s.llm.GetABMetrics()
+	if snapshot == nil {
+		response.OK(w, map[string]interface{}{
+			"enabled": false,
+			"message": "A/B testing not enabled. Set DEEPSEEK_RESPONSES_API_RATIO > 0 to enable.",
+		})
+		return
+	}
+
+	// Calculate cache hit rates
+	chatCacheRate := 0.0
+	if snapshot.ChatCompletions.PromptTokens > 0 {
+		chatCacheRate = float64(snapshot.ChatCompletions.CacheHitTokens) / float64(snapshot.ChatCompletions.PromptTokens)
+	}
+	respCacheRate := 0.0
+	if snapshot.ResponsesAPI.PromptTokens > 0 {
+		respCacheRate = float64(snapshot.ResponsesAPI.CacheHitTokens) / float64(snapshot.ResponsesAPI.PromptTokens)
+	}
+
+	// Calculate average latencies
+	chatAvgLatency := 0.0
+	if snapshot.ChatCompletions.RequestCount > 0 {
+		chatAvgLatency = float64(snapshot.ChatCompletions.TotalLatencyMs) / float64(snapshot.ChatCompletions.RequestCount)
+	}
+	respAvgLatency := 0.0
+	if snapshot.ResponsesAPI.RequestCount > 0 {
+		respAvgLatency = float64(snapshot.ResponsesAPI.TotalLatencyMs) / float64(snapshot.ResponsesAPI.RequestCount)
+	}
+
+	response.OK(w, map[string]interface{}{
+		"enabled": true,
+		"chat_completions": map[string]interface{}{
+			"request_count":     snapshot.ChatCompletions.RequestCount,
+			"prompt_tokens":     snapshot.ChatCompletions.PromptTokens,
+			"cache_hit_tokens":  snapshot.ChatCompletions.CacheHitTokens,
+			"completion_tokens": snapshot.ChatCompletions.CompletionTokens,
+			"cache_hit_rate":    chatCacheRate,
+			"avg_latency_ms":    chatAvgLatency,
+		},
+		"responses_api": map[string]interface{}{
+			"request_count":     snapshot.ResponsesAPI.RequestCount,
+			"prompt_tokens":     snapshot.ResponsesAPI.PromptTokens,
+			"cache_hit_tokens":  snapshot.ResponsesAPI.CacheHitTokens,
+			"completion_tokens": snapshot.ResponsesAPI.CompletionTokens,
+			"cache_hit_rate":    respCacheRate,
+			"avg_latency_ms":    respAvgLatency,
+		},
+	})
+}
+
 // ─── Admin: Cron Jobs ────────────────────────────────────
 
 func (s *Server) handleAdminListCronJobs(w http.ResponseWriter, r *http.Request) {
@@ -620,8 +680,6 @@ func (s *Server) executeCronJob(job *database.CronJob) error {
 		return s.cronFeedbackAggregate(ctx, job)
 	case "cleanup":
 		return s.cronCleanup(ctx, job)
-	case "ima_sync":
-		return s.cronIMASync(ctx, job)
 	case "weknora_sync":
 		return s.cronWeKnoraSync(ctx, job)
 	case "kb_auto_import":
@@ -750,74 +808,5 @@ func (s *Server) cronCleanup(ctx context.Context, job *database.CronJob) error {
 	}
 
 	slog.Info("cron: cleanup completed", "job", job.Name)
-	return nil
-}
-
-// cronIMASync syncs IMA knowledge base entries into the local pgvector store.
-// It fetches all documents from the IMA knowledge base API and upserts them
-// into the local knowledge_base table, then generates embeddings for any new entries.
-func (s *Server) cronIMASync(ctx context.Context, job *database.CronJob) error {
-	slog.Info("cron: ima_sync triggered", "job", job.Name)
-
-	if s.search == nil {
-		return fmt.Errorf("search client not configured")
-	}
-
-	imaClient := s.search.IMAClient()
-	if imaClient == nil {
-		slog.Warn("cron: ima_sync — IMA client not configured, skipping")
-		return nil
-	}
-	if !imaClient.IsConfigured() {
-		slog.Warn("cron: ima_sync — IMA client not fully configured (placeholder keys), skipping")
-		return nil
-	}
-
-	if s.kbRepo == nil {
-		return fmt.Errorf("knowledge base repo not available")
-	}
-
-	// Step 1: Fetch all documents from IMA knowledge base
-	docs, err := imaClient.FetchDocuments(ctx, 50)
-	if err != nil {
-		slog.Warn("cron: ima_sync — failed to fetch documents from IMA", "error", err)
-		// Don't return error — still try to generate embeddings for existing entries
-	} else {
-		slog.Info("cron: ima_sync — fetched documents from IMA", "count", len(docs))
-
-		// Step 2: Upsert each document into the local knowledge_base table
-		newCount := 0
-		skipCount := 0
-		for _, doc := range docs {
-			// Use AddEntry which handles deduplication via content_hash
-			metadata := map[string]interface{}{
-				"source":   "ima",
-				"doc_id":   doc.DocID,
-				"category": doc.Category,
-				"url":      doc.URL,
-			}
-			entry, err := s.kbRepo.AddEntry(ctx, "ima", doc.DocID, doc.Title, doc.Content, metadata)
-			if err != nil {
-				slog.Debug("cron: ima_sync — failed to upsert doc", "doc_id", doc.DocID, "error", err)
-				skipCount++
-				continue
-			}
-			if entry != nil {
-				newCount++
-			}
-		}
-		slog.Info("cron: ima_sync — upsert completed",
-			"new_or_updated", newCount, "skipped", skipCount, "total_fetched", len(docs))
-	}
-
-	// Step 3: Generate embeddings for KB entries that don't have one yet
-	count, err := s.kbRepo.GenerateMissingEmbeddings(ctx, 25)
-	if err != nil {
-		slog.Warn("cron: ima_sync — embedding generation failed", "error", err)
-	} else {
-		slog.Info("cron: ima_sync — missing embeddings generated", "count", count)
-	}
-
-	slog.Info("cron: ima_sync completed", "job", job.Name)
 	return nil
 }

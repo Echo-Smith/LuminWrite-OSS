@@ -82,6 +82,10 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.DeepSeek.Temperature,
 			cfg.DeepSeek.Timeout,
 		)
+		// Configure A/B testing for Responses API if ratio is set
+		if cfg.DeepSeek.ResponsesAPIRatio > 0 {
+			llm.SetResponsesAPIRatio(cfg.DeepSeek.ResponsesAPIRatio)
+		}
 	} else {
 		slog.Warn("AI_API_KEY not set, LLM features will be limited")
 	}
@@ -169,7 +173,6 @@ func New(cfg *config.Config) (*Server, error) {
 	searchClient := tools.NewSearchClient(
 		cfg.Tavily.APIKey, cfg.Tavily.Endpoint, cfg.Tavily.Timeout,
 		cfg.Zhihu.Enabled, cfg.Zhihu.BaseURL, cfg.Zhihu.AccessSecret, cfg.Zhihu.Timeout,
-		cfg.IMA.BaseURL, cfg.IMA.ClientID, cfg.IMA.APIKey, cfg.IMA.KBID, cfg.IMA.Timeout,
 		cfg.Tencent.Enabled, cfg.Tencent.BaseURL, cfg.Tencent.Timeout,
 		cfg.Weibo.Enabled, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
 		cfg.ExtraHot.Enabled, cfg.ExtraHot.BaseURL, cfg.ExtraHot.Timeout,
@@ -599,6 +602,9 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             // Token Usage
             r.Get("/token-usage", s.handleAdminTokenUsage)
 
+            // A/B Test Metrics (Responses API vs Chat Completions)
+            r.Get("/ab-metrics", s.handleAdminABMetrics)
+
             // Cron Jobs
             r.Get("/cron-jobs", s.handleAdminListCronJobs)
             r.Post("/cron-jobs", s.handleAdminCreateCronJob)
@@ -686,11 +692,6 @@ func (s *Server) Start(ctx context.Context) error {
 // ─── Handlers ────────────────────────────────────────────
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	imaConfigured := false
-	if s.search != nil && s.search.IMAClient() != nil {
-		imaConfigured = s.search.IMAClient().IsConfigured()
-	}
-
 	embeddingConfigured := false
 	if s.embedding != nil {
 		embeddingConfigured = s.embedding.IsConfigured()
@@ -702,7 +703,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"llm_configured":      s.llm != nil,
 		"search_configured":   s.search != nil && s.search.HasSources(),
 		"db_configured":       s.dbAvail,
-		"ima_configured":      imaConfigured,
 		"embedding_configured": embeddingConfigured,
 	})
 }
@@ -1654,7 +1654,7 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 	))
 	registry.Register(engine.NewStepTool(
 		steps.NewSearchStep(llmClient, s.search),
-		"多源搜索：并发执行知乎/IMA/Tavily/腾讯新闻/微博搜索，返回 20 条结果",
+		"多源搜索：并发执行知乎/Tavily/腾讯新闻/微博/本地知识库搜索，返回 20 条结果",
 		false,
 	))
 	registry.Register(engine.NewStepTool(
