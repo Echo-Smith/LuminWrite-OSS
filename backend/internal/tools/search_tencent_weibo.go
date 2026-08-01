@@ -109,8 +109,8 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 
 	// List of known Tencent News hot list endpoints (tried in order)
 	type endpointInfo struct {
-		url      string
-		isHTML   bool
+		url    string
+		isHTML bool
 	}
 	endpoints := []endpointInfo{
 		{url: fmt.Sprintf("%s/getQQNewsUnreadList?machine=samsung&nums=%d", c.baseURL, limit), isHTML: false},
@@ -120,9 +120,6 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 		{url: "https://news.so.com/hotnews?src=www", isHTML: true},
 	}
 
-	var body []byte
-	var usedEndpoint string
-	var isHTMLEndpoint bool
 	for _, ep := range endpoints {
 		req, err := http.NewRequestWithContext(ctx, "GET", ep.url, nil)
 		if err != nil {
@@ -137,7 +134,7 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 			continue
 		}
 
-		body, err = io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2MB limit for HTML pages
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2MB limit for HTML pages
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -147,30 +144,27 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 			slog.Debug("tencent hot topics endpoint returned non-200", "url", ep.url, "status", resp.StatusCode)
 			continue
 		}
-		usedEndpoint = ep.url
-		isHTMLEndpoint = ep.isHTML
-		break
-	}
 
-	if body == nil {
-		return nil, fmt.Errorf("all tencent hot news endpoints failed")
-	}
-
-	var topics []map[string]interface{}
-
-	if isHTMLEndpoint {
-		// Parse 360 search hot news HTML
-		topics = parse360HotNewsHTML(body, limit)
-	} else {
-		topics = parseTencentHotTopics(body, limit)
-		if len(topics) == 0 {
-			// Try vvhan API format (different structure)
-			topics = parseVVHanQQNews(body, limit)
+		// Parse immediately and check if we got results
+		var topics []map[string]interface{}
+		if ep.isHTML {
+			topics = parse360HotNewsHTML(body, limit)
+		} else {
+			topics = parseTencentHotTopics(body, limit)
+			if len(topics) == 0 {
+				topics = parseVVHanQQNews(body, limit)
+			}
 		}
+
+		if len(topics) > 0 {
+			slog.Info("tencent hot topics fetched", "count", len(topics), "endpoint", ep.url)
+			return topics, nil
+		}
+
+		slog.Debug("tencent hot topics endpoint returned 0 results, trying next", "url", ep.url)
 	}
 
-	slog.Info("tencent hot topics fetched", "count", len(topics), "endpoint", usedEndpoint)
-	return topics, nil
+	return nil, fmt.Errorf("all tencent hot news endpoints returned 0 results")
 }
 
 // parse360HotNewsHTML parses the 360 search (news.so.com) hot news HTML page.
