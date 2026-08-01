@@ -6,19 +6,33 @@
  *   - 聚焦时微妙阴影上浮
  *   - 极简边框（border/60 透明度）
  *   - 控件行与输入框整合在同一个容器内
+ *   - 支持动态建议词（从 API 获取热搜/历史）
+ *   - 支持错误 Toast 通知
  */
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Pause, Play, Square, Plus, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, PenLine, Paperclip, Loader2, type LucideIcon } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
+import { Pause, Play, Square, Plus, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, PenLine, Paperclip, Loader2, Database, type LucideIcon } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 
-export function WritingComposer() {
+export interface WritingComposerHandle {
+  focusTextarea: () => void;
+}
+
+const FALLBACK_SUGGESTIONS = [
+  { icon: TrendingUp, label: "基于热搜写评论", text: "基于热搜写一篇评论" },
+  { icon: FileEdit, label: "写一篇议论文", text: "写一篇关于人工智能与就业的议论文" },
+  { icon: Lightbulb, label: "帮我构思选题", text: "帮我构思3个关于城市交通的选题" },
+  { icon: MessageCircle, label: "提炼核心观点", text: "提炼以下文章的核心观点：\n\n" },
+];
+
+export const WritingComposer = forwardRef<WritingComposerHandle>(function WritingComposer(_, ref) {
   const [message, setMessage] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
   const [materials, setMaterials] = useState<string[]>([]);
@@ -27,6 +41,12 @@ export function WritingComposer() {
   const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 从 session 读取选题注入的素材标签
+  const injectedMaterials = useAgentStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return session?.injectedMaterials ?? [];
+  });
 
   const startWriting = useAgentStore((s) => s.startWriting);
   const pauseWriting = useAgentStore((s) => s.pauseWriting);
@@ -85,6 +105,13 @@ export function WritingComposer() {
     }
   }, [message]);
 
+  // 暴露 focusTextarea 方法给父组件（用于 Cmd+K 快捷键）
+  useImperativeHandle(ref, () => ({
+    focusTextarea: () => {
+      textareaRef.current?.focus();
+    },
+  }), []);
+
   const handleSend = useCallback(() => {
     if (!message.trim() || isRunning) return;
 
@@ -101,6 +128,11 @@ export function WritingComposer() {
   }, [message, style, mode, model, materials, isRunning, startWriting, agentMode]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleSend();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -135,6 +167,7 @@ export function WritingComposer() {
       }
     } catch (err) {
       console.error("file upload failed", err);
+      toast.error("文件上传失败", err instanceof Error ? err.message : "请稍后重试");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -143,6 +176,25 @@ export function WritingComposer() {
 
   return (
     <div className="px-4 pb-4 pt-2">
+      {/* 从选题注入的素材标签（只读展示） */}
+      {injectedMaterials.length > 0 && !isRunning && !isPaused && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 anim-fade-in">
+          <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium shrink-0">
+            <Database className="h-3 w-3" />
+            选题素材
+          </span>
+          {injectedMaterials.map((mat, i) => (
+            <span
+              key={i}
+              className="flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200/40 dark:border-emerald-900/40 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400 max-w-[200px] truncate"
+              title={mat}
+            >
+              {mat.startsWith("📎 ") ? mat.slice(3) : mat}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* 暂停状态提示栏 */}
       {isPaused && (
         <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/60 px-3 py-1.5 anim-fade-in">
@@ -152,20 +204,9 @@ export function WritingComposer() {
         </div>
       )}
 
-      {/* Suggestion 快捷入口（仅空闲且无输入时显示） */}
+      {/* Suggestion 快捷入口（仅空闲且无输入时显示）*/}
       {!isRunning && !isPaused && !message.trim() && (
-        <div className="mb-2.5 flex flex-wrap gap-1.5">
-          {[
-            { icon: TrendingUp, label: "基于热搜写评论", text: "基于热搜写一篇评论" },
-            { icon: FileEdit, label: "写一篇议论文", text: "写一篇关于人工智能与就业的议论文" },
-            { icon: Lightbulb, label: "帮我构思选题", text: "帮我构思3个关于城市交通的选题" },
-            { icon: MessageCircle, label: "提炼核心观点", text: "提炼以下文章的核心观点：\n\n" },
-          ].map((s, i) => (
-            <StaggerItem key={i} index={i} interval={60} animation="fade-up">
-              <SuggestionButton icon={s.icon} label={s.label} onClick={() => setMessage(s.text)} />
-            </StaggerItem>
-          ))}
-        </div>
+        <DynamicSuggestions onSelect={(text) => setMessage(text)} />
       )}
 
       {/* ── Composer 药丸容器 ── */}
@@ -244,9 +285,8 @@ export function WritingComposer() {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"
-            className="flex-1 min-h-[40px] max-h-[200px] resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:opacity-50"
-            disabled={isRunning}
+            placeholder={isRunning ? "写作进行中… 可先编辑下一条需求，完成后发送" : "输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"}
+            className="flex-1 min-h-[40px] max-h-[200px] resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
             rows={1}
           />
         </div>
@@ -331,16 +371,62 @@ export function WritingComposer() {
                 <PenLine className="h-4 w-4" />
               </button>
             )}
+
+            {isRunning && message.trim() && (
+              <span className="text-xs text-muted-foreground px-1" title="当前写作完成后可发送">
+                待发
+              </span>
+            )}
           </div>
         </div>
       </div>
     </div>
   );
-}
+});
 
 /**
- * Suggestion 快捷按钮 — 极简 pill 样式
+ * DynamicSuggestions — 动态建议词
+ * 尝试从 /api/v2/hot-topics 获取热搜话题，失败时用本地 fallback
  */
+function DynamicSuggestions({ onSelect }: { onSelect: (text: string) => void }) {
+  const [suggestions, setSuggestions] = useState(FALLBACK_SUGGESTIONS);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/v2/hot-topics?limit=4")
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const topics = data?.data ?? data;
+        if (Array.isArray(topics) && topics.length > 0) {
+          const dynamic = topics.slice(0, 4).map((t: { title?: string; text?: string; category?: string }, i: number) => {
+            const icons = [TrendingUp, FileEdit, Lightbulb, MessageCircle];
+            const labels = ["热搜", "议论文", "选题", "提炼"];
+            return {
+              icon: icons[i % icons.length],
+              label: t.category ?? labels[i % labels.length],
+              text: t.text ?? `写一篇关于${t.title}的评论`,
+            };
+          });
+          setSuggestions(dynamic);
+        }
+      })
+      .catch(() => {
+        // 保留 fallback，不需要错误提示
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <div className="mb-2.5 flex flex-wrap gap-1.5">
+      {suggestions.map((s, i) => (
+        <StaggerItem key={i} index={i} interval={60} animation="fade-up">
+          <SuggestionButton icon={s.icon} label={s.label} onClick={() => onSelect(s.text)} />
+        </StaggerItem>
+      ))}
+    </div>
+  );
+}
 function SuggestionButton({
   icon: Icon,
   label,

@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Plus, Trash2, FileText, Link as LinkIcon, Upload, Search,
   Loader2, File, ChevronLeft, ChevronRight, AlertCircle, Database,
+  Compass, ArrowRight, ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
+import { useNavigate } from "react-router-dom";
 import {
   type UserMaterial,
   type MaterialSearchResult,
@@ -46,6 +49,7 @@ function formatTime(ts: string): string {
 }
 
 export function MyMaterialsPage() {
+  const navigate = useNavigate();
   const [materials, setMaterials] = useState<UserMaterial[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -147,23 +151,50 @@ export function MyMaterialsPage() {
   const totalPages = Math.ceil(total / pageSize);
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      <div className="max-w-6xl mx-auto p-6 space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <Database className="h-5 w-5" />
-              <h1 className="text-xl font-semibold">我的素材库</h1>
-            </div>
-            <p className="text-sm text-muted-foreground mt-1">
-              内置知识引擎（BM25 + Dense + GraphRAG）· 支持 文本/文件 上传 · 仅可见自己的素材
-            </p>
+    <div className="flex h-screen flex-col bg-muted/30">
+      {/* ─── Header ─── */}
+      <header className="flex items-center justify-between border-b bg-surface px-6 py-3">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={() => navigate("/write")} className="gap-1">
+            <ArrowLeft className="h-4 w-4" />
+            返回
+          </Button>
+          <Separator orientation="vertical" className="h-5" />
+          <div className="flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            <h1 className="text-lg font-semibold">我的素材库</h1>
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => navigate("/topics")} className="gap-1.5">
+            <Compass className="h-4 w-4" />
+            去选题中心
+            <ArrowRight className="h-3 w-3" />
+          </Button>
           <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
             <Plus className="h-4 w-4 mr-2" /> 添加素材
           </Button>
         </div>
+      </header>
+
+      {/* ─── Main ─── */}
+      <div className="flex-1 overflow-y-auto">
+      <div className="max-w-6xl mx-auto p-6 space-y-6">
+        {/* 选题关联提示横幅 */}
+        <Card className="border-emerald-200/60 dark:border-emerald-900/40 bg-emerald-50/30 dark:bg-emerald-950/10">
+          <CardContent className="flex items-center gap-3 py-3">
+            <Compass className="h-5 w-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <div className="flex-1 text-sm text-muted-foreground">
+              在选题详情中可将素材关联到选题，写作时自动注入作为参考。
+              <button
+                onClick={() => navigate("/topics")}
+                className="text-emerald-600 dark:text-emerald-400 hover:underline ml-1 font-medium"
+              >
+                前往选题中心 →
+              </button>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Error */}
         {error && (
@@ -356,6 +387,13 @@ export function MyMaterialsPage() {
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
                           <span>{formatTime(mat.created_at)}</span>
                           {mat.file_size ? <span>{formatSize(mat.file_size)}</span> : null}
+                          <button
+                            onClick={() => navigate("/topics")}
+                            className="text-emerald-600 dark:text-emerald-400 hover:underline"
+                            title="去选题中心关联此素材"
+                          >
+                            关联选题 →
+                          </button>
                         </div>
                       </div>
                       <Button
@@ -399,6 +437,7 @@ export function MyMaterialsPage() {
             )}
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );

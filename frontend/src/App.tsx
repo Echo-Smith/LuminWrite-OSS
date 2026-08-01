@@ -14,9 +14,9 @@ import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
 import { EditorialBoard } from "@/pages/editorial/editorial-board";
 import { MyStylesPage } from "@/pages/my-styles";
-import { MyMaterialsPage } from "@/pages/my-materials";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
+import { ToastContainer } from "@/components/ui/toast";
 
 export function App() {
   const init = useAuthStore((s) => s.init);
@@ -78,14 +78,8 @@ export function App() {
             }
           />
 
-          <Route
-            path="/materials"
-            element={
-              <ProtectedRoute>
-                <MyMaterialsPage />
-              </ProtectedRoute>
-            }
-          />
+          {/* /materials 已合并到 /topics 的素材 Tab，重定向 */}
+          <Route path="/materials" element={<Navigate to="/topics" replace />} />
 
           {/* Admin — 需管理员 */}
           <Route
@@ -125,6 +119,9 @@ export function App() {
           defaultTab={defaultTab}
         />
       </BrowserRouter>
+
+      {/* 全局 Toast 通知 */}
+      <ToastContainer />
     </TooltipProvider>
   );
 }

@@ -10,7 +10,7 @@
  * 文档来源: docs/07-feedback.md
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { Star, ThumbsUp, ThumbsDown, Send, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
+import { Star, ThumbsUp, ThumbsDown, Send, CheckCircle2, ChevronDown, ChevronUp, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -247,9 +247,15 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
 
   if (submitted) {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-        <CheckCircle2 className="h-4 w-4 text-green-600" />
-        <span>感谢反馈！你的评价已提交。</span>
+      <div className="rounded-lg border bg-background p-3 space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <CheckCircle2 className="h-4 w-4 text-green-600" />
+          <span>感谢反馈！你的评价已提交。</span>
+        </div>
+        <div className="flex items-start gap-1.5 text-xs text-muted-foreground/70 pl-6">
+          <Info className="h-3 w-3 shrink-0 mt-0.5" />
+          <span>反馈将用于优化你的写作风格画像，提升未来文章质量。</span>
+        </div>
       </div>
     );
   }
@@ -300,6 +306,12 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
             分段评分
           </Button>
         </div>
+      </div>
+
+      {/* 反馈用途说明 */}
+      <div className="flex items-start gap-1.5 text-xs text-muted-foreground/60">
+        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+        <span>反馈将用于优化写作风格画像与记忆系统，帮助 AI 更好地理解你的偏好。</span>
       </div>
 
       {/* 分段评分区域 */}

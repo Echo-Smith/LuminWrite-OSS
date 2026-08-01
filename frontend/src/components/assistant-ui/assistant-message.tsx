@@ -8,7 +8,7 @@
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { PenLine, Pause, Copy, Check, RefreshCw, ChevronRight, Brain } from "lucide-react";
+import { PenLine, Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
@@ -19,15 +19,18 @@ import { MarkdownContent } from "./markdown-content";
 import { OutlineTool } from "@/components/tools/outline-tool";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { STEP_LABELS } from "@/lib/constants";
+import { toast } from "@/stores/toast-store";
 import { cn } from "@/lib/utils";
 import { TypingDots, StreamingCursor, PulseIndicator } from "@/components/animation";
 
 interface AssistantMessageProps {
   message: ChatMessage;
   traceId: string | null;
+  version?: number;
+  totalVersions?: number;
 }
 
-export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
+export function AssistantMessage({ message, traceId, version = 1, totalVersions = 1 }: AssistantMessageProps) {
   // 获取当前会话状态（用于判断是否暂停）
   const sessionStatus = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
@@ -91,12 +94,20 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
         {/* 流式文章输出 */}
         {textParts.length > 0 && (
           <div className="codex-card p-4">
-            {/* 文章标题（结构化提取，先于正文显示） */}
-            {message.articleTitle && (
-              <h2 className="text-xl font-bold text-foreground mb-3 leading-tight">
-                {message.articleTitle}
-              </h2>
-            )}
+            {/* 版本标签 + 文章标题 */}
+            <div className="flex items-start justify-between gap-2 mb-3">
+              {message.articleTitle && (
+                <h2 className="text-xl font-bold text-foreground leading-tight flex-1">
+                  {message.articleTitle}
+                </h2>
+              )}
+              {totalVersions > 1 && (
+                <Badge variant="outline" className="shrink-0 text-xs gap-1">
+                  <FileText className="h-3 w-3" />
+                  v{version}/{totalVersions}
+                </Badge>
+              )}
+            </div>
             {textParts.map((part, i) => (
               <div key={i}>
                 <MarkdownContent content={part.text} />
@@ -112,6 +123,10 @@ export function AssistantMessage({ message, traceId }: AssistantMessageProps) {
                 <span className="text-sm text-amber-700 dark:text-amber-400 font-medium">已暂停</span>
                 <span className="text-xs text-amber-600 dark:text-amber-500">— 点击下方播放按钮继续</span>
               </div>
+            )}
+            {/* 流式字数进度条 */}
+            {isRunning && textParts.some((p) => p.streaming) && (
+              <WordCountProgress text={textParts.map((t) => t.text).join("")} />
             )}
             {/* 消息操作按钮 */}
             {!isRunning && textParts.some((p) => p.text.trim()) && (
@@ -415,6 +430,21 @@ function MessageActions({ text, title }: { text: string; title?: string }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownload = () => {
+    const fullText = title ? `# ${title}\n\n${text}` : text;
+    const blob = new Blob([fullText], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    // 文件名：取标题前 20 字，替换非法字符
+    const safeName = (title ?? "article").slice(0, 20).replace(/[<>:"/\\|?*\n]/g, "_");
+    a.download = `${safeName}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const handleRegenerate = () => {
     // Trigger regeneration by re-sending the last user message
     const store = useAgentStore.getState();
@@ -429,8 +459,30 @@ function MessageActions({ text, title }: { text: string; title?: string }) {
     }
   };
 
+  const handleContinue = () => {
+    const store = useAgentStore.getState();
+    const session = store.sessions.find((s) => s.id === store.activeSessionId);
+    if (!session) return;
+    // 续写：基于当前文章内容继续延伸
+    const continuePrompt = `基于以下已写内容的风格和逻辑，继续续写：\n\n${text.slice(-500)}`;
+    store.startWriting({ message: continuePrompt, style: session.style, mode: session.mode as WriteMode });
+    toast.info("续写已开始", "AI 将基于当前内容继续延伸");
+  };
+
+  const handleExpand = () => {
+    const store = useAgentStore.getState();
+    const session = store.sessions.find((s) => s.id === store.activeSessionId);
+    if (!session) return;
+    // 扩写：选取最后一段进行展开
+    const paragraphs = text.split(/\n\n+/).filter(Boolean);
+    const lastPara = paragraphs[paragraphs.length - 1] ?? text.slice(-300);
+    const expandPrompt = `请将以下段落进行扩写，增加更丰富的论据和细节：\n\n${lastPara}`;
+    store.startWriting({ message: expandPrompt, style: session.style, mode: session.mode as WriteMode });
+    toast.info("扩写已开始", "AI 将展开最后一段的论述");
+  };
+
   return (
-    <div className="mt-3 flex items-center gap-1 border-t pt-2 anim-fade-in">
+    <div className="mt-3 flex items-center gap-1 border-t pt-2 anim-fade-in flex-wrap">
       <button
         onClick={handleCopy}
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
@@ -454,6 +506,86 @@ function MessageActions({ text, title }: { text: string; title?: string }) {
         <RefreshCw className="h-3.5 w-3.5" />
         <span>重写</span>
       </button>
+      <button
+        onClick={handleContinue}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+        title="继续写，延伸内容"
+      >
+        <FilePlus className="h-3.5 w-3.5" />
+        <span>续写</span>
+      </button>
+      <button
+        onClick={handleExpand}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+        title="选取末尾段落展开论述"
+      >
+        <Maximize2 className="h-3.5 w-3.5" />
+        <span>扩写</span>
+      </button>
+      <button
+        onClick={handleDownload}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+        title="下载为 Markdown 文件"
+      >
+        <Download className="h-3.5 w-3.5" />
+        <span>下载</span>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * WordCountProgress — 流式写作中的实时字数进度条
+ * 从 session.style 获取目标字数范围，显示当前进度
+ */
+function WordCountProgress({ text }: { text: string }) {
+  const sessionStyle = useAgentStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return session?.style ?? "yinyue";
+  });
+
+  // 风格对应的目标字数范围（fallback）
+  const STYLE_WORD_RANGE: Record<string, [number, number]> = {
+    yinyue: [1800, 2800],
+    sheping: [1500, 2500],
+    xinwen: [800, 1500],
+    pinglun: [1200, 2000],
+    sanwen: [800, 1500],
+  };
+  const range = STYLE_WORD_RANGE[sessionStyle] ?? [1000, 2000];
+  const targetMin = range[0];
+  const targetMax = range[1];
+
+  // 计算中文字数（去除空白和标记符号）
+  const cleanText = text.replace(/\s/g, "").replace(/[#*>\-_`~]/g, "");
+  const currentCount = cleanText.length;
+  const progressPercent = Math.min(100, (currentCount / targetMax) * 100);
+
+  // 判断当前状态
+  const isBelowTarget = currentCount < targetMin;
+  const isInRange = currentCount >= targetMin && currentCount <= targetMax;
+  const isAboveTarget = currentCount > targetMax;
+
+  return (
+    <div className="mt-3 flex items-center gap-3 rounded-md bg-muted/30 dark:bg-muted/10 px-3 py-2 anim-fade-in">
+      <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all duration-300",
+            isBelowTarget ? "bg-blue-400" : isInRange ? "bg-emerald-500" : "bg-amber-500"
+          )}
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+      <div className="flex items-center gap-1.5 text-xs tabular-nums shrink-0">
+        <span className={cn(
+          "font-medium",
+          isInRange ? "text-emerald-600" : isAboveTarget ? "text-amber-600" : "text-muted-foreground"
+        )}>
+          {currentCount}
+        </span>
+        <span className="text-muted-foreground/60">/ {targetMin}-{targetMax} 字</span>
+      </div>
     </div>
   );
 }
