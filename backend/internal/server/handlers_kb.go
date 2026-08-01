@@ -606,3 +606,31 @@ func (s *Server) handleKBRechunk(w http.ResponseWriter, r *http.Request) {
 		}(),
 	})
 }
+
+// handleKBReimport re-fetches all URL-imported documents from their original URLs,
+// updates the content with the improved extractor, and re-chunks them.
+func (s *Server) handleKBReimport(w http.ResponseWriter, r *http.Request) {
+	if !s.kbAvailable() {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "knowledge base is not configured")
+		return
+	}
+
+	config := services.DefaultChunkConfig()
+	results, err := s.kbMgr.ReimportAllURLs(r.Context(), config)
+	if err != nil {
+		slog.Warn("KB reimport failed", "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to reimport: "+err.Error())
+		return
+	}
+
+	var totalNew int
+	for _, r := range results {
+		totalNew += r.NewChunks
+	}
+
+	response.OK(w, map[string]interface{}{
+		"documents":  results,
+		"total_docs": len(results),
+		"new_chunks": totalNew,
+	})
+}
