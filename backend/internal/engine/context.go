@@ -90,7 +90,7 @@ type CredibilityLookup interface {
 // SearchPlanEntry is a single entry in the search plan.
 type SearchPlanEntry struct {
 	Query  string `json:"query"`
-	Source string `json:"source"` // zhihu | ima | tavily | tencent | weibo
+	Source string `json:"source"` // zhihu | local_kb | tavily | tencent | weibo
 }
 
 // ReviewIssue is a single issue found in post-review.
