@@ -469,7 +469,9 @@ func (m *KbManager) RechunkAll(ctx context.Context, config ChunkConfig) ([]Rechu
 		}
 
 		// Update the document's content column with cleaned content
-		if _, err := m.db.ExecContext(ctx, `UPDATE knowledge_base SET content = $2, content_hash = $3, updated_at = NOW() WHERE id = $1`, docID, cleaned, simpleContentHash(cleaned)); err != nil {
+		// Note: we don't update content_hash to avoid unique constraint violations
+		// when multiple documents have similar cleaned content
+		if _, err := m.db.ExecContext(ctx, `UPDATE knowledge_base SET content = $2, updated_at = NOW() WHERE id = $1`, docID, cleaned); err != nil {
 			slog.Warn("rechunk: failed to update content", "doc_id", docID, "error", err)
 		}
 
