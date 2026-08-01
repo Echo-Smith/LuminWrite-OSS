@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,39 +108,47 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 	}
 
 	// List of known Tencent News hot list endpoints (tried in order)
-	endpoints := []string{
-		fmt.Sprintf("%s/getQQNewsUnreadList?machine=samsung&nums=%d", c.baseURL, limit),
-		fmt.Sprintf("%s/gettop10?nums=%d", c.baseURL, limit),
-		fmt.Sprintf("https://api.vvhan.com/api/hotlist/qqNews", ),
+	type endpointInfo struct {
+		url      string
+		isHTML   bool
+	}
+	endpoints := []endpointInfo{
+		{url: fmt.Sprintf("%s/getQQNewsUnreadList?machine=samsung&nums=%d", c.baseURL, limit), isHTML: false},
+		{url: fmt.Sprintf("%s/gettop10?nums=%d", c.baseURL, limit), isHTML: false},
+		{url: "https://api.vvhan.com/api/hotlist/qqNews", isHTML: false},
+		// 360 search hot news as final fallback (aggregates from multiple sources including Tencent)
+		{url: "https://news.so.com/hotnews?src=www", isHTML: true},
 	}
 
 	var body []byte
 	var usedEndpoint string
+	var isHTMLEndpoint bool
 	for _, ep := range endpoints {
-		req, err := http.NewRequestWithContext(ctx, "GET", ep, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", ep.url, nil)
 		if err != nil {
 			continue
 		}
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("Accept", "application/json, text/html, text/plain, */*")
 
 		resp, err := c.client.Do(req)
 		if err != nil {
-			slog.Debug("tencent hot topics endpoint failed", "url", ep, "error", err)
+			slog.Debug("tencent hot topics endpoint failed", "url", ep.url, "error", err)
 			continue
 		}
 
-		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2MB limit for HTML pages
 		resp.Body.Close()
 		if err != nil {
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			slog.Debug("tencent hot topics endpoint returned non-200", "url", ep, "status", resp.StatusCode)
+			slog.Debug("tencent hot topics endpoint returned non-200", "url", ep.url, "status", resp.StatusCode)
 			continue
 		}
-		usedEndpoint = ep
+		usedEndpoint = ep.url
+		isHTMLEndpoint = ep.isHTML
 		break
 	}
 
@@ -147,14 +156,81 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 		return nil, fmt.Errorf("all tencent hot news endpoints failed")
 	}
 
-	topics := parseTencentHotTopics(body, limit)
-	if len(topics) == 0 {
-		// Try vvhan API format (different structure)
-		topics = parseVVHanQQNews(body, limit)
+	var topics []map[string]interface{}
+
+	if isHTMLEndpoint {
+		// Parse 360 search hot news HTML
+		topics = parse360HotNewsHTML(body, limit)
+	} else {
+		topics = parseTencentHotTopics(body, limit)
+		if len(topics) == 0 {
+			// Try vvhan API format (different structure)
+			topics = parseVVHanQQNews(body, limit)
+		}
 	}
 
-	slog.Debug("tencent hot topics fetched", "count", len(topics), "endpoint", usedEndpoint)
+	slog.Info("tencent hot topics fetched", "count", len(topics), "endpoint", usedEndpoint)
 	return topics, nil
+}
+
+// parse360HotNewsHTML parses the 360 search (news.so.com) hot news HTML page.
+// This is used as a fallback when all Tencent News JSON APIs are unavailable.
+// The 360 hot news aggregates headlines from multiple Chinese news sources.
+func parse360HotNewsHTML(body []byte, limit int) []map[string]interface{} {
+	html := string(body)
+
+	// Each hot news item is in an <a class="item" data-index="N" ...>
+	// with <span class="title">title</span> and <span class="hot">NNNNN人在看</span>
+	itemRe := regexp.MustCompile(`(?s)<a[^>]*class="item"[^>]*data-index="(\d+)"[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	matches := itemRe.FindAllStringSubmatch(html, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	titleRe := regexp.MustCompile(`(?s)<span[^>]*class="title"[^>]*>(.*?)</span>`)
+	hotRe := regexp.MustCompile(`(?s)<span[^>]*class="hot"[^>]*>(.*?)</span>`)
+
+	topics := make([]map[string]interface{}, 0, len(matches))
+	for _, m := range matches {
+		if len(topics) >= limit {
+			break
+		}
+		rankStr := m[1]
+		url := m[2]
+		inner := m[3]
+
+		titleMatch := titleRe.FindStringSubmatch(inner)
+		if titleMatch == nil {
+			continue
+		}
+		title := cleanHTML(decodeHTMLEntities(titleMatch[1]))
+		if title == "" {
+			continue
+		}
+
+		hotText := ""
+		hotMatch := hotRe.FindStringSubmatch(inner)
+		if hotMatch != nil {
+			hotText = cleanHTML(hotMatch[1])
+		}
+
+		rank := len(topics) + 1
+		if r, err := strconv.Atoi(rankStr); err == nil && r > 0 {
+			rank = r
+		}
+
+		topic := map[string]interface{}{
+			"title":       title,
+			"description": hotText,
+			"source":      "tencent",
+			"platform":    "qq_news",
+			"hot_rank":    rank,
+			"url":         url,
+		}
+		topics = append(topics, topic)
+	}
+
+	return topics
 }
 
 // parseTencentHotTopics parses the standard Tencent News API response format.
