@@ -382,9 +382,10 @@ func (c *SearchClient) FetchHotTopics(ctx context.Context, limit int) []map[stri
 	}
 
 	var (
-		mu      sync.Mutex
-		results []map[string]interface{}
-		wg      sync.WaitGroup
+		mu         sync.Mutex
+		results    []map[string]interface{}
+		tencentCnt int
+		wg         sync.WaitGroup
 	)
 
 	if c.tencent != nil {
@@ -393,11 +394,15 @@ func (c *SearchClient) FetchHotTopics(ctx context.Context, limit int) []map[stri
 			defer wg.Done()
 			topics, err := c.tencent.FetchHotTopics(ctx, limit)
 			if err != nil {
-				slog.Warn("tencent hot topics fetch failed", "error", err)
+				slog.Warn("tencent hot topics fetch failed (HTTP API)", "error", err)
 				return
+			}
+			if len(topics) == 0 {
+				slog.Warn("tencent hot topics: HTTP API returned 0 results (API may be deprecated)")
 			}
 			mu.Lock()
 			results = append(results, topics...)
+			tencentCnt = len(topics)
 			mu.Unlock()
 		}()
 	}
@@ -434,11 +439,77 @@ func (c *SearchClient) FetchHotTopics(ctx context.Context, limit int) []map[stri
 
 	wg.Wait()
 
+	// ── Fallback: if Tencent HTTP API returned nothing, try the CLI ──
+	if tencentCnt == 0 && c.tencentCLI != nil && c.tencentCLI.IsConfigured() {
+		slog.Info("tencent HTTP API returned no results, trying CLI fallback")
+		topics, err := c.tencentCLI.FetchHot(ctx, limit)
+		if err != nil {
+			slog.Warn("tencent CLI hot fetch also failed", "error", err)
+		} else {
+			// Normalize CLI output to match the expected format
+			normalized := normalizeTencentCLITopics(topics, limit)
+			if len(normalized) > 0 {
+				slog.Info("tencent CLI hot topics fetched successfully", "count", len(normalized))
+				mu.Lock()
+				results = append(results, normalized...)
+				mu.Unlock()
+			}
+		}
+	}
+
 	if len(results) > limit*10 {
 		results = results[:limit*10]
 	}
 
 	return results
+}
+
+// normalizeTencentCLITopics converts the raw CLI output items into the
+// standard hot topic format with source="tencent" and platform="qq_news".
+func normalizeTencentCLITopics(items []map[string]interface{}, limit int) []map[string]interface{} {
+	if len(items) == 0 {
+		return nil
+	}
+	topics := make([]map[string]interface{}, 0, len(items))
+	for i, item := range items {
+		if i >= limit {
+			break
+		}
+		// Try common field names from CLI output
+		title, _ := item["title"].(string)
+		if title == "" {
+			// Skip items without a title
+			continue
+		}
+		description, _ := item["description"].(string)
+		if description == "" {
+			description, _ = item["summary"].(string)
+		}
+		if description == "" {
+			description, _ = item["hot"].(string)
+		}
+		url, _ := item["url"].(string)
+		if url == "" {
+			url, _ = item["link"].(string)
+		}
+		hotCount := 0
+		if hc, ok := item["hot_count"].(float64); ok {
+			hotCount = int(hc)
+		}
+		topic := map[string]interface{}{
+			"title":       cleanHTML(title),
+			"description": cleanHTML(description),
+			"source":      "tencent",
+			"platform":    "qq_news",
+			"hot_rank":    i + 1,
+			"url":         url,
+		}
+		if hotCount > 0 {
+			topic["hot_count"] = hotCount
+		}
+		topics = append(topics, topic)
+	}
+	return topics
 }
 
 // IMAClient returns the IMA client (for knowledge base sync).
