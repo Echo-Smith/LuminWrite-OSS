@@ -345,7 +345,7 @@ func (s *QueryPlanStep) planWithLLM(ctx context.Context, execCtx *engine.Executi
 // buildSearchPlan creates search plan entries from multiple queries.
 // Distributes queries across available sources for broader coverage.
 func (s *QueryPlanStep) buildSearchPlan(queries []string) []engine.SearchPlanEntry {
-	sources := []string{"tavily", "zhihu", "ima"}
+	sources := []string{"tavily", "zhihu", "local_kb"}
 	var plan []engine.SearchPlanEntry
 	for i, q := range queries {
 		source := sources[i%len(sources)]
