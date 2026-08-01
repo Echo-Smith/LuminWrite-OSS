@@ -121,6 +121,7 @@ export function WritingWorkspace() {
             {session && (
               <span className="hidden sm:inline text-xs text-muted-foreground font-mono-sm">
                 · {session.style} · {session.mode}
+                · {new Date(session.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
               </span>
             )}
           </div>
