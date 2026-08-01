@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -449,8 +450,28 @@ func (m *KbManager) RechunkAll(ctx context.Context, config ChunkConfig) ([]Rechu
 			continue
 		}
 
-		// Clean the content (apply boilerplate filter if it's URL-imported)
+		// Clean the content using whitelist extraction (only author + body text)
 		cleaned := cleanContentForRechunk(content)
+
+		// If cleaning produced empty content, skip this document
+		if strings.TrimSpace(cleaned) == "" {
+			slog.Warn("rechunk: cleaned content is empty, skipping", "doc_id", docID, "title", title)
+			// Still delete old chunks for this doc
+			m.DeleteChunksByDocID(ctx, docID)
+			m.UpdateChunkCount(ctx, docID, 0)
+			results = append(results, RechunkResult{
+				DocID:     docID,
+				Title:     title,
+				OldChunks: oldChunkCount,
+				NewChunks: 0,
+			})
+			continue
+		}
+
+		// Update the document's content column with cleaned content
+		if _, err := m.db.ExecContext(ctx, `UPDATE knowledge_base SET content = $2, content_hash = $3, updated_at = NOW() WHERE id = $1`, docID, cleaned, simpleContentHash(cleaned)); err != nil {
+			slog.Warn("rechunk: failed to update content", "doc_id", docID, "error", err)
+		}
 
 		// Re-chunk with the new config
 		chunks := ChunkText(cleaned, config)
@@ -494,12 +515,12 @@ func (m *KbManager) RechunkAll(ctx context.Context, config ChunkConfig) ([]Rechu
 	return results, nil
 }
 
-// cleanContentForRechunk applies boilerplate filtering to existing content.
+// cleanContentForRechunk applies whitelist article extraction to existing content.
 // This is used when re-chunking old documents that were imported with
-// the old (noisy) URL extractor.
+// the old (noisy) URL extractor. Only extracts author and body text.
 func cleanContentForRechunk(content string) string {
-	// Apply the same boilerplate cleaning used by the URL importer
-	return cleanBoilerplate(content)
+	// Use the whitelist approach: only keep author + body paragraphs
+	return extractArticleContent(content)
 }
 
 // ─── Hybrid Search (BM25 + Dense) ──────────────────────
