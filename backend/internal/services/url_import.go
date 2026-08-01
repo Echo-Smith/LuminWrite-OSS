@@ -244,6 +244,14 @@ var urlLineRe = regexp.MustCompile(`^https?://\S+$`)
 // timestampRe matches timestamp patterns like "2025-12-31 15:48:16" or "时间：2025-12-31"
 var timestampRe = regexp.MustCompile(`^(时间[：:])?\s*\d{4}[-/]\d{2}[-/]\d{2}.*`)
 
+// urlInTextRe matches URLs embedded within text (not just lines that are entirely URLs)
+var urlInTextRe = regexp.MustCompile(`https?://\S+`)
+
+// relatedArticlesRe detects lines that are concatenations of multiple article titles
+// (common in "related articles" sections): "标题1 标题2 标题3 标题4"
+// These lines have multiple short segments separated by spaces, each looking like a title
+var relatedArticlesRe = regexp.MustCompile(`^[^\n]{60,}$`)
+
 // isBodyParagraph checks if a paragraph is actual article body text.
 func isBodyParagraph(text string) bool {
 	trimmed := strings.TrimSpace(text)
@@ -267,6 +275,11 @@ func isBodyParagraph(text string) bool {
 		return false
 	}
 
+	// Reject lines containing URLs (URL fragments embedded in text)
+	if urlInTextRe.MatchString(trimmed) {
+		return false
+	}
+
 	// Reject lines that contain mostly navigation characters (|, ｜, spaces)
 	nonNavChars := 0
 	for _, r := range runes {
@@ -278,13 +291,35 @@ func isBodyParagraph(text string) bool {
 		return false
 	}
 
-	// Check for Chinese sentence-ending punctuation (。！？) — body text must have at least one
+	// Reject "related articles" lines: multiple short titles concatenated with spaces
+	// These typically have no sentence-ending punctuation (。！？) and contain multiple
+	// space-separated segments each < 30 chars
 	hasSentenceEnd := false
+	spaceCount := 0
+	shortSegmentCount := 0
+	currentSegmentLen := 0
 	for _, r := range runes {
 		if r == '。' || r == '！' || r == '？' || r == '.' || r == '!' || r == '?' {
 			hasSentenceEnd = true
-			break
 		}
+		if r == ' ' {
+			spaceCount++
+			if currentSegmentLen > 0 && currentSegmentLen < 30 {
+				shortSegmentCount++
+			}
+			currentSegmentLen = 0
+		} else {
+			currentSegmentLen++
+		}
+	}
+	// If last segment is also short
+	if currentSegmentLen > 0 && currentSegmentLen < 30 {
+		shortSegmentCount++
+	}
+
+	// If no sentence-ending punctuation AND many short segments, it's likely related articles
+	if !hasSentenceEnd && shortSegmentCount >= 3 {
+		return false
 	}
 
 	// If > 200 runes, accept even without sentence-ending punctuation
