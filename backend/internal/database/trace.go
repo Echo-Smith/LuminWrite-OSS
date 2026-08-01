@@ -129,6 +129,38 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 	return err
 }
 
+// LinkEditorialTask associates an editorial task with a trace.
+func (r *TraceRepo) LinkEditorialTask(ctx context.Context, traceID, taskID string) error {
+	if r.db == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE agent_traces SET editorial_task_id = $1::uuid WHERE trace_id = $2
+	`, taskID, traceID)
+	if err != nil {
+		slog.Warn("failed to link editorial task", "error", err, "trace_id", traceID, "task_id", taskID)
+	}
+	return err
+}
+
+// GetEditorialTaskID retrieves the editorial task ID associated with a trace.
+func (r *TraceRepo) GetEditorialTaskID(ctx context.Context, traceID string) (string, error) {
+	if r.db == nil {
+		return "", fmt.Errorf("database not available")
+	}
+	var taskID *string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(editorial_task_id::text, '') FROM agent_traces WHERE trace_id = $1
+	`, traceID).Scan(&taskID)
+	if err != nil {
+		return "", err
+	}
+	if taskID == nil || *taskID == "" {
+		return "", nil
+	}
+	return *taskID, nil
+}
+
 // FailTrace marks a trace as failed with an error message.
 func (r *TraceRepo) FailTrace(ctx context.Context, traceID, errMsg string) error {
 	if r.db == nil {
@@ -168,18 +200,21 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		createdAt   time.Time
 		completedAt *time.Time
 		reasoningContent *string
+		editorialTaskID  *string
 	)
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT status, current_step, user_input, style_slug, mode,
 		       article, article_title, step_history, review_result, token_usage,
-		       duration_ms, error, created_at, completed_at, reasoning_content
+		       duration_ms, error, created_at, completed_at, reasoning_content,
+		       COALESCE(editorial_task_id::text, '')
 		FROM agent_traces
 		WHERE trace_id = $1
 	`, traceID).Scan(
 		&status, &currentStep, &userInput, &styleSlug, &mode,
 		&article, &articleTitle, &stepHistory, &reviewJSON, &tokenJSON,
 		&durationMs, &errorMsg, &createdAt, &completedAt, &reasoningContent,
+		&editorialTaskID,
 	)
 	if err != nil {
 		return nil, err
@@ -192,6 +227,9 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		"user_input":    userInput,
 		"mode":          mode,
 		"created_at":    createdAt,
+	}
+	if editorialTaskID != nil && *editorialTaskID != "" {
+		result["editorial_task_id"] = *editorialTaskID
 	}
 
 	if styleSlug != nil {
