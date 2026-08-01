@@ -132,6 +132,10 @@ type ExecutionContext struct {
 	UserMaterials []string       `json:"user_materials"`
 	WordLimit     int            `json:"word_limit"`
 
+	// TopicURL is the original hot topic URL (if writing from a hot topic).
+	// Used by SearchStep to fetch the topic's full article as background context.
+	TopicURL     string         `json:"topic_url,omitempty"`
+
 	// Populated during execution
 	TaskIntent    *TaskIntent     `json:"task_intent,omitempty"`
 	WritingTask   *WritingTask    `json:"writing_task,omitempty"`

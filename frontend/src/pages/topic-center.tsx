@@ -106,6 +106,7 @@ export function TopicCenter() {
         mode: "writing",
         user_materials: userMaterials.length > 0 ? userMaterials : undefined,
         word_limit: wordLimit && wordLimit > 0 ? wordLimit : undefined,
+        topic_url: topic.url || undefined,
       });
       if (userMaterials.length > 1) {
         toast.success(`已注入 ${userMaterials.length - 1} 条关联素材`, "素材将作为写作参考");

@@ -1102,6 +1102,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	}
 	execCtx.UserMaterials = p.UserMaterials
 	execCtx.WordLimit = p.WordLimit
+	execCtx.TopicURL = p.TopicURL
 	execCtx.SessionID = traceID // SessionID 用于记忆 dismiss 追踪
 	// ConversationID 用于短期记忆分组（同一会话内的消息组成对话历史）
 	if p.SessionID != "" {

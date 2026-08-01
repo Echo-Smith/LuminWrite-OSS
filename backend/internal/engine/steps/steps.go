@@ -401,7 +401,7 @@ func (s *SearchStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
 }
 
 func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
-	if len(execCtx.SearchPlan) == 0 {
+	if len(execCtx.SearchPlan) == 0 && execCtx.TopicURL == "" {
 		execCtx.SearchResults = []engine.SearchResult{}
 		return nil
 	}
@@ -416,6 +416,33 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 	// Check pause before starting search
 	if err := execCtx.CheckPause(ctx, emitter, engine.StepSearch); err != nil {
 		return err
+	}
+
+	var allResults []engine.SearchResult
+	seenURLs := make(map[string]bool)
+
+	// ── Fetch topic URL content as primary background source ──
+	// If the writing was initiated from a hot topic with a URL, fetch the
+	// original article to provide rich event details and narrative context.
+	if execCtx.TopicURL != "" {
+		fetcher := tools.NewURLFetcher()
+		result, err := fetcher.FetchContent(ctx, execCtx.TopicURL)
+		if err != nil {
+			slog.Warn("failed to fetch topic URL content", "url", execCtx.TopicURL, "error", err)
+		} else if result != nil && result.Content != "" {
+			allResults = append(allResults, engine.SearchResult{
+				Title:    result.Title,
+				Snippet:  result.Content,
+				URL:      result.URL,
+				Source:   "topic_url",
+			})
+			seenURLs[result.URL] = true
+			slog.Info("topic URL content fetched as background",
+				"url", execCtx.TopicURL,
+				"title", result.Title,
+				"content_length", len([]rune(result.Content)),
+			)
+		}
 	}
 
 	// Use real search client if available
@@ -441,8 +468,6 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 			maxPerQuery = 5
 		}
 
-		var allResults []engine.SearchResult
-		seenURLs := make(map[string]bool)
 		for _, q := range queries {
 			results := s.search.Search(ctx, q, maxPerQuery)
 			for _, r := range results {
@@ -461,6 +486,10 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 	}
 
 	// Fallback: use LLM to generate mock search results
+	if len(allResults) > 0 {
+		execCtx.SearchResults = allResults
+		return nil
+	}
 	if execCtx.WritingTask != nil && s.llm != nil {
 		results := s.generateMockResults(ctx, execCtx.WritingTask.Topic)
 		execCtx.SearchResults = results

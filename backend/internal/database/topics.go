@@ -259,7 +259,8 @@ func (r *TraceRepo) ListTopicsByPlatform(ctx context.Context, platform string, p
 	offset := (page - 1) * pageSize
 
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id::text, title, description, source, platform, hot_rank, fetched_at, created_at
+		SELECT id::text, title, description, source, platform, hot_rank, fetched_at, created_at,
+		       raw_data->>'url' AS url
 		FROM topics
 		WHERE status = 'active' AND COALESCE(platform, '') = $1
 		ORDER BY hot_rank ASC NULLS LAST, created_at DESC
@@ -412,6 +413,7 @@ func (r *TraceRepo) ListFavoriteTopics(ctx context.Context, userID string, page,
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT t.id::text, t.title, t.description, t.source, t.platform, t.hot_rank, t.fetched_at, t.created_at,
+		       t.raw_data->>'url' AS url,
 		       f.created_at AS favorited_at
 		FROM topic_favorites f
 		JOIN topics t ON t.id = f.topic_id
@@ -446,8 +448,9 @@ func scanTopicRows(rows *sql.Rows) []map[string]interface{} {
 			hotRank     *int
 			fetchedAt   *time.Time
 			createdAt   time.Time
+			url         *string
 		)
-		if err := rows.Scan(&id, &title, &description, &source, &platform, &hotRank, &fetchedAt, &createdAt); err != nil {
+		if err := rows.Scan(&id, &title, &description, &source, &platform, &hotRank, &fetchedAt, &createdAt, &url); err != nil {
 			continue
 		}
 		topic := map[string]interface{}{
@@ -468,6 +471,9 @@ func scanTopicRows(rows *sql.Rows) []map[string]interface{} {
 		if fetchedAt != nil {
 			topic["fetched_at"] = *fetchedAt
 		}
+		if url != nil && *url != "" {
+			topic["url"] = *url
+		}
 		topics = append(topics, topic)
 	}
 	return topics
@@ -485,9 +491,10 @@ func scanTopicRowsWithFavorite(rows *sql.Rows) []map[string]interface{} {
 			hotRank      *int
 			fetchedAt    *time.Time
 			createdAt    time.Time
+			url          *string
 			favoritedAt  time.Time
 		)
-		if err := rows.Scan(&id, &title, &description, &source, &platform, &hotRank, &fetchedAt, &createdAt, &favoritedAt); err != nil {
+		if err := rows.Scan(&id, &title, &description, &source, &platform, &hotRank, &fetchedAt, &createdAt, &url, &favoritedAt); err != nil {
 			continue
 		}
 		topic := map[string]interface{}{
@@ -508,6 +515,9 @@ func scanTopicRowsWithFavorite(rows *sql.Rows) []map[string]interface{} {
 		}
 		if fetchedAt != nil {
 			topic["fetched_at"] = *fetchedAt
+		}
+		if url != nil && *url != "" {
+			topic["url"] = *url
 		}
 		topics = append(topics, topic)
 	}

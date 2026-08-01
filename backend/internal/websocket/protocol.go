@@ -58,6 +58,7 @@ type AgentStartPayload struct {
 	SessionID    string   `json:"session_id,omitempty"`
 	UserMaterials []string `json:"user_materials,omitempty"`
 	WordLimit    int      `json:"word_limit,omitempty"`
+	TopicURL     string   `json:"topic_url,omitempty"` // 热搜选题原始链接，用于抓取事件背景
 }
 
 // AgentControlPayload is the payload for pause/resume/cancel.
