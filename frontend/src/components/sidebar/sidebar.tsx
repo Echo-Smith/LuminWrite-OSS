@@ -50,6 +50,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [cancelTarget, setCancelTarget] = useState<{ id: string; title: string } | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
+  // 已点击过的进行中会话（黄点点击一次后消失）
+  const [acknowledgedRunning, setAcknowledgedRunning] = useState<Set<string>>(new Set());
+
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -245,25 +248,26 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       : "hover:bg-accent/50 text-muted-foreground"
                   )}
                   onClick={() => {
-                    // 正在进行的写作 → 提示取消
+                    // 正在进行的写作 → 标记已知晓 + 提示取消
                     if (session.status === "running" || session.status === "paused") {
+                      setAcknowledgedRunning((prev) => new Set(prev).add(session.id));
                       setCancelTarget({ id: session.id, title: session.title });
                       return;
                     }
                     switchSession(session.id);
                   }}
                 >
-                  {/* 状态圆点 */}
-                  <span
-                    className={cn(
-                      "h-2 w-2 shrink-0 rounded-full",
-                      session.status === "running" || session.status === "paused"
-                        ? "bg-amber-400"
-                        : session.status === "error"
-                          ? "bg-red-400"
-                          : "bg-blue-400"
-                    )}
-                  />
+                  {/* 状态圆点 — 进行中黄点点击一次后消失 */}
+                  {(() => {
+                    const isRunning = session.status === "running" || session.status === "paused";
+                    const showYellow = isRunning && !acknowledgedRunning.has(session.id);
+                    const dotColor = showYellow
+                      ? "bg-amber-400"
+                      : session.status === "error"
+                        ? "bg-red-400"
+                        : "bg-blue-400";
+                    return <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />;
+                  })()}
                   <span className="flex-1 min-w-0 truncate text-sm">{session.title}</span>
                   <button
                     onClick={(e) => {
