@@ -232,8 +232,8 @@ func parse360HotNewsHTML(body []byte, limit int) []map[string]interface{} {
 		topic := map[string]interface{}{
 			"title":       title,
 			"description": hotText,
-			"source":      "tencent",
-			"platform":    "qq_news",
+			"source":      "360",
+			"platform":    "360",
 			"hot_rank":    rank,
 			"url":         url,
 		}
