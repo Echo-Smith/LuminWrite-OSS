@@ -215,6 +215,8 @@ func (u *URLImporter) extractTextFromHTML(html string) string {
 // boilerplatePatterns are regex patterns for lines that are almost certainly
 // website navigation, footer, or ad content — not article body text.
 var boilerplatePatterns = []*regexp.Regexp{
+	// Breadcrumb navigation: "当前位置：杭州网 > 杭网评论 > 预设评论风格"
+	regexp.MustCompile(`(?i)当前位置[：:]`),
 	// Navigation menus: "首页 | 新闻 | 原创 | 议事厅 | 论坛"
 	regexp.MustCompile(`(?i)(首页|主页|网站首页)\s*[|｜]\s*(新闻|原创|议事厅|论坛|视频|图片|专题|专栏|博客|微博|微信)`),
 	// App download prompts
@@ -225,10 +227,18 @@ var boilerplatePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)版权所有|Copyright|All\s+Rights\s+Reserved|©`),
 	// Site map / navigation links
 	regexp.MustCompile(`(?i)网站地图|关于我们|联系我们|加入我们|招贤纳士|友情链接|站点地图`),
-	// Social media follows
-	regexp.MustCompile(`(?i)关注|下载客户端|移动端|PC端`),
+	// Social media follows / app prompts
+	regexp.MustCompile(`(?i)你关心的|下载客户端|移动端|PC端`),
+	// Author / editor attribution lines: "作者：xxx 编辑：xxx"
+	regexp.MustCompile(`(?i)^作者[：:].*编辑[：:]`),
+	regexp.MustCompile(`(?i)^编辑[：:]`),
 	// Short navigation-only lines (e.g., "杭网首页 | 新闻 | 原创")
+	// Matches lines that are short and contain only Chinese chars, pipes, spaces, letters
 	regexp.MustCompile(`^[\s|｜A-Za-z\x{4e00}-\x{9fff}]{0,30}$`),
+	// Article source lines: "来源：xxx" or "稿件来源：xxx"
+	regexp.MustCompile(`(?i)^(稿件)?来源[：:]`),
+	// Related/recommended article section headers
+	regexp.MustCompile(`(?i)相关(阅读|推荐|新闻|链接)|热门(阅读|推荐|新闻)|延伸阅读`),
 }
 
 // cleanBoilerplate removes lines that match common boilerplate patterns.
