@@ -12,7 +12,7 @@ export const PLATFORM_LABELS: Record<string, string> = {
   bilibili: "B站热搜",
   toutiao: "头条热搜",
   kuaishou: "快手热搜",
-  qq_news: "QQ新闻",
+  qq_news: "腾讯热搜",
   user: "自定义",
   system: "系统",
   unknown: "未分类",

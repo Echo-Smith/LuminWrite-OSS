@@ -66,6 +66,11 @@ export function buildWritingMessage(draft: TopicDraft): string {
     parts.push(`\n选题背景：${topic.description}`);
   }
 
+  // 热搜来源链接（如果有，提示后端可据此抓取事件详情）
+  if (topic.url) {
+    parts.push(`热搜来源：${topic.url}`);
+  }
+
   // 写作角度详情（如果有）
   if (angle) {
     if (angle.rationale) {

@@ -254,6 +254,17 @@ export function TopicDetailDialog({
               {topic.description && (
                 <DialogDescription className="mt-1">{topic.description}</DialogDescription>
               )}
+              {topic.url && (
+                <a
+                  href={topic.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  <FileText className="h-3 w-3" />
+                  查看原文
+                </a>
+              )}
             </div>
             <button onClick={onToggleFavorite} className="flex-shrink-0 pt-1">
               <Star className={cn(

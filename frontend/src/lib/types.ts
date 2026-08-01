@@ -84,6 +84,8 @@ export interface AgentStartPayload {
   session_id?: string;
   user_materials?: string[];
   word_limit?: number;
+  /** 热搜选题原始链接（用于后端抓取事件背景增强写作叙事） */
+  topic_url?: string;
 }
 
 // ─── 写作结果 ────────────────────────────────────────────
@@ -132,6 +134,8 @@ export interface Topic {
   fetched_at: string;
   favorited_at?: string;
   recommendation_reason?: string;
+  /** 热搜原始链接（用于写作时抓取事件背景） */
+  url?: string;
 }
 
 export interface WritingAngle {

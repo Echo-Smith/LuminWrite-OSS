@@ -522,7 +522,8 @@ func (r *TraceRepo) ListTopics(ctx context.Context, source string, page, pageSiz
 	offset := (page - 1) * pageSize
 
 	query := `
-		SELECT id::text, title, description, source, platform, hot_rank, fetched_at, created_at
+		SELECT id::text, title, description, source, platform, hot_rank, fetched_at, created_at,
+		       raw_data->>'url' AS url
 		FROM topics
 		WHERE status = 'active'
 	`
@@ -558,9 +559,10 @@ func (r *TraceRepo) ListTopics(ctx context.Context, source string, page, pageSiz
 			hotRank     *int
 			fetchedAt   *time.Time
 			createdAt   time.Time
+			url         *string
 		)
 
-		if err := rows.Scan(&id, &title, &description, &topicSource, &platform, &hotRank, &fetchedAt, &createdAt); err != nil {
+		if err := rows.Scan(&id, &title, &description, &topicSource, &platform, &hotRank, &fetchedAt, &createdAt, &url); err != nil {
 			continue
 		}
 
@@ -581,6 +583,9 @@ func (r *TraceRepo) ListTopics(ctx context.Context, source string, page, pageSiz
 		}
 		if fetchedAt != nil {
 			topic["fetched_at"] = *fetchedAt
+		}
+		if url != nil && *url != "" {
+			topic["url"] = *url
 		}
 
 		topics = append(topics, topic)
