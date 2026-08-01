@@ -228,7 +228,7 @@ var boilerplatePatterns = []*regexp.Regexp{
 	// Social media follows
 	regexp.MustCompile(`(?i)关注|下载客户端|移动端|PC端`),
 	// Short navigation-only lines (e.g., "杭网首页 | 新闻 | 原创")
-	regexp.MustCompile(`^[\s|｜A-Za-z\u4e00-\u9fff]{0,30}$`),
+	regexp.MustCompile(`^[\s|｜A-Za-z\x{4e00}-\x{9fff}]{0,30}$`),
 }
 
 // cleanBoilerplate removes lines that match common boilerplate patterns.
