@@ -173,27 +173,43 @@ func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]ma
 func parse360HotNewsHTML(body []byte, limit int) []map[string]interface{} {
 	html := string(body)
 
-	// Each hot news item is in an <a class="item" data-index="N" ...>
+	// Each hot news item is in an <a class="item" data-index="N" href="..." ...>
 	// with <span class="title">title</span> and <span class="hot">NNNNN人在看</span>
-	itemRe := regexp.MustCompile(`(?s)<a[^>]*class="item"[^>]*data-index="(\d+)"[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
-	matches := itemRe.FindAllStringSubmatch(html, -1)
-	if len(matches) == 0 {
+	// Attributes may appear in any order, so we match the whole <a> tag.
+	fullItemRe := regexp.MustCompile(`(?s)<a[^>]*class="item"[^>]*>.*?</a>`)
+	fullMatches := fullItemRe.FindAllString(html, -1)
+	if len(fullMatches) == 0 {
+		slog.Debug("parse360HotNewsHTML: no items matched", "html_len", len(html))
 		return nil
 	}
 
+	// Sub-regexes to extract specific attributes and content
+	hrefRe := regexp.MustCompile(`href="([^"]*)"`)
+	dataIndexRe := regexp.MustCompile(`data-index="(\d+)"`)
 	titleRe := regexp.MustCompile(`(?s)<span[^>]*class="title"[^>]*>(.*?)</span>`)
 	hotRe := regexp.MustCompile(`(?s)<span[^>]*class="hot"[^>]*>(.*?)</span>`)
 
-	topics := make([]map[string]interface{}, 0, len(matches))
-	for _, m := range matches {
+	topics := make([]map[string]interface{}, 0, len(fullMatches))
+	for _, fullTag := range fullMatches {
 		if len(topics) >= limit {
 			break
 		}
-		rankStr := m[1]
-		url := m[2]
-		inner := m[3]
 
-		titleMatch := titleRe.FindStringSubmatch(inner)
+		// Extract href from the opening <a> tag
+		url := ""
+		hrefMatch := hrefRe.FindStringSubmatch(fullTag)
+		if hrefMatch != nil {
+			url = hrefMatch[1]
+		}
+
+		// Extract data-index
+		rankStr := ""
+		diMatch := dataIndexRe.FindStringSubmatch(fullTag)
+		if diMatch != nil {
+			rankStr = diMatch[1]
+		}
+
+		titleMatch := titleRe.FindStringSubmatch(fullTag)
 		if titleMatch == nil {
 			continue
 		}
@@ -203,7 +219,7 @@ func parse360HotNewsHTML(body []byte, limit int) []map[string]interface{} {
 		}
 
 		hotText := ""
-		hotMatch := hotRe.FindStringSubmatch(inner)
+		hotMatch := hotRe.FindStringSubmatch(fullTag)
 		if hotMatch != nil {
 			hotText = cleanHTML(hotMatch[1])
 		}
