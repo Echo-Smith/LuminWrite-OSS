@@ -6,7 +6,7 @@
  */
 import { useState } from "react";
 import {
-  Plus, MessageSquare, Trash2, Compass,
+  Plus, Trash2, Compass,
   Settings, Sun, Moon, LogOut, UserPlus,
   PanelLeftClose, PanelLeftOpen, Pen,
   ChevronRight, User, AlertTriangle, Newspaper,
@@ -40,9 +40,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const switchSession = useAgentStore((s) => s.switchSession);
   const deleteSession = useAgentStore((s) => s.deleteSession);
 
+  const cancelWriting = useAgentStore((s) => s.cancelWriting);
+
   // 删除确认状态
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // 取消写作确认状态
+  const [cancelTarget, setCancelTarget] = useState<{ id: string; title: string } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
@@ -56,6 +62,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     deleteSession(deleteTarget.id);
     setDeleting(false);
     setDeleteTarget(null);
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    // 先切换到该会话再取消
+    switchSession(cancelTarget.id);
+    cancelWriting();
+    setCancelling(false);
+    setCancelTarget(null);
   };
 
   // 认证状态
@@ -203,41 +219,64 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* 会话列表 */}
       <ScrollArea className="flex-1">
-        <div className="p-3 space-y-0.5">
+        <div className="p-3 space-y-1">
           {sessions.length === 0 ? (
             <div className="px-3 py-10 text-center">
               <p className="text-xs text-muted-foreground">暂无写作记录</p>
               <p className="text-[11px] text-muted-foreground/60 mt-1">点击上方按钮开始创作</p>
             </div>
           ) : (
-            sessions.map((session, i) => (
-              <StaggerItem
-                key={session.id}
-                index={i}
-                interval={30}
-                animation="slide-right"
-                as="div"
-                className={cn(
-                  "group flex items-center gap-2 rounded-lg px-3 py-2 cursor-pointer transition-ui overflow-hidden min-w-0",
-                  session.id === activeSessionId
-                    ? "bg-accent text-foreground"
-                    : "hover:bg-accent/50 text-muted-foreground"
-                )}
-                onClick={() => switchSession(session.id)}
-              >
-                <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-                <span className="flex-1 min-w-0 truncate text-sm">{session.title}</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleteTarget({ id: session.id, title: session.title });
+            <>
+              {/* 7 天内分区 */}
+              <p className="px-3 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">
+                7 天内
+              </p>
+              {sessions.map((session, i) => (
+                <StaggerItem
+                  key={session.id}
+                  index={i}
+                  interval={20}
+                  animation="slide-right"
+                  as="div"
+                  className={cn(
+                    "group flex items-center gap-2 rounded-lg px-3 py-2 cursor-pointer transition-ui overflow-hidden min-w-0",
+                    session.id === activeSessionId
+                      ? "bg-accent text-foreground"
+                      : "hover:bg-accent/50 text-muted-foreground"
+                  )}
+                  onClick={() => {
+                    // 正在进行的写作 → 提示取消
+                    if (session.status === "running" || session.status === "paused") {
+                      setCancelTarget({ id: session.id, title: session.title });
+                      return;
+                    }
+                    switchSession(session.id);
                   }}
-                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-ui text-muted-foreground hover:text-destructive"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </StaggerItem>
-            ))
+                  {/* 状态圆点 */}
+                  <span
+                    className={cn(
+                      "h-2 w-2 shrink-0 rounded-full",
+                      session.status === "running" || session.status === "paused"
+                        ? "bg-amber-400"
+                        : session.status === "error"
+                          ? "bg-red-400"
+                          : "bg-blue-400"
+                    )}
+                  />
+                  <span className="flex-1 min-w-0 truncate text-sm">{session.title}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTarget({ id: session.id, title: session.title });
+                    }}
+                    className="shrink-0 opacity-0 group-hover:opacity-100 transition-ui text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </StaggerItem>
+              ))}
+            </>
           )}
         </div>
       </ScrollArea>
@@ -305,6 +344,29 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </Button>
             <Button variant="destructive" size="sm" onClick={handleConfirmDelete} disabled={deleting}>
               {deleting ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 取消写作确认对话框 */}
+      <Dialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              该写作正在进行中
+            </DialogTitle>
+            <DialogDescription>
+              「{cancelTarget?.title}」正在写作中，点击取消将终止当前任务。确定要取消吗？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setCancelTarget(null)} disabled={cancelling}>
+              返回
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleConfirmCancel} disabled={cancelling}>
+              {cancelling ? "取消中..." : "确认取消写作"}
             </Button>
           </DialogFooter>
         </DialogContent>

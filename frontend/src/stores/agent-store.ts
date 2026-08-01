@@ -72,7 +72,7 @@ export interface ChatMessage {
 
 export interface WritingSession {
   id: string;
-  title: string;
+  title: string;          // 显示标题：优先用 article_title，其次 user_input 截断
   messages: ChatMessage[];
   traceId: string | null;
   status: "idle" | "running" | "paused" | "completed" | "error";
@@ -81,6 +81,7 @@ export interface WritingSession {
   createdAt: number;
   awaitInputAt: number | null; // timestamp when await_input was received (for timeout countdown)
   injectedMaterials?: string[]; // 从选题关联注入的素材标签
+  articleTitle?: string | null; // AI 生成的文章标题（完成后才有）
 }
 
 // ─── Store 定义 ──────────────────────────────────────────
@@ -208,12 +209,15 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         created_at: string;
         completed_at?: string;
         duration_ms?: number;
+        article_title?: string;
       }>;
 
       // 将 DB 记录转换为 WritingSession（仅列表摘要，不加载完整消息）
+      // 标题优先级：article_title > user_input 截断 > "历史会话"
       const dbSessionsMapped: WritingSession[] = dbSessions.map((t) => ({
         id: t.trace_id,
-        title: t.user_input?.slice(0, 30) || "历史会话",
+        title: t.article_title || t.user_input?.slice(0, 30) || "历史会话",
+        articleTitle: t.article_title || null,
         messages: [], // 延迟加载，点击时通过 loadSessionDetail 获取
         traceId: t.trace_id,
         status: (t.status === "completed" ? "completed" :
@@ -750,7 +754,13 @@ case "agent.paused": {
           return { ...m, parts, status: "complete" as const, articleTitle: articleTitle || m.articleTitle };
         });
 
-        get()._updateActiveSession((s) => ({ ...s, status: "completed" }));
+        // 写作完成后，用 AI 生成的文章标题更新会话标题（比 user_input 截断更有辨识度）
+        get()._updateActiveSession((s) => ({
+          ...s,
+          status: "completed",
+          title: articleTitle || s.title,
+          articleTitle: articleTitle || s.articleTitle,
+        }));
         break;
       }
 

@@ -263,7 +263,7 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 
 	if userID != "" && userID != "anonymous" && isLikelyUUID(userID) {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms
+			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title
 			FROM agent_traces
 			WHERE user_id = $1 AND user_deleted = FALSE
 			ORDER BY created_at DESC
@@ -273,7 +273,7 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		countArgs = []interface{}{userID}
 	} else {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms
+			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title
 			FROM agent_traces
 			WHERE user_deleted = FALSE
 			ORDER BY created_at DESC
@@ -290,18 +290,19 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 	var traces []map[string]interface{}
 	for rows.Next() {
 		var (
-			traceID     string
-			status      string
-			currentStep string
-			userInput   string
-			styleSlug   *string
-			mode        string
-			createdAt   time.Time
-			completedAt *time.Time
-			durationMs  *int64
+			traceID       string
+			status        string
+			currentStep   string
+			userInput     string
+			styleSlug     *string
+			mode          string
+			createdAt     time.Time
+			completedAt   *time.Time
+			durationMs    *int64
+			articleTitle  *string
 		)
 
-		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode, &createdAt, &completedAt, &durationMs); err != nil {
+		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode, &createdAt, &completedAt, &durationMs, &articleTitle); err != nil {
 			continue
 		}
 
@@ -321,6 +322,9 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		}
 		if durationMs != nil {
 			trace["duration_ms"] = *durationMs
+		}
+		if articleTitle != nil && *articleTitle != "" {
+			trace["article_title"] = *articleTitle
 		}
 
 		traces = append(traces, trace)
