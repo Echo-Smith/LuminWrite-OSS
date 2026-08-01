@@ -32,6 +32,9 @@ const FALLBACK_SUGGESTIONS = [
   { icon: MessageCircle, label: "提炼核心观点", text: "提炼以下文章的核心观点：\n\n" },
 ];
 
+// 稳定的空数组引用，避免 Zustand selector 每次返回新 [] 导致无限重渲染
+const EMPTY_MATERIALS: string[] = [];
+
 export const WritingComposer = forwardRef<WritingComposerHandle>(function WritingComposer(_, ref) {
   const [message, setMessage] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
@@ -45,7 +48,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   // 从 session 读取选题注入的素材标签
   const injectedMaterials = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.injectedMaterials ?? [];
+    return session?.injectedMaterials ?? EMPTY_MATERIALS;
   });
 
   const startWriting = useAgentStore((s) => s.startWriting);
