@@ -59,6 +59,7 @@ type Server struct {
 	jiaozhen      *tools.JiaozhenClient
 	memorySvc     *memsvc.Service
 	mcpRegistry   *mcp.Registry
+	mcpServer     *mcp.MCPServer
 	toolRegistry  *engine.ToolRegistry
 	editorialSvc  *editorial.Service
 	editorialHdlr *editorial.Handlers
@@ -366,6 +367,11 @@ func New(cfg *config.Config) (*Server, error) {
 		slog.Warn("editorial system disabled — database not available")
 	}
 
+	// ── In-Process MCP Server ──
+	if cfg.MCPServer.Enabled {
+		s.initMCPServer(cfg)
+	}
+
 	return s, nil
 }
 
@@ -434,6 +440,13 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 	r.Post("/memories", s.handleCreateMemory)
 	r.Delete("/memories/{id}", s.handleDeleteMemory)
 	r.Post("/memories/{id}/dismiss", s.handleDismissMemory)
+
+	// Memory Files (Markdown memory layer)
+	r.With(s.jwtAuthMiddleware).Get("/memories/file", s.handleGetMemoryFile)
+	r.With(s.jwtAuthMiddleware).Post("/memories/file/export", s.handleExportMemoryFile)
+	r.With(s.jwtAuthMiddleware).Post("/memories/file/import", s.handleImportMemoryFile)
+	r.With(s.jwtAuthMiddleware).Get("/memories/global", s.handleGetGlobalMemory)
+	r.With(s.jwtAuthMiddleware).Put("/memories/global", s.handleUpdateGlobalMemory)
 
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
@@ -617,6 +630,11 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Post("/kb/rechunk", s.handleKBRechunk)
             r.Post("/kb/reimport", s.handleKBReimport)
 
+            // MCP Server Admin
+            r.Get("/mcp/status", s.handleAdminMCPStatus)
+            r.Get("/mcp/tools", s.handleAdminMCPTools)
+            r.Get("/mcp/export", s.handleAdminMCPExport)
+
             // SSE Push (admin only)
             r.Post("/sse/push", s.handleSSEPushTopic)
         })
@@ -669,6 +687,9 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		slog.Info("shutting down server...")
+		if s.mcpServer != nil {
+			s.mcpServer.Close()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.WriteTimeout)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
@@ -683,6 +704,16 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start cron scheduler
 	if s.cronScheduler != nil {
 		go s.cronScheduler.Start(ctx, s.executeCronJob)
+	}
+
+	// Start memory file watcher (hot-reload of Markdown memory files)
+	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+		s.memorySvc.StartFileWatch(ctx)
+	}
+
+	// Start in-process MCP server (HTTP mode)
+	if s.mcpServer != nil {
+		s.startMCPServerHTTP()
 	}
 
 	slog.Info("server starting", "addr", s.cfg.ListenAddr())

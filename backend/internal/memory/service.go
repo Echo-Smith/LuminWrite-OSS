@@ -19,6 +19,8 @@ type Service struct {
 	entityStore     *PgEntityStore
 	embedder        *DashscopeEmbedder
 	entityExtractor *LLMEntityExtractor
+	fileStore       *memory.FileStore  // 文件记忆层
+	fileSyncer      *memory.FileMemorySyncer
 }
 
 // NewService 创建记忆服务
@@ -44,7 +46,11 @@ func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.Embeddin
 	entityStore := NewPgEntityStore(db)
 	entityExtractor := NewLLMEntityExtractor(llm)
 
-	slog.Info("memory: service initialized (with short-term + entity network)")
+	// Initialize file-based memory layer
+	fileStore := memory.NewFileStore("data/memory")
+	fileSyncer := memory.NewFileMemorySyncer(fileStore, store)
+
+	slog.Info("memory: service initialized (with short-term + entity network + file layer)")
 	return &Service{
 		sdk:             sdk,
 		cfg:             memory.DefaultConfig(),
@@ -52,6 +58,8 @@ func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.Embeddin
 		entityStore:     entityStore,
 		embedder:        embedder,
 		entityExtractor: entityExtractor,
+		fileStore:       fileStore,
+		fileSyncer:      fileSyncer,
 	}
 }
 
@@ -318,4 +326,70 @@ func (s *Service) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, nil
 	}
 	return s.embedder.Embed(ctx, text)
+}
+
+// ─── 文件记忆层 ─────────────────────────────────────────────
+
+// ExportMemoryFile exports a user's DB memories to a Markdown file.
+func (s *Service) ExportMemoryFile(ctx context.Context, userID string) error {
+	if !s.IsAvailable() {
+		return ErrServiceUnavailable
+	}
+	return s.fileSyncer.SyncFromDB(ctx, userID)
+}
+
+// ImportMemoryFile imports a Markdown memory file and syncs entries to DB.
+func (s *Service) ImportMemoryFile(ctx context.Context, userID, content string) (int, error) {
+	if !s.IsAvailable() {
+		return 0, ErrServiceUnavailable
+	}
+	_, err := s.fileStore.ImportUserMemory(userID, content)
+	if err != nil {
+		return 0, err
+	}
+	return s.fileSyncer.SyncToDB(ctx, userID)
+}
+
+// GetMemoryFileMarkdown returns the raw Markdown content of a user's memory file.
+func (s *Service) GetMemoryFileMarkdown(userID string) (string, error) {
+	return s.fileStore.GetUserMemoryMarkdown(userID)
+}
+
+// LoadFileMemories loads file-based memories as prompt-injectable entries.
+func (s *Service) LoadFileMemories(ctx context.Context, userID string) ([]memory.MemoryEntry, error) {
+	if s.fileStore == nil {
+		return nil, nil
+	}
+	return s.fileStore.GetUserMemoriesAsEntries(ctx, userID)
+}
+
+// GetGlobalMemoryFile returns the global memory file content.
+func (s *Service) GetGlobalMemoryFile(ctx context.Context) (string, []memory.MemoryFileEntry, error) {
+	if s.fileStore == nil {
+		return "", nil, nil
+	}
+	md, err := s.fileStore.GetGlobalMemoryMarkdown()
+	if err != nil {
+		return "", nil, err
+	}
+	entries, err := s.fileStore.GetGlobalMemory(ctx)
+	if err != nil {
+		return md, nil, err
+	}
+	return md, entries, nil
+}
+
+// SaveGlobalMemoryFile saves the global memory file.
+func (s *Service) SaveGlobalMemoryFile(content string) error {
+	if s.fileStore == nil {
+		return ErrServiceUnavailable
+	}
+	return s.fileStore.SaveGlobalMemory(content)
+}
+
+// StartFileWatch starts the file watcher for hot-reloading memory files.
+func (s *Service) StartFileWatch(ctx context.Context) {
+	if s.fileStore != nil {
+		s.fileStore.Watch(ctx, 1*time.Minute)
+	}
 }
