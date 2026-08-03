@@ -43,8 +43,8 @@ func (s *ChatStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext
 		return fmt.Errorf("LLM client not available")
 	}
 
-	// Build a conversational system prompt
-	systemPrompt := "你是一个智能写作助手「笔润智谈」。你可以帮助用户写文章、润色文字、提取观点等。请用自然、友好的语气回答用户的问题。如果用户的意图是写作相关的，可以引导用户使用更具体的指令（如「写一篇关于…」）。"
+	// Build a conversational system prompt with injection defense
+	systemPrompt := "你是一个智能写作助手「笔润智谈」。你可以帮助用户写文章、润色文字、提取观点等。请用自然、友好的语气回答用户的问题。如果用户的意图是写作相关的，可以引导用户使用更具体的指令（如「写一篇关于…」）。" + engine.PromptInjectionDefenseDirective
 
 	// Build user message
 	var promptBuilder strings.Builder

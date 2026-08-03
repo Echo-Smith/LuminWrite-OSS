@@ -79,9 +79,13 @@ func (s *CompressStep) Execute(ctx context.Context, execCtx *engine.ExecutionCon
 	}
 
 	// Filter to strong + medium relevance only; weak results add noise
+	// Also apply prompt injection sanitization to search result content
 	var relevantResults []engine.SearchResult
 	for _, r := range execCtx.SearchResults {
 		if r.Relevance == "strong" || r.Relevance == "medium" || r.Relevance == "" {
+			// Sanitize each result's title and snippet before use
+			r.Title = engine.SanitizeExternalContent(r.Title, "compress_step:search_title")
+			r.Snippet = engine.SanitizeExternalContent(r.Snippet, "compress_step:search_snippet")
 			relevantResults = append(relevantResults, r)
 		}
 	}
@@ -106,8 +110,8 @@ func (s *CompressStep) Execute(ctx context.Context, execCtx *engine.ExecutionCon
 		totalChars += len(entry)
 	}
 
-	// Build the compression prompt
-	systemMsg := "你是搜索结果压缩器。将搜索结果压缩为结构化的研究简报，保留关键事实和多元视角，删除冗余信息。只输出简报内容，不要解释。"
+	// Build the compression prompt with injection defense directive
+	systemMsg := "你是搜索结果压缩器。将搜索结果压缩为结构化的研究简报，保留关键事实和多元视角，删除冗余信息。只输出简报内容，不要解释。" + engine.PromptInjectionDefenseDirective
 
 	userMsg := fmt.Sprintf(`请将以下搜索结果压缩为结构化的研究简报。
 
