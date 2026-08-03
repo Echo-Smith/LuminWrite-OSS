@@ -518,7 +518,12 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/evaluation/runs", s.handleListEvalRuns)
 		r.Get("/evaluation/runs/compare", s.handleCompareEvalRuns)
 		r.Get("/evaluation/runs/{id}", s.handleGetEvalRun)
-r.Get("/evaluation/runs/{id}/export/{format}", s.handleExportEvalRun)
+		r.Get("/evaluation/runs/{id}/export/{format}", s.handleExportEvalRun)
+
+		// Red-Team Security Evaluation
+		r.Get("/evaluation/redteam/cases", s.handleRedTeamCases)
+		r.Post("/evaluation/redteam/seed", s.handleRedTeamSeed)
+		r.Post("/evaluation/redteam/run", s.handleRedTeamRun)
 
 		// WebSocket
 		r.Get("/ws/agent", s.handleWebSocket)

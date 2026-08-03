@@ -386,6 +386,7 @@ func (a *UnifiedAgent) buildPlannerPrompt() string {
 4. 审查通过后，调用 memory_extract 提取写作偏好，然后结束
 
 重要：文章生成后必须经过 post_review 质量评审通过才能结束。`)
+	sb.WriteString(engine.PromptInjectionDefenseDirective)
 	return sb.String()
 }
 

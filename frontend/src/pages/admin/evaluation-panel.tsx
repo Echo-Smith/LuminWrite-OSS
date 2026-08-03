@@ -2,7 +2,7 @@
  * 评测面板页面 — Admin Dashboard
  */
 import { useState, useEffect, useCallback } from "react";
-import { Play, Plus, FileText, CheckCircle, Clock, XCircle, Loader2 } from "lucide-react";
+import { Play, Plus, FileText, CheckCircle, Clock, XCircle, Loader2, Shield, ShieldAlert, FlaskConical, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +51,33 @@ interface EvalRun {
 
 const STYLES = ["yinyue", "shenlun", "xiaohongshu"];
 
+interface RedTeamCase {
+  id: string;
+  category: string;
+  attack_vector: string;
+  input_prompt: string;
+  expected_behavior: string;
+  pass_criteria: string[];
+  fail_indicators: string[];
+  severity: string;
+}
+
+const SEVERITY_COLORS: Record<string, string> = {
+  critical: "bg-red-100 text-red-700 border-red-200",
+  high: "bg-orange-100 text-orange-700 border-orange-200",
+  medium: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  low: "bg-blue-100 text-blue-700 border-blue-200",
+};
+
+const CATEGORY_LABELS: Record<string, string> = {
+  prompt_injection: "Prompt 注入",
+  search_injection: "搜索结果注入",
+  info_extraction: "信息提取",
+  instruction_override: "指令覆盖",
+  content_policy: "内容策略违规",
+  tool_misuse: "工具滥用",
+};
+
 export function EvaluationPage() {
   const [sets, setSets] = useState<EvalSet[]>([]);
   const [selectedSet, setSelectedSet] = useState<EvalSet | null>(null);
@@ -64,6 +91,13 @@ export function EvaluationPage() {
   const [newSetStyle, setNewSetStyle] = useState("yinyue");
   const [newSetDesc, setNewSetDesc] = useState("");
   const [newSetSamples, setNewSetSamples] = useState("");
+
+  // Red-team state
+  const [showRedTeam, setShowRedTeam] = useState(false);
+  const [redTeamCases, setRedTeamCases] = useState<RedTeamCase[]>([]);
+  const [redTeamRunning, setRedTeamRunning] = useState(false);
+  const [redTeamSeeding, setRedTeamSeeding] = useState(false);
+  const [redTeamMessage, setRedTeamMessage] = useState("");
 
   const loadSets = useCallback(async () => {
     setLoading(true);
@@ -163,14 +197,86 @@ export function EvaluationPage() {
     }
   };
 
+  const loadRedTeamCases = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v2/evaluation/redteam/cases");
+      const json = await res.json();
+      if (json.success) {
+        setRedTeamCases(json.data?.cases ?? []);
+      }
+    } catch (e) {
+      console.error("Failed to load red-team cases", e);
+    }
+  }, []);
+
+  const handleSeedRedTeam = async () => {
+    setRedTeamSeeding(true);
+    setRedTeamMessage("");
+    try {
+      const res = await fetch("/api/v2/evaluation/redteam/seed", { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        setRedTeamMessage("红队评估集已成功写入数据库");
+        await loadSets();
+      } else {
+        setRedTeamMessage("写入失败: " + (json.error?.message ?? "未知错误"));
+      }
+    } catch (e) {
+      setRedTeamMessage("请求失败: " + String(e));
+    } finally {
+      setRedTeamSeeding(false);
+      setTimeout(() => setRedTeamMessage(""), 5000);
+    }
+  };
+
+  const handleRunRedTeam = async () => {
+    setRedTeamRunning(true);
+    setRedTeamMessage("");
+    try {
+      const res = await fetch("/api/v2/evaluation/redteam/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setRedTeamMessage(`红队评估已启动，共 ${json.data?.cases ?? 20} 个测试用例，预计运行 ~15 分钟，结果请查看后端日志`);
+      } else {
+        setRedTeamMessage("启动失败: " + (json.error?.message ?? "未知错误"));
+      }
+    } catch (e) {
+      setRedTeamMessage("请求失败: " + String(e));
+    } finally {
+      setRedTeamRunning(false);
+      setTimeout(() => setRedTeamMessage(""), 8000);
+    }
+  };
+
   useEffect(() => {
     loadSets();
   }, [loadSets]);
 
+  useEffect(() => {
+    if (showRedTeam && redTeamCases.length === 0) {
+      loadRedTeamCases();
+    }
+  }, [showRedTeam, redTeamCases.length, loadRedTeamCases]);
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">评测面板</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-xl font-semibold">评测面板</h2>
+          <Button
+            size="sm"
+            variant={showRedTeam ? "default" : "outline"}
+            onClick={() => setShowRedTeam(!showRedTeam)}
+          >
+            <Shield className="h-4 w-4 mr-2" />
+            {showRedTeam ? "返回常规评测" : "红队安全评估"}
+          </Button>
+        </div>
+        {!showRedTeam && (
         <Dialog>
           <DialogTrigger asChild>
             <Button size="sm">
@@ -219,8 +325,108 @@ export function EvaluationPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
+      {/* Red-Team Security Evaluation Panel */}
+      {showRedTeam ? (
+        <div className="space-y-4">
+          {/* Red-team action bar */}
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <ShieldAlert className="h-4 w-4 text-red-500" />
+                  <span>红队安全评估 — 对抗性测试覆盖 Prompt 注入、信息泄露、内容策略违规等攻击场景</span>
+                </div>
+                <div className="flex-1" />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSeedRedTeam}
+                  disabled={redTeamSeeding}
+                >
+                  <FlaskConical className="h-4 w-4 mr-2" />
+                  {redTeamSeeding ? "写入中..." : "写入评估集"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleRunRedTeam}
+                  disabled={redTeamRunning}
+                >
+                  <Zap className="h-4 w-4 mr-2" />
+                  {redTeamRunning ? "启动中..." : "运行红队评估"}
+                </Button>
+              </div>
+              {redTeamMessage && (
+                <div className="mt-3 text-sm text-muted-foreground bg-muted/50 rounded-md px-3 py-2">
+                  {redTeamMessage}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Red-team cases grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {redTeamCases.map((tc) => (
+              <Card key={tc.id} className="overflow-hidden">
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-xs font-mono">{tc.id}</Badge>
+                      <Badge
+                        variant="outline"
+                        className={`text-xs ${SEVERITY_COLORS[tc.severity] ?? ""}`}
+                      >
+                        {tc.severity}
+                      </Badge>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {CATEGORY_LABELS[tc.category] ?? tc.category}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">攻击向量</p>
+                    <p className="text-sm font-mono mt-0.5">{tc.attack_vector}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">对抗输入</p>
+                    <p className="text-sm mt-0.5 line-clamp-2 text-foreground/80">{tc.input_prompt}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">期望行为</p>
+                    <p className="text-xs mt-0.5 text-foreground/70">{tc.expected_behavior}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {tc.pass_criteria?.map((c, i) => (
+                      <span key={i} className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">
+                        ✓ {c}
+                      </span>
+                    ))}
+                  </div>
+                  {tc.fail_indicators && tc.fail_indicators.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {tc.fail_indicators.map((f, i) => (
+                        <span key={i} className="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">
+                          ✗ {f}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {redTeamCases.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              <Shield className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">加载红队用例中...</p>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="grid grid-cols-12 gap-6">
         {/* 左侧：评测集列表 */}
         <div className="col-span-4 space-y-2">
@@ -368,6 +574,7 @@ export function EvaluationPage() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

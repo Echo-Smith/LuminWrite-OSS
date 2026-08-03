@@ -62,6 +62,12 @@ func (s *IntentStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 	for _, pair := range voiceNormalizationPairs {
 		normalized = pair.pattern.ReplaceAllString(normalized, pair.replace)
 	}
+
+	// Sanitize user input: strip fake system message tags to prevent prompt injection
+	// This is lighter-touch than external content sanitization — only fake system tags
+	// are removed, the user's actual writing request is preserved.
+	normalized = engine.SanitizeUserInput(normalized)
+
 	execCtx.NormalizedInput = normalized
 
 	// Fast path: empty input → chat
@@ -481,18 +487,19 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 			}
 			slog.Info("search completed", "query", q, "results", len(results), "cumulative", len(allResults))
 		}
-		execCtx.SearchResults = allResults
+		// Sanitize all search results before storing to prevent prompt injection
+		execCtx.SearchResults = engine.SanitizeSearchResults(allResults)
 		return nil
 	}
 
 	// Fallback: use LLM to generate mock search results
 	if len(allResults) > 0 {
-		execCtx.SearchResults = allResults
+		execCtx.SearchResults = engine.SanitizeSearchResults(allResults)
 		return nil
 	}
 	if execCtx.WritingTask != nil && s.llm != nil {
 		results := s.generateMockResults(ctx, execCtx.WritingTask.Topic)
-		execCtx.SearchResults = results
+		execCtx.SearchResults = engine.SanitizeSearchResults(results)
 	}
 
 	return nil
@@ -1067,6 +1074,9 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	if execCtx.Outline != nil && execCtx.Outline.Title != "" {
 		systemPrompt += "\n\n【重要】本次为引导模式写作，文章标题已由用户确认，必须原样使用提供的标题，不得自行创作或修改。核心比喻和修辞手法仅用于正文，不影响标题。"
 	}
+
+	// Append prompt injection defense directive to system prompt
+	systemPrompt += engine.PromptInjectionDefenseDirective
 
 	// Build user prompt — differentiated by task mode
 	var promptBuilder strings.Builder
