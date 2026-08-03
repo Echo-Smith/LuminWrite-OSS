@@ -1624,9 +1624,18 @@ func (s *PostReviewStep) CanPause() bool         { return false }
 func (s *PostReviewStep) Timeout() time.Duration { return 60 * time.Second }
 func (s *PostReviewStep) Critical() bool         { return false }
 
-// ShouldSkip returns true for chat intent — chat responses don't need review.
+// ShouldSkip returns true for chat intent or when review already passed.
+// Chat responses don't need review. If review already passed (e.g. after
+// a successful AutoFix), the re-review step is skipped in pipeline mode.
 func (s *PostReviewStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
-	return execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat"
+	if execCtx.TaskIntent != nil && execCtx.TaskIntent.TaskMode == "chat" {
+		return true
+	}
+	// Skip re-review if the article already passed review
+	if execCtx.ReviewResult != nil && execCtx.ReviewResult.Passed {
+		return true
+	}
+	return false
 }
 
 func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
@@ -1744,10 +1753,19 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		{Role: "user", Content: userMsg},
 	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
-		// If review fails, pass by default
+		// If review fails, pass by default (graceful degradation) but add a warning
+		slog.Warn("post review LLM call failed, skipping review (graceful degradation)",
+			"trace_id", execCtx.TraceID,
+			"error", err)
 		execCtx.ReviewResult = &engine.ReviewResult{
 			Scores: map[string]float64{},
-			Issues: []engine.ReviewIssue{},
+			Issues: []engine.ReviewIssue{
+				{
+					Severity: "medium",
+					Type:     "review_skipped",
+					Message:  "质量评审因服务异常被跳过（已自动放行）",
+				},
+			},
 			Passed: true,
 		}
 		return nil
@@ -1755,9 +1773,17 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 	jsonStr := tools.ExtractJSONObject(resp)
 	if jsonStr == "" {
+		slog.Warn("post review: no JSON in response, skipping review",
+			"trace_id", execCtx.TraceID)
 		execCtx.ReviewResult = &engine.ReviewResult{
 			Scores: map[string]float64{},
-			Issues: []engine.ReviewIssue{},
+			Issues: []engine.ReviewIssue{
+				{
+					Severity: "medium",
+					Type:     "review_skipped",
+					Message:  "质量评审因响应格式异常被跳过（已自动放行）",
+				},
+			},
 			Passed: true,
 		}
 		return nil
@@ -1765,9 +1791,18 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 	var review engine.ReviewResult
 	if err := json.Unmarshal([]byte(jsonStr), &review); err != nil {
+		slog.Warn("post review: failed to parse review JSON, skipping review",
+			"trace_id", execCtx.TraceID,
+			"error", err)
 		execCtx.ReviewResult = &engine.ReviewResult{
 			Scores: map[string]float64{},
-			Issues: []engine.ReviewIssue{},
+			Issues: []engine.ReviewIssue{
+				{
+					Severity: "medium",
+					Type:     "review_skipped",
+					Message:  "质量评审因解析异常被跳过（已自动放行）",
+				},
+			},
 			Passed: true,
 		}
 		return nil
@@ -1994,6 +2029,11 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		return nil
 	}
 
+	// Increment fix attempts at the start (after limit check) so that
+	// even if no fixable issues are found, the counter advances to prevent
+	// infinite loops. The counter tracks attempts, not successful fixes.
+	execCtx.FixAttempts++
+
 	// Non-fixable types (hard rules, cannot be auto-corrected)
 	nonFixableTypes := map[string]bool{
 		"sensitive_word":  true,
@@ -2073,10 +2113,23 @@ func (s *AutoFixStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 		}
 	}
 
-	// Mark as passed if we fixed at least something
+	// Note: we intentionally do NOT set Passed = true here.
+	// After auto_fix, a re-review (post_review) will be triggered to verify
+	// the fix actually resolved the issues:
+	//   - In unified mode: determineNextStep forces re-review after auto_fix
+	//   - In pipeline mode: a second PostReviewStep runs after AutoFixStep
+	// This prevents "false pass" where AutoFix marks issues as fixed without
+	// verifying the fix actually resolved them.
 	if fixedSomething {
-		execCtx.ReviewResult.Passed = true
-		execCtx.FixAttempts++
+		slog.Info("auto-fix applied, awaiting re-review to verify",
+			"trace_id", execCtx.TraceID,
+			"fix_attempts", execCtx.FixAttempts,
+			"max_fix_attempts", execCtx.MaxFixAttempts)
+	} else {
+		slog.Info("auto-fix attempted but nothing fixable",
+			"trace_id", execCtx.TraceID,
+			"fix_attempts", execCtx.FixAttempts,
+			"max_fix_attempts", execCtx.MaxFixAttempts)
 	}
 
 	return nil

@@ -1279,6 +1279,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
 			s.newPostReviewStepWithLLM(llmClient, styleProfile),
 			steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+			s.newPostReviewStepWithLLM(llmClient, styleProfile), // re-review after fix
 		)
 
 		// Memory extract: extract patterns after article completion (async)
