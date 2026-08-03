@@ -37,6 +37,7 @@ type Config struct {
 	HotTopics HotTopicsConfig
 	Agent     AgentConfig
 	MCPServers []MCPServerConfig
+	MCPServer  InProcessMCPServerConfig
 }
 
 type WebAuthnConfig struct {
@@ -200,6 +201,16 @@ type MCPServerConfig struct {
 	URL       string   `json:"url,omitempty"`
 }
 
+// InProcessMCPServerConfig configures the in-process MCP server.
+// When enabled, the application exposes its built-in tools (search,
+// knowledge base, memory, etc.) via the MCP JSON-RPC protocol,
+// allowing external MCP clients to discover and call them.
+type InProcessMCPServerConfig struct {
+	Enabled  bool   // master switch (default false)
+	HTTPAddr string // HTTP listen address for HTTP transport (default ":9090")
+	Stdio    bool   // if true, also serve over stdio (for CLI mode)
+}
+
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	// Load .env file if present (non-fatal if missing)
@@ -327,6 +338,11 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			CircuitBreakerFails: getEnvInt("AGENT_CIRCUIT_BREAKER_FAILS", 3),
 		},
 		MCPServers: loadMCPServers(),
+		MCPServer: InProcessMCPServerConfig{
+			Enabled:  getEnvBool("MCP_SERVER_ENABLED", false),
+			HTTPAddr: getEnv("MCP_SERVER_HTTP_ADDR", ":9090"),
+			Stdio:    getEnvBool("MCP_SERVER_STDIO", false),
+		},
 	}
 }
 
