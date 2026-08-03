@@ -162,11 +162,18 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 			"total_tokens", execCtx.TotalTokens,
 		)
 
-		resp, llmResp, err := a.llm.Chat(ctx, conversation,
-			tools.WithThinking(true),
-			tools.WithReasoningEffort("high"),
-			tools.WithTools(a.buildToolDefs(execCtx)),
-		)
+	// Adaptive reasoning effort: use high for early iterations (intent + planning),
+	// low for later iterations (simple tool selection reduces token cost).
+	reasoningEffort := "high"
+	if iteration >= 3 {
+		reasoningEffort = "low"
+	}
+
+	resp, llmResp, err := a.llm.Chat(ctx, conversation,
+		tools.WithThinking(true),
+		tools.WithReasoningEffort(reasoningEffort),
+		tools.WithTools(a.buildToolDefs(execCtx)),
+	)
 		if err != nil {
 			// ── Quota exceeded: hard stop, no retry ──
 			errMsg := strings.ToLower(err.Error())
@@ -211,18 +218,28 @@ func (a *UnifiedAgent) Run(ctx context.Context, execCtx *engine.ExecutionContext
 
 		if len(assistantMsg.ToolCalls) == 0 {
 			// LLM wants to finish — but check if critical steps are missing
-			if !a.canFinish(execCtx) {
-				slog.Info("unified agent: LLM tried to finish but steps missing",
-					"trace_id", execCtx.TraceID,
-					"iteration", iteration,
-				)
-				conversation = append(conversation, assistantMsg)
-				conversation = append(conversation, tools.LLMMessage{
-					Role:    "user",
-					Content: "文章已生成但尚未经过质量评审。请调用 post_review 工具进行质量评审。",
-				})
-				continue
+		if !a.canFinish(execCtx) {
+			slog.Info("unified agent: LLM tried to finish but requirements not met",
+				"trace_id", execCtx.TraceID,
+				"iteration", iteration,
+				"has_review", execCtx.ReviewResult != nil,
+				"review_passed", execCtx.ReviewResult != nil && execCtx.ReviewResult.Passed,
+				"fix_attempts", execCtx.FixAttempts,
+			)
+			conversation = append(conversation, assistantMsg)
+			var hint string
+			if execCtx.ReviewResult == nil {
+				hint = "文章已生成但尚未经过质量评审。请调用 post_review 工具进行质量评审。"
+			} else if !execCtx.ReviewResult.Passed {
+				hint = fmt.Sprintf("质量评审未通过（%d 个问题待修正）。请调用 auto_fix 工具进行修正（已修正 %d/%d 次）。",
+					len(execCtx.ReviewResult.Issues), execCtx.FixAttempts, execCtx.MaxFixAttempts)
 			}
+			conversation = append(conversation, tools.LLMMessage{
+				Role:    "user",
+				Content: hint,
+			})
+			continue
+		}
 
 			slog.Info("unified agent finished by LLM",
 				"trace_id", execCtx.TraceID,
@@ -360,16 +377,15 @@ func (a *UnifiedAgent) buildPlannerPrompt() string {
 	sb.WriteString(`
 
 决策原则：
-1. 第一步调用 intent 进行意图分类
-2. 根据意图和当前状态，选择最有价值的下一步
-3. 写作类意图通常需要：素材准备（query_plan → search → relevance → compress）→ 写作 → 质量评审 → 记忆提取
+1. 根据意图和当前状态，选择最有价值的下一步
+2. 写作类意图通常需要：素材准备（query_plan → search → relevance → compress）→ 写作 → 质量评审 → 记忆提取
    - 但你可以根据情况调整，例如搜索结果质量很高时可以跳过 compress
    - 评审发现问题时可以调用 auto_fix 修复
-   - auto_fix 最多执行 2 次
-4. 对话类意图通常更简单：记忆检索 → 对话回复 → 记忆提取
-5. 审查通过后，调用 memory_extract 提取写作偏好，然后结束
+   - auto_fix 最多执行 2 次，修正后会自动触发重新评审
+3. 对话类意图通常更简单：记忆检索 → 对话回复 → 记忆提取
+4. 审查通过后，调用 memory_extract 提取写作偏好，然后结束
 
-重要：文章生成后必须经过 post_review 质量评审才能结束。`)
+重要：文章生成后必须经过 post_review 质量评审通过才能结束。`)
 	return sb.String()
 }
 
@@ -467,26 +483,51 @@ var nonRepeatableTools = map[string]bool{
 	"memory_extract": true,
 }
 
+// toolDependencies defines which tools require other tools to have run first.
+// This prevents the LLM planner from calling tools out of order (e.g. calling
+// "relevance" before "search" has produced any results to filter).
+var toolDependencies = map[string][]string{
+	"search":    {"query_plan"}, // search needs queries from query_plan
+	"relevance": {"search"},     // relevance needs search results to filter
+	"compress":  {"relevance"},   // compress needs filtered results
+	"auto_fix":  {"post_review"}, // auto_fix needs review issues to fix
+}
+
 func (a *UnifiedAgent) buildToolDefs(execCtx *engine.ExecutionContext) []tools.ToolDef {
-	// Build a set of already-executed tool names from step history
+	// Build a set of all executed tool names from step history
 	executed := make(map[string]bool)
 	for _, rec := range execCtx.StepHistory {
-		if nonRepeatableTools[string(rec.Step)] {
-			executed[string(rec.Step)] = true
-		}
+		executed[string(rec.Step)] = true
 	}
 
 	all := a.registry.All()
 	defs := make([]tools.ToolDef, 0, len(all))
 	for _, t := range all {
+		name := t.Name()
+
 		// Skip non-repeatable tools that have already been executed
-		if executed[t.Name()] {
+		if nonRepeatableTools[name] && executed[name] {
 			continue
 		}
+
+		// Skip tools whose dependencies haven't been met
+		if deps, ok := toolDependencies[name]; ok {
+			depsMet := true
+			for _, dep := range deps {
+				if !executed[dep] {
+					depsMet = false
+					break
+				}
+			}
+			if !depsMet {
+				continue
+			}
+		}
+
 		defs = append(defs, tools.ToolDef{
 			Type: "function",
 			Function: tools.ToolDefFunction{
-				Name:        t.Name(),
+				Name:        name,
 				Description: t.Description(),
 				Parameters:  t.Schema(),
 			},
@@ -501,9 +542,10 @@ func (a *UnifiedAgent) buildToolDefs(execCtx *engine.ExecutionContext) []tools.T
 // Invariants:
 //  1. intent must run first (before any other tool)
 //  2. post_review must run before finishing (if an article was produced)
+//  3. after auto_fix, force re-review to verify the fix (if review didn't pass)
 //
 // All other ordering decisions (memory_gate, query_plan, search, relevance,
-// compress, outline, write, auto_fix, memory_extract) are left to the LLM.
+// compress, outline, write, memory_extract) are left to the LLM.
 func (a *UnifiedAgent) determineNextStep(execCtx *engine.ExecutionContext) (string, bool) {
 	// Invariant 1: intent classification must happen first
 	if execCtx.TaskIntent == nil {
@@ -512,9 +554,20 @@ func (a *UnifiedAgent) determineNextStep(execCtx *engine.ExecutionContext) (stri
 
 	// Invariant 2: post_review must run before the agent can finish
 	if execCtx.Article != "" && execCtx.ReviewResult == nil && a.hasTool("post_review") {
-		// Only force if the LLM hasn't already started a different step
-		// (i.e. no step is currently in progress)
 		return "post_review", true
+	}
+
+	// Invariant 3: force re-review after auto_fix if review didn't pass
+	// This ensures AutoFix results are verified by a fresh review, not auto-passed.
+	if execCtx.Article != "" && execCtx.ReviewResult != nil && !execCtx.ReviewResult.Passed &&
+		execCtx.FixAttempts > 0 && a.hasTool("post_review") {
+		// Only force re-review if the last executed step was auto_fix
+		if len(execCtx.StepHistory) > 0 {
+			last := execCtx.StepHistory[len(execCtx.StepHistory)-1]
+			if last.Step == engine.StepAutoFix {
+				return "post_review", true
+			}
+		}
 	}
 
 	// Let the LLM decide everything else
@@ -523,6 +576,7 @@ func (a *UnifiedAgent) determineNextStep(execCtx *engine.ExecutionContext) (stri
 
 // canFinish checks whether the agent is in a valid state to finish.
 // Prevents finishing without post_review when article was produced.
+// Also prevents finishing if review didn't pass and fix attempts remain.
 func (a *UnifiedAgent) canFinish(execCtx *engine.ExecutionContext) bool {
 	// No article → can finish (e.g. chat mode or error)
 	if execCtx.Article == "" {
@@ -531,6 +585,19 @@ func (a *UnifiedAgent) canFinish(execCtx *engine.ExecutionContext) bool {
 	// Article exists → must have post_review
 	if execCtx.ReviewResult == nil {
 		return false
+	}
+	// Review exists but didn't pass → only finish if fix attempts exhausted
+	if !execCtx.ReviewResult.Passed {
+		if execCtx.MaxFixAttempts > 0 && execCtx.FixAttempts < execCtx.MaxFixAttempts {
+			return false
+		}
+		// Fix attempts exhausted — allow finishing with warning
+		slog.Warn("allowing finish despite review failure — max fix attempts exhausted",
+			"trace_id", execCtx.TraceID,
+			"fix_attempts", execCtx.FixAttempts,
+			"max_fix_attempts", execCtx.MaxFixAttempts,
+		)
+		return true
 	}
 	return true
 }
