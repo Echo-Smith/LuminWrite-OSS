@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // RolloutConfig defines how a profile is rolled out to users.
@@ -14,6 +15,15 @@ type RolloutConfig struct {
 	FallbackVersion int      `json:"fallback_version"` // version to serve to non-selected users
 }
 
+// RolloutMetrics holds lightweight atomic counters for grayscale routing decisions.
+// These are read by the server's /metrics endpoint.
+var RolloutMetrics = struct {
+	NewVersion  atomic.Int64
+	OldVersion  atomic.Int64
+	Whitelist   atomic.Int64
+	Percentage  atomic.Int64
+}{}
+
 // ShouldUseNewVersion determines whether a user should get the new profile version.
 // Uses a two-level routing strategy:
 //   1. Whitelist: if the user is in the whitelist, they always get the new version
@@ -21,17 +31,33 @@ type RolloutConfig struct {
 func ShouldUseNewVersion(uid string, config RolloutConfig) bool {
 	switch config.Type {
 	case "full":
+		RolloutMetrics.NewVersion.Add(1)
 		return true
 	case "whitelist":
-		return isInWhitelist(uid, config.WhitelistUIDs)
+		if isInWhitelist(uid, config.WhitelistUIDs) {
+			RolloutMetrics.NewVersion.Add(1)
+			RolloutMetrics.Whitelist.Add(1)
+			return true
+		}
+		RolloutMetrics.OldVersion.Add(1)
+		return false
 	case "percentage":
 		// First check whitelist
 		if isInWhitelist(uid, config.WhitelistUIDs) {
+			RolloutMetrics.NewVersion.Add(1)
+			RolloutMetrics.Whitelist.Add(1)
 			return true
 		}
 		// Then check percentage via hash
-		return hashInPercentile(uid, config.RolloutPercent)
+		if hashInPercentile(uid, config.RolloutPercent) {
+			RolloutMetrics.NewVersion.Add(1)
+			RolloutMetrics.Percentage.Add(1)
+			return true
+		}
+		RolloutMetrics.OldVersion.Add(1)
+		return false
 	default:
+		RolloutMetrics.NewVersion.Add(1)
 		return true
 	}
 }

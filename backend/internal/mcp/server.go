@@ -47,6 +47,9 @@ type MCPServer struct {
 	stdin  io.ReadCloser
 	stdout io.WriteCloser
 	cancel context.CancelFunc
+
+	// For SSE mode: maps session ID → SSE writer
+	sseSessions sync.Map // string → *sseSession
 }
 
 // NewMCPServer creates a new in-process MCP server.
@@ -132,11 +135,17 @@ func (s *MCPServer) ServeStdio(ctx context.Context) error {
 
 // ServeHTTP returns an http.Handler that serves the MCP protocol over HTTP.
 // Each request is a JSON-RPC 2.0 message; responses are returned as JSON.
-// For SSE mode, the client opens a long-lived connection to receive
-// streaming responses.
+// For SSE mode, the client opens a long-lived connection to /sse to receive
+// streaming responses, and POSTs messages to /mcp?session=<id>.
 func (s *MCPServer) ServeHTTP() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only accept POST
+		// GET /sse — open SSE stream
+		if r.Method == http.MethodGet && r.URL.Path == "/sse" {
+			s.handleSSEStream(w, r)
+			return
+		}
+
+		// Only accept POST for JSON-RPC
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -149,6 +158,22 @@ func (s *MCPServer) ServeHTTP() http.Handler {
 		}
 
 		response := s.handleMessage(r.Context(), body)
+
+		// Check if this is an SSE session request
+		sessionID := r.URL.Query().Get("session")
+		if sessionID != "" {
+			// SSE mode: write response to the SSE stream
+			if sess, ok := s.getSSESession(sessionID); ok {
+				if response != nil {
+					sess.write(response)
+				}
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			// Session not found — fall through to JSON response
+		}
+
+		// Non-SSE mode: return JSON directly (backward compatible)
 		if response == nil {
 			// Notification — no response
 			w.WriteHeader(http.StatusAccepted)
@@ -469,8 +494,9 @@ func (s *MCPServer) RegisterBuiltinTools() {
 func (s *MCPServer) StartHTTPServer(addr string) *http.Server {
 	mux := http.NewServeMux()
 
-	// MCP endpoint
+	// MCP endpoint (POST /mcp for JSON-RPC, GET /sse for SSE stream)
 	mux.Handle("/mcp", s.ServeHTTP())
+	mux.Handle("/sse", s.ServeHTTP())
 
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -483,10 +509,10 @@ func (s *MCPServer) StartHTTPServer(addr string) *http.Server {
 	})
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:         addr,
+		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		WriteTimeout: 0, // no write timeout — SSE connections are long-lived
 	}
 
 	go func() {
@@ -497,6 +523,81 @@ func (s *MCPServer) StartHTTPServer(addr string) *http.Server {
 	}()
 
 	return srv
+}
+
+// ─── SSE Session Management ───────────────────────────────
+
+// sseSession represents an active SSE connection from a client.
+type sseSession struct {
+	id     string
+	writer http.ResponseWriter
+	flusher http.Flusher
+	done   chan struct{}
+}
+
+// write sends a JSON-RPC response to the SSE client.
+func (sess *sseSession) write(resp *mcpResponse) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(sess.writer, "data: %s\n\n", data)
+	if sess.flusher != nil {
+		sess.flusher.Flush()
+	}
+}
+
+// handleSSEStream handles GET /sse — opens a text/event-stream connection.
+func (s *MCPServer) handleSSEStream(w http.ResponseWriter, r *http.Request) {
+	// Check that the ResponseWriter supports flushing
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	// Generate a session ID
+	sessionID := fmt.Sprintf("sess_%d", s.nextID.Add(1))
+
+	// Register the session
+	sess := &sseSession{
+		id:      sessionID,
+		writer:  w,
+		flusher: flusher,
+		done:    make(chan struct{}),
+	}
+	s.sseSessions.Store(sessionID, sess)
+	defer s.sseSessions.Delete(sessionID)
+
+	slog.Info("MCP SSE client connected", "session", sessionID)
+
+	// Send the `endpoint` event — tells the client where to POST messages
+	endpointURL := fmt.Sprintf("/mcp?session=%s", sessionID)
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURL)
+	flusher.Flush()
+
+	// Block until the client disconnects or server closes
+	select {
+	case <-r.Context().Done():
+	case <-sess.done:
+	}
+
+	slog.Info("MCP SSE client disconnected", "session", sessionID)
+}
+
+// getSSESession retrieves an SSE session by ID.
+func (s *MCPServer) getSSESession(id string) (*sseSession, bool) {
+	v, ok := s.sseSessions.Load(id)
+	if !ok {
+		return nil, false
+	}
+	return v.(*sseSession), true
 }
 
 // ─── Stdin reader for testing ─────────────────────────────

@@ -285,10 +285,12 @@ func (s *Server) startMCPServerHTTP() {
 	go s.mcpServer.StartHTTPServer(s.cfg.MCPServer.HTTPAddr)
 }
 
-// startMCPServerStdio starts the MCP server in stdio mode (blocking).
-// This should only be called when the server is run as an MCP subprocess.
-func (s *Server) startMCPServerStdio(ctx context.Context) {
+// StartMCPServerStdio starts the MCP server in stdio mode (blocking).
+// This is called from main.go when MCP_SERVER_STDIO=true, allowing the
+// binary to be used as a subprocess by Claude Desktop and other MCP clients.
+func (s *Server) StartMCPServerStdio(ctx context.Context) {
 	if s.mcpServer == nil {
+		slog.Error("MCP server not initialized, cannot start stdio mode")
 		return
 	}
 	slog.Info("starting MCP server in stdio mode (blocking)")
