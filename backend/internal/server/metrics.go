@@ -14,6 +14,7 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	ws "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 )
 
@@ -165,6 +166,16 @@ type MetricsRegistry struct {
 	GrayscaleFallbackHits   *Counter
 	GrayscaleErrors         *Counter
 
+	// Search metrics
+	SearchQueriesTotal *Counter
+	SearchErrorsTotal  *Counter
+	SearchDuration     *Histogram
+
+	// Embedding metrics
+	EmbeddingCallsTotal  *Counter
+	EmbeddingErrorsTotal *Counter
+	EmbeddingDuration    *Histogram
+
 	// All metrics for export
 	counters   []*Counter
 	histograms []*Histogram
@@ -196,6 +207,12 @@ func NewMetricsRegistry() *MetricsRegistry {
 		GrayscaleNewVersionHits: NewCounter("grayscale_new_version_hits_total", "Times new version was served", "slug"),
 		GrayscaleFallbackHits:   NewCounter("grayscale_fallback_hits_total", "Times fallback version was served", "slug"),
 		GrayscaleErrors:         NewCounter("grayscale_errors_total", "Grayscale routing errors", "slug", "type"),
+		SearchQueriesTotal: NewCounter("search_queries_total", "Total search queries"),
+		SearchErrorsTotal:  NewCounter("search_errors_total", "Total search errors"),
+		SearchDuration:     NewHistogram("search_duration_seconds", "Search query duration", defaultBuckets),
+		EmbeddingCallsTotal:  NewCounter("embedding_calls_total", "Total embedding API calls"),
+		EmbeddingErrorsTotal: NewCounter("embedding_errors_total", "Total embedding API errors"),
+		EmbeddingDuration:    NewHistogram("embedding_duration_seconds", "Embedding API call duration", defaultBuckets),
 	}
 
 	r.counters = []*Counter{
@@ -213,12 +230,18 @@ func NewMetricsRegistry() *MetricsRegistry {
 		r.GrayscaleNewVersionHits,
 		r.GrayscaleFallbackHits,
 		r.GrayscaleErrors,
+		r.SearchQueriesTotal,
+		r.SearchErrorsTotal,
+		r.EmbeddingCallsTotal,
+		r.EmbeddingErrorsTotal,
 	}
 
 	r.histograms = []*Histogram{
 		r.HTTPRequestDuration,
 		r.AgentDuration,
 		r.LLMDuration,
+		r.SearchDuration,
+		r.EmbeddingDuration,
 	}
 
 	r.gauges = []*Gauge{
@@ -392,6 +415,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		ws.WSMetrics.WriteErrors.Store(0)
 		ws.WSMetrics.ParseErrors.Store(0)
 		// Sync grayscale routing metrics (labels: slug="", result)
+		reqTotal := routing.RolloutMetrics.Requests.Load()
+		errTotal := routing.RolloutMetrics.Errors.Load()
+		s.metrics.GrayscaleRequestsTotal.Add(reqTotal, "global", "ok")
+		s.metrics.GrayscaleErrors.Add(errTotal, "global", "invalid_config")
+		routing.RolloutMetrics.Requests.Store(0)
+		routing.RolloutMetrics.Errors.Store(0)
+
 		nv := routing.RolloutMetrics.NewVersion.Load()
 		ov := routing.RolloutMetrics.OldVersion.Load()
 		for i := int64(0); i < nv; i++ {
@@ -402,6 +432,33 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		routing.RolloutMetrics.NewVersion.Store(0)
 		routing.RolloutMetrics.OldVersion.Store(0)
+
+		// Sync search metrics
+		sq := tools.ToolMetrics.SearchQueriesTotal.Load()
+		se := tools.ToolMetrics.SearchErrorsTotal.Load()
+		sd := tools.ToolMetrics.SearchDurationNs.Load()
+		s.metrics.SearchQueriesTotal.Add(sq)
+		s.metrics.SearchErrorsTotal.Add(se)
+		if sq > 0 {
+			s.metrics.SearchDuration.Observe(time.Duration(sd/sq) * time.Nanosecond)
+		}
+		tools.ToolMetrics.SearchQueriesTotal.Store(0)
+		tools.ToolMetrics.SearchErrorsTotal.Store(0)
+		tools.ToolMetrics.SearchDurationNs.Store(0)
+
+		// Sync embedding metrics
+		ec := tools.ToolMetrics.EmbeddingCallsTotal.Load()
+		ee := tools.ToolMetrics.EmbeddingErrorsTotal.Load()
+		ed := tools.ToolMetrics.EmbeddingDurationNs.Load()
+		s.metrics.EmbeddingCallsTotal.Add(ec)
+		s.metrics.EmbeddingErrorsTotal.Add(ee)
+		if ec > 0 {
+			s.metrics.EmbeddingDuration.Observe(time.Duration(ed/ec) * time.Nanosecond)
+		}
+		tools.ToolMetrics.EmbeddingCallsTotal.Store(0)
+		tools.ToolMetrics.EmbeddingErrorsTotal.Store(0)
+		tools.ToolMetrics.EmbeddingDurationNs.Store(0)
+
 		s.metrics.Export(w)
 	} else {
 		w.Write([]byte("# metrics not initialized\n"))

@@ -92,10 +92,14 @@ type embeddingResponse struct {
 // Embed generates embeddings for the given texts.
 // Returns a slice of float64 slices (one per input text).
 func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float64, int, error) {
+	embedStart := time.Now()
+
 	if !c.IsConfigured() {
+		RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), fmt.Errorf("not configured"))
 		return nil, 0, fmt.Errorf("embedding client not configured (DASHSCOPE_API_KEY not set)")
 	}
 	if len(texts) == 0 {
+		RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), nil)
 		return nil, 0, nil
 	}
 
@@ -119,6 +123,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 
 		data, err := json.Marshal(reqBody)
 		if err != nil {
+			RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), err)
 			return nil, 0, fmt.Errorf("failed to marshal embedding request: %w", err)
 		}
 
@@ -127,6 +132,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 
 		req, err := http.NewRequestWithContext(ctx, "POST", embedURL, bytes.NewReader(data))
 		if err != nil {
+			RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), err)
 			return nil, 0, fmt.Errorf("failed to create embedding request: %w", err)
 		}
 
@@ -135,6 +141,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), err)
 			return nil, 0, fmt.Errorf("embedding API request failed: %w", err)
 		}
 		defer resp.Body.Close()
@@ -145,11 +152,14 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, 0, fmt.Errorf("embedding API returned status %d: %s", resp.StatusCode, string(body))
+			err := fmt.Errorf("embedding API returned status %d: %s", resp.StatusCode, string(body))
+			RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), err)
+			return nil, 0, err
 		}
 
 		var embResp embeddingResponse
 		if err := json.Unmarshal(body, &embResp); err != nil {
+			RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), err)
 			return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
 		}
 
@@ -170,6 +180,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		"base_url", c.baseURL,
 	)
 
+	RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), nil)
 	return allEmbeddings, totalTokens, nil
 }
 
