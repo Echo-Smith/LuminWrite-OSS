@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -15,6 +16,14 @@ const (
 	readTimeout   = 600 * time.Second // 10 min — allows time for user to edit outlines in guided mode
 	bufSize       = 256
 )
+
+// WSMetrics holds lightweight atomic counters for WebSocket errors.
+// These are read by the server's /metrics endpoint.
+var WSMetrics = struct {
+	ReadErrors  atomic.Int64
+	WriteErrors atomic.Int64
+	ParseErrors atomic.Int64
+}{}
 
 // Client represents a single WebSocket connection.
 type Client struct {
@@ -82,6 +91,7 @@ func (c *Client) ReadLoop(handler func(*ClientMessage)) {
 				slog.Debug("websocket closed", "trace_id", c.traceID)
 			} else {
 				slog.Error("websocket read error", "error", err, "trace_id", c.traceID)
+				WSMetrics.ReadErrors.Add(1)
 			}
 			return
 		}
@@ -89,6 +99,7 @@ func (c *Client) ReadLoop(handler func(*ClientMessage)) {
 		var msg ClientMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			slog.Error("failed to unmarshal client message", "error", err)
+			WSMetrics.ParseErrors.Add(1)
 			continue
 		}
 		handler(&msg)
@@ -105,6 +116,7 @@ func (c *Client) WriteLoop() {
 		c.mu.Unlock()
 		if err != nil {
 			slog.Error("websocket write error", "error", err, "trace_id", c.traceID)
+			WSMetrics.WriteErrors.Add(1)
 			return
 		}
 	}
