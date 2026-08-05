@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -75,7 +77,9 @@ type MCPClient struct {
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
 	httpClient *http.Client
-	sseURL     string
+	sseURL     string // base SSE URL (GET to open stream)
+	postURL    string // POST endpoint discovered from SSE `endpoint` event
+	sseBody    io.ReadCloser
 
 	mu       sync.Mutex
 	nextID   atomic.Int64
@@ -146,7 +150,35 @@ func NewMCPClient(ctx context.Context, cfg MCPClientConfig) (*MCPClient, error) 
 			return nil, fmt.Errorf("sse transport requires 'url'")
 		}
 		c.sseURL = cfg.URL
-		c.httpClient = &http.Client{Timeout: cfg.Timeout}
+		// Use a client with no timeout for the long-lived SSE connection,
+		// but keep a separate client with timeout for POST requests.
+		c.httpClient = &http.Client{} // no timeout — SSE is long-lived
+
+		// Open persistent SSE connection (GET)
+		endpointCh := make(chan string, 1)
+		if err := c.connectSSE(ctx, endpointCh); err != nil {
+			c.Close()
+			return nil, fmt.Errorf("SSE connect failed: %w", err)
+		}
+
+		// Wait for the server's `endpoint` event to learn the POST URL
+		select {
+		case postURL := <-endpointCh:
+			// Resolve relative URLs against the SSE base URL
+			if strings.HasPrefix(postURL, "/") {
+				// Parse base URL to get scheme + host
+				if u, err := url.Parse(c.sseURL); err == nil {
+					postURL = u.Scheme + "://" + u.Host + postURL
+				}
+			}
+			c.postURL = postURL
+		case <-time.After(10 * time.Second):
+			c.Close()
+			return nil, fmt.Errorf("timeout waiting for SSE endpoint event")
+		case <-ctx.Done():
+			c.Close()
+			return nil, ctx.Err()
+		}
 
 	default:
 		return nil, fmt.Errorf("unknown transport: %s (use 'stdio' or 'sse')", cfg.Transport)
@@ -293,6 +325,10 @@ func (c *MCPClient) Close() {
 		if c.cmd != nil && c.cmd.Process != nil {
 			c.cmd.Process.Kill()
 		}
+	} else if c.transport == "sse" {
+		if c.sseBody != nil {
+			c.sseBody.Close()
+		}
 	}
 
 	slog.Info("MCP client closed", "server", c.name)
@@ -365,32 +401,133 @@ func (c *MCPClient) send(req jsonrpcRequest) error {
 		c.mu.Unlock()
 		return err
 	case "sse":
-		// Send HTTP POST to the SSE endpoint
-		resp, err := c.httpClient.Post(c.sseURL, "application/json", bytes.NewReader(data))
+		// POST the JSON-RPC message to the endpoint URL.
+		// The response will arrive asynchronously via the SSE stream (readSSELoop).
+		postURL := c.postURL
+		if postURL == "" {
+			postURL = c.sseURL // fallback
+		}
+		resp, err := c.httpClient.Post(postURL, "application/json", bytes.NewReader(data))
 		if err != nil {
 			return err
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
+		// The server returns 202 Accepted; the actual JSON-RPC response
+		// is pushed back through the SSE stream.
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 			body, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 		}
-		// For SSE, the response comes as an event stream
-		// For simplicity, we read the full body as the JSON-RPC response
-		var rpcResp jsonrpcResponse
-		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-			return fmt.Errorf("failed to decode SSE response: %w", err)
-		}
-		// Dispatch to pending
-		c.mu.Lock()
-		if ch, ok := c.pending[rpcResp.ID]; ok {
-			ch <- &rpcResp
-		}
-		c.mu.Unlock()
 		return nil
 	default:
 		return fmt.Errorf("unknown transport: %s", c.transport)
 	}
+}
+
+// connectSSE opens a persistent GET connection to the SSE endpoint and
+// starts a goroutine to read the event stream.
+func (c *MCPClient) connectSSE(ctx context.Context, endpointCh chan<- string) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.sseURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create SSE request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("SSE connection failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return fmt.Errorf("SSE connection returned status %d", resp.StatusCode)
+	}
+
+	c.sseBody = resp.Body
+	go c.readSSELoop(resp.Body, endpointCh)
+	return nil
+}
+
+// readSSELoop reads Server-Sent Events from the SSE stream and dispatches
+// JSON-RPC responses to pending callers. It also handles the initial
+// `endpoint` event that tells the client where to POST messages.
+func (c *MCPClient) readSSELoop(r io.Reader, endpointCh chan<- string) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var eventType string
+	var dataBuf strings.Builder
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Empty line = end of event
+		if line == "" {
+			if dataBuf.Len() > 0 {
+				data := strings.TrimSpace(dataBuf.String())
+				c.handleSSEEvent(eventType, data, endpointCh)
+			}
+			eventType = ""
+			dataBuf.Reset()
+			continue
+		}
+
+		// Parse SSE field: "field: value"
+		if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteString("\n")
+			}
+			dataBuf.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+		// Ignore comments (lines starting with ':') and other fields
+	}
+
+	// Handle any remaining buffered event
+	if dataBuf.Len() > 0 {
+		data := strings.TrimSpace(dataBuf.String())
+		c.handleSSEEvent(eventType, data, endpointCh)
+	}
+
+	if err := scanner.Err(); err != nil && !c.closed {
+		slog.Warn("MCP SSE reader stopped", "server", c.name, "error", err)
+	}
+}
+
+// handleSSEEvent processes a single SSE event.
+func (c *MCPClient) handleSSEEvent(eventType, data string, endpointCh chan<- string) {
+	// The `endpoint` event tells us where to POST JSON-RPC messages
+	if eventType == "endpoint" {
+		select {
+		case endpointCh <- data:
+		default:
+		}
+		return
+	}
+
+	// Default: treat data as a JSON-RPC response
+	if data == "" {
+		return
+	}
+
+	var resp jsonrpcResponse
+	if err := json.Unmarshal([]byte(data), &resp); err != nil {
+		slog.Debug("MCP: unparseable SSE data", "server", c.name, "data_len", len(data))
+		return
+	}
+
+	// Dispatch to pending caller
+	c.mu.Lock()
+	if ch, ok := c.pending[resp.ID]; ok {
+		select {
+		case ch <- &resp:
+		default:
+			slog.Warn("MCP: SSE response channel full, dropping", "id", resp.ID, "server", c.name)
+		}
+	}
+	c.mu.Unlock()
 }
 
 // readLoop reads JSON-RPC responses from stdio stdout.

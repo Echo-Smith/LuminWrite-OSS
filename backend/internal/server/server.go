@@ -304,6 +304,8 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(llm)
+		// Wire LLM metrics (Prometheus instrumentation)
+		llm.SetMetricsRecorder(s.metrics)
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -1296,7 +1298,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			))
 		}
 
-		agentRunner = engine.NewAgentEngine(emitter, engineSteps)
+		ae := engine.NewAgentEngine(emitter, engineSteps)
+		// Wire step hook for real-time trace persistence (per-step, not just at completion)
+		if s.traces != nil {
+			ae.SetStepHook(func(ctx context.Context, execCtx *engine.ExecutionContext) {
+				s.traces.UpdateTraceStep(ctx, execCtx)
+			})
+		}
+		agentRunner = ae
 		slog.Info("using fixed pipeline engine", "trace_id", traceID)
 	}
 

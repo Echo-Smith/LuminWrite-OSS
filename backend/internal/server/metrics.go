@@ -11,6 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
 )
 
 // ─── Metric Types ────────────────────────────────────────
@@ -347,12 +350,50 @@ func escapeLabelValue(s string) string {
 	return s
 }
 
+// RecordLLMCall records an LLM API call metric (implements tools.LLMMetricsRecorder).
+func (r *MetricsRegistry) RecordLLMCall(model string, callType string, duration time.Duration) {
+	r.LLMCallsTotal.Inc(model, callType)
+	r.LLMDuration.Observe(duration, model)
+}
+
+// RecordLLMError records an LLM API error metric (implements tools.LLMMetricsRecorder).
+func (r *MetricsRegistry) RecordLLMError(model string, errorType string) {
+	r.LLMErrorsTotal.Inc(model, errorType)
+}
+
 // ─── HTTP Handler & Middleware ──────────────────────────
 
 // handleMetrics exports all metrics in Prometheus format.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	if s.metrics != nil {
+		// Sync DB metrics from the global DB counters
+		if dbm := database.GetDBMetrics(); dbm != nil {
+			s.metrics.DBQueriesTotal.Add(dbm.Queries.Load())
+			s.metrics.DBErrorsTotal.Add(dbm.Errors.Load())
+			dbm.Queries.Store(0)
+			dbm.Errors.Store(0)
+		}
+		// Sync profile cache metrics
+		if s.profiles != nil {
+			s.metrics.ProfileCacheHits.Add(s.profiles.L1Hits.Load())
+			s.metrics.ProfileCacheHits.Add(s.profiles.L2Hits.Load())
+			s.metrics.ProfileCacheMisses.Add(s.profiles.Misses.Load())
+			s.profiles.L1Hits.Store(0)
+			s.profiles.L2Hits.Store(0)
+			s.profiles.Misses.Store(0)
+		}
+		// Sync grayscale routing metrics (labels: slug="", result)
+		nv := routing.RolloutMetrics.NewVersion.Load()
+		ov := routing.RolloutMetrics.OldVersion.Load()
+		for i := int64(0); i < nv; i++ {
+			s.metrics.GrayscaleNewVersionHits.Inc("global")
+		}
+		for i := int64(0); i < ov; i++ {
+			s.metrics.GrayscaleFallbackHits.Inc("global")
+		}
+		routing.RolloutMetrics.NewVersion.Store(0)
+		routing.RolloutMetrics.OldVersion.Store(0)
 		s.metrics.Export(w)
 	} else {
 		w.Write([]byte("# metrics not initialized\n"))

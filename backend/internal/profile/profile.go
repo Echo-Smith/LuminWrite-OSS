@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lib/pq"
@@ -137,6 +138,11 @@ type Loader struct {
 
 	// PublishHook is called when a profile is published (for auto-evaluation trigger)
 	PublishHook func(slug string, version int, detail string)
+
+	// Metrics (lightweight atomic counters, read by server /metrics endpoint)
+	L1Hits atomic.Int64
+	L2Hits atomic.Int64
+	Misses atomic.Int64
 }
 
 // NewLoader creates a new profile loader with built-in profiles.
@@ -619,6 +625,7 @@ func (l *Loader) Get(slug string) (*StyleProfile, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if p, ok := l.l2Cache.Get(ctx, slug); ok {
 			cancel()
+			l.L2Hits.Add(1)
 			return p, true
 		}
 		cancel()
@@ -628,6 +635,7 @@ func (l *Loader) Get(slug string) (*StyleProfile, bool) {
 	defer l.mu.RUnlock()
 
 	if p, ok := l.profiles[slug]; ok {
+		l.L1Hits.Add(1)
 		// Populate L2 cache on L1 hit
 		if l.l2Cache != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -639,6 +647,7 @@ func (l *Loader) Get(slug string) (*StyleProfile, bool) {
 
 	// Fallback to yinyue
 	if p, ok := l.profiles["yinyue"]; ok {
+		l.Misses.Add(1)
 		slog.Warn("style profile not found, falling back to yinyue", "requested", slug)
 		return p, true
 	}

@@ -6,6 +6,7 @@ import (
 	"embed"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -14,9 +15,26 @@ import (
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
+// DBMetrics holds lightweight counters for database operations.
+// These are read by the server's metrics exporter and converted to Prometheus metrics.
+type DBMetrics struct {
+	Queries atomic.Int64
+	Errors  atomic.Int64
+}
+
+// globalDBMetrics is a package-level singleton for DB metrics.
+// It is read by the server's /metrics endpoint.
+var globalDBMetrics = &DBMetrics{}
+
+// GetDBMetrics returns the global DB metrics counters.
+func GetDBMetrics() *DBMetrics {
+	return globalDBMetrics
+}
+
 // DB wraps the sql.DB connection pool.
 type DB struct {
 	*sql.DB
+	metrics *DBMetrics
 }
 
 // NewPostgres creates a new PostgreSQL connection pool.
@@ -40,7 +58,7 @@ func NewPostgres(url string, maxOpen, maxIdle int) (*DB, error) {
 		cancel()
 		if err == nil {
 			slog.Info("database connected", "url", maskURL(url), "attempt", attempt)
-			return &DB{db}, nil
+			return &DB{DB: db, metrics: globalDBMetrics}, nil
 		}
 		lastErr = err
 		slog.Warn("database connection retry", "attempt", attempt, "max", maxRetries, "error", err)
@@ -67,6 +85,40 @@ func (db *DB) IsAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return db.PingContext(ctx) == nil
+}
+
+// ExecContext wraps sql.DB.ExecContext with metrics instrumentation.
+func (db *DB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if db.metrics != nil {
+		db.metrics.Queries.Add(1)
+	}
+	res, err := db.DB.ExecContext(ctx, query, args...)
+	if err != nil && db.metrics != nil {
+		db.metrics.Errors.Add(1)
+	}
+	return res, err
+}
+
+// QueryContext wraps sql.DB.QueryContext with metrics instrumentation.
+func (db *DB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if db.metrics != nil {
+		db.metrics.Queries.Add(1)
+	}
+	rows, err := db.DB.QueryContext(ctx, query, args...)
+	if err != nil && db.metrics != nil {
+		db.metrics.Errors.Add(1)
+	}
+	return rows, err
+}
+
+// QueryRowContext wraps sql.DB.QueryRowContext with metrics instrumentation.
+func (db *DB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	if db.metrics != nil {
+		db.metrics.Queries.Add(1)
+	}
+	// Note: QueryRowContext doesn't return an error directly — it's deferred to Scan().
+	// We still count the query; errors will be caught at the Scan() call site.
+	return db.DB.QueryRowContext(ctx, query, args...)
 }
 
 // maskURL hides credentials in the database URL for logging.

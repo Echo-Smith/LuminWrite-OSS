@@ -11,10 +11,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// StepHook is called after each step completes (or fails/degrades).
+// It allows external observers (e.g., TraceRepo) to persist intermediate state.
+type StepHook func(ctx context.Context, execCtx *ExecutionContext)
+
 // AgentEngine orchestrates the writing pipeline steps.
 type AgentEngine struct {
 	steps   []Step
 	emitter EventEmitter
+	hook    StepHook // optional callback after each step
 }
 
 // NewAgentEngine creates a new AgentEngine with the given steps.
@@ -23,6 +28,13 @@ func NewAgentEngine(emitter EventEmitter, steps []Step) *AgentEngine {
 		steps:   steps,
 		emitter: emitter,
 	}
+}
+
+// SetStepHook sets a callback that is invoked after each step completes,
+// fails, or degrades. This is used to persist trace state to the database
+// in real-time (step-by-step) rather than only at the end.
+func (e *AgentEngine) SetStepHook(hook StepHook) {
+	e.hook = hook
 }
 
 // Run executes the full pipeline for a writing request.
@@ -159,12 +171,15 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 					"is_timeout", isTimeout,
 					"duration_ms", durationMs,
 				)
-				updateLastStepRecord(execCtx, stepName, "degraded", nil, durationMs, err.Error())
-				e.emitter.StepComplete(stepName, map[string]interface{}{
-					"degraded": true,
-					"error":    err.Error(),
-				}, durationMs)
-				continue
+			updateLastStepRecord(execCtx, stepName, "degraded", nil, durationMs, err.Error())
+			e.emitter.StepComplete(stepName, map[string]interface{}{
+				"degraded": true,
+				"error":    err.Error(),
+			}, durationMs)
+			if e.hook != nil {
+				e.hook(ctx, execCtx)
+			}
+			continue
 			}
 
 			// ── Quota exceeded: hard stop, no retry ──
@@ -179,6 +194,9 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 						stepName)
 				execCtx.Status = StatusFailed
 				updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())
+				if e.hook != nil {
+					e.hook(ctx, execCtx)
+				}
 				return ErrQuotaExceeded
 				}
 
@@ -189,8 +207,11 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 						fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
 						stepName)
 					execCtx.Status = StatusFailed
-					updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())
-					return ErrCircuitBreaker
+				updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())
+				if e.hook != nil {
+					e.hook(ctx, execCtx)
+				}
+				return ErrCircuitBreaker
 				}
 			}
 
@@ -200,6 +221,10 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 
 			// Update step record
 			updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())
+
+			if e.hook != nil {
+				e.hook(ctx, execCtx)
+			}
 
 			slog.Error("step failed",
 				"trace_id", execCtx.TraceID,
@@ -219,6 +244,10 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 
 	// Emit step.complete
 	e.emitter.StepComplete(stepName, result, durationMs)
+
+		if e.hook != nil {
+			e.hook(ctx, execCtx)
+		}
 
 		slog.Info("step completed",
 			"trace_id", execCtx.TraceID,

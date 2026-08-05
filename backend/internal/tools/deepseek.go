@@ -16,6 +16,13 @@ import (
 // ModelV4Pro is the DeepSeek V4 Pro model name, used for high-reasoning steps.
 const ModelV4Pro = "deepseek-v4-pro"
 
+// LLMMetricsRecorder is an optional interface for recording LLM call metrics.
+// The server.MetricsRegistry implements this to wire Prometheus metrics.
+type LLMMetricsRecorder interface {
+	RecordLLMCall(model string, callType string, duration time.Duration)
+	RecordLLMError(model string, errorType string)
+}
+
 // LLMClient is a client for the DeepSeek (OpenAI-compatible) API.
 type LLMClient struct {
 	baseURL           string
@@ -26,6 +33,7 @@ type LLMClient struct {
 	httpClient        *http.Client
 	responsesAPIRatio float64    // 0.0~1.0, proportion of traffic routed to Responses API
 	abMetrics         *ABMetrics // A/B test metrics collector (nil if A/B disabled)
+	metrics           LLMMetricsRecorder
 }
 
 // LLMMessage represents a single message in the conversation.
@@ -178,6 +186,11 @@ func (c *LLMClient) GetABMetrics() *ABMetricsSnapshot {
 	return c.abMetrics.Snapshot()
 }
 
+// SetMetricsRecorder sets the metrics recorder for LLM call instrumentation.
+func (c *LLMClient) SetMetricsRecorder(m LLMMetricsRecorder) {
+	c.metrics = m
+}
+
 // Chat calls the LLM API and returns the full response text.
 // If A/B testing is enabled, traffic is split between Chat Completions and Responses API.
 func (c *LLMClient) Chat(ctx context.Context, messages []LLMMessage, opts ...ChatOption) (string, *LLMResponse, error) {
@@ -190,6 +203,7 @@ func (c *LLMClient) Chat(ctx context.Context, messages []LLMMessage, opts ...Cha
 		if c.abMetrics != nil {
 			c.abMetrics.RecordResponsesAPI(resp, time.Since(start))
 		}
+		c.recordMetrics(req.Model, "responses", time.Since(start), err)
 		return text, resp, err
 	}
 
@@ -198,6 +212,7 @@ func (c *LLMClient) Chat(ctx context.Context, messages []LLMMessage, opts ...Cha
 	if c.abMetrics != nil {
 		c.abMetrics.RecordChatCompletions(resp, time.Since(start))
 	}
+	c.recordMetrics(req.Model, "chat", time.Since(start), err)
 	return text, resp, err
 }
 
@@ -221,6 +236,7 @@ func (c *LLMClient) ChatStreamWithReasoning(ctx context.Context, messages []LLMM
 		if c.abMetrics != nil {
 			c.abMetrics.RecordResponsesAPIStream(tokens, time.Since(start))
 		}
+		c.recordMetrics(req.Model, "responses_stream", time.Since(start), err)
 		return text, tokens, err
 	}
 
@@ -229,6 +245,7 @@ func (c *LLMClient) ChatStreamWithReasoning(ctx context.Context, messages []LLMM
 	if c.abMetrics != nil {
 		c.abMetrics.RecordChatCompletionsStream(tokens, time.Since(start))
 	}
+	c.recordMetrics(req.Model, "stream", time.Since(start), err)
 	return text, tokens, err
 }
 
@@ -558,6 +575,30 @@ func flushChunked(onDelta func(string), content string) {
 			end = len(runes)
 		}
 		onDelta(string(runes[i:end]))
+	}
+}
+
+// recordMetrics records LLM call metrics if a recorder is configured.
+func (c *LLMClient) recordMetrics(model, callType string, duration time.Duration, err error) {
+	if c.metrics == nil {
+		return
+	}
+	c.metrics.RecordLLMCall(model, callType, duration)
+	if err != nil {
+		errType := "unknown"
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") {
+			errType = "timeout"
+		} else if strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") {
+			errType = "rate_limit"
+		} else if strings.Contains(msg, "quota") || strings.Contains(msg, "402") {
+			errType = "quota"
+		} else if strings.Contains(msg, "connection") || strings.Contains(msg, "request failed") {
+			errType = "connection"
+		} else {
+			errType = "api_error"
+		}
+		c.metrics.RecordLLMError(model, errType)
 	}
 }
 
