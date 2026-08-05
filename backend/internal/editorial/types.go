@@ -131,19 +131,22 @@ const (
 
 // Artifact 编辑部交付物 — Agent 间传递的可验收产出
 type Artifact struct {
-	ID          string         `json:"id"`
-	TaskID      string         `json:"task_id"`
-	Type        ArtifactType   `json:"type"`
-	Version     int            `json:"version"`
-	Content     string         `json:"content"` // JSON 字符串
-	Status      ArtifactStatus `json:"status"`
-	ProducedBy  string         `json:"produced_by"`
-	ReviewedBy  string         `json:"reviewed_by,omitempty"`
-	ReviewNote  string         `json:"review_note,omitempty"`
-	ParentID    string         `json:"parent_id,omitempty"`
-	TokenCost   int            `json:"token_cost"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID             string         `json:"id"`
+	TaskID         string         `json:"task_id"`
+	Type           ArtifactType   `json:"type"`
+	Version        int            `json:"version"`
+	Content        string         `json:"content"` // JSON 字符串
+	Status         ArtifactStatus `json:"status"`
+	ProducedBy     string         `json:"produced_by"`
+	ReviewedBy     string         `json:"reviewed_by,omitempty"`
+	ReviewNote     string         `json:"review_note,omitempty"`
+	ParentID       string         `json:"parent_id,omitempty"`
+	TokenCost      int            `json:"token_cost"`
+	Checksum       string         `json:"checksum,omitempty"`        // SHA-256 content hash
+	Provenance     string         `json:"provenance,omitempty"`       // JSON metadata
+	RetentionUntil *time.Time     `json:"retention_until,omitempty"`  // Retention policy
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // ArtifactRef 交付物引用 — 在 AgentContext 中传递的轻量引用

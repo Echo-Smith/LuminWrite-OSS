@@ -393,3 +393,72 @@ func (s *Service) StartFileWatch(ctx context.Context) {
 		s.fileStore.Watch(ctx, 1*time.Minute)
 	}
 }
+
+// ─── Memory Forgetting (TTL + Salience Decay) ───────────────
+
+// ApplyForgettingPolicy applies TTL and salience-based decay to user memories
+func (s *Service) ApplyForgettingPolicy(ctx context.Context) error {
+	if s.pgStore == nil {
+		return nil
+	}
+
+	// Apply TTL: archive memories that have expired
+	if _, err := s.pgStore.db.ExecContext(ctx, `
+		UPDATE user_memories
+		SET status = 'archived', updated_at = NOW()
+		WHERE status IN ('active', 'candidate')
+		  AND expires_at IS NOT NULL
+		  AND expires_at < NOW()
+	`); err != nil {
+		slog.Warn("failed to archive expired memories", "error", err)
+	}
+
+	// Apply salience decay: reduce memory_weight for low-salience memories
+	// Salience decay rate: 0.01 per day (1% daily reduction, compounded)
+	if _, err := s.pgStore.db.ExecContext(ctx, `
+		UPDATE user_memories
+		SET memory_weight = GREATEST(0.1, memory_weight * 0.99),
+		    updated_at = NOW()
+		WHERE status = 'active'
+		  AND last_seen < NOW() - INTERVAL '1 day'
+		  AND salience_score < 0.3
+	`); err != nil {
+		slog.Warn("failed to apply salience decay", "error", err)
+	}
+
+	// Auto-archive very low weight memories
+	if _, err := s.pgStore.db.ExecContext(ctx, `
+		UPDATE user_memories
+		SET status = 'archived', updated_at = NOW()
+		WHERE status = 'active'
+		  AND memory_weight < 0.05
+	`); err != nil {
+		slog.Warn("failed to archive low-weight memories", "error", err)
+	}
+
+	slog.Info("memory forgetting policy applied")
+	return nil
+}
+
+// StartForgettingScheduler runs the forgetting policy periodically
+func (s *Service) StartForgettingScheduler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 24 * time.Hour // Default: daily
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	slog.Info("memory forgetting scheduler started", "interval", interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.ApplyForgettingPolicy(ctx); err != nil {
+				slog.Warn("forgetting policy execution failed", "error", err)
+			}
+		}
+	}
+}

@@ -64,6 +64,7 @@ type Server struct {
 	editorialSvc  *editorial.Service
 	editorialHdlr *editorial.Handlers
 	redTeamRepo   *database.RedTeamRepo
+	evidenceRepo  *database.EvidenceRepo
 
 	userStyleStore  *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
@@ -137,6 +138,7 @@ func New(cfg *config.Config) (*Server, error) {
 			slog.Info("API key encryption enabled")
 		}
 		kbRepo = database.NewKnowledgeBaseRepo(db, embeddingClient)
+		evidenceRepo = database.NewEvidenceRepo(db)
 		if err := database.Migrate(db); err != nil {
 			slog.Error("database migration failed — refusing to start with incomplete schema", "error", err)
 			return nil, fmt.Errorf("database migration failed: %w", err)
@@ -304,6 +306,7 @@ func New(cfg *config.Config) (*Server, error) {
 		mcpRegistry:   mcpRegistry,
 		toolRegistry:  toolRegistry,
 		redTeamRepo:   redTeamRepo,
+		evidenceRepo:  evidenceRepo,
 	}
 
 	// ── User custom styles & AI builder ──
@@ -654,6 +657,9 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 
             // SSE Push (admin only)
             r.Post("/sse/push", s.handleSSEPushTopic)
+
+            // Evidence System
+            r.Get("/evidence/{traceId}", s.handleAdminGetEvidence)
         })
     })
 
@@ -1364,6 +1370,13 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			if s.metrics != nil {
 				s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "completed")
 				s.metrics.AgentDuration.Observe(time.Since(start), execCtx.StyleSlug)
+			}
+
+			// Record search results as evidence for traceability
+			if s.evidenceRepo != nil && len(execCtx.SearchResults) > 0 {
+				if err := s.evidenceRepo.SaveSearchEvidence(ctx, traceID, execCtx.SearchResults); err != nil {
+					slog.Warn("failed to save search evidence", "error", err, "trace_id", traceID)
+				}
 			}
 
 			// Record writing process artifacts for traceability

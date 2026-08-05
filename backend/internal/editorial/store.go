@@ -159,6 +159,11 @@ func (s *Store) AddTokenUsage(ctx context.Context, taskID string, tokens int) er
 
 // CreateArtifact 创建交付物
 func (s *Store) CreateArtifact(ctx context.Context, input SubmitArtifactInput, taskID string) (*Artifact, error) {
+	return s.CreateArtifactWithVersioning(ctx, input, taskID, "", "{}", nil)
+}
+
+// CreateArtifactWithVersioning creates an artifact with checksum and provenance metadata
+func (s *Store) CreateArtifactWithVersioning(ctx context.Context, input SubmitArtifactInput, taskID, checksum, provenance string, retentionUntil *time.Time) (*Artifact, error) {
 	// 获取当前最大版本号
 	var maxVersion int
 	err := s.db.QueryRowContext(ctx, `
@@ -183,6 +188,11 @@ func (s *Store) CreateArtifact(ctx context.Context, input SubmitArtifactInput, t
 	}
 
 	var art Artifact
+	var retentionUntilTime sql.NullTime
+	if retentionUntil != nil {
+		retentionUntilTime.Valid = true
+		retentionUntilTime.Time = *retentionUntil
+	}
 	parentID := sql.NullString{}
 	if input.ParentID != "" {
 		parentID.Valid = true
@@ -190,16 +200,16 @@ func (s *Store) CreateArtifact(ctx context.Context, input SubmitArtifactInput, t
 	}
 
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO editorial_artifacts (task_id, type, version, content, status, produced_by, parent_id, token_cost)
-		VALUES ($1, $2, $3, $4, 'submitted', $5, $6, $7)
+		INSERT INTO editorial_artifacts (task_id, type, version, content, status, produced_by, parent_id, token_cost, checksum, provenance, retention_until)
+		VALUES ($1, $2, $3, $4, 'submitted', $5, $6, $7, $8, $9, $10)
 		RETURNING id, task_id, type, version, content, status, produced_by,
-			reviewed_by, review_note, COALESCE(parent_id::text, ''), token_cost, created_at, updated_at
+			reviewed_by, review_note, COALESCE(parent_id::text, ''), token_cost, checksum, provenance, retention_until, created_at, updated_at
 	`,
-		taskID, input.Type, nextVersion, input.Content, input.ProducedBy, parentID, input.TokenCost,
+		taskID, input.Type, nextVersion, input.Content, input.ProducedBy, parentID, input.TokenCost, checksum, provenance, retentionUntilTime,
 	).Scan(
 		&art.ID, &art.TaskID, &art.Type, &art.Version, &art.Content, &art.Status,
 		&art.ProducedBy, &art.ReviewedBy, &art.ReviewNote, &art.ParentID, &art.TokenCost,
-		&art.CreatedAt, &art.UpdatedAt,
+		&art.Checksum, &art.Provenance, &art.RetentionUntil, &art.CreatedAt, &art.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create artifact: %w", err)
