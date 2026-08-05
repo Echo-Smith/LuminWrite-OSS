@@ -536,11 +536,98 @@ func (s *EvaluationService) TriggerEvaluationIfProfileChanged(ctx context.Contex
 			defer cancel()
 			if err := s.RunEvaluation(evalCtx, runID); err != nil {
 				slog.Error("auto-evaluation failed", "run_id", runID, "error", err)
+				return
 			}
+
+			// After evaluation completes, run regression comparison if a baseline exists
+			s.CompareWithBaseline(evalCtx, slug, set.ID, runID, version)
 		}(run.ID)
 
 		slog.Info("auto-evaluation triggered", "slug", slug, "version", version, "set", set.Name, "run_id", run.ID)
 	}
+}
+
+// CompareWithBaseline compares the current run with the stored baseline and reports regressions
+func (s *EvaluationService) CompareWithBaseline(ctx context.Context, slug, setID, runID string, version int) {
+	if s.repo == nil {
+		return
+	}
+
+	// Get the current run's scores
+	currentRun, err := s.repo.GetRun(ctx, runID)
+	if err != nil {
+		slog.Warn("failed to get current run for regression comparison", "error", err, "run_id", runID)
+		return
+	}
+
+	// Get or create baseline for this set
+	baseline, err := s.repo.GetOrCreateRegressionBaseline(ctx, slug, setID, currentRun.OverallScore, currentRun.DimensionScores, nil)
+	if err != nil {
+		slog.Warn("failed to get baseline for regression comparison", "error", err, "slug", slug, "set_id", setID)
+		return
+	}
+
+	// If this is the first run (no previous baseline), set it as baseline and exit
+	if baseline == nil {
+		slog.Info("first evaluation run, setting as baseline", "slug", slug, "set_id", setID, "score", currentRun.OverallScore)
+		return
+	}
+
+	// Calculate score delta
+	scoreDelta := currentRun.OverallScore - baseline.OverallScore
+
+	// Calculate dimension deltas
+	dimDeltas := make(map[string]float64)
+	var regressions []map[string]interface{}
+
+	for dim, currentScore := range currentRun.DimensionScores {
+		if baselineScore, ok := baseline.DimensionScores[dim]; ok {
+			delta := currentScore - baselineScore
+			dimDeltas[dim] = delta
+
+			// Flag regression if score drops by more than 0.3 (6 points on 5-point scale)
+			if delta < -0.3 {
+				regressions = append(regressions, map[string]interface{}{
+					"dimension":    dim,
+					"baseline":     baselineScore,
+					"current":      currentScore,
+					"delta":        delta,
+					"severity":     getRegressionSeverity(delta),
+				})
+			}
+		}
+	}
+
+	// Determine if passing (no severe regressions)
+	isPassing := true
+	for _, r := range regressions {
+		if r["severity"] == "severe" {
+			isPassing = false
+			break
+		}
+	}
+
+	// Record regression comparison
+	if err := s.repo.CreateRegressionComparison(ctx, slug, setID, baseline.RunID, runID, scoreDelta, dimDeltas, regressions, isPassing); err != nil {
+		slog.Warn("failed to create regression comparison", "error", err, "slug", slug)
+	}
+
+	slog.Info("regression comparison completed",
+		"slug", slug, "set_id", setID,
+		"score_delta", scoreDelta,
+		"regressions", len(regressions),
+		"passing", isPassing,
+	)
+}
+
+func getRegressionSeverity(delta float64) string {
+	if delta < -1.0 {
+		return "severe"
+	}
+	if delta < -0.3 {
+		return "moderate"
+	}
+	return "minor"
 }
 
 // ExportRunJSON exports an evaluation run as a JSON byte slice.

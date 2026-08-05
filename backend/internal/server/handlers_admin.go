@@ -849,10 +849,34 @@ func (s *Server) handleAdminExitStats(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, map[string]interface{}{
 		"by_exit_reason":  byExitReason,
 		"by_step":         byStep,
-		"degraded_count":  degradedCount,
+		"degraded_count": degradedCount,
 		"total_failed":    totalFailed,
 		"total_completed": totalCompleted,
 		"total_paused":    totalPaused,
 		"days":            days,
+	})
+}
+
+// ─── Admin: Evidence System ─────────────────────────────
+
+func (s *Server) handleAdminGetEvidence(w http.ResponseWriter, r *http.Request) {
+	traceID := chi.URLParam(r, "traceId")
+
+	if s.evidenceRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "evidence repository not available")
+		return
+	}
+
+	evidence, err := s.evidenceRepo.GetEvidence(r.Context(), traceID)
+	if err != nil {
+		slog.Warn("failed to get evidence", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to retrieve evidence")
+		return
+	}
+
+	response.OK(w, map[string]interface{}{
+		"trace_id":  traceID,
+		"evidence":  evidence,
+		"total":     len(evidence),
 	})
 }

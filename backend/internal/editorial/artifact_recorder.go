@@ -2,9 +2,12 @@ package editorial
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 	"unicode/utf8"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
@@ -199,12 +202,35 @@ func (r *ArtifactRecorder) recordMemoryContext(ctx context.Context, execCtx *eng
 // Writing process artifacts are objective records, not editorial decisions,
 // so they are always auto-approved.
 func (r *ArtifactRecorder) createAndApprove(ctx context.Context, taskID string, artType ArtifactType, content, producedBy string) error {
-	art, err := r.store.CreateArtifact(ctx, SubmitArtifactInput{
+	// Calculate content checksum for version verification
+	checksum := computeChecksum(content)
+
+	// Build provenance metadata
+	provenance := map[string]interface{}{
+		"produced_by":   producedBy,
+		"produced_at":   time.Now().UTC().Format(time.RFC3339),
+		"content_size":  len(content),
+		"artifact_type": string(artType),
+	}
+
+	// Set retention policy: 90 days for intermediate artifacts, 1 year for drafts
+	var retentionUntil *time.Time
+	if artType == ArtifactDraft || artType == ArtifactRevisedDraft {
+		ret := time.Now().UTC().AddDate(1, 0, 0)
+		retentionUntil = &ret
+	} else {
+		ret := time.Now().UTC().AddDate(0, 0, 90)
+		retentionUntil = &ret
+	}
+
+	provenanceJSON, _ := json.Marshal(provenance)
+
+	art, err := r.store.CreateArtifactWithVersioning(ctx, SubmitArtifactInput{
 		Type:       artType,
 		Content:    content,
 		ProducedBy: producedBy,
-		TokenCost:  0, // Per-step token tracking not available yet
-	}, taskID)
+		TokenCost:  0,
+	}, taskID, checksum, string(provenanceJSON), retentionUntil)
 	if err != nil {
 		return fmt.Errorf("create artifact %s: %w", artType, err)
 	}
@@ -217,4 +243,10 @@ func (r *ArtifactRecorder) createAndApprove(ctx context.Context, taskID string, 
 		return fmt.Errorf("approve artifact %s: %w", artType, err)
 	}
 	return nil
+}
+
+// computeChecksum calculates SHA-256 hash of the content
+func computeChecksum(content string) string {
+	hash := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(hash[:])
 }
