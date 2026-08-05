@@ -105,6 +105,11 @@ func (c *SearchClient) HasSources() bool {
 
 // Search executes concurrent multi-source search and returns aggregated results.
 func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) []engine.SearchResult {
+	searchStart := time.Now()
+	defer func() {
+		RecordSearchCall(time.Since(searchStart).Nanoseconds(), nil)
+	}()
+
 	if maxTotal <= 0 {
 		maxTotal = 9
 	}

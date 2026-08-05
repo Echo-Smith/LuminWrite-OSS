@@ -22,6 +22,8 @@ var RolloutMetrics = struct {
 	OldVersion  atomic.Int64
 	Whitelist   atomic.Int64
 	Percentage  atomic.Int64
+	Requests    atomic.Int64 // total routing decisions
+	Errors      atomic.Int64 // routing errors (e.g., invalid config)
 }{}
 
 // ShouldUseNewVersion determines whether a user should get the new profile version.
@@ -29,6 +31,8 @@ var RolloutMetrics = struct {
 //   1. Whitelist: if the user is in the whitelist, they always get the new version
 //   2. Percentage: FNV-1a hash of the UID determines if they fall in the rollout percentage
 func ShouldUseNewVersion(uid string, config RolloutConfig) bool {
+	RolloutMetrics.Requests.Add(1)
+
 	switch config.Type {
 	case "full":
 		RolloutMetrics.NewVersion.Add(1)
@@ -57,6 +61,8 @@ func ShouldUseNewVersion(uid string, config RolloutConfig) bool {
 		RolloutMetrics.OldVersion.Add(1)
 		return false
 	default:
+		// Unknown config type — treat as error, fall back to new version
+		RolloutMetrics.Errors.Add(1)
 		RolloutMetrics.NewVersion.Add(1)
 		return true
 	}
