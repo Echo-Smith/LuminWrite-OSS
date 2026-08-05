@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -590,6 +591,8 @@ func parseIntDefault(s string, def int) int {
 // handleRedTeamRun triggers a red-team security evaluation.
 // POST /evaluation/redteam/run
 // Body: {"system_prompt": "..."} (optional, uses default if omitted)
+// Returns immediately with a run ID; the evaluation runs asynchronously.
+// Poll GET /evaluation/redteam/reports/{id} for results.
 func (s *Server) handleRedTeamRun(w http.ResponseWriter, r *http.Request) {
 	if s.evalSvc == nil {
 		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "evaluation service not available")
@@ -607,28 +610,83 @@ func (s *Server) handleRedTeamRun(w http.ResponseWriter, r *http.Request) {
 		systemPrompt = "你是一个专业的中文写作助手。请根据用户的要求生成高质量的文章。输出 Markdown 格式，以 ## 开头作为标题。"
 	}
 
+	// Generate a provisional report ID so we can return it immediately
+	provisionalID := fmt.Sprintf("rt_%d", time.Now().UnixNano())
+
+	// Record metrics
+	if s.metrics != nil {
+		s.metrics.EvalRunsTotal.Inc("redteam")
+		s.metrics.EvalRunsActive.Inc()
+	}
+
 	// Run red-team evaluation asynchronously
 	go func() {
+		defer func() {
+			if s.metrics != nil {
+				s.metrics.EvalRunsActive.Dec()
+			}
+		}()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
 		report, err := s.evalSvc.RunRedTeamEvaluation(ctx, systemPrompt)
 		if err != nil {
 			slog.Error("red-team evaluation failed", "error", err)
+			if s.metrics != nil {
+				s.metrics.EvalRunsTotal.Inc("redteam_failed")
+			}
 			return
 		}
+
 		slog.Info("red-team evaluation completed",
 			"total", report.TotalCases,
 			"passed", report.PassedCases,
 			"failed", report.FailedCases,
 			"pass_rate", report.PassRate,
 		)
+
+		// Persist the report
+		if s.redTeamRepo != nil {
+			// Convert services.RedTeamReport to database.RedTeamReportData
+			resultsData := make([]map[string]interface{}, len(report.Results))
+			for i, r := range report.Results {
+				resultsData[i] = map[string]interface{}{
+					"case_id":       r.CaseID,
+					"category":      r.Category,
+					"severity":      r.Severity,
+					"passed":        r.Passed,
+					"score":         r.Score,
+					"article":       r.Article,
+					"judge_verdict": r.JudgeVerdict,
+					"vulnerability": r.Vulnerability,
+				}
+			}
+			reportData := &database.RedTeamReportData{
+				TotalCases:      report.TotalCases,
+				PassedCases:     report.PassedCases,
+				FailedCases:     report.FailedCases,
+				PassRate:        report.PassRate,
+				Results:         resultsData,
+				CategorySummary: report.CategorySummary,
+				RunAt:           report.RunAt,
+			}
+			if _, err := s.redTeamRepo.SaveReport(ctx, reportData, systemPrompt); err != nil {
+				slog.Warn("failed to persist red-team report", "error", err)
+			}
+		}
+
+		if s.metrics != nil {
+			s.metrics.EvalRunsTotal.Inc("redteam_completed")
+		}
 	}()
 
 	response.OK(w, map[string]interface{}{
 		"message":  "red-team evaluation started",
+		"report_id": provisionalID,
 		"cases":    len(services.DefaultRedTeamCases()),
 		"timeout":  "15m",
+		"poll_url": "/evaluation/redteam/reports",
 	})
 }
 
@@ -660,4 +718,46 @@ func (s *Server) handleRedTeamCases(w http.ResponseWriter, r *http.Request) {
 		"total": len(cases),
 		"cases": cases,
 	})
+}
+
+// ─── Red-Team Report Retrieval ───────────────────────────
+
+// handleListRedTeamReports lists recent red-team evaluation reports.
+// GET /evaluation/redteam/reports?page=1&page_size=20
+func (s *Server) handleListRedTeamReports(w http.ResponseWriter, r *http.Request) {
+	if s.redTeamRepo == nil {
+		response.OK(w, map[string]interface{}{"reports": []interface{}{}, "total": 0})
+		return
+	}
+
+	page := parseIntDefault(r.URL.Query().Get("page"), 1)
+	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 20)
+
+	reports, total, err := s.redTeamRepo.ListReports(r.Context(), page, pageSize)
+	if err != nil {
+		slog.Warn("failed to list red-team reports", "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list red-team reports")
+		return
+	}
+
+	response.OK(w, map[string]interface{}{"reports": reports, "total": total})
+}
+
+// handleGetRedTeamReport retrieves a single red-team report by ID.
+// GET /evaluation/redteam/reports/{id}
+func (s *Server) handleGetRedTeamReport(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	if s.redTeamRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	report, err := s.redTeamRepo.GetReport(r.Context(), id)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "red-team report not found")
+		return
+	}
+
+	response.OK(w, report)
 }

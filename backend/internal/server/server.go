@@ -63,6 +63,7 @@ type Server struct {
 	toolRegistry  *engine.ToolRegistry
 	editorialSvc  *editorial.Service
 	editorialHdlr *editorial.Handlers
+	redTeamRepo   *database.RedTeamRepo
 
 	userStyleStore  *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
@@ -269,6 +270,12 @@ func New(cfg *config.Config) (*Server, error) {
 	// (Steps + Built-in tools + MCP tools)
 	toolRegistry := engine.NewToolRegistry()
 
+	// ── Red-team report repo ──
+	var redTeamRepo *database.RedTeamRepo
+	if dbAvail {
+		redTeamRepo = database.NewRedTeamRepo(db)
+	}
+
 	s := &Server{
 		cfg:           cfg,
 		hub:           websocket.NewHub(),
@@ -296,6 +303,7 @@ func New(cfg *config.Config) (*Server, error) {
 		memorySvc:     memorySvc,
 		mcpRegistry:   mcpRegistry,
 		toolRegistry:  toolRegistry,
+		redTeamRepo:   redTeamRepo,
 	}
 
 	// ── User custom styles & AI builder ──
@@ -526,6 +534,8 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/evaluation/redteam/cases", s.handleRedTeamCases)
 		r.Post("/evaluation/redteam/seed", s.handleRedTeamSeed)
 		r.Post("/evaluation/redteam/run", s.handleRedTeamRun)
+		r.Get("/evaluation/redteam/reports", s.handleListRedTeamReports)
+		r.Get("/evaluation/redteam/reports/{id}", s.handleGetRedTeamReport)
 
 		// WebSocket
 		r.Get("/ws/agent", s.handleWebSocket)

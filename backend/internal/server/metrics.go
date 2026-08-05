@@ -14,6 +14,7 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
+	ws "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 )
 
 // ─── Metric Types ────────────────────────────────────────
@@ -383,6 +384,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			s.profiles.L2Hits.Store(0)
 			s.profiles.Misses.Store(0)
 		}
+		// Sync WebSocket error metrics
+		s.metrics.WSErrorsTotal.Add(ws.WSMetrics.ReadErrors.Load(), "read")
+		s.metrics.WSErrorsTotal.Add(ws.WSMetrics.WriteErrors.Load(), "write")
+		s.metrics.WSErrorsTotal.Add(ws.WSMetrics.ParseErrors.Load(), "parse")
+		ws.WSMetrics.ReadErrors.Store(0)
+		ws.WSMetrics.WriteErrors.Store(0)
+		ws.WSMetrics.ParseErrors.Store(0)
 		// Sync grayscale routing metrics (labels: slug="", result)
 		nv := routing.RolloutMetrics.NewVersion.Load()
 		ov := routing.RolloutMetrics.OldVersion.Load()
