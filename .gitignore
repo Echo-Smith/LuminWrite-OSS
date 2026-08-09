@@ -19,6 +19,7 @@ backend/vendor/
 node_modules/
 frontend/dist/
 frontend/.tsbuildinfo
+frontend/*.tsbuildinfo
 frontend/eslint-cache
 
 # ─── Docker ───────────────────────────────────────────
