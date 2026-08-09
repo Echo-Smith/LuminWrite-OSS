@@ -1,137 +1,147 @@
-# Writing Agent V2
+# 笔润智谈 LuminBuddy V2
 
-> 笔润智谈 V2 — 模块化、高性能的 AI 写作平台
+[English](README.en.md) · [在线体验](https://luminbuddy2.ericdocmic.top/v2/)
 
-## 项目定位
+面向中文内容生产者的 AI 写作工作台：从需求理解、素材检索和提纲确认，到按风格成稿、写后自检、反馈与记忆沉淀，把一次性生成变成可观察、可干预、可迭代的写作流程。
 
-V1（`writing-assistant`）是一个基于 Node.js 的单体写作管道，V2 将重构为 Go + PostgreSQL + React 的模块化写作平台，核心升级包括：
+![笔润智谈写作工作台](docs/assets/luminbuddy-workspace.png)
 
-- **Agent Engine**：状态机式写作引擎，Steps 可插拔、可编排
-- **Style Profiles**：用户端可选的写作风格热插拔系统（预设评论风格、申论、小红书等）
-- **Topic Center**：选题中心，解耦热点抓取与写作流程
-- **Guided Mode**：引导模式，用户可选择/定制论点提纲后再生成
-- **Feedback & Evaluation**：分段反馈 + 信誉加权 + 评测集基准
-- **Admin Dashboard**：热插拔管理、模型配置、自动化、评测面板
+> **当前成熟度：工程 Beta。** 仓库已实现可运行的前后端、写作 Pipeline、引导式提纲、风格配置、反馈评测、分层记忆与监控指标；尚未积累可公开验证的用户规模、留存或业务结果，因此不把“功能完成”描述为“市场验证”。
 
-## 技术栈
+## 为什么做
 
-| 层 | 选型 | 版本 |
+通用对话模型可以很快给出一篇稿件，但真实写作任务通常卡在四个环节：
+
+- 用户的真实意图、篇幅和风格约束没有被稳定理解；
+- 素材检索、观点组织和成稿被压进一次不可观察的生成；
+- 用户无法在关键决策点确认提纲、暂停或调整方向；
+- 好坏反馈没有进入下一次生成，团队也难以定位失败发生在哪一步。
+
+LuminBuddy 将这些问题拆成可见的产品机制，而不是简单增加一个更长的 Prompt。
+
+## 核心体验
+
+```text
+写作需求
+  → 意图识别与任务归一化
+  → 检索计划与多源素材
+  → 相关性过滤与去重
+  → 提纲确认（引导模式）
+  → 风格化流式写作
+  → 写后审校与一次自动修正
+  → 分段反馈、评测与记忆沉淀
+```
+
+| 用户阶段 | 产品机制 | 用户获得什么 |
 |---|---|---|
-| 后端 | Go | 1.24+ |
-| 路由 | chi | v5 |
-| WebSocket | coder/websocket | latest |
-| 数据库 | PostgreSQL | 17 |
-| 向量扩展 | pgvector | latest |
-| Embedding | 通义 text-embedding-v3 | — |
-| LLM | DeepSeek V4 (flash/pro + thinking) | — |
-| 前端 | React + Vite | 19 |
-| UI 组件 | shadcnUI + assistantUI | latest |
-| 定时任务 | robfig/cron | v3 |
+| 描述任务 | 规则优先、低置信度再调用 LLM 的意图路由 | 口语化需求也能落到写作、润色、压缩、扩写等明确任务 |
+| 补充素材 | Query Plan、多源检索、相关性过滤与语义去重 | 看得到素材从哪里来，减少无关信息进入成稿 |
+| 决定结构 | 自动模式或 Guided Mode | 可直接生成，也可先确认、修改或重做提纲 |
+| 形成稿件 | Style Profile + 流式输出 + 暂停/恢复 | 风格从代码逻辑中解耦，生成过程可干预 |
+| 判断质量 | Post Review、敏感检查、Auto Fix | 低严重度问题自动修正，高风险问题保留人工判断 |
+| 持续改进 | 分段反馈、评测集、分层记忆 | 将偏好和失败信号沉淀为下一轮可复用证据 |
 
-## 项目结构
+## 关键产品判断
 
+### 1. 模型不负责所有确定性逻辑
+
+意图识别先走规则评分，低置信度场景才交给模型；Pipeline 管理确定步骤，模型负责需要语义判断和生成的环节。这样可以降低不必要的延迟、成本与输出漂移。
+
+### 2. 把“控制权”放在高代价决策点
+
+Guided Mode 在提纲阶段设置人工门控，支持确认、编辑和最多五次重做。用户不必逐步配置全部参数，但能在成稿前改变最重要的结构方向。
+
+### 3. 风格不是一段藏在代码里的 Prompt
+
+Style Profile 将风格规则、版本和灰度路由独立管理，使不同写作场景可以发布、回滚和评测，而不需要修改整条 Agent Pipeline。
+
+### 4. 记忆必须可解释、可冲突处理
+
+当前实现将记忆区分为硬偏好、行为模式和反馈信号，并提供质量门、冲突处理、强化与废弃状态。记忆用于辅助写作，不默认把每次输入都永久保存。
+
+### 5. 没有评测和观测，就没有可持续迭代
+
+后端暴露 HTTP、WebSocket、Agent、LLM、数据库、评测、缓存和灰度路由等指标；Trace 保存步骤、耗时和错误。评测与用户反馈仍是后续需要持续积累的数据资产，而不是 README 中的装饰指标。
+
+## 已实现能力与边界
+
+| 状态 | 能力 |
+|---|---|
+| 已实现 | React 写作工作台、Go Agent Pipeline、WebSocket 流式事件、暂停/恢复/取消、Guided Mode、Style Profile、Post Review、Auto Fix、用户反馈、评测后台、分层记忆、Trace 与 Prometheus 文本指标 |
+| 依赖配置 | PostgreSQL / pgvector、模型 API、Embedding、外部检索信源、WebAuthn 或账号体系 |
+| Demo / 早期能力 | 多信源稳定性、真实用户反馈闭环、评测集标注质量、长期记忆的实际收益 |
+| 尚缺公开证据 | 活跃用户、重复使用、质量提升幅度、成本收益、内容采用或业务结果 |
+
+## 系统结构
+
+```text
+React 19 + Vite
+       │ REST / WebSocket
+Go Agent Engine
+       ├─ Intent / Memory Gate / Query Plan / Search / Relevance
+       ├─ Outline / Write / Post Review / Auto Fix / Memory Extract
+       ├─ Style Profile / Feedback / Evaluation / Admin
+       └─ Trace / Metrics / Grayscale Routing
+       │
+PostgreSQL 17 + pgvector
 ```
-writing-agent-v2/
-├── README.md                     # 本文件
-├── docker-compose.yml            # 一键启动 PG + Backend + Frontend
-├── .env.docker                   # Docker 环境变量配置
-├── docs/                         # 设计文档
-│   ├── 01-architecture.md        # 架构蓝图
-│   ├── 02-database-schema.md     # 数据库 Schema
-│   ├── 03-api-specification.md   # API 规范
-│   ├── 04-style-profile.md       # Style Profile 热插拔系统
-│   ├── 05-grayscale-routing.md   # 灰度路由
-│   ├── 06-evaluation.md          # 评测系统
-│   ├── 07-feedback.md            # 反馈与信誉系统
-│   ├── 08-admin-dashboard.md     # Admin Dashboard
-│   ├── 09-go-project.md          # Go 后端项目结构
-│   └── 10-execution-plan.md      # 分阶段执行计划
-├── frontend/                     # React 前端
-│   ├── Dockerfile                # 多阶段构建 (Vite + Nginx)
-│   ├── nginx.conf                # Nginx 配置 + API 代理
-│   └── src/
-│       ├── pages/                # 页面组件
-│       ├── components/           # 通用组件
-│       ├── layouts/              # 布局组件
-│       ├── hooks/                # 自定义 Hooks
-│       └── lib/                  # 工具函数
-└── backend/                      # Go 后端
-    ├── Dockerfile                # 多阶段构建 (Go static binary)
-    └── internal/
-        ├── database/             # PostgreSQL 连接 + 迁移
-        ├── profile/              # Style Profile 加载器 (DB + fallback)
-        ├── engine/               # Agent 执行引擎
-        └── server/               # HTTP 路由 + 处理函数
-```
+
+技术选型服务于三个目标：让步骤可观察、让关键节点可干预、让反馈可以进入下一轮迭代。详细设计见 [架构蓝图](docs/01-architecture.md)。
 
 ## 快速启动
 
-### Docker Compose 一键启动（推荐）
+### Docker Compose
 
 ```bash
-# 1. 复制环境变量配置，填入 API Key
-cp .env.docker .env.docker.local
-# 编辑 .env.docker.local，至少配置 AI_API_KEY
-
-# 2. 一键启动
+cp .env.docker.example .env.docker
+# 配置数据库与模型相关环境变量
 docker compose up -d
-
-# 3. 查看日志
-docker compose logs -f backend
-
-# 4. 访问
-#   前端: http://localhost:3000
-#   后端 API: http://localhost:8080/api/v2/health
-#   PostgreSQL: localhost:5432
 ```
+
+默认入口：前端 `http://localhost:3000`，后端健康检查 `http://localhost:8080/api/v2/health`。
 
 ### 本地开发
 
 ```bash
-# 启动 PostgreSQL (Docker)
-docker run -d --name writing-agent-pg \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=writing_agent_v2 \
-  -p 5432:5432 \
-  pgvector/pgvector:pg16
-
 # 后端
 cd backend
-cp .env.example .env  # 编辑配置
-make run              # 或: go run ./cmd/server/
+cp .env.example .env
+go run ./cmd/server/
 
 # 前端
 cd frontend
-npm install
-npm run dev           # http://localhost:5173
+npm ci
+npm run dev
 ```
 
-### 数据库迁移
+### 验证
 
-迁移文件位于 `backend/internal/database/migrations/`，后端启动时自动执行。
+```bash
+cd backend && go test ./...
+cd frontend && npm ci && npm run build
+```
 
-启动顺序：
-1. PostgreSQL + pgvector 启动
-2. 后端连接数据库 → 自动执行迁移 → 种子内置 Style Profiles
-3. 前端启动，通过 Nginx 代理 API 请求到后端
+端到端脚本位于 `backend/e2e-*.mjs`，需要可访问的后端、数据库和相应外部服务配置。
 
-## V1 与 V2 的关系
-
-- **V1**：先进行完善优化，打包为 LTS 版本，通过 1Panel 继续部署运行
-- **V2**：独立开发，稳定后决定是否将 V1 下线
-- V1 和 V2 可并行运行，V2 上线后逐步迁移流量
-
-## 文档索引
+## 设计文档
 
 | 文档 | 内容 |
 |---|---|
-| [架构蓝图](docs/01-architecture.md) | 整体架构、Agent Engine、数据流、技术选型 |
-| [数据库 Schema](docs/02-database-schema.md) | PostgreSQL 表设计、pgvector、迁移 |
-| [API 规范](docs/03-api-specification.md) | REST API + WebSocket 协议 |
-| [Style Profile](docs/04-style-profile.md) | 风格热插拔、用户端选择、Admin 发布流程 |
-| [灰度路由](docs/05-grayscale-routing.md) | Profile 标记 + UID Hash 两级路由 |
-| [评测系统](docs/06-evaluation.md) | 评测集框架、人工标注、变更触发 |
-| [反馈系统](docs/07-feedback.md) | 分段反馈、信誉加权、workbuddy 录用标记 |
-| [Admin Dashboard](docs/08-admin-dashboard.md) | 热插拔管理、模型配置、自动化面板 |
-| [Go 项目结构](docs/09-go-project.md) | 后端目录结构、包划分 |
-| [执行计划](docs/10-execution-plan.md) | Phase 0-4 分阶段路线图 |
+| [架构蓝图](docs/01-architecture.md) | Agent Engine、数据流与系统边界 |
+| [数据库 Schema](docs/02-database-schema.md) | PostgreSQL、pgvector 与迁移 |
+| [API 规范](docs/03-api-specification.md) | REST 与 WebSocket 协议 |
+| [Style Profile](docs/04-style-profile.md) | 风格版本、发布与回滚 |
+| [灰度路由](docs/05-grayscale-routing.md) | Profile 标记和 UID Hash 分流 |
+| [评测系统](docs/06-evaluation.md) | 评测集与触发机制 |
+| [反馈系统](docs/07-feedback.md) | 分段反馈与信誉权重 |
+| [Admin Dashboard](docs/08-admin-dashboard.md) | 配置、评测与可观测入口 |
+
+## 项目声明
+
+- 这是可运行的个人产品与工程项目，不代表已完成规模化市场验证。
+- 外部模型、检索和数据源的可用性取决于各服务配置与条款。
+- 仓库不包含生产环境密钥；请从示例环境文件创建本地配置。
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,51 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        # tw-shimmer currently declares a Tailwind 4-only peer range while this
+        # product remains on Tailwind 3; the existing lockfile is the tested set.
+        run: npm ci --legacy-peer-deps
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  repository-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject generated and operating-system metadata
+        run: |
+          if find . -path './.git' -prune -o -name '.DS_Store' -print -o -name '._*' -print -o -name '__pycache__' -print | grep -q .; then
+            echo "Forbidden generated or operating-system metadata found"
+            exit 1
+          fi
