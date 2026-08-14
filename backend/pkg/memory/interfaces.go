@@ -80,3 +80,37 @@ type NoopEmitter struct{}
 
 func (NoopEmitter) EmitMemoryUsed(_ string, _ *MemoryContext)          {}
 func (NoopEmitter) EmitMemoryExtracted(_ string, _ int)                 {}
+
+// ─── 安全与内容过滤 (P0) ───────────────────────────────────────
+
+// ContentChecker 内容检查接口 — 用于 PII 检测和敏感内容过滤
+// 复用已有的 services.SensitiveCheckService 实现
+type ContentChecker interface {
+	// Check 检查文本是否包含敏感内容
+	Check(ctx context.Context, text string) *ContentCheckResult
+}
+
+// ContentCheckResult 内容检查结果
+type ContentCheckResult struct {
+	Passed  bool              `json:"passed"`          // true if no blocking-level hits
+	Hits    []ContentHit      `json:"hits,omitempty"`  // all sensitive word matches
+	Summary string            `json:"summary"`         // human-readable summary
+	Cleaned string            `json:"cleaned,omitempty"` // 清理后的文本
+}
+
+// ContentHit 单个敏感词匹配
+type ContentHit struct {
+	Word        string `json:"word"`
+	Category    string `json:"category"`
+	Severity    string `json:"severity"`     // low | medium | high
+	Action      string `json:"action"`       // warn | block | replace
+	Count       int    `json:"count"`
+	Replacement string `json:"replacement,omitempty"`
+}
+
+// NoopContentChecker 空实现 — 当未配置检查器时使用
+type NoopContentChecker struct{}
+
+func (NoopContentChecker) Check(_ context.Context, text string) *ContentCheckResult {
+	return &ContentCheckResult{Passed: true, Summary: "no checker configured"}
+}

@@ -1,4 +1,4 @@
-# ─── Writing Agent V2 — Docker Compose ──────────────────
+# ─── LuminBuddy V2 — Docker Compose ──────────────────
 # Quick start:
 #   cp .env.docker.example .env.docker  # fill in API keys
 #   docker compose up -d                # starts all services
@@ -11,7 +11,7 @@ services:
   # paradedb includes: pgvector, pg_bm25 (BM25 full-text search), and more.
   postgres:
     image: paradedb/paradedb:v0.22.2-pg17
-    container_name: writing-agent-pg
+    container_name: luminbuddy-v2-pg
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -38,7 +38,7 @@ services:
   # High-quality PDF/Word/image parsing. Called by backend via gRPC.
   docreader:
     image: wechatopenai/weknora-docreader:latest
-    container_name: writing-agent-docreader
+    container_name: luminbuddy-v2-docreader
     environment:
       GRPC_TLS_ENABLED: "false"
     volumes:
@@ -56,7 +56,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: writing-agent-backend
+    image: luminbuddy-v2-backend:latest
+    container_name: luminbuddy-v2-backend
     env_file:
       - .env.docker
     environment:
@@ -92,9 +93,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: writing-agent-frontend
+    image: luminbuddy-v2-frontend:latest
+    container_name: luminbuddy-v2-frontend
     ports:
-      - "${FRONTEND_PORT:-3000}:8080"
+      - "${FRONTEND_PORT:-3002}:8080"
     networks:
       - frontend
       - internal

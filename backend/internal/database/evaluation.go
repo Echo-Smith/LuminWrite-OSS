@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -446,4 +447,142 @@ func (r *EvaluationRepo) FailRun(ctx context.Context, runID, errMsg string) erro
 		UPDATE evaluation_runs SET status = 'failed', completed_at = NOW() WHERE id = $1
 	`, runID)
 	return err
+}
+
+// ─── Regression Evaluation Baseline ───────────────────────────
+
+type RegressionBaseline struct {
+	ID             string                 `json:"id"`
+	StyleSlug      string                 `json:"style_slug"`
+	SetID          string                 `json:"set_id"`
+	RunID          string                 `json:"run_id"`
+	OverallScore   float64                `json:"overall_score"`
+	DimensionScores map[string]float64    `json:"dimension_scores"`
+	Snapshot       map[string]interface{} `json:"snapshot"`
+	IsActive       bool                   `json:"is_active"`
+	CreatedAt      time.Time              `json:"created_at"`
+}
+
+// GetOrCreateRegressionBaseline gets the active baseline or creates one from current run
+func (r *EvaluationRepo) GetOrCreateRegressionBaseline(ctx context.Context, styleSlug, setID string, overallScore float64, dimScores map[string]float64, snapshot interface{}) (*RegressionBaseline, error) {
+	if r.db == nil {
+		return nil, nil
+	}
+
+	// Try to get existing active baseline
+	var baseline RegressionBaseline
+	var snapshotJSON []byte
+	var dimScoresJSON []byte
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, style_slug, set_id, run_id, overall_score, dimension_scores, snapshot, is_active, created_at
+		FROM eval_regression_baselines
+		WHERE style_slug = $1 AND set_id = $2 AND is_active = TRUE
+		ORDER BY created_at DESC LIMIT 1
+	`, styleSlug, setID).Scan(
+		&baseline.ID, &baseline.StyleSlug, &baseline.SetID, &baseline.RunID,
+		&baseline.OverallScore, &dimScoresJSON, &snapshotJSON, &baseline.IsActive, &baseline.CreatedAt,
+	)
+
+	if err == nil {
+		json.Unmarshal(dimScoresJSON, &baseline.DimensionScores)
+		return &baseline, nil
+	}
+
+	if err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	// No baseline exists, create one from current run
+	snapshotData := map[string]interface{}{"created_from_run": snapshot}
+	snapshotJSON, _ = json.Marshal(snapshotData)
+	dimJSON, _ := json.Marshal(dimScores)
+
+	var newBaseline RegressionBaseline
+	var newDimScoresJSON []byte
+	err = r.db.QueryRowContext(ctx, `
+		INSERT INTO eval_regression_baselines (style_slug, set_id, run_id, overall_score, dimension_scores, snapshot, is_active, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, NOW())
+		RETURNING id, style_slug, set_id, run_id, overall_score, dimension_scores, snapshot, is_active, created_at
+	`, styleSlug, setID, nil, overallScore, string(dimJSON), string(snapshotJSON)).Scan(
+		&newBaseline.ID, &newBaseline.StyleSlug, &newBaseline.SetID, &newBaseline.RunID,
+		&newBaseline.OverallScore, &newDimScoresJSON, &snapshotJSON, &newBaseline.IsActive, &newBaseline.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal(newDimScoresJSON, &newBaseline.DimensionScores)
+
+	slog.Info("created regression baseline", "slug", styleSlug, "set_id", setID, "score", overallScore)
+	return &newBaseline, nil
+}
+
+// CreateRegressionComparison records a regression comparison result
+func (r *EvaluationRepo) CreateRegressionComparison(ctx context.Context, styleSlug, setID, baselineRunID, candidateRunID string, scoreDelta float64, dimDeltas map[string]float64, regressions []map[string]interface{}, isPassing bool) error {
+	if r.db == nil {
+		return nil
+	}
+
+	dimJSON, _ := json.Marshal(dimDeltas)
+	regJSON, _ := json.Marshal(regressions)
+
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO eval_regression_comparisons (style_slug, set_id, baseline_run_id, candidate_run_id, score_delta, dimension_deltas, regressions, is_passing, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+	`, styleSlug, setID, baselineRunID, candidateRunID, scoreDelta, string(dimJSON), string(regJSON), isPassing)
+	return err
+}
+
+// GetRegressionComparisons lists regression comparisons for a style
+func (r *EvaluationRepo) GetRegressionComparisons(ctx context.Context, styleSlug string, limit int) ([]map[string]interface{}, error) {
+	if r.db == nil {
+		return []map[string]interface{}{}, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, style_slug, set_id, baseline_run_id, candidate_run_id, score_delta, dimension_deltas, regressions, is_passing, created_at
+		FROM eval_regression_comparisons
+		WHERE style_slug = $1
+		ORDER BY created_at DESC LIMIT $2
+	`, styleSlug, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comparisons []map[string]interface{}
+	for rows.Next() {
+		cmp := make(map[string]interface{})
+		var regressionsJSON []byte
+		var dimJSON []byte
+		var id, styleSlug, setID, baselineRunID, candidateRunID interface{}
+		var scoreDelta interface{}
+		var isPassing interface{}
+		var createdAt interface{}
+		if err := rows.Scan(
+			&id, &styleSlug, &setID, &baselineRunID,
+			&candidateRunID, &scoreDelta, &dimJSON, &regressionsJSON,
+			&isPassing, &createdAt,
+		); err != nil {
+			continue
+		}
+		cmp["id"] = id
+		cmp["style_slug"] = styleSlug
+		cmp["set_id"] = setID
+		cmp["baseline_run_id"] = baselineRunID
+		cmp["candidate_run_id"] = candidateRunID
+		cmp["score_delta"] = scoreDelta
+		cmp["is_passing"] = isPassing
+		cmp["created_at"] = createdAt
+		var dimDeltas map[string]interface{}
+		json.Unmarshal(dimJSON, &dimDeltas)
+		cmp["dimension_deltas"] = dimDeltas
+		var regressions []map[string]interface{}
+		json.Unmarshal(regressionsJSON, &regressions)
+		cmp["regressions"] = regressions
+		comparisons = append(comparisons, cmp)
+	}
+	return comparisons, nil
 }

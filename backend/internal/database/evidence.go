@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"time"
+
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
 
 type EvidenceRepo struct {
@@ -80,7 +82,7 @@ func (r *EvidenceRepo) GetEvidence(ctx context.Context, traceID string) ([]Evide
 	return evidence, nil
 }
 
-func (r *EvidenceRepo) SaveSearchEvidence(ctx context.Context, traceID string, results []SearchResult) error {
+func (r *EvidenceRepo) SaveSearchEvidence(ctx context.Context, traceID string, results []engine.SearchResult) error {
 	for _, sr := range results {
 		hash := sha256.Sum256([]byte(sr.Snippet))
 		ev := Evidence{

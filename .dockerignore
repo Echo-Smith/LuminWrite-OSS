@@ -16,6 +16,7 @@ docs/
 
 # OS
 .DS_Store
+._*
 Thumbs.db
 
 # Docker

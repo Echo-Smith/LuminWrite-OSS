@@ -34,14 +34,16 @@ func (s *PgStore) Save(ctx context.Context, m *memory.Memory) error {
 			id, user_id, tier, category, key, value, embedding,
 			confidence, occurrences, source_trace_id,
 			quality_source, quality_weight, status, superseded_by,
-			first_seen, last_seen, created_at, updated_at
+			first_seen, last_seen, created_at, updated_at,
+			evidence_status, source_count
 		) VALUES (
 			COALESCE(NULLIF($1, '')::uuid, uuid_generate_v4()),
 			$2::uuid, $3, $4, $5, $6, $7,
 			$8, $9, $10,
 			$11, $12, $13, NULLIF($14, '')::uuid,
 			COALESCE($15, NOW()), COALESCE($16, NOW()),
-			COALESCE($17, NOW()), NOW()
+			COALESCE($17, NOW()), NOW(),
+			$18, $19
 		)
 		ON CONFLICT (user_id, category, key, status) DO UPDATE SET
 			value = EXCLUDED.value,
@@ -52,13 +54,16 @@ func (s *PgStore) Save(ctx context.Context, m *memory.Memory) error {
 			quality_weight = EXCLUDED.quality_weight,
 			status = EXCLUDED.status,
 			last_seen = NOW(),
-			updated_at = NOW()
+			updated_at = NOW(),
+			evidence_status = EXCLUDED.evidence_status,
+			source_count = EXCLUDED.source_count
 		RETURNING id::text
 	`,
 		m.ID, m.UserID, m.Tier, m.Category, m.Key, m.Value, embeddingStr,
 		m.Confidence, m.Occurrences, m.SourceTraceID,
 		m.QualitySource, m.QualityWeight, m.Status, m.SupersededBy,
 		m.FirstSeen, m.LastSeen, m.CreatedAt,
+		m.EvidenceStatus, m.SourceCount,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save memory: %w", err)
@@ -79,7 +84,8 @@ func (s *PgStore) Get(ctx context.Context, id string) (*memory.Memory, error) {
 		       confidence, occurrences, source_trace_id,
 		       quality_source, quality_weight, status,
 		       COALESCE(superseded_by::text, ''),
-		       first_seen, last_seen, created_at, updated_at
+		       first_seen, last_seen, created_at, updated_at,
+		       evidence_status, source_count
 		FROM user_memories WHERE id = $1::uuid
 	`, id).Scan(
 		&m.ID, &m.UserID, &m.Tier, &m.Category, &m.Key, &m.Value,
@@ -87,6 +93,7 @@ func (s *PgStore) Get(ctx context.Context, id string) (*memory.Memory, error) {
 		&m.QualitySource, &m.QualityWeight, &m.Status,
 		&m.SupersededBy,
 		&m.FirstSeen, &m.LastSeen, &m.CreatedAt, &m.UpdatedAt,
+		&m.EvidenceStatus, &m.SourceCount,
 	)
 	if err != nil {
 		return nil, err
@@ -105,7 +112,8 @@ func (s *PgStore) List(ctx context.Context, userID string, opts memory.ListOptio
 		       confidence, occurrences, source_trace_id,
 		       quality_source, quality_weight, status,
 		       COALESCE(superseded_by::text, ''),
-		       first_seen, last_seen, created_at, updated_at
+		       first_seen, last_seen, created_at, updated_at,
+		       evidence_status, source_count
 		FROM user_memories
 		WHERE user_id = $1::uuid
 	`
@@ -149,6 +157,7 @@ func (s *PgStore) List(ctx context.Context, userID string, opts memory.ListOptio
 			&m.QualitySource, &m.QualityWeight, &m.Status,
 			&m.SupersededBy,
 			&m.FirstSeen, &m.LastSeen, &m.CreatedAt, &m.UpdatedAt,
+			&m.EvidenceStatus, &m.SourceCount,
 		); err != nil {
 			continue
 		}
@@ -174,6 +183,7 @@ func (s *PgStore) Search(ctx context.Context, userID string, queryVector []float
 		       quality_source, quality_weight, status,
 		       COALESCE(superseded_by::text, ''),
 		       first_seen, last_seen, created_at, updated_at,
+		       evidence_status, source_count,
 		       1 - (embedding <=> $2::vector) AS similarity
 		FROM user_memories
 		WHERE user_id = $1::uuid
@@ -197,6 +207,7 @@ func (s *PgStore) Search(ctx context.Context, userID string, queryVector []float
 			&m.QualitySource, &m.QualityWeight, &m.Status,
 			&m.SupersededBy,
 			&m.FirstSeen, &m.LastSeen, &m.CreatedAt, &m.UpdatedAt,
+			&m.EvidenceStatus, &m.SourceCount,
 			&similarity,
 		); err != nil {
 			continue
@@ -217,7 +228,8 @@ func (s *PgStore) FindByCategoryKey(ctx context.Context, userID, category, key s
 		       confidence, occurrences, source_trace_id,
 		       quality_source, quality_weight, status,
 		       COALESCE(superseded_by::text, ''),
-		       first_seen, last_seen, created_at, updated_at
+		       first_seen, last_seen, created_at, updated_at,
+		       evidence_status, source_count
 		FROM user_memories
 		WHERE user_id = $1::uuid AND category = $2 AND key = $3
 		  AND status IN ('active', 'candidate')
@@ -236,6 +248,7 @@ func (s *PgStore) FindByCategoryKey(ctx context.Context, userID, category, key s
 			&m.QualitySource, &m.QualityWeight, &m.Status,
 			&m.SupersededBy,
 			&m.FirstSeen, &m.LastSeen, &m.CreatedAt, &m.UpdatedAt,
+			&m.EvidenceStatus, &m.SourceCount,
 		); err != nil {
 			continue
 		}

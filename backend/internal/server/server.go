@@ -123,6 +123,7 @@ func New(cfg *config.Config) (*Server, error) {
 	var evalRepo *database.EvaluationRepo
 	var adminRepo *database.AdminRepo
 	var kbRepo *database.KnowledgeBaseRepo
+	var evidenceRepo *database.EvidenceRepo
 	dbAvail := false
 	db, err := database.NewPostgres(cfg.Database.URL, cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns)
 	if err != nil {
@@ -249,7 +250,7 @@ func New(cfg *config.Config) (*Server, error) {
 	// Create memory service (optional, requires DB + LLM + Embedding)
 	var memorySvc *memsvc.Service
 	if dbAvail {
-		memorySvc = memsvc.NewService(db, llm, embeddingClient)
+		memorySvc = memsvc.NewService(db, llm, embeddingClient, sensitiveSvc)
 	}
 
 	// Create LLM service (dynamic client factory with DB-backed model configs)
