@@ -42,3 +42,13 @@ tmp/
 # Skill source files are tracked, but downloaded binaries are not
 skills/**/tencent-news-cli
 skills/**/*.zip
+
+# ─── 部署打包产物 ─────────────────────────────────────
+*.tar.gz
+*.tar.gz.sha256
+data/
+
+# ─── 临时文件 ─────────────────────────────────────────
+agentops-*.zip
+agentops-*.md
+scripts/check_go_imports.py

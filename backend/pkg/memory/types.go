@@ -36,6 +36,27 @@ const (
 	QualityManualApprove QualitySource = "manual_approve"  // 用户手动标记满意
 )
 
+// EvidenceStatus 证据状态 — 标识一条记忆背后的证据强度
+// 用于证据边界召回（Evidence-Bounded Recall）：
+// 写作场景只注入有证据支撑的记忆，聊天场景可放宽。
+type EvidenceStatus string
+
+const (
+	EvidenceVerified    EvidenceStatus = "verified"    // 可追溯证据或人工确认
+	EvidenceSupported   EvidenceStatus = "supported"   // LLM 判断有信源支持
+	EvidenceConflicted  EvidenceStatus = "conflicted"  // 信源间存在矛盾
+	EvidenceUnknown     EvidenceStatus = "unknown"     // LLM 无法判断
+	EvidenceNone        EvidenceStatus = "none"        // 无证据信号（默认）
+)
+
+// IsSafeForInjection 判断该证据状态是否可安全注入到写作上下文
+func (e EvidenceStatus) IsSafeForInjection(requireVerified bool) bool {
+	if requireVerified {
+		return e == EvidenceVerified || e == EvidenceSupported
+	}
+	return e != EvidenceConflicted && e != EvidenceUnknown
+}
+
 // QualitySignal 代表"这篇文章值得学习"的外部信号
 type QualitySignal struct {
 	Source       QualitySource `json:"source"`
@@ -54,24 +75,27 @@ const (
 
 // Memory 是一条用户记忆的完整表示
 type Memory struct {
-	ID             string        `json:"id"`
-	UserID         string        `json:"user_id"`
-	Tier           Tier          `json:"tier"`
-	Category       string        `json:"category"`        // word_count | style | structure | tone | title | topic | argument
-	Key            string        `json:"key"`
-	Value          string        `json:"value"`
-	Embedding      []float32     `json:"-"`
-	Confidence     float64       `json:"confidence"`       // 基础置信度 0.0-1.0
-	Occurrences    int           `json:"occurrences"`
-	SourceTraceID  string        `json:"source_trace_id,omitempty"`
-	QualitySource  QualitySource `json:"quality_source,omitempty"`
-	QualityWeight  float64       `json:"quality_weight,omitempty"`
-	Status         MemoryStatus  `json:"status"`
-	SupersededBy   string        `json:"superseded_by,omitempty"`
-	FirstSeen      time.Time     `json:"first_seen"`
-	LastSeen       time.Time     `json:"last_seen"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
+	ID             string          `json:"id"`
+	UserID         string          `json:"user_id"`
+	Tier           Tier            `json:"tier"`
+	Category       string          `json:"category"`        // word_count | style | structure | tone | title | topic | argument
+	Key            string          `json:"key"`
+	Value          string          `json:"value"`
+	Embedding      []float32       `json:"-"`
+	Confidence     float64         `json:"confidence"`       // 基础置信度 0.0-1.0
+	Occurrences    int             `json:"occurrences"`
+	SourceTraceID  string          `json:"source_trace_id,omitempty"`
+	QualitySource  QualitySource   `json:"quality_source,omitempty"`
+	QualityWeight  float64         `json:"quality_weight,omitempty"`
+	Status         MemoryStatus    `json:"status"`
+	SupersededBy   string          `json:"superseded_by,omitempty"`
+	FirstSeen      time.Time       `json:"first_seen"`
+	LastSeen       time.Time       `json:"last_seen"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	// ─── 安全与证据边界 (P0) ────────────────────────────────
+	EvidenceStatus EvidenceStatus `json:"evidence_status,omitempty"` // 证据状态（默认 none）
+	SourceCount    int             `json:"source_count,omitempty"`    // 支撑来源数量
 }
 
 // EffectiveConfidence 计算衰减后的有效置信度
@@ -117,19 +141,21 @@ type RetrieveRequest struct {
 
 // MemoryEntry 是注入到 prompt 中的记忆条目
 type MemoryEntry struct {
-	ID            string  `json:"id"`
-	Tier          Tier    `json:"tier"`
-	Category      string  `json:"category"`
-	Value         string  `json:"value"`
-	Confidence    float64 `json:"confidence"`
-	Dismissible   bool    `json:"dismissible"`   // 用户是否可关闭
+	ID             string          `json:"id"`
+	Tier           Tier            `json:"tier"`
+	Category       string          `json:"category"`
+	Value          string          `json:"value"`
+	Confidence     float64         `json:"confidence"`
+	Dismissible    bool            `json:"dismissible"`   // 用户是否可关闭
+	EvidenceStatus EvidenceStatus  `json:"evidence_status,omitempty"` // 证据状态
 }
 
 // MemoryContext 是门控后的记忆上下文
 type MemoryContext struct {
-	Injected    []MemoryEntry `json:"injected"`     // 注入 WriteStep 的记忆（Tier 1 + Tier 2）
-	ReviewGuard []MemoryEntry `json:"review_guard"`  // 注入 PostReviewStep 的反馈记忆（Tier 3）
-	Dismissed   []string      `json:"dismissed"`    // 本次被关闭的记忆 ID
+	Injected      []MemoryEntry `json:"injected"`       // 注入 WriteStep 的记忆（Tier 1 + Tier 2）
+	ReviewGuard   []MemoryEntry `json:"review_guard"`    // 注入 PostReviewStep 的反馈记忆（Tier 3）
+	Dismissed     []string      `json:"dismissed"`      // 本次被关闭的记忆 ID
+	RefusalReason string        `json:"refusal_reason,omitempty"` // 拒答原因（非空时表示记忆不足或安全过滤触发拒答）
 }
 
 // ─── 提取 ──────────────────────────────────────────────────
@@ -184,11 +210,34 @@ type RolloutConfig struct {
 	Percentage    int      // 灰度百分比 0-100（默认 100）
 }
 
+// SafetyConfig 安全与证据边界配置
+type SafetyConfig struct {
+	Enabled              bool    // 安全过滤总开关，默认 true
+	EnableRefusal        bool    // 拒答开关：无足够证据记忆时返回拒答而非空结果，默认 true
+	RequireVerifiedForWriting bool // 写作场景要求 verified/supported 证据，默认 true
+	RequireVerifiedForChat    bool // 聊天场景要求 verified/supported 证据，默认 false
+	PIIFilterEnabled    bool    // PII 过滤开关：保存记忆前检查敏感内容，默认 true
+	MaxInjectedPerIntent int    // 每次注入的最大记忆条数（最小披露），默认 0=不限制
+}
+
+// DefaultSafetyConfig 返回默认安全配置
+func DefaultSafetyConfig() SafetyConfig {
+	return SafetyConfig{
+		Enabled:               true,
+		EnableRefusal:         true,
+		RequireVerifiedForWriting: true,
+		RequireVerifiedForChat:    false,
+		PIIFilterEnabled:     true,
+		MaxInjectedPerIntent: 0,
+	}
+}
+
 // Config SDK 完整配置 — 注入给 SDK，避免读取宿主配置
 type Config struct {
 	HalfLife   HalfLifeConfig
 	Thresholds ThresholdConfig
 	Rollout    RolloutConfig
+	Safety     SafetyConfig
 }
 
 // DefaultConfig 返回默认配置
@@ -207,6 +256,7 @@ func DefaultConfig() Config {
 			Enabled:    true,
 			Percentage: 100,
 		},
+		Safety: DefaultSafetyConfig(),
 	}
 }
 

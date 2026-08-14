@@ -9,14 +9,15 @@ import (
 
 // SDK 是记忆系统的统一入口
 type SDK struct {
-	store       Store
-	embedder    Embedder
-	extractor   LLMExtractor
-	gate        *Gate
-	resolver    *ConflictResolver
-	qualityCalc *QualityCalculator
-	config      Config
-	emitter     EventEmitter
+	store         Store
+	embedder      Embedder
+	extractor     LLMExtractor
+	gate          *Gate
+	resolver      *ConflictResolver
+	qualityCalc   *QualityCalculator
+	config        Config
+	emitter       EventEmitter
+	contentChecker ContentChecker // P0: 内容检查器（PII 检测）
 }
 
 // NewSDK 创建记忆 SDK 实例
@@ -25,14 +26,15 @@ func NewSDK(cfg Config, store Store, embedder Embedder, extractor LLMExtractor, 
 		emitter = NoopEmitter{}
 	}
 	return &SDK{
-		store:       store,
-		embedder:    embedder,
-		extractor:   extractor,
-		gate:        NewGate(store, embedder, cfg),
-		resolver:    NewConflictResolver(store),
-		qualityCalc: NewQualityCalculator(),
-		config:      cfg,
-		emitter:     emitter,
+		store:         store,
+		embedder:      embedder,
+		extractor:     extractor,
+		gate:          NewGate(store, embedder, cfg),
+		resolver:      NewConflictResolver(store),
+		qualityCalc:   NewQualityCalculator(),
+		config:        cfg,
+		emitter:       emitter,
+		contentChecker: NoopContentChecker{}, // 默认空实现，由外部注入
 	}
 }
 
@@ -74,7 +76,15 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 	// 5. 保存 Tier 2 模式记忆（确定性 + LLM）
 	totalSaved := 0
 	if grade != GradeNegative {
+		// P0-2: PII 检测 — 在保存前检查敏感内容
 		for _, ext := range deterministic {
+			checkedValue, skipped := s.checkAndCleanMemoryValue(ctx, ext.Value, ext.Category)
+			if skipped {
+				slog.Warn("memory: skipped sensitive content", 
+					"category", ext.Category, "key", ext.Key, "trace_id", session.TraceID)
+				continue
+			}
+			ext.Value = checkedValue
 			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade)
 			if err != nil {
 				slog.Warn("memory: failed to save pattern", "category", ext.Category, "error", err)
@@ -85,6 +95,13 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 			}
 		}
 		for _, ext := range llmExtracted {
+			checkedValue, skipped := s.checkAndCleanMemoryValue(ctx, ext.Value, ext.Category)
+			if skipped {
+				slog.Warn("memory: skipped sensitive LLM extraction", 
+					"category", ext.Category, "key", ext.Key, "trace_id", session.TraceID)
+				continue
+			}
+			ext.Value = checkedValue
 			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade)
 			if err != nil {
 				slog.Warn("memory: failed to save LLM pattern", "category", ext.Category, "error", err)
@@ -130,6 +147,12 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 }
 
 // ─── 记忆管理 ──────────────────────────────────────────────
+
+// SetContentChecker 设置内容检查器（用于 PII 检测）
+// 通常在创建 Service 后由外部注入
+func (s *SDK) SetContentChecker(checker ContentChecker) {
+	s.contentChecker = checker
+}
 
 // List 列出用户记忆
 func (s *SDK) List(ctx context.Context, userID string, opts ListOptions) ([]*Memory, error) {
@@ -267,4 +290,33 @@ func (s *SDK) generateEmbeddings(ctx context.Context, userID string) {
 			}
 		}
 	}
+}
+
+// ─── P0-2: 安全与内容过滤辅助方法 ─────────────────────────────
+
+// checkAndCleanMemoryValue 检查记忆值是否包含敏感内容
+// 返回 (清理后的值, 是否跳过保存)
+func (s *SDK) checkAndCleanMemoryValue(ctx context.Context, value, category string) (string, bool) {
+	if s.contentChecker == nil || !s.config.Safety.PIIFilterEnabled {
+		return value, false
+	}
+
+	result := s.contentChecker.Check(ctx, value)
+	if result == nil {
+		return value, false
+	}
+
+	// 如果被 block（含 blocking 级敏感词），跳过保存
+	if !result.Passed {
+		slog.Debug("memory: content check blocked memory", "category", category, "summary", result.Summary)
+		return "", true
+	}
+
+	// 如果有 warn 级敏感词，使用清理后的值
+	if len(result.Hits) > 0 && result.Cleaned != "" {
+		slog.Debug("memory: content cleaned", "category", category, "summary", result.Summary)
+		return result.Cleaned, false
+	}
+
+	return value, false
 }

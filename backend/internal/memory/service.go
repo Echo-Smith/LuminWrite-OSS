@@ -7,14 +7,48 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
-// Service 是 V2 项目的记忆服务封装
+// SensitiveCheckAdapter 将 services.SensitiveCheckService 适配为 memory.ContentChecker
+type SensitiveCheckAdapter struct {
+	service *services.SensitiveCheckService
+}
+
+func (a *SensitiveCheckAdapter) Check(ctx context.Context, text string) *memory.ContentCheckResult {
+	if a.service == nil {
+		return &memory.ContentCheckResult{Passed: true, Summary: "no checker configured"}
+	}
+	result := a.service.Check(ctx, text)
+	
+	// 转换为 memory.ContentCheckResult 格式
+	hits := make([]memory.ContentHit, len(result.Hits))
+	for i := range result.Hits {
+		hits[i] = memory.ContentHit{
+			Word:        result.Hits[i].Word,
+			Category:    result.Hits[i].Category,
+			Severity:    result.Hits[i].Severity,
+			Action:      result.Hits[i].Action,
+			Count:       result.Hits[i].Count,
+			Replacement: result.Hits[i].Replacement,
+		}
+	}
+	
+	return &memory.ContentCheckResult{
+		Passed:  result.Passed,
+		Hits:    hits,
+		Summary: result.Summary,
+		Cleaned: result.Cleaned,
+	}
+}
+
+// Service 是 V2项目的记忆服务封装
 // 将 SDK 与 V2 的具体基础设施（DB、LLM、Embedding）连接
 type Service struct {
 	sdk             *memory.SDK
 	cfg             memory.Config
+	pgStore         *PgStore
 	shortTermStore  *PgShortTermStore
 	entityStore     *PgEntityStore
 	embedder        *DashscopeEmbedder
@@ -24,15 +58,21 @@ type Service struct {
 }
 
 // NewService 创建记忆服务
-func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.EmbeddingClient) *Service {
+func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.EmbeddingClient, sensitiveCheck *services.SensitiveCheckService) *Service {
 	if db == nil {
 		slog.Warn("memory: database not available, memory service disabled")
 		return &Service{sdk: nil}
 	}
 
- store := NewPgStore(db)
+	store := NewPgStore(db)
 	embedder := NewDashscopeEmbedder(embedding)
 	extractor := NewDeepSeekExtractor(llm)
+	
+	// P0-2: 注入 PII 检查器
+	var contentChecker memory.ContentChecker
+	if sensitiveCheck != nil {
+		contentChecker = &SensitiveCheckAdapter{service: sensitiveCheck}
+	}
 
 	sdk := memory.NewSDK(
 		memory.DefaultConfig(),
@@ -41,6 +81,13 @@ func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.Embeddin
 		extractor,
 		memory.NoopEmitter{}, // emitter 由 Server 注入
 	)
+	
+	// P0-2: 将 checker 注入 SDK（需要 SDK 添加 setter 或通过直接修改 sdk 字段）
+	// 由于 SDK 结构字段是私有的，我们通过封装的方式注入：
+	// 这里暂时直接赋值（实际应该通过构造函数参数或 setter 方法）
+	if checker := contentChecker; checker != nil {
+		sdk.SetContentChecker(contentChecker)
+	}
 
 	shortTermStore := NewPgShortTermStore(db)
 	entityStore := NewPgEntityStore(db)
@@ -50,10 +97,11 @@ func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.Embeddin
 	fileStore := memory.NewFileStore("data/memory")
 	fileSyncer := memory.NewFileMemorySyncer(fileStore, store)
 
-	slog.Info("memory: service initialized (with short-term + entity network + file layer)")
+	slog.Info("memory: service initialized (with short-term + entity network + file layer + PII checker)")
 	return &Service{
 		sdk:             sdk,
 		cfg:             memory.DefaultConfig(),
+		pgStore:         store,
 		shortTermStore:  shortTermStore,
 		entityStore:     entityStore,
 		embedder:        embedder,
