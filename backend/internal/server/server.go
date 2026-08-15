@@ -63,14 +63,18 @@ type Server struct {
 	toolRegistry  *engine.ToolRegistry
 	editorialSvc  *editorial.Service
 	editorialHdlr *editorial.Handlers
-	redTeamRepo   *database.RedTeamRepo
-	evidenceRepo  *database.EvidenceRepo
+	redTeamRepo    *database.RedTeamRepo
+	evidenceRepo   *database.EvidenceRepo
+	sessionEvents  *database.SessionEventRepo
 
 	userStyleStore  *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
 
 	// Knowledge Manager (operates directly on local PG)
 	kbMgr *services.KbManager
+
+	// Route metadata registry for /api/v2/admin/routes discovery
+	routeReg *routeRegistry
 }
 
 // New creates a new Server.
@@ -124,6 +128,7 @@ func New(cfg *config.Config) (*Server, error) {
 	var adminRepo *database.AdminRepo
 	var kbRepo *database.KnowledgeBaseRepo
 	var evidenceRepo *database.EvidenceRepo
+	var sessionEventRepo *database.SessionEventRepo
 	dbAvail := false
 	db, err := database.NewPostgres(cfg.Database.URL, cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns)
 	if err != nil {
@@ -140,6 +145,7 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		kbRepo = database.NewKnowledgeBaseRepo(db, embeddingClient)
 		evidenceRepo = database.NewEvidenceRepo(db)
+		sessionEventRepo = database.NewSessionEventRepo(db)
 		if err := database.Migrate(db); err != nil {
 			slog.Error("database migration failed — refusing to start with incomplete schema", "error", err)
 			return nil, fmt.Errorf("database migration failed: %w", err)
@@ -308,6 +314,7 @@ func New(cfg *config.Config) (*Server, error) {
 		toolRegistry:  toolRegistry,
 		redTeamRepo:   redTeamRepo,
 		evidenceRepo:  evidenceRepo,
+		sessionEvents: sessionEventRepo,
 	}
 
 	// ── User custom styles & AI builder ──
@@ -391,6 +398,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 // Router returns the HTTP router with all routes registered.
 func (s *Server) Router() http.Handler {
+	s.routeReg = newRouteRegistry()
 	r := chi.NewRouter()
 
 	// Middleware
@@ -541,6 +549,9 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/evaluation/redteam/reports", s.handleListRedTeamReports)
 		r.Get("/evaluation/redteam/reports/{id}", s.handleGetRedTeamReport)
 
+		// Tool Graph — dependency visualization
+		r.Get("/tools/graph", s.handleToolGraph)
+
 		// WebSocket
 		r.Get("/ws/agent", s.handleWebSocket)
 
@@ -577,6 +588,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}", s.handleGetUserSession)
 		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}", s.handleDeleteUserSession)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/artifacts", s.handleGetSessionArtifacts)
+		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/events", s.handleGetSessionEvents)
 		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 
 		// Admin (protected by admin token)
@@ -656,13 +668,25 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Get("/mcp/tools", s.handleAdminMCPTools)
             r.Get("/mcp/export", s.handleAdminMCPExport)
 
+            // Tool Plugin Management (hot-pluggable tool sets)
+            r.Get("/tool-plugins", s.handleAdminListToolPlugins)
+            r.Post("/tool-plugins", s.handleAdminCreateToolPlugin)
+            r.Get("/tool-plugins/{name}", s.handleAdminGetToolPlugin)
+            r.Delete("/tool-plugins/{name}", s.handleAdminDeleteToolPlugin)
+
             // SSE Push (admin only)
             r.Post("/sse/push", s.handleSSEPushTopic)
 
             // Evidence System
             r.Get("/evidence/{traceId}", s.handleAdminGetEvidence)
+
+            // Route Discovery — list all registered API routes
+            r.Get("/routes", s.handleAdminRoutes)
         })
     })
+
+	// Walk chi router to discover all routes and populate metadata
+	s.registerRoutesFromChi(r)
 
 	return r
 }
@@ -1217,8 +1241,9 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		},
 	})
 
-	// Create emitter
-	emitter := NewWSEmitter(s.hub, traceID)
+	// Create emitter (wrapped with event logging for session replay)
+	baseEmitter := NewWSEmitter(s.hub, traceID)
+	emitter := NewLoggingEmitter(baseEmitter, s.sessionEvents, traceID, EventLogCoarse)
 
 	// Load style profile (needed by both pipeline and unified modes)
 	var styleProfile *profile.StyleProfile
@@ -1235,6 +1260,9 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	if p.AgentMode == "unified" || p.AgentMode == "pipeline" {
 		agentMode = p.AgentMode
 	}
+
+	// Store agent mode so resume can rebuild the correct runner
+	execCtx.AgentMode = agentMode
 
 	var agentRunner interface {
 		Run(context.Context, *engine.ExecutionContext) error
@@ -1327,74 +1355,139 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	}
 
 	// Run in background
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("agent goroutine panicked",
-					"trace_id", traceID,
-					"panic", r,
-					"stack", string(debug.Stack()),
-				)
-				// Push the error to the frontend so the UI can recover
-				emitter.Error("panic", fmt.Sprintf("内部错误: %v", r), execCtx.CurrentStep)
-				execCtx.Status = engine.StatusFailed
-				if s.traces != nil {
-					s.traces.FailTrace(context.Background(), traceID, fmt.Sprintf("panic: %v", r))
-				}
-				if s.metrics != nil {
-					s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "panic")
-				}
-			}
-		}()
+	go s.runAgent(agentRunner, execCtx, emitter, traceID, styleProfile)
+}
 
-		ctx := context.Background()
-		if s.cfg.Agent.Timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, s.cfg.Agent.Timeout)
-			defer cancel()
-		}
-		start := time.Now()
-		if err := agentRunner.Run(ctx, execCtx); err != nil {
-			slog.Error("agent execution failed", "trace_id", traceID, "error", err)
+// runAgent runs the agent in a background goroutine with pause-aware cleanup.
+//
+// Cloud-server model: when the agent pauses due to client disconnect,
+// the goroutine exits (releasing resources) but the session stays in
+// memory for a TTL period. If the client reconnects and resumes within
+// the TTL, a new goroutine is started to continue from the pause point.
+// If the TTL expires, the session is cleaned up and the paused state
+// is persisted to the database (read-only recovery for late reconnects).
+//
+// Parameters:
+//   - agentRunner: the pipeline or unified agent
+//   - execCtx: the shared execution context
+//   - emitter: the event emitter (LoggingEmitter wrapping WSEmitter)
+//   - traceID: the trace identifier
+//   - styleProfile: the style profile (needed to rebuild the runner on resume)
+func (s *Server) runAgent(
+	agentRunner interface {
+		Run(context.Context, *engine.ExecutionContext) error
+	},
+	execCtx *engine.ExecutionContext,
+	emitter engine.EventEmitter,
+	traceID string,
+	styleProfile *profile.StyleProfile,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("agent goroutine panicked",
+				"trace_id", traceID,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			emitter.Error("panic", fmt.Sprintf("内部错误: %v", r), execCtx.CurrentStep)
+			execCtx.Status = engine.StatusFailed
 			if s.traces != nil {
-				s.traces.FailTrace(ctx, traceID, err.Error())
+				s.traces.FailTrace(context.Background(), traceID, fmt.Sprintf("panic: %v", r))
 			}
 			if s.metrics != nil {
-				s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "failed")
-				s.metrics.AgentDuration.Observe(time.Since(start), execCtx.StyleSlug)
-			}
-		} else {
-			// Persist completed trace
-			if s.traces != nil {
-				s.traces.CompleteTrace(ctx, execCtx)
-			}
-			if s.metrics != nil {
-				s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "completed")
-				s.metrics.AgentDuration.Observe(time.Since(start), execCtx.StyleSlug)
-			}
-
-			// Record search results as evidence for traceability
-			if s.evidenceRepo != nil && len(execCtx.SearchResults) > 0 {
-				if err := s.evidenceRepo.SaveSearchEvidence(ctx, traceID, execCtx.SearchResults); err != nil {
-					slog.Warn("failed to save search evidence", "error", err, "trace_id", traceID)
-				}
-			}
-
-			// Record writing process artifacts for traceability
-			if s.editorialSvc != nil {
-				taskID, _ := s.traces.GetEditorialTaskID(ctx, traceID)
-				if taskID != "" {
-					recorder := editorial.NewArtifactRecorder(s.editorialSvc.Store())
-					if err := recorder.RecordWritingArtifacts(ctx, execCtx, taskID); err != nil {
-						slog.Warn("failed to record writing artifacts", "error", err, "trace_id", traceID)
-					}
-				}
+				s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "panic")
 			}
 		}
-		// Cleanup
-		s.hub.Unregister(traceID)
-		s.sessions.Delete(traceID)
 	}()
+
+	ctx := context.Background()
+	if s.cfg.Agent.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.cfg.Agent.Timeout)
+		defer cancel()
+	}
+	start := time.Now()
+	err := agentRunner.Run(ctx, execCtx)
+
+	// ── Paused: persist paused state, keep session with TTL ──
+	if err == nil && execCtx.Status == engine.StatusPaused {
+		slog.Info("agent paused (client disconnect), keeping session with TTL",
+			"trace_id", traceID,
+			"step", execCtx.CurrentStep,
+		)
+
+		// Persist paused state to DB (not completed_at — remains in-progress)
+		if s.traces != nil {
+			if perr := s.traces.PauseTrace(context.Background(), execCtx); perr != nil {
+				slog.Warn("failed to persist paused trace", "error", perr, "trace_id", traceID)
+			}
+		}
+
+		// Unregister the WS hub (no client connected now), but keep session
+		s.hub.Unregister(traceID)
+
+		// Schedule TTL-based cleanup
+		ttl := s.cfg.Agent.PausedSessionTTL
+		if ttl <= 0 {
+			ttl = 2 * time.Minute
+		}
+		time.AfterFunc(ttl, func() {
+			// Only clean up if the session is still paused (not resumed)
+			if val, ok := s.sessions.Load(traceID); ok {
+				if ec, ok := val.(*engine.ExecutionContext); ok && ec.Status == engine.StatusPaused {
+					slog.Info("paused session TTL expired, cleaning up",
+						"trace_id", traceID,
+						"step", ec.CurrentStep,
+					)
+					s.sessions.Delete(traceID)
+				}
+			}
+		})
+		return
+	}
+
+	// ── Failed ──
+	if err != nil {
+		slog.Error("agent execution failed", "trace_id", traceID, "error", err)
+		if s.traces != nil {
+			s.traces.FailTrace(ctx, traceID, err.Error())
+		}
+		if s.metrics != nil {
+			s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "failed")
+			s.metrics.AgentDuration.Observe(time.Since(start), execCtx.StyleSlug)
+		}
+	} else {
+		// ── Completed successfully ──
+		if s.traces != nil {
+			s.traces.CompleteTrace(ctx, execCtx)
+		}
+		if s.metrics != nil {
+			s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "completed")
+			s.metrics.AgentDuration.Observe(time.Since(start), execCtx.StyleSlug)
+		}
+
+		// Record search results as evidence for traceability
+		if s.evidenceRepo != nil && len(execCtx.SearchResults) > 0 {
+			if err := s.evidenceRepo.SaveSearchEvidence(ctx, traceID, execCtx.SearchResults); err != nil {
+				slog.Warn("failed to save search evidence", "error", err, "trace_id", traceID)
+			}
+		}
+
+		// Record writing process artifacts for traceability
+		if s.editorialSvc != nil {
+			taskID, _ := s.traces.GetEditorialTaskID(ctx, traceID)
+			if taskID != "" {
+				recorder := editorial.NewArtifactRecorder(s.editorialSvc.Store())
+				if err := recorder.RecordWritingArtifacts(ctx, execCtx, taskID); err != nil {
+					slog.Warn("failed to record writing artifacts", "error", err, "trace_id", traceID)
+				}
+			}
+		}
+	}
+
+	// Cleanup: unregister hub and delete session
+	s.hub.Unregister(traceID)
+	s.sessions.Delete(traceID)
 }
 
 func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMessage, action string) {
@@ -1413,6 +1506,125 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 	case "pause":
 		execCtx.Pause()
 	case "resume":
+		// If the session was paused due to client disconnect, the goroutine
+		// has already exited. We need to reconnect the channels and start
+		// a new goroutine to continue from where it left off.
+		if execCtx.Status == engine.StatusPaused {
+			slog.Info("resuming paused session after reconnect",
+				"trace_id", p.TraceID,
+				"step", execCtx.CurrentStep,
+			)
+
+			// Reconnect: reset disconnect channel and control channels
+			execCtx.Reconnect()
+			execCtx.ResumeFromPause()
+
+			// Rebuild the agent runner and emitter (wrapped with event logging)
+			baseEmitter := NewWSEmitter(s.hub, p.TraceID)
+			emitter := NewLoggingEmitter(baseEmitter, s.sessionEvents, p.TraceID, EventLogCoarse)
+
+			// Resolve LLM client
+			var llmClient *tools.LLMClient
+			if s.llmSvc != nil {
+				llmClient = s.llmSvc.GetClient(context.Background(), "")
+			} else {
+				llmClient = s.llm
+			}
+
+			// Load style profile
+			var styleProfile *profile.StyleProfile
+			if s.profiles != nil {
+				if sp, ok := s.profiles.Get(execCtx.StyleSlug); ok {
+					styleProfile = sp
+				}
+			}
+
+			// Rebuild agent runner based on mode
+			var agentRunner interface {
+				Run(context.Context, *engine.ExecutionContext) error
+			}
+
+			// Use the original agent mode from the execution context,
+			// falling back to server config if not set
+			resumeMode := execCtx.AgentMode
+			if resumeMode == "" {
+				resumeMode = s.cfg.Agent.Mode
+			}
+
+			if resumeMode == "unified" {
+				registry := s.buildToolRegistry(llmClient, styleProfile, execCtx)
+				agentRunner = agent.NewUnifiedAgent(registry, llmClient, emitter)
+			} else {
+				var engineSteps []engine.Step
+				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+					engineSteps = append(engineSteps, steps.NewShortTermMemoryStep(
+						s.memorySvc,
+						&embedderAdapter{svc: s.memorySvc},
+						memory.DefaultDynamicWindowConfig(),
+					))
+				}
+				engineSteps = append(engineSteps,
+					steps.NewIntentStep(llmClient),
+				)
+				searchBranch := []engine.Step{
+					steps.NewQueryPlanStep(llmClient),
+					steps.NewSearchStep(llmClient, s.search),
+					steps.NewRelevanceStepWithEmbedding(s.embedding),
+					steps.NewCompressStep(llmClient),
+				}
+				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+					memoryBranch := []engine.Step{
+						steps.NewMemoryGateStepWithEntityGraph(s.memorySvc, &embedderAdapter{svc: s.memorySvc}),
+					}
+					engineSteps = append(engineSteps, engine.NewParallelGroup(
+						"parallel_pre_write",
+						memoryBranch,
+						searchBranch,
+					))
+				} else {
+					engineSteps = append(engineSteps, searchBranch...)
+				}
+				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+					engineSteps = append(engineSteps, steps.NewWorkingMemoryStep(
+						&workingMemoryLLMAdapter{llm: llmClient},
+						memory.DefaultSummarizerConfig(),
+					))
+				}
+				engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
+				if execCtx.Mode == "guided" {
+					engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
+				}
+				engineSteps = append(engineSteps,
+					steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+					s.newPostReviewStepWithLLM(llmClient, styleProfile),
+					steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+					s.newPostReviewStepWithLLM(llmClient, styleProfile),
+				)
+				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+					engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memorySvc))
+					engineSteps = append(engineSteps, steps.NewShortTermStoreStep(
+						s.memorySvc,
+						&embedderAdapter{svc: s.memorySvc},
+					))
+				}
+				ae := engine.NewAgentEngine(emitter, engineSteps)
+				if s.traces != nil {
+					ae.SetStepHook(func(ctx context.Context, execCtx *engine.ExecutionContext) {
+						s.traces.UpdateTraceStep(ctx, execCtx)
+					})
+				}
+				agentRunner = ae
+			}
+
+			// Start new goroutine to continue execution
+			go s.runAgent(agentRunner, execCtx, emitter, p.TraceID, styleProfile)
+
+			// Emit resumed event
+			emitter.Resumed(execCtx.CurrentStep)
+			return
+		}
+
+		// Normal resume (agent is still running, just paused by user)
 		execCtx.Resume()
 	case "cancel":
 		execCtx.Cancel()
@@ -1530,6 +1742,11 @@ func (s *Server) handleAgentEdit(client *websocket.Client, payload json.RawMessa
 // handleSessionResume handles a session.resume message from a reconnecting client.
 // It re-associates the new WebSocket client with an existing trace session
 // and sends back the current execution state so the UI can recover.
+//
+// Resolution strategy:
+//  1. Check in-memory sessions (active or recently paused)
+//  2. Fall back to database trace records (completed/failed sessions)
+//  3. Return "not_found" if neither has the trace
 func (s *Server) handleSessionResume(client *websocket.Client, payload json.RawMessage) {
 	var p websocket.SessionResumePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -1549,74 +1766,133 @@ func (s *Server) handleSessionResume(client *websocket.Client, payload json.RawM
 		return
 	}
 
-	// Check if the session still exists in memory
+	// ── 1. Check in-memory sessions ──
 	val, ok := s.sessions.Load(traceID)
-	if !ok {
-		// Session not found — either completed, cancelled, or expired
+	if ok {
+		execCtx := val.(*engine.ExecutionContext)
+
+		// Re-associate the client with this trace ID
+		s.hub.Register(traceID, client)
+
+		status := string(execCtx.Status)
+		if status == "" {
+			status = "running"
+		}
+		currentStep := ""
+		if execCtx.CurrentStep != "" {
+			currentStep = string(execCtx.CurrentStep)
+		}
+
+		// Find the current running step from history (more reliable)
+		for _, stepRecord := range execCtx.StepHistory {
+			if stepRecord.Status == "running" {
+				currentStep = string(stepRecord.Step)
+				break
+			}
+		}
+
+		// Build the response payload with full state
+		respPayload := websocket.SessionResumedPayload{
+			TraceID:          traceID,
+			Status:           status,
+			Step:             currentStep,
+			Article:          execCtx.Article,
+			ArticleTitle:     execCtx.ArticleTitle,
+			Style:            execCtx.StyleSlug,
+			Mode:             execCtx.Mode,
+			ConversationID:   execCtx.ConversationID,
+			UserInput:        execCtx.UserInput,
+			ReasoningContent: execCtx.ReasoningContent,
+		}
+
+		// Convert step history to JSON-serializable format
+		if len(execCtx.StepHistory) > 0 {
+			respPayload.StepHistory = execCtx.StepHistory
+		}
+
+		// Include outline if awaiting input (paused state)
+		if execCtx.Status == engine.StatusPaused && execCtx.Outline != nil {
+			respPayload.Outline = execCtx.Outline
+		}
+
+		// Mark as resumable if the session is paused (client can send agent.resume)
+		if execCtx.Status == engine.StatusPaused {
+			respPayload.CanResume = true
+		}
+
+		// Include review if completed
+		if status == "completed" && execCtx.ReviewResult != nil {
+			respPayload.Review = execCtx.ReviewResult
+		}
+
 		client.SendDirect(&websocket.ServerMessage{
-			Type: websocket.MsgSessionResumed,
-			Payload: websocket.SessionResumedPayload{
-				TraceID: traceID,
-				Status:  "not_found",
-				Message: "session not found or expired",
-			},
+			Type:    websocket.MsgSessionResumed,
+			Payload: respPayload,
 		})
+
+		slog.Info("session resumed from memory",
+			"trace_id", traceID,
+			"status", status,
+			"step", currentStep)
 		return
 	}
 
-	execCtx := val.(*engine.ExecutionContext)
+	// ── 2. Fall back to database trace record ──
+	if s.traces != nil {
+		trace, err := s.traces.GetTrace(context.Background(), traceID)
+		if err == nil && trace != nil {
+			status, _ := trace["status"].(string)
+			if status == "" {
+				status = "completed"
+			}
 
-	// Re-associate the client with this trace ID
-	s.hub.Register(traceID, client)
+			respPayload := websocket.SessionResumedPayload{
+				TraceID:        traceID,
+				Status:         status,
+				Article:        getStr(trace, "article"),
+				ArticleTitle:   getStr(trace, "article_title"),
+				Style:          getStr(trace, "style_slug"),
+				Mode:           getStr(trace, "mode"),
+				UserInput:      getStr(trace, "user_input"),
+				StepHistory:    trace["step_history"],
+				Review:         trace["review"],
+				ReasoningContent: getStr(trace, "reasoning_content"),
+				// ConversationID: not stored in DB trace, client can use traceID
+				ConversationID: traceID,
+			}
 
-	// Determine current status from the execution context
-	status := string(execCtx.Status)
-	if status == "" {
-		status = "running"
-	}
-	currentStep := ""
-	if execCtx.CurrentStep != "" {
-		currentStep = string(execCtx.CurrentStep)
-	}
+			client.SendDirect(&websocket.ServerMessage{
+				Type:    websocket.MsgSessionResumed,
+				Payload: respPayload,
+			})
 
-	// Find the current running step from history (more reliable)
-	for _, stepRecord := range execCtx.StepHistory {
-		if stepRecord.Status == "running" {
-			currentStep = string(stepRecord.Step)
-			break
+			slog.Info("session resumed from database",
+				"trace_id", traceID,
+				"status", status)
+			return
 		}
 	}
 
-	// Build the response payload
-	respPayload := websocket.SessionResumedPayload{
-		TraceID:      traceID,
-		Status:       status,
-		Step:         currentStep,
-		Article:      execCtx.Article,
-		ArticleTitle: execCtx.ArticleTitle,
-		Style:        execCtx.StyleSlug,
-		Mode:         execCtx.Mode,
-	}
-
-	// Include outline if awaiting input (paused state)
-	if execCtx.Status == engine.StatusPaused && execCtx.Outline != nil {
-		respPayload.Outline = execCtx.Outline
-	}
-
-	// Include review if completed
-	if status == "completed" && execCtx.ReviewResult != nil {
-		respPayload.Review = execCtx.ReviewResult
-	}
-
+	// ── 3. Not found ──
 	client.SendDirect(&websocket.ServerMessage{
-		Type:    websocket.MsgSessionResumed,
-		Payload: respPayload,
+		Type: websocket.MsgSessionResumed,
+		Payload: websocket.SessionResumedPayload{
+			TraceID: traceID,
+			Status:  "not_found",
+			Message: "session not found or expired",
+		},
 	})
 
-	slog.Info("session resumed after reconnect",
-		"trace_id", traceID,
-		"status", status,
-		"step", currentStep)
+	slog.Info("session resume: not found",
+		"trace_id", traceID)
+}
+
+// getStr safely extracts a string from a map[string]interface{}.
+func getStr(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // ─── Middleware ──────────────────────────────────────────
@@ -1694,83 +1970,196 @@ func (s *Server) newPostReviewStepWithLLM(llm *tools.LLMClient, p *profile.Style
 // buildToolRegistry builds a ToolRegistry containing all pipeline steps as tools,
 // built-in function tools, and MCP tools (if MCP servers are configured).
 // This is used by the UnifiedAgent to give the LLM planner access to all capabilities.
+//
+// Each tool is registered with a ToolDescriptor that declares its dependencies,
+// repeatability, terminal flag, and category. This replaces the hardcoded
+// nonRepeatableTools and toolDependencies maps in unified_agent.go.
 func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *profile.StyleProfile, execCtx *engine.ExecutionContext) *engine.ToolRegistry {
 	registry := engine.NewToolRegistry()
 
 	// ── Macro Tools: pipeline steps wrapped as AgentTool ──
-	registry.Register(engine.NewStepTool(
-		steps.NewIntentStep(llmClient),
-		"意图分类：分析用户输入，判定为 writing/polish/chat/shorten/expand/extract_points",
-		false,
-	))
+	// Each tool gets a ToolDescriptor with:
+	//   DependsOn: tools that must execute first
+	//   Repeatable: false = only once per session
+	//   Terminal:   true = can end the agent loop
+	//   Category:   for dependency graph visualization
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewIntentStep(llmClient),
+			"意图分类：分析用户输入，判定为 writing/polish/chat/shorten/expand/extract_points",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  nil,
+			Repeatable:  false,
+			Terminal:    false,
+			Category:    "planning",
+		},
+	)
 
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		registry.Register(engine.NewStepTool(
-			steps.NewMemoryGateStep(s.memorySvc),
-			"记忆门控：检索用户写作偏好记忆，注入到执行上下文",
-			false,
-		))
+		registry.RegisterWithDescriptor(
+			engine.NewStepTool(
+				steps.NewMemoryGateStep(s.memorySvc),
+				"记忆门控：检索用户写作偏好记忆，注入到执行上下文",
+				false,
+			),
+			engine.ToolDescriptor{
+				DependsOn:  nil,
+				Repeatable:  false,
+				Terminal:    false,
+				Category:    "memory",
+			},
+		)
 	}
 
-	registry.Register(engine.NewStepTool(
-		steps.NewChatStep(llmClient),
-		"对话回复：处理 chat 意图，直接流式输出回复（非写作模式专用）",
-		true, // terminal — article is produced
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewQueryPlanStep(llmClient),
-		"检索规划：LLM 分析用户输入，提取核心话题并生成多角度搜索查询（仅写作模式需要）",
-		false,
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewSearchStep(llmClient, s.search),
-		"多源搜索：并发执行知乎/Tavily/腾讯新闻/微博/本地知识库搜索，返回 20 条结果",
-		false,
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewRelevanceStepWithEmbedding(s.embedding),
-		"相关性过滤：对搜索结果评分和语义去重，保留高质量素材",
-		false,
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewCompressStep(llmClient),
-		"素材压缩：将搜索结果压缩为结构化研究简报，节省 prompt token",
-		false,
-	))
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewChatStep(llmClient),
+			"对话回复：处理 chat 意图，直接流式输出回复（非写作模式专用）",
+			true, // terminal — article is produced
+		),
+		engine.ToolDescriptor{
+			DependsOn:  nil,
+			Repeatable:  true,
+			Terminal:    true,
+			Category:    "writing",
+		},
+	)
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewQueryPlanStep(llmClient),
+			"检索规划：LLM 分析用户输入，提取核心话题并生成多角度搜索查询（仅写作模式需要）",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  nil,
+			Repeatable:  false,
+			Terminal:    false,
+			Category:    "retrieval",
+		},
+	)
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewSearchStep(llmClient, s.search),
+			"多源搜索：并发执行知乎/Tavily/腾讯新闻/微博/本地知识库搜索，返回 20 条结果",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  []string{"query_plan"},
+			Repeatable:  true,
+			Terminal:    false,
+			Category:    "retrieval",
+		},
+	)
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewRelevanceStepWithEmbedding(s.embedding),
+			"相关性过滤：对搜索结果评分和语义去重，保留高质量素材",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  []string{"search"},
+			Repeatable:  true,
+			Terminal:    false,
+			Category:    "retrieval",
+		},
+	)
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewCompressStep(llmClient),
+			"素材压缩：将搜索结果压缩为结构化研究简报，节省 prompt token",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  []string{"relevance"},
+			Repeatable:  true,
+			Terminal:    false,
+			Category:    "retrieval",
+		},
+	)
 
 	if execCtx.Mode == "guided" {
-		registry.Register(engine.NewStepTool(
-			steps.NewOutlineStep(llmClient),
-			"提纲生成：为引导模式生成文章提纲（标题+要点），等待用户确认",
-			false,
-		))
+		registry.RegisterWithDescriptor(
+			engine.NewStepTool(
+				steps.NewOutlineStep(llmClient),
+				"提纲生成：为引导模式生成文章提纲（标题+要点），等待用户确认",
+				false,
+			),
+			engine.ToolDescriptor{
+				DependsOn:  nil,
+				Repeatable:  false,
+				Terminal:    false,
+				Category:    "planning",
+			},
+		)
 	}
 
-	registry.Register(engine.NewStepTool(
-		steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
-		"文章生成：按风格 Profile 生成文章，支持流式输出和 Agent Loop",
-		true, // terminal — article is produced
-	))
-	registry.Register(engine.NewStepTool(
-		s.newPostReviewStepWithLLM(llmClient, styleProfile),
-		"质量评审：多维度评分（事实/结构/风格/修辞/安全）+ 敏感词检查",
-		false,
-	))
- registry.Register(engine.NewStepTool(
- steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
- "自动修正：根据评审结果自动修正可修复的问题（含标题独立修正）",
- false,
- ))
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+			"文章生成：按风格 Profile 生成文章，支持流式输出和 Agent Loop",
+			true, // terminal — article is produced
+		),
+		engine.ToolDescriptor{
+			DependsOn:  nil,
+			Repeatable:  true,
+			Terminal:    true,
+			Category:    "writing",
+		},
+	)
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			s.newPostReviewStepWithLLM(llmClient, styleProfile),
+			"质量评审：多维度评分（事实/结构/风格/修辞/安全）+ 敏感词检查",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  nil,
+			Repeatable:  true,
+			Terminal:    false,
+			Category:    "review",
+		},
+	)
+
+	registry.RegisterWithDescriptor(
+		engine.NewStepTool(
+			steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+			"自动修正：根据评审结果自动修正可修复的问题（含标题独立修正）",
+			false,
+		),
+		engine.ToolDescriptor{
+			DependsOn:  []string{"post_review"},
+			Repeatable:  true,
+			Terminal:    false,
+			Category:    "review",
+		},
+	)
 
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-		registry.Register(engine.NewStepTool(
-			steps.NewMemoryExtractStep(s.memorySvc),
-			"记忆提取：从文章和反馈中异步提取写作偏好模式",
-			false,
-		))
+		registry.RegisterWithDescriptor(
+			engine.NewStepTool(
+				steps.NewMemoryExtractStep(s.memorySvc),
+				"记忆提取：从文章和反馈中异步提取写作偏好模式",
+				false,
+			),
+			engine.ToolDescriptor{
+				DependsOn:  nil,
+				Repeatable:  false,
+				Terminal:    false,
+				Category:    "memory",
+			},
+		)
 	}
 
 	// ── MCP Tools: dynamically discovered from MCP servers ──
+	// MCP tools use the basic Register() method (no descriptor = repeatable, no deps)
 	if s.mcpRegistry != nil {
 		s.mcpRegistry.RegisterTools(registry)
 	}
