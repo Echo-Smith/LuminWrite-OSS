@@ -1,0 +1,333 @@
+package profile
+
+import (
+	"fmt"
+	"strings"
+)
+
+// ─── Prompt Layer Priority ──────────────────────────────
+//
+// Style constraints are layered by priority so the LLM knows
+// which rules are hard constraints vs soft guidance.
+//
+//   Priority 0 (强制约束): Fact guard — violations make the article defective.
+//   Priority 1 (写作要求): Structure, rhetoric, word limit — core style identity.
+//   Priority 2 (风格参考): Value orientation keywords — nice to have.
+//
+// This mirrors dsh's system-prompt assembly where different plugins
+// register prompt sections with varying priority, and Pi Agent's
+// convertToLlm pattern where context is structured before reaching the LLM.
+
+const (
+	priorityMandatory = "【强制约束——违反将导致文章不合格】"
+	priorityRequired  = "【写作要求——尽量遵循】"
+	prioritySoft      = "【风格参考——适当融入】"
+)
+
+// RenderWritingConstraints renders all style constraints for the
+// WriteStep user prompt. It is the single source of truth for how
+// StyleProfile fields become prompt text during article generation.
+//
+// Parameters:
+//   - taskMode: "writing" | "polish" | "shorten" | "expand" | "extract_points"
+//   - hasOutlineTitle: true when guided mode provides a title (skips structure + title guidelines)
+func (p *StyleProfile) RenderWritingConstraints(taskMode string, hasOutlineTitle bool, wordLimit int) string {
+	if p == nil {
+		return ""
+	}
+
+	var mandatory, required, soft strings.Builder
+
+	// ── Priority 0: Fact Guard (applies to all modes) ──
+	p.appendFactGuard(&mandatory)
+
+	// ── Priority 1: Writing requirements ──
+	if taskMode == "writing" {
+		if !hasOutlineTitle {
+			p.appendStructure(&required)
+			p.appendTitleGuidelines(&required)
+		}
+		p.appendRhetoric(&required, true) // detailed=true for writing
+	}
+
+	// Word range applies to all modes (writing, polish, shorten, expand)
+	p.appendWordRange(&required, taskMode, wordLimit)
+
+	// ── Priority 2: Soft guidance ──
+	if taskMode == "writing" {
+		p.appendValueOrientation(&soft)
+	}
+
+	// Assemble with priority headers
+	var result strings.Builder
+	if mandatory.Len() > 0 {
+		result.WriteString("\n" + priorityMandatory + "\n")
+		result.WriteString(mandatory.String())
+	}
+	if required.Len() > 0 {
+		result.WriteString("\n" + priorityRequired + "\n")
+		result.WriteString(required.String())
+	}
+	if soft.Len() > 0 {
+		result.WriteString("\n" + prioritySoft + "\n")
+		result.WriteString(soft.String())
+	}
+	return result.String()
+}
+
+// RenderReviewCriteria renders style constraints for the PostReviewStep
+// review prompt. This is a separate rendering path because:
+//  1. Rhetoric is listed as category names only (not full descriptions)
+//  2. Title guidelines are excluded (handled by independent title review)
+//  3. Word range uses the global value (not per-task-type length_profiles)
+//  4. Structure is rendered as a summary line, not with argument variations
+func (p *StyleProfile) RenderReviewCriteria() string {
+	if p == nil {
+		return ""
+	}
+
+	var mandatory, required strings.Builder
+
+	// ── Priority 0: Fact Guard ──
+	p.appendFactGuard(&mandatory)
+
+	// ── Priority 1: Review-specific requirements ──
+	p.appendRhetoric(&required, false) // detailed=false for review
+	p.appendWordRangeSummary(&required)
+	p.appendStructureSummary(&required)
+
+	var result strings.Builder
+	if mandatory.Len() > 0 {
+		result.WriteString(priorityMandatory + "\n")
+		result.WriteString(mandatory.String())
+	}
+	if required.Len() > 0 {
+		result.WriteString(priorityRequired + "\n")
+		result.WriteString(required.String())
+	}
+	return result.String()
+}
+
+// RenderTitleConstraints renders title-specific constraints for
+// AutoFixStep.fixTitle. This is used when regenerating a title that
+// failed review.
+func (p *StyleProfile) RenderTitleConstraints() string {
+	if p == nil {
+		return ""
+	}
+
+	var b strings.Builder
+
+	// ── Title length ──
+	if p.TitleGuidelines.Length.Max > 0 {
+		b.WriteString(fmt.Sprintf("标题字数限制：%d-%d字\n",
+			p.TitleGuidelines.Length.Min, p.TitleGuidelines.Length.Max))
+	}
+
+	// ── Title style ──
+	if p.TitleGuidelines.Style != "" {
+		b.WriteString(fmt.Sprintf("标题风格要求：%s\n", p.TitleGuidelines.Style))
+	}
+
+	// ── Title examples ──
+	if len(p.TitleGuidelines.Examples) > 0 {
+		b.WriteString(fmt.Sprintf("标题参考示例：%s\n",
+			strings.Join(p.TitleGuidelines.Examples, " / ")))
+	}
+
+	// ── Title forbidden patterns ──
+	if len(p.TitleGuidelines.ForbiddenPatterns) > 0 {
+		b.WriteString(fmt.Sprintf("标题禁止模式（正则）：%s\n",
+			strings.Join(p.TitleGuidelines.ForbiddenPatterns, ", ")))
+	}
+
+	return b.String()
+}
+
+// RenderOutputFormat renders the output format instruction based on
+// the profile's OutputFormat settings and whether an outline title exists.
+// Returns empty string if no format constraint is needed.
+func (p *StyleProfile) RenderOutputFormat(taskMode string, outlineTitle string, separator string) string {
+	if p == nil {
+		// Default for nil profile: use JSON title for writing mode
+		if taskMode == "writing" {
+			return RenderJSONTitleFormat("", separator)
+		}
+		return ""
+	}
+
+	if taskMode != "writing" {
+		// Non-writing modes: plain Markdown if configured
+		if p.OutputFormat.UseMarkdown {
+			return fmt.Sprintf("\n输出格式：Markdown，标题以 %s 开头\n", p.OutputFormat.TitlePrefix)
+		}
+		return ""
+	}
+
+	// Writing mode with Markdown enabled
+	if p.OutputFormat.UseMarkdown {
+		return RenderJSONTitleFormat(outlineTitle, separator)
+	}
+
+	return ""
+}
+
+// RenderJSONTitleFormat renders the JSON title + separator + Markdown body format.
+// Exported so steps package can use it for nil-profile fallback.
+func RenderJSONTitleFormat(outlineTitle, separator string) string {
+	if outlineTitle != "" {
+		return fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行，title 必须与上方【标题】完全一致），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"%s\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", separator, outlineTitle, separator)
+	}
+	return fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"文章标题\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", separator, separator)
+}
+
+// ── Internal appenders ──────────────────────────────────
+// These are shared between RenderWritingConstraints and RenderReviewCriteria.
+
+func (p *StyleProfile) appendFactGuard(b *strings.Builder) {
+	if len(p.FactGuard.ForbiddenResults) > 0 {
+		b.WriteString(fmt.Sprintf("事实红线——禁止使用以下表述（已完成事件不得用结果性动词）：%s\n",
+			strings.Join(p.FactGuard.ForbiddenResults, ", ")))
+	}
+	if len(p.FactGuard.FutureTenseRequired) > 0 {
+		b.WriteString(fmt.Sprintf("事实红线——未发生事件须使用以下时态标记：%s\n",
+			strings.Join(p.FactGuard.FutureTenseRequired, ", ")))
+	}
+	if p.FactGuard.UserMaterialPriority {
+		b.WriteString("事实红线——用户提供的素材优先于 AI 检索结果，如有冲突以用户素材为准\n")
+	}
+}
+
+func (p *StyleProfile) appendStructure(b *strings.Builder) {
+	if p.Structure.Type == "" {
+		return
+	}
+	b.WriteString(fmt.Sprintf("结构要求：%s", p.Structure.Opening))
+	if p.Structure.Body != "" {
+		b.WriteString(fmt.Sprintf(" → %s", p.Structure.Body))
+	}
+	if p.Structure.Conclusion != "" {
+		b.WriteString(fmt.Sprintf(" → %s", p.Structure.Conclusion))
+	}
+	b.WriteString("\n")
+	if p.Structure.ArgumentPattern != "" {
+		b.WriteString(fmt.Sprintf("论证模式：%s\n", p.Structure.ArgumentPattern))
+	}
+	if len(p.Structure.ArgumentVariations) > 0 {
+		b.WriteString(fmt.Sprintf("可选递进变式：%s\n",
+			strings.Join(p.Structure.ArgumentVariations, " / ")))
+	}
+	if p.Structure.ArgumentInstruction != "" {
+		b.WriteString(fmt.Sprintf("论述要求：%s\n", p.Structure.ArgumentInstruction))
+	}
+}
+
+func (p *StyleProfile) appendStructureSummary(b *strings.Builder) {
+	if p.Structure.Type == "" {
+		return
+	}
+	b.WriteString(fmt.Sprintf("结构类型：%s（%s → %s → %s）\n",
+		p.Structure.Type, p.Structure.Opening, p.Structure.Body, p.Structure.Conclusion))
+}
+
+func (p *StyleProfile) appendRhetoric(b *strings.Builder, detailed bool) {
+	var parts []string
+	if p.Rhetoric.RequiredMetaphor {
+		if detailed && p.Rhetoric.MetaphorDescription != "" {
+			parts = append(parts, "正文核心比喻: "+p.Rhetoric.MetaphorDescription+"（仅用于正文，不影响标题）")
+		} else {
+			parts = append(parts, "核心比喻")
+		}
+	}
+	if p.Rhetoric.RequiredParallelism {
+		if detailed {
+			parts = append(parts, "正文必须使用排比")
+		} else {
+			parts = append(parts, "排比")
+		}
+	}
+	if p.Rhetoric.RequiredRhetoricalQuestion {
+		if detailed {
+			parts = append(parts, "正文必须使用设问")
+		} else {
+			parts = append(parts, "设问")
+		}
+	}
+	if len(parts) > 0 {
+		sep := "；"
+		if !detailed {
+			sep = "、"
+		}
+		label := "修辞要求"
+		if !detailed {
+			label = "修辞要求——必须包含"
+		}
+		b.WriteString(fmt.Sprintf("%s：%s\n", label, strings.Join(parts, sep)))
+	}
+}
+
+func (p *StyleProfile) appendTitleGuidelines(b *strings.Builder) {
+	if len(p.TitleGuidelines.ForbiddenPatterns) > 0 {
+		b.WriteString(fmt.Sprintf("标题禁止模式（正则）：%s\n",
+			strings.Join(p.TitleGuidelines.ForbiddenPatterns, ", ")))
+	}
+	if p.TitleGuidelines.Style != "" {
+		b.WriteString(fmt.Sprintf("标题风格要求：%s\n", p.TitleGuidelines.Style))
+	}
+	if len(p.TitleGuidelines.Examples) > 0 {
+		b.WriteString(fmt.Sprintf("标题参考示例：%s\n",
+			strings.Join(p.TitleGuidelines.Examples, " / ")))
+	}
+}
+
+func (p *StyleProfile) appendWordRange(b *strings.Builder, taskMode string, wordLimit int) {
+	// Try length_profiles first (per-task-type word ranges)
+	if p.LengthProfiles != nil {
+		var key string
+		switch taskMode {
+		case "polish", "shorten", "expand":
+			if wordLimit > 0 && wordLimit <= 600 {
+				key = "polish_short"
+			} else {
+				key = "polish_long"
+			}
+		case "writing":
+			key = "writing"
+		}
+
+		if wr, ok := p.LengthProfiles[key]; ok && wr.Max > 0 {
+			b.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", wr.Min, wr.Max))
+			if wr.HardLimit {
+				b.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
+			}
+			return
+		}
+	}
+
+	// Fall back to profile's global word_range
+	if p.WordRange.Max > 0 {
+		b.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", p.WordRange.Min, p.WordRange.Max))
+		if p.WordRange.HardLimit {
+			b.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
+		}
+		return
+	}
+
+	// Fall back to explicit wordLimit (from execCtx)
+	if wordLimit > 0 {
+		b.WriteString(fmt.Sprintf("\n字数要求：约%d字\n", wordLimit))
+	}
+}
+
+func (p *StyleProfile) appendWordRangeSummary(b *strings.Builder) {
+	if p.WordRange.Max > 0 {
+		b.WriteString(fmt.Sprintf("字数范围：%d-%d字\n", p.WordRange.Min, p.WordRange.Max))
+	}
+}
+
+func (p *StyleProfile) appendValueOrientation(b *strings.Builder) {
+	if len(p.ValueOrientation.Keywords) > 0 {
+		b.WriteString(fmt.Sprintf("价值导向关键词（适当融入）：%s\n",
+			strings.Join(p.ValueOrientation.Keywords, ", ")))
+	}
+}

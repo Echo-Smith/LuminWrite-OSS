@@ -136,6 +136,10 @@ type ExecutionContext struct {
 	// Used by SearchStep to fetch the topic's full article as background context.
 	TopicURL     string         `json:"topic_url,omitempty"`
 
+	// AgentMode records which agent runner was used: "pipeline" or "unified".
+	// Used when resuming a paused session to rebuild the correct runner.
+	AgentMode    string         `json:"agent_mode,omitempty"`
+
 	// Populated during execution
 	TaskIntent    *TaskIntent     `json:"task_intent,omitempty"`
 	WritingTask   *WritingTask    `json:"writing_task,omitempty"`
@@ -358,6 +362,27 @@ func (ctx *ExecutionContext) IsDisconnected() bool {
 	default:
 		return false
 	}
+}
+
+// Reconnect resets the disconnect signal and control channels so the
+// ExecutionContext can be reused after a client reconnects.
+// This is used in the cloud-server model: when a paused session is
+// resumed, we rewire the channels so the engine can continue.
+func (ctx *ExecutionContext) Reconnect() {
+	// Replace all control channels with fresh ones
+	ctx.pauseCh = make(chan struct{}, 1)
+	ctx.resumeCh = make(chan struct{}, 1)
+	ctx.cancelCh = make(chan struct{}, 1)
+	ctx.confirmCh = make(chan map[string]interface{}, 1)
+	ctx.disconnectCh = make(chan struct{})
+	ctx.PausedAt = nil
+}
+
+// ResumeFromPause resets status from paused to running, clears pause state.
+// Called when a reconnected client triggers resume on a paused session.
+func (ctx *ExecutionContext) ResumeFromPause() {
+	ctx.Status = StatusRunning
+	ctx.PausedAt = nil
 }
 
 // RecordLLMFailure increments the consecutive LLM failure counter.

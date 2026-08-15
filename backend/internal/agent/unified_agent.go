@@ -473,26 +473,10 @@ func (a *UnifiedAgent) buildStateSummary(execCtx *engine.ExecutionContext) strin
 	return sb.String()
 }
 
-// nonRepeatableTools are tools that should only be executed once per session.
-// After execution, they are excluded from the LLM's tool list to prevent
-// redundant calls (e.g. calling "intent" again after it was already done).
-var nonRepeatableTools = map[string]bool{
-	"intent":         true,
-	"memory_gate":    true,
-	"query_plan":     true,
-	"outline":        true,
-	"memory_extract": true,
-}
-
-// toolDependencies defines which tools require other tools to have run first.
-// This prevents the LLM planner from calling tools out of order (e.g. calling
-// "relevance" before "search" has produced any results to filter).
-var toolDependencies = map[string][]string{
-	"search":    {"query_plan"}, // search needs queries from query_plan
-	"relevance": {"search"},     // relevance needs search results to filter
-	"compress":  {"relevance"},   // compress needs filtered results
-	"auto_fix":  {"post_review"}, // auto_fix needs review issues to fix
-}
+// NOTE: Tool dependency and repeatability metadata is now declared via
+// ToolDescriptor at registration time (see server.go buildToolRegistry).
+// The hardcoded nonRepeatableTools and toolDependencies maps have been
+// replaced by ToolRegistry.IsRepeatable() and ToolRegistry.DependsOn().
 
 func (a *UnifiedAgent) buildToolDefs(execCtx *engine.ExecutionContext) []tools.ToolDef {
 	// Build a set of all executed tool names from step history
@@ -507,18 +491,21 @@ func (a *UnifiedAgent) buildToolDefs(execCtx *engine.ExecutionContext) []tools.T
 		name := t.Name()
 
 		// Skip non-repeatable tools that have already been executed
-		if nonRepeatableTools[name] && executed[name] {
+		// (read from ToolDescriptor, not hardcoded map)
+		if !a.registry.IsRepeatable(name) && executed[name] {
 			continue
 		}
 
 		// Skip tools whose dependencies haven't been met
-		if deps, ok := toolDependencies[name]; ok {
+		// (read from ToolDescriptor.DependsOn, not hardcoded map)
+		deps := a.registry.DependsOn(name)
+		if len(deps) > 0 {
 			depsMet := true
 			for _, dep := range deps {
 				if !executed[dep] {
-					depsMet = false
-					break
-				}
+				depsMet = false
+				break
+			}
 			}
 			if !depsMet {
 				continue
