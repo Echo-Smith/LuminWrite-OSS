@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 )
 
@@ -47,25 +48,101 @@ type ToolResult struct {
 	Done bool `json:"done"`
 }
 
+// ─── ToolDescriptor: declarative tool metadata ─────────────
+//
+// ToolDescriptor carries dependency and repeatability metadata for a tool.
+// This replaces the hardcoded nonRepeatableTools and toolDependencies maps
+// in unified_agent.go, making tool relationships declarative and visible
+// to the API layer for visualization.
+//
+// Inspired by dsh's plugin registration pattern where plugins declare
+// their capabilities and dependencies via seam definitions.
+
+// ToolDescriptor describes a tool's relational metadata.
+type ToolDescriptor struct {
+	// Name is the tool identifier (matches AgentTool.Name()).
+	Name string `json:"name"`
+
+	// Description is the human-readable summary.
+	Description string `json:"description"`
+
+	// DependsOn lists tools that must have executed before this tool.
+	// The UnifiedAgent uses this to hide tools whose dependencies haven't run.
+	DependsOn []string `json:"depends_on,omitempty"`
+
+	// Repeatable indicates whether the tool can be invoked more than once.
+	// false = the tool is removed from the LLM's tool list after first execution.
+	Repeatable bool `json:"repeatable"`
+
+	// Terminal indicates whether the tool can end the agent loop.
+	// Terminal tools set Done=true in the ToolResult when conditions are met.
+	Terminal bool `json:"terminal"`
+
+	// Category groups tools for the dependency graph visualization.
+	// Common values: "planning", "retrieval", "writing", "review", "memory".
+	Category string `json:"category,omitempty"`
+}
+
 // ToolRegistry is the central registry for all agent tools.
 // It is thread-safe and supports dynamic registration (e.g. MCP tools
 // discovered at runtime).
 type ToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]AgentTool
+	mu           sync.RWMutex
+	tools        map[string]AgentTool
+	descriptors  map[string]ToolDescriptor
+	plugins      *pluginManager
 }
 
 // NewToolRegistry creates an empty registry.
 func NewToolRegistry() *ToolRegistry {
-	return &ToolRegistry{tools: make(map[string]AgentTool)}
+	return &ToolRegistry{
+		tools:       make(map[string]AgentTool),
+		descriptors: make(map[string]ToolDescriptor),
+		plugins:     newPluginManager(),
+	}
 }
 
-// Register adds or replaces a tool in the registry.
+// Register adds or replaces a tool in the registry without descriptor metadata.
+// Tools registered this way default to Repeatable=true, no dependencies.
 func (r *ToolRegistry) Register(t AgentTool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[t.Name()] = t
-	slog.Debug("tool registered", "name", t.Name(), "description", t.Description())
+	name := t.Name()
+	r.tools[name] = t
+	// Default descriptor: repeatable, no deps, non-terminal
+	if _, exists := r.descriptors[name]; !exists {
+		r.descriptors[name] = ToolDescriptor{
+			Name:        name,
+			Description: t.Description(),
+			Repeatable:  true,
+		}
+	}
+	slog.Debug("tool registered", "name", name, "description", t.Description())
+}
+
+// RegisterWithDescriptor adds a tool with explicit dependency metadata.
+// This is the preferred registration method for tools with dependencies
+// or that should only execute once per session.
+func (r *ToolRegistry) RegisterWithDescriptor(t AgentTool, desc ToolDescriptor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := t.Name()
+	r.tools[name] = t
+	// Ensure Name and Description are filled from the tool if empty
+	if desc.Name == "" {
+		desc.Name = name
+	}
+	if desc.Description == "" {
+		desc.Description = t.Description()
+	}
+	r.descriptors[name] = desc
+	slog.Debug("tool registered with descriptor",
+		"name", name,
+		"depends_on", desc.DependsOn,
+		"repeatable", desc.Repeatable,
+		"terminal", desc.Terminal,
+		"category", desc.Category,
+	)
 }
 
 // Get returns a tool by name, or nil if not found.
@@ -84,6 +161,34 @@ func (r *ToolRegistry) All() []AgentTool {
 		result = append(result, t)
 	}
 	return result
+}
+
+// GetDescriptor returns the descriptor for a tool, or a default if not found.
+func (r *ToolRegistry) GetDescriptor(name string) (ToolDescriptor, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	desc, ok := r.descriptors[name]
+	return desc, ok
+}
+
+// IsRepeatable returns false if the tool should only execute once.
+func (r *ToolRegistry) IsRepeatable(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if desc, ok := r.descriptors[name]; ok {
+		return desc.Repeatable
+	}
+	return true // default: repeatable
+}
+
+// DependsOn returns the list of tools that must execute before the given tool.
+func (r *ToolRegistry) DependsOn(name string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if desc, ok := r.descriptors[name]; ok {
+		return desc.DependsOn
+	}
+	return nil
 }
 
 // ToolDefs returns OpenAI-compatible tool definitions for all registered tools.
@@ -112,4 +217,89 @@ func (r *ToolRegistry) ExecuteTool(ctx context.Context, name string, args map[st
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
 	return tool.Execute(ctx, args, execCtx, emitter)
+}
+
+// ─── Tool Graph: dependency visualization ────────────────
+
+// ToolGraphNode represents a single tool in the dependency graph.
+type ToolGraphNode struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Category    string   `json:"category,omitempty"`
+	DependsOn   []string `json:"depends_on,omitempty"`
+	Repeatable  bool     `json:"repeatable"`
+	Terminal    bool     `json:"terminal"`
+}
+
+// ToolGraphEdge represents a dependency relationship.
+type ToolGraphEdge struct {
+	From string `json:"from"` // tool that depends
+	To   string `json:"to"`   // tool that is depended on
+}
+
+// ToolGraph is the complete dependency graph for visualization.
+type ToolGraph struct {
+	Nodes []ToolGraphNode `json:"nodes"`
+	Edges []ToolGraphEdge `json:"edges"`
+}
+
+// ToolGraph returns the dependency graph of all registered tools.
+// The frontend uses this to render a visual tool dependency diagram.
+func (r *ToolRegistry) ToolGraph() ToolGraph {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	graph := ToolGraph{
+		Nodes: make([]ToolGraphNode, 0, len(r.descriptors)),
+	}
+
+	// Collect nodes
+	for name, desc := range r.descriptors {
+		node := ToolGraphNode{
+			Name:        name,
+			Description: desc.Description,
+			Category:    desc.Category,
+			DependsOn:   desc.DependsOn,
+			Repeatable:  desc.Repeatable,
+			Terminal:    desc.Terminal,
+		}
+		// For tools without explicit descriptor (e.g. MCP tools),
+		// pull description from the tool itself
+		if node.Description == "" {
+			if t, ok := r.tools[name]; ok {
+				node.Description = t.Description()
+			}
+		}
+		graph.Nodes = append(graph.Nodes, node)
+	}
+
+	// Sort nodes by name for stable output
+	sort.Slice(graph.Nodes, func(i, j int) bool {
+		return graph.Nodes[i].Name < graph.Nodes[j].Name
+	})
+
+	// Build edges from dependency declarations
+	seen := make(map[string]bool) // deduplicate edges
+	for name, desc := range r.descriptors {
+		for _, dep := range desc.DependsOn {
+			edgeKey := name + "->" + dep
+			if !seen[edgeKey] {
+				graph.Edges = append(graph.Edges, ToolGraphEdge{
+					From: name,
+					To:   dep,
+				})
+				seen[edgeKey] = true
+			}
+		}
+	}
+
+	// Sort edges for stable output
+	sort.Slice(graph.Edges, func(i, j int) bool {
+		if graph.Edges[i].From != graph.Edges[j].From {
+			return graph.Edges[i].From < graph.Edges[j].From
+		}
+		return graph.Edges[i].To < graph.Edges[j].To
+	})
+
+	return graph
 }
