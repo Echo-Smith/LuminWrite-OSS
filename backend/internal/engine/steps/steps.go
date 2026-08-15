@@ -1078,211 +1078,49 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	// Append prompt injection defense directive to system prompt
 	systemPrompt += engine.PromptInjectionDefenseDirective
 
-	// Build user prompt — differentiated by task mode
-	var promptBuilder strings.Builder
-	s.buildTaskPrompt(&promptBuilder, taskMode, execCtx)
-
-	// Add search results as context (only for writing mode — other modes operate on existing text)
-	// If CompressStep produced a CompressedContext, use the structured brief instead
-	// of raw search snippets — saves ~60% prompt tokens and improves generation quality.
-	if taskMode == "writing" && execCtx.CompressedContext != "" {
-		promptBuilder.WriteString("\n参考素材（结构化研究简报）：\n")
-		promptBuilder.WriteString(execCtx.CompressedContext)
-		promptBuilder.WriteString("\n")
-	} else if taskMode == "writing" && len(execCtx.SearchResults) > 0 {
-		hasMockResults := false
-		for _, result := range execCtx.SearchResults {
-			if result.IsMock {
-				hasMockResults = true
-				break
-			}
-		}
-		if hasMockResults {
-			promptBuilder.WriteString("\n⚠️ 参考素材（注意：以下为 AI 生成的背景参考，非真实搜索结果，使用前请核实事实）：\n")
-		} else {
-			promptBuilder.WriteString("\n参考素材：\n")
-		}
-		for i, result := range execCtx.SearchResults {
-			promptBuilder.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, result.Title, result.Snippet))
-		}
-	}
-
-	// Add outline if available (guided mode, writing only)
-	// In guided mode, the outline defines the article structure — it takes precedence over profile structure
+	// ── Build user prompt via PromptBuilder (section-based assembly) ──
+	// Token budget: 12000 tokens for the user prompt section.
+	// This leaves room for system prompt (~2000) + conversation history (~2048)
+	// + response (~8192) within the 32K context window.
+	// If sections exceed budget, low-priority sections (memory, search) are auto-truncated.
+	const userPromptTokenBudget = 12000
 	hasOutlineTitle := execCtx.Outline != nil && execCtx.Outline.Title != ""
-	if taskMode == "writing" && execCtx.Outline != nil {
-		promptBuilder.WriteString(fmt.Sprintf("\n【标题（必须原样使用，不得修改）】：%s\n", execCtx.Outline.Title))
-		promptBuilder.WriteString("【写作提纲（必须严格按照以下提纲展开，每个要点对应一个段落，不得增删或更改要点顺序）】：\n")
-		typeLabels := map[string]string{
-			"opening":    "开头",
-			"argument":   "分论点",
-			"conclusion": "结尾",
-		}
-		for i, item := range execCtx.Outline.Outline {
-			label := typeLabels[item.Type]
-			if label == "" {
-				label = item.Type
-			}
-			promptBuilder.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, label, item.Point))
-		}
-		promptBuilder.WriteString("\n")
+	outlineTitle := ""
+	if hasOutlineTitle {
+		outlineTitle = execCtx.Outline.Title
 	}
 
-	// Add word limit — use length_profiles per task type if available, fall back to word_range
-	s.appendWordLimit(&promptBuilder, taskMode, execCtx)
+	pb := NewPromptBuilder().
+		WithBudget(userPromptTokenBudget).
+		AddTaskPrompt(taskMode, execCtx).
+		AddSearchResults(taskMode, execCtx).
+		AddOutline(taskMode, execCtx).
+		AddStyleConstraints(s.profile, taskMode, hasOutlineTitle, execCtx.WordLimit).
+		AddUserMaterials(execCtx.UserMaterials).
+		AddMemory(execCtx).
+		AddOutputFormat(s.profile, taskMode, outlineTitle, articleSeparator)
 
-	// Add structure requirements from profile (writing only)
-	// SKIP in guided mode — outline already defines the structure,
-	// profile's argument pattern (e.g. 首在-重在-贵在) would conflict with outline points
-	if taskMode == "writing" && s.profile != nil && s.profile.Structure.Type != "" && !hasOutlineTitle {
-		promptBuilder.WriteString(fmt.Sprintf("\n结构要求：%s", s.profile.Structure.Opening))
-		if s.profile.Structure.Body != "" {
-			promptBuilder.WriteString(fmt.Sprintf(" → %s", s.profile.Structure.Body))
-		}
-		if s.profile.Structure.Conclusion != "" {
-			promptBuilder.WriteString(fmt.Sprintf(" → %s", s.profile.Structure.Conclusion))
-		}
-		promptBuilder.WriteString("\n")
-		if s.profile.Structure.ArgumentPattern != "" {
-			promptBuilder.WriteString(fmt.Sprintf("论证模式：%s\n", s.profile.Structure.ArgumentPattern))
-		}
-		// If argument variations are provided, list them as flexible options
-		if len(s.profile.Structure.ArgumentVariations) > 0 {
-			promptBuilder.WriteString(fmt.Sprintf("可选递进变式：%s\n", strings.Join(s.profile.Structure.ArgumentVariations, " / ")))
-		}
-		// If argument instruction is provided, add it as guidance
-		if s.profile.Structure.ArgumentInstruction != "" {
-			promptBuilder.WriteString(fmt.Sprintf("论述要求：%s\n", s.profile.Structure.ArgumentInstruction))
-		}
+	// Stream the article
+	messages := []tools.LLMMessage{
+		{Role: "system", Content: systemPrompt},
 	}
 
-	// Add rhetoric requirements from profile (writing only)
-	// Clarify that rhetoric applies to body content, not the title
-	if taskMode == "writing" && s.profile != nil {
-		var rhetoricParts []string
-		if s.profile.Rhetoric.RequiredMetaphor && s.profile.Rhetoric.MetaphorDescription != "" {
-			rhetoricParts = append(rhetoricParts, "正文核心比喻: "+s.profile.Rhetoric.MetaphorDescription+"（仅用于正文，不影响标题）")
-		}
-		if s.profile.Rhetoric.RequiredParallelism {
-			rhetoricParts = append(rhetoricParts, "正文必须使用排比")
-		}
-		if s.profile.Rhetoric.RequiredRhetoricalQuestion {
-			rhetoricParts = append(rhetoricParts, "正文必须使用设问")
-		}
-		if len(rhetoricParts) > 0 {
-			promptBuilder.WriteString(fmt.Sprintf("\n修辞要求：%s\n", strings.Join(rhetoricParts, "；")))
-		}
-	}
-
-	// Add title guidelines from profile
-	// SKIP in guided mode — title is already determined by the outline,
-	// showing style requirements/examples would mislead the LLM into creating its own title
-	if !hasOutlineTitle {
-		if s.profile != nil && len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-			promptBuilder.WriteString(fmt.Sprintf("\n标题禁止模式（正则）：%s\n", strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
-		}
-		if s.profile != nil && s.profile.TitleGuidelines.Style != "" {
-			promptBuilder.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
-		}
-		if s.profile != nil && len(s.profile.TitleGuidelines.Examples) > 0 {
-			promptBuilder.WriteString(fmt.Sprintf("标题参考示例：%s\n", strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
-		}
-	}
-
-	// Add fact guard requirements from profile
-	if s.profile != nil && len(s.profile.FactGuard.ForbiddenResults) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n事实红线——禁止使用以下表述（已完成事件不得用结果性动词）：%s\n", strings.Join(s.profile.FactGuard.ForbiddenResults, ", ")))
-	}
-	if s.profile != nil && len(s.profile.FactGuard.FutureTenseRequired) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("事实红线——未发生事件须使用以下时态标记：%s\n", strings.Join(s.profile.FactGuard.FutureTenseRequired, ", ")))
-	}
-	if s.profile != nil && s.profile.FactGuard.UserMaterialPriority {
-		promptBuilder.WriteString("事实红线——用户提供的素材优先于 AI 检索结果，如有冲突以用户素材为准\n")
-	}
-
-	// Add value orientation keywords from profile
-	if taskMode == "writing" && s.profile != nil && len(s.profile.ValueOrientation.Keywords) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("\n价值导向关键词（适当融入）：%s\n", strings.Join(s.profile.ValueOrientation.Keywords, ", ")))
-	}
-
-	// Add user materials if provided
-	if len(execCtx.UserMaterials) > 0 {
-		promptBuilder.WriteString("\n用户提供的素材：\n")
-		for i, mat := range execCtx.UserMaterials {
-			promptBuilder.WriteString(fmt.Sprintf("%d. %s\n\n", i+1, mat))
-		}
-		promptBuilder.WriteString("（用户素材优先级高于 AI 检索结果）\n")
-	}
-
-	// Inject user memory preferences (from MemoryGateStep)
-	if execCtx.MemoryContext != nil {
-		if memCtx, ok := execCtx.MemoryContext.(*memory.MemoryContext); ok {
-			if memStr := FormatMemoryForPrompt(memCtx); memStr != "" {
-				promptBuilder.WriteString(memStr)
+	// Inject conversation history (short-term memory) with smart token budget
+	if execCtx.ConversationHistory != nil {
+		if history, ok := execCtx.ConversationHistory.([]memory.ConversationMessage); ok {
+			selection := memory.SelectHistoryForPrompt(history, memory.DefaultHistorySelectionConfig())
+			for _, msg := range selection.Messages {
+				messages = append(messages, tools.LLMMessage{
+					Role:    string(msg.Role),
+					Content: msg.Content,
+				})
 			}
 		}
 	}
 
-	// Inject entity memory network context
-	if execCtx.EntityContext != nil {
-		if entityCtx, ok := execCtx.EntityContext.(*memory.EntityGraphResult); ok {
-			promptBuilder.WriteString(entityCtx.FormattedContext)
-		}
-	}
-
-	// Inject working memory summary
-	if execCtx.WorkingSummary != nil {
-		if ws, ok := execCtx.WorkingSummary.(*memory.WorkingSummary); ok {
-			if wsStr := memory.FormatWorkingSummaryForPrompt(ws); wsStr != "" {
-				promptBuilder.WriteString(wsStr)
-			}
-		}
-	}
-
-	// Add output format requirements
-	// For writing mode: use JSON title prefix + Markdown body
-	// For other modes (polish/shorten/expand): plain Markdown (title already in source text)
-	useJSONTitle := taskMode == "writing" && (s.profile == nil || s.profile.OutputFormat.UseMarkdown)
-	if useJSONTitle {
-		// When outline title is provided (guided mode), force using it
-		if execCtx.Outline != nil && execCtx.Outline.Title != "" {
-			promptBuilder.WriteString(fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行，title 必须与上方【标题】完全一致），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"%s\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", articleSeparator, execCtx.Outline.Title, articleSeparator))
-		} else {
-			promptBuilder.WriteString(fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"文章标题\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", articleSeparator, articleSeparator))
-		}
-	} else if s.profile != nil && s.profile.OutputFormat.UseMarkdown {
-		promptBuilder.WriteString(fmt.Sprintf("\n输出格式：Markdown，标题以 %s 开头\n", s.profile.OutputFormat.TitlePrefix))
-	}
-
-// Stream the article
-messages := []tools.LLMMessage{
-	{Role: "system", Content: systemPrompt},
-}
-
-// Inject conversation history (short-term memory) before current user message
-if execCtx.ConversationHistory != nil {
-	if history, ok := execCtx.ConversationHistory.([]memory.ConversationMessage); ok {
-		for _, msg := range history {
-			content := msg.Content
-			// 安全截断过长的历史消息，避免 token 溢出
-			maxLen := 800
-			if msg.Role == memory.RoleAssistant && msg.ContentType == memory.ContentArticle {
-				maxLen = 500
-			}
-			if len(content) > maxLen {
-				content = memory.SafeTruncate(content, maxLen) + "...（已截断）"
-			}
-			messages = append(messages, tools.LLMMessage{
-				Role:    string(msg.Role),
-				Content: content,
-			})
-		}
-	}
-}
-
-messages = append(messages, tools.LLMMessage{
-	Role: "user", Content: promptBuilder.String(),
-})
+	messages = append(messages, tools.LLMMessage{
+		Role: "user", Content: pb.String(),
+	})
 
 	// Determine thinking strategy by task mode:
 	//   writing → thinking enabled (deep reasoning for article composition)
@@ -1307,6 +1145,10 @@ messages = append(messages, tools.LLMMessage{
 			streamOpts = append(streamOpts, tools.WithTemperature(adjusted))
 		}
 	}
+
+	// Determine whether JSON title prefix is expected
+	// (true for writing mode with markdown output format)
+	useJSONTitle := taskMode == "writing" && (s.profile == nil || s.profile.OutputFormat.UseMarkdown)
 
 	// State machine for JSON title prefix extraction
 	var titleBuf strings.Builder
@@ -1482,116 +1324,6 @@ messages = append(messages, tools.LLMMessage{
 	return nil
 }
 
-// buildTaskPrompt constructs the core prompt instruction differentiated by task mode.
-func (s *WriteStep) buildTaskPrompt(b *strings.Builder, taskMode string, execCtx *engine.ExecutionContext) {
-	normalizedInput := execCtx.NormalizedInput
-	if normalizedInput == "" {
-		normalizedInput = execCtx.UserInput
-	}
-
-	switch taskMode {
-	case "polish":
-		b.WriteString("请对以下文章进行润色优化。保持原文的核心观点和结构不变，重点优化语言表达、修辞效果和行文流畅度。\n\n")
-		b.WriteString("原文：\n")
-		b.WriteString(normalizedInput)
-		b.WriteString("\n\n")
-		b.WriteString("润色要求：\n")
-		b.WriteString("1. 保持原文的核心论点和逻辑结构\n")
-		b.WriteString("2. 优化遣词造句，提升表达力\n")
-		b.WriteString("3. 补充必要的修辞手法（如适用风格 Profile 中的要求）\n")
-		b.WriteString("4. 修正语病、冗余和不流畅之处\n")
-		b.WriteString("5. 标题如有需要可微调，但不可改变主旨\n\n")
-
-	case "shorten":
-		b.WriteString("请将以下文章缩短到指定字数范围内。保持核心观点和关键论证完整，删除冗余表述和重复论证。\n\n")
-		b.WriteString("原文：\n")
-		b.WriteString(normalizedInput)
-		b.WriteString("\n\n")
-		b.WriteString("缩写要求：\n")
-		b.WriteString("1. 保留原文的核心论点和主要论据\n")
-		b.WriteString("2. 删除冗余表述、重复论证和过度展开\n")
-		b.WriteString("3. 保持文章的逻辑连贯性\n")
-		b.WriteString("4. 保持原文的风格和语气\n")
-		b.WriteString("5. 标题保持不变或微调\n\n")
-
-	case "expand":
-		b.WriteString("请将以下文章扩充到指定字数范围内。在不改变核心观点的前提下，增加论证深度、补充论据和细节。\n\n")
-		b.WriteString("原文：\n")
-		b.WriteString(normalizedInput)
-		b.WriteString("\n\n")
-		b.WriteString("扩写要求：\n")
-		b.WriteString("1. 保持原文的核心论点和结构框架\n")
-		b.WriteString("2. 增加论证深度，补充具体论据和案例\n")
-		b.WriteString("3. 丰富修辞手法，增强表达力\n")
-		b.WriteString("4. 保持原文的风格和语气\n")
-		b.WriteString("5. 扩充内容须与主题紧密相关，不可偏题\n\n")
-
-	case "extract_points":
-		b.WriteString("请从以下文章中提炼核心观点，以结构化的方式输出。\n\n")
-		b.WriteString("原文：\n")
-		b.WriteString(normalizedInput)
-		b.WriteString("\n\n")
-		b.WriteString("提取要求：\n")
-		b.WriteString("1. 提炼 3-5 个核心观点，按重要性排序\n")
-		b.WriteString("2. 每个观点用一句话概括，附简要说明\n")
-		b.WriteString("3. 保持原文的价值立场，不添加新观点\n")
-		b.WriteString("4. 输出格式：\n")
-		b.WriteString("## 核心观点\n\n")
-		b.WriteString("1. **观点一**：概括（说明）\n")
-		b.WriteString("2. **观点二**：概括（说明）\n")
-		b.WriteString("3. **观点三**：概括（说明）\n\n")
-
-	default: // writing
-		topic := execCtx.UserInput
-		if execCtx.WritingTask != nil && execCtx.WritingTask.Topic != "" {
-			topic = execCtx.WritingTask.Topic
-		}
-		b.WriteString("请写一篇文章。\n\n")
-		b.WriteString(fmt.Sprintf("话题：%s\n\n", topic))
-	}
-}
-
-// appendWordLimit adds word limit instructions, preferring length_profiles per task type.
-func (s *WriteStep) appendWordLimit(b *strings.Builder, taskMode string, execCtx *engine.ExecutionContext) {
-	// Try length_profiles first (per-task-type word ranges)
-	if s.profile != nil && s.profile.LengthProfiles != nil {
-		var key string
-		switch taskMode {
-		case "polish", "shorten", "expand":
-			// Use polish_short or polish_long based on current length
-			if execCtx.WordLimit > 0 && execCtx.WordLimit <= 600 {
-				key = "polish_short"
-			} else {
-				key = "polish_long"
-			}
-		case "writing":
-			key = "writing"
-		}
-
-		if wr, ok := s.profile.LengthProfiles[key]; ok && wr.Max > 0 {
-			b.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", wr.Min, wr.Max))
-			if wr.HardLimit {
-				b.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
-			}
-			return
-		}
-	}
-
-	// Fall back to profile's global word_range
-	if s.profile != nil && s.profile.WordRange.Max > 0 {
-		b.WriteString(fmt.Sprintf("\n字数要求：%d-%d字\n", s.profile.WordRange.Min, s.profile.WordRange.Max))
-		if s.profile.WordRange.HardLimit {
-			b.WriteString("（字数限制为硬性要求，超出范围将不合格）\n")
-		}
-		return
-	}
-
-	// Fall back to execCtx.WordLimit
-	if execCtx.WordLimit > 0 {
-		b.WriteString(fmt.Sprintf("\n字数要求：约%d字\n", execCtx.WordLimit))
-	}
-}
-
 // ─── PostReviewStep ──────────────────────────────────────
 
 type PostReviewStep struct {
@@ -1677,38 +1409,8 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 	// report "missing title" since it cannot see the title in the article body.
 	var profileRules strings.Builder
 	if s.profile != nil {
-		// Fact guard
-		if len(s.profile.FactGuard.ForbiddenResults) > 0 {
-			profileRules.WriteString(fmt.Sprintf("事实红线——以下表述禁止出现在文章中（已完成事件不得用结果性动词）：%s\n", strings.Join(s.profile.FactGuard.ForbiddenResults, ", ")))
-		}
-		if len(s.profile.FactGuard.FutureTenseRequired) > 0 {
-			profileRules.WriteString(fmt.Sprintf("事实红线——未发生事件须使用以下时态标记：%s\n", strings.Join(s.profile.FactGuard.FutureTenseRequired, ", ")))
-		}
-
-		// Rhetoric requirements
-		var rhetoricParts []string
-		if s.profile.Rhetoric.RequiredMetaphor {
-			rhetoricParts = append(rhetoricParts, "核心比喻")
-		}
-		if s.profile.Rhetoric.RequiredParallelism {
-			rhetoricParts = append(rhetoricParts, "排比")
-		}
-		if s.profile.Rhetoric.RequiredRhetoricalQuestion {
-			rhetoricParts = append(rhetoricParts, "设问")
-		}
-		if len(rhetoricParts) > 0 {
-			profileRules.WriteString(fmt.Sprintf("修辞要求——必须包含：%s\n", strings.Join(rhetoricParts, "、")))
-		}
-
-		// Word range
-		if s.profile.WordRange.Max > 0 {
-			profileRules.WriteString(fmt.Sprintf("字数范围：%d-%d字\n", s.profile.WordRange.Min, s.profile.WordRange.Max))
-		}
-
-		// Structure
-		if s.profile.Structure.Type != "" {
-			profileRules.WriteString(fmt.Sprintf("结构类型：%s（%s → %s → %s）\n", s.profile.Structure.Type, s.profile.Structure.Opening, s.profile.Structure.Body, s.profile.Structure.Conclusion))
-		}
+		// Unified rendering: fact guard (P0) + rhetoric/word-range/structure (P1)
+		profileRules.WriteString(s.profile.RenderReviewCriteria())
 	}
 
 	// Inject user feedback memories (Tier 3) as additional review criteria
@@ -2204,24 +1906,10 @@ func (s *AutoFixStep) fixTitle(ctx context.Context, execCtx *engine.ExecutionCon
 		issueList += fmt.Sprintf("%d. [%s/%s] %s\n", i+1, issue.Severity, issue.Type, issue.Message)
 	}
 
-	// Build title constraints
+	// Build title constraints (unified rendering)
 	var constraints strings.Builder
 	if s.profile != nil {
-		if s.profile.TitleGuidelines.Length.Max > 0 {
-			constraints.WriteString(fmt.Sprintf("标题字数限制：%d-%d字\n",
-				s.profile.TitleGuidelines.Length.Min, s.profile.TitleGuidelines.Length.Max))
-		}
-		if s.profile.TitleGuidelines.Style != "" {
-			constraints.WriteString(fmt.Sprintf("标题风格要求：%s\n", s.profile.TitleGuidelines.Style))
-		}
-		if len(s.profile.TitleGuidelines.Examples) > 0 {
-			constraints.WriteString(fmt.Sprintf("标题参考示例：%s\n",
-				strings.Join(s.profile.TitleGuidelines.Examples, " / ")))
-		}
-		if len(s.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-			constraints.WriteString(fmt.Sprintf("标题禁止模式（正则）：%s\n",
-				strings.Join(s.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
-		}
+		constraints.WriteString(s.profile.RenderTitleConstraints())
 	}
 
 	systemMsg := "你是文章标题修正助手。根据问题列表和正文重新生成一个标题。只输出新标题（纯文本，不要引号、不要 Markdown 标记），不要解释。"

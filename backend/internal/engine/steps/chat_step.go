@@ -80,21 +80,14 @@ func (s *ChatStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext
 	}
 
 	// Inject conversation history as alternating user/assistant messages
+	// with smart token budget management (replaces old char-based truncation)
 	if execCtx.ConversationHistory != nil {
 		if history, ok := execCtx.ConversationHistory.([]memory.ConversationMessage); ok {
-			for _, msg := range history {
-				content := msg.Content
-				// 安全截断过长的历史消息，避免 token 溢出
-				maxLen := 800
-				if msg.Role == memory.RoleAssistant && msg.ContentType == memory.ContentArticle {
-					maxLen = 500 // 助手文章类历史更短
-				}
-				if len(content) > maxLen {
-					content = memory.SafeTruncate(content, maxLen) + "...（已截断）"
-				}
+			selection := memory.SelectHistoryForPrompt(history, memory.DefaultHistorySelectionConfig())
+			for _, msg := range selection.Messages {
 				messages = append(messages, tools.LLMMessage{
 					Role:    string(msg.Role),
-					Content: content,
+					Content: msg.Content,
 				})
 			}
 		}

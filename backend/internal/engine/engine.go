@@ -90,6 +90,17 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			return ErrCircuitBreaker
 		}
 
+		// ── Resume check: skip already-completed steps ──
+		// When resuming from a paused state, steps that already completed
+		// successfully should not be re-executed.
+		if isStepCompleted(execCtx, step.Name()) {
+			slog.Debug("step skipped (already completed from previous run)",
+				"trace_id", execCtx.TraceID,
+				"step", step.Name(),
+			)
+			continue
+		}
+
 		// Check if the step should be skipped
 		if skipper, ok := step.(Skipper); ok && skipper.ShouldSkip(execCtx) {
 			slog.Debug("step skipped",
@@ -291,6 +302,18 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 // GenerateTraceID creates a new unique trace ID.
 func GenerateTraceID() string {
 	return "trace_" + uuid.New().String()[:8]
+}
+
+// isStepCompleted checks whether a step has already completed successfully
+// in the ExecutionContext's StepHistory. This is used during resume after
+// a disconnect-pause to skip already-executed steps.
+func isStepCompleted(execCtx *ExecutionContext, step StepName) bool {
+	for _, rec := range execCtx.StepHistory {
+		if rec.Step == step && rec.Status == "complete" {
+			return true
+		}
+	}
+	return false
 }
 
 // updateLastStepRecord updates the last step record for the given step.
