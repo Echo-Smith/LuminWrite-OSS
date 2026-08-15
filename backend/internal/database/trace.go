@@ -89,6 +89,45 @@ func (r *TraceRepo) UpdateTraceStep(ctx context.Context, execCtx *engine.Executi
 	return err
 }
 
+// PauseTrace persists the paused state to the database so the session
+// can be resumed after a client disconnect. Unlike CompleteTrace, it
+// does not set completed_at — the trace remains "in progress".
+func (r *TraceRepo) PauseTrace(ctx context.Context, execCtx *engine.ExecutionContext) error {
+	if r.db == nil {
+		return nil
+	}
+
+	stepHistoryJSON, err := json.Marshal(execCtx.StepHistory)
+	if err != nil {
+		return err
+	}
+
+	tokenJSON, _ := json.Marshal(map[string]int{
+		"total_tokens": execCtx.TotalTokens,
+	})
+
+	_, err = r.db.ExecContext(ctx, `
+		UPDATE agent_traces
+		SET status = $1, current_step = $2, step_history = $3,
+		    article = $4, article_title = $5, token_usage = $6,
+		    reasoning_content = $7
+		WHERE trace_id = $8
+	`,
+		string(execCtx.Status),
+		string(execCtx.CurrentStep),
+		stepHistoryJSON,
+		execCtx.Article,
+		execCtx.ArticleTitle,
+		tokenJSON,
+		execCtx.ReasoningContent,
+		execCtx.TraceID,
+	)
+	if err != nil {
+		slog.Warn("failed to persist paused trace", "error", err, "trace_id", execCtx.TraceID)
+	}
+	return err
+}
+
 // CompleteTrace finalizes the trace with article, review, and token usage.
 func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.ExecutionContext) error {
 	if r.db == nil {

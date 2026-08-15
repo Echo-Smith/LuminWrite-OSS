@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 	"golang.org/x/crypto/bcrypt"
@@ -173,6 +175,70 @@ func (s *Server) handleGetSessionArtifacts(w http.ResponseWriter, r *http.Reques
 	response.OK(w, map[string]interface{}{
 		"artifacts": artifacts,
 		"task_id":   taskID,
+	})
+}
+
+// handleGetSessionEvents retrieves the append-only event log for a session.
+//
+// GET /api/v2/sessions/{traceId}/events?level=all|coarse|errors
+// Header: Authorization: Bearer <jwt>
+//
+// Returns the complete sequence of discrete events recorded during
+// the agent execution lifecycle. This enables:
+//   - Session replay: reconstruct the UI from events in order
+//   - Fork from step: identify the event boundary to re-run from
+//   - Debug/audit: inspect the exact sequence of step transitions
+//
+// The events are returned in seq order, oldest first.
+// Query parameter `event_type` can filter to specific event types
+// (e.g. ?event_type=step.start,step.complete).
+func (s *Server) handleGetSessionEvents(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	if s.sessionEvents == nil {
+		response.OK(w, map[string]interface{}{
+			"events": []interface{}{},
+			"total":  0,
+		})
+		return
+	}
+
+	// Parse optional event_type filter (comma-separated)
+	var eventTypes []string
+	if et := r.URL.Query().Get("event_type"); et != "" {
+		for _, t := range strings.Split(et, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				eventTypes = append(eventTypes, t)
+			}
+		}
+	}
+
+	events, err := s.sessionEvents.GetEvents(r.Context(), traceID, eventTypes...)
+	if err != nil {
+		slog.Warn("failed to get session events", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to retrieve events")
+		return
+	}
+
+	if events == nil {
+		events = []database.SessionEvent{}
+	}
+
+	response.OK(w, map[string]interface{}{
+		"events": events,
+		"total":  len(events),
+		"trace_id": traceID,
 	})
 }
 
