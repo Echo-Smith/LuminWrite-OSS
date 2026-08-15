@@ -8,39 +8,49 @@
 
 ## 部署步骤
 
-### 方式一：1Panel 界面部署（推荐）
+### 方式一：镜像包部署（推荐，无需服务器构建）
 
-1. **上传包到服务器**
+打包时使用了 `--images` 参数，已导出预构建的 Docker 镜像，服务器无需 build。
+
+1. **上传两个文件到服务器**
    ```bash
-   # 将 luminbuddy-v2-deploy.tar.gz 上传到服务器，例如 /opt/
-   scp luminbuddy-v2-deploy.tar.gz root@your-server:/opt/
+   # 源码包 + 镜像包上传到服务器，例如 /opt/
+   scp luminbuddy-v2-main-*.tar.gz luminbuddy-v2-images-*.tar.gz root@your-server:/opt/
    ```
 
-2. **解压**
+2. **解压源码 + 加载镜像**
    ```bash
    cd /opt
-   tar xzf luminbuddy-v2-deploy.tar.gz
+   mkdir -p luminbuddy-v2
    cd luminbuddy-v2
+   tar xzf /opt/luminbuddy-v2-main-*.tar.gz
+   docker load -i /opt/luminbuddy-v2-images-*.tar.gz
    ```
 
-3. **在 1Panel 中创建 Compose**
+3. **配置环境**
+   ```bash
+   # .env.docker 已在包中，按需修改
+   vi .env.docker
+   ```
+
+4. **在 1Panel 中创建 Compose**
    - 打开 1Panel → 容器 → 编排 → 创建编排
    - 名称：`luminbuddy-v2`
    - 路径：选择 `/opt/luminbuddy-v2` 目录
    - 1Panel 会自动识别 `docker-compose.yml`
    - 点击 **启动**
+   - **无需 --build**，镜像已预加载
 
-4. **等待构建完成**
-   - 首次构建需要下载 Go/Node 基础镜像 + 编译，约 5-10 分钟
-   - 在 1Panel 容器列表可看到 4 个容器：
+5. **验证启动**
+   - 1Panel 容器列表可看到 4 个容器：
      - `luminbuddy-v2-pg` — PostgreSQL 数据库
      - `luminbuddy-v2-docreader` — 文档解析
      - `luminbuddy-v2-backend` — 后端 API + WebSocket
      - `luminbuddy-v2-frontend` — 前端 Nginx
 
-5. **访问**
+6. **访问**
    - 本地：`http://your-server-ip:3002`
-   - 域名（需配置反向代理）：`https://luminbuddy.ericdocmic.top/v2/`
+   - 域名（需配置反向代理）：`https://luminbuddy2.ericdocmic.top/`
    - 后端 API：`http://your-server-ip:8080/health`
 
 ### 域名 + HTTPS 部署（1Panel 反向代理）
@@ -130,23 +140,47 @@ location / {
 
 > **1Panel 操作路径：** 网站 → 点击域名 → 配置 → Nginx 配置（或「自定义伪静态规则」），将上面的 location 块粘贴进去，reload nginx 即可。
 
-### 方式二：命令行部署
+### 方式二：命令行部署（有镜像包）
+
+```bash
+# 1. 解压源码
+cd /opt
+mkdir -p luminbuddy-v2 && cd luminbuddy-v2
+tar xzf /opt/luminbuddy-v2-main-*.tar.gz
+
+# 2. 加载镜像（无需 build！）
+docker load -i /opt/luminbuddy-v2-images-*.tar.gz
+
+# 3. 配置环境（.env.docker 已在包中，按需修改）
+vi .env.docker
+
+# 4. 启动
+docker compose up -d   # 无需 --build！
+
+# 5. 查看日志
+docker compose logs -f backend
+
+# 6. 查看状态
+docker compose ps
+```
+
+### 方式三：仅源码部署（服务器自行 build）
 
 ```bash
 # 解压
 cd /opt
-tar xzf luminbuddy-v2-deploy.tar.gz
+tar xzf luminbuddy-v2-main-*.tar.gz
 cd luminbuddy-v2
+
+# 配置
+cp .env.docker.example .env.docker
+vi .env.docker
 
 # 构建并启动
 docker compose up -d --build
-
-# 查看日志
-docker compose logs -f backend
-
-# 查看状态
-docker compose ps
 ```
+
+> ⚠️ 国内服务器构建慢，建议使用方式二（镜像包部署）。
 
 ## 环境配置
 

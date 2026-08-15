@@ -189,6 +189,7 @@ type AgentConfig struct {
 	MaxConcurrentPerUser int          // max concurrent per user (default 1)
 	ConfirmTimeout      time.Duration // user confirm (await_input) timeout (default 5m)
 	CircuitBreakerFails int           // consecutive LLM failures before tripping (default 3)
+	PausedSessionTTL    time.Duration // how long to keep paused sessions in memory after disconnect (default 2m)
 }
 
 // MCPServerConfig holds configuration for a single MCP server.
@@ -336,6 +337,7 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			MaxConcurrentPerUser: getEnvInt("AGENT_MAX_CONCURRENT_PER_USER", 3),
 			ConfirmTimeout:      getEnvDuration("AGENT_CONFIRM_TIMEOUT", 5*time.Minute),
 			CircuitBreakerFails: getEnvInt("AGENT_CIRCUIT_BREAKER_FAILS", 3),
+			PausedSessionTTL:    getEnvDuration("AGENT_PAUSED_SESSION_TTL", 2*time.Minute),
 		},
 		MCPServers: loadMCPServers(),
 		MCPServer: InProcessMCPServerConfig{

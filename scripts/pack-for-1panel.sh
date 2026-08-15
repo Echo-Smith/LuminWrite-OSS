@@ -111,6 +111,14 @@ for extra in \
     fi
 done
 
+# 补充 untracked 的部署必需源码文件（.go / .sql / .tsx / .ts / .sh / .yaml / .yml / .json / .mod / .sum）
+# git ls-files 只包含已跟踪文件，但新增的源码文件也是部署必需的
+while IFS= read -r uf; do
+    if ! grep -qxF "$uf" "$FILELIST"; then
+        echo "$uf" >> "$FILELIST"
+    fi
+done < <(git ls-files --others --exclude-standard | grep -E '\.(go|sql|tsx|ts|sh|yaml|yml|json|mod|sum)$')
+
 # ── 排除规则：部署不需要的文件 ────────────────────────
 # tests/          测试和基准报告
 # skills/         技能定义（部署后从 GitHub 拉取）
@@ -138,6 +146,9 @@ EXCLUDE_PATTERNS=(
     "_test.go"
     "/._"
     ".DS_Store"
+    "node_modules/"
+    "dist/"
+    ".tar.gz"
 )
 
 while IFS= read -r f; do
