@@ -192,14 +192,19 @@ type SessionResumePayload struct {
 
 // SessionResumedPayload is the server response to a session.resume.
 type SessionResumedPayload struct {
-	TraceID      string      `json:"trace_id"`
-	Status       string      `json:"status"`                        // running | paused | completed | error | not_found
-	Step         string      `json:"step,omitempty"`                // current running step
-	Article      string      `json:"article,omitempty"`             // partial article text
-	ArticleTitle string      `json:"article_title,omitempty"`       // extracted article title
-	Style        string      `json:"style,omitempty"`
-	Mode         string      `json:"mode,omitempty"`
-	Outline      interface{} `json:"outline,omitempty"`             // current outline if awaiting input
-	Review       interface{} `json:"review,omitempty"`              // review result if completed
-	Message      string      `json:"message,omitempty"`             // error message if applicable
+	TraceID          string      `json:"trace_id"`
+	Status           string      `json:"status"`                        // running | paused | completed | error | not_found
+	Step             string      `json:"step,omitempty"`                // current running step
+	Article          string      `json:"article,omitempty"`             // partial article text
+	ArticleTitle     string      `json:"article_title,omitempty"`       // extracted article title
+	Style            string      `json:"style,omitempty"`
+	Mode             string      `json:"mode,omitempty"`
+	Outline          interface{} `json:"outline,omitempty"`             // current outline if awaiting input
+	Review           interface{} `json:"review,omitempty"`              // review result if completed
+	Message          string      `json:"message,omitempty"`             // error message if applicable
+	StepHistory      interface{} `json:"step_history,omitempty"`        // completed step records
+	ReasoningContent string      `json:"reasoning_content,omitempty"`   // model's chain-of-thought
+	ConversationID   string      `json:"conversation_id,omitempty"`     // for continuing the conversation
+	UserInput        string      `json:"user_input,omitempty"`           // original user request
+	CanResume        bool        `json:"can_resume,omitempty"`          // true if paused session can be resumed
 }
