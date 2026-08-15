@@ -858,8 +858,15 @@ case "agent.paused": {
         const traceId = p.trace_id as string;
         const status = p.status as string;
         const article = p.article as string | undefined;
+        const articleTitle = p.article_title as string | undefined;
         const outline = p.outline;
         const review = p.review;
+        const stepHistory = p.step_history as Array<Record<string, unknown>> | undefined;
+        const reasoningContent = p.reasoning_content as string | undefined;
+        const conversationId = p.conversation_id as string | undefined;
+        const userInput = p.user_input as string | undefined;
+        const style = p.style as string | undefined;
+        const mode = p.mode as string | undefined;
 
         if (status === "not_found") {
           console.warn("Session resume failed:", p.message);
@@ -884,41 +891,72 @@ case "agent.paused": {
           ...s,
           traceId,
           status: status as WritingSession["status"],
+          style: style || s.style,
+          mode: mode || s.mode,
+          articleTitle: articleTitle || s.articleTitle,
         }));
 
-        // If there's a partial article, restore it as a text part
+        // Rebuild assistant message parts from step_history + reasoning + article + outline + review
+        // (mirrors loadSessionDetail's reconstruction logic)
+        const assistantParts: MessagePart[] = [];
+
+        // Rebuild tool-call parts from step_history
+        if (stepHistory && Array.isArray(stepHistory)) {
+          for (const step of stepHistory) {
+            assistantParts.push({
+              type: "tool-call",
+              toolName: step.step as AgentStepName,
+              status: (step.status === "running" ? "running" : "complete") as AgentStepStatus,
+              startedAt: step.startedAt ? new Date(step.started_at as string).getTime() : undefined,
+              completedAt: step.completedAt ? new Date(step.completed_at as string).getTime() : undefined,
+              durationMs: step.duration_ms as number | undefined,
+              result: step.result,
+              error: step.error as string | undefined,
+            });
+          }
+        }
+
+        // Restore reasoning (thinking) content
+        if (reasoningContent) {
+          assistantParts.push({ type: "reasoning", text: reasoningContent });
+        }
+
+        // Restore article text
         if (article) {
-          const articleTitle = p.article_title as string | undefined;
-          get()._updateLastAssistantMessage((m) => ({
-            ...m,
-            articleTitle: articleTitle || m.articleTitle,
-            parts: [
-              ...m.parts.filter((part) => part.type !== "text"),
-              { type: "text", text: article, streaming: status === "running" },
-            ],
-          }));
+          assistantParts.push({ type: "text", text: article, streaming: status === "running" });
         }
 
-        // If there's an outline awaiting confirmation
+        // Restore outline
         if (outline) {
-          get()._updateLastAssistantMessage((m) => ({
-            ...m,
-            parts: [
-              ...m.parts.filter((part) => !(part.type === "data" && (part as DataPart).dataType === "outline")),
-              { type: "data", dataType: "outline" as const, data: outline },
-            ],
-          }));
+          assistantParts.push({ type: "data", dataType: "outline" as const, data: outline });
         }
 
-        // If there's a review result
+        // Restore review result
         if (review) {
-          get()._updateLastAssistantMessage((m) => ({
-            ...m,
-            parts: [
-              ...m.parts.filter((part) => !(part.type === "data" && (part as DataPart).dataType === "review")),
-              { type: "data", dataType: "review" as const, data: review },
-            ],
-          }));
+          assistantParts.push({ type: "data", dataType: "review" as const, data: review });
+        }
+
+        // Replace assistant message parts with the rebuilt set
+        get()._updateLastAssistantMessage((m) => ({
+          ...m,
+          articleTitle: articleTitle || m.articleTitle,
+          parts: assistantParts.length > 0 ? assistantParts : m.parts,
+        }));
+
+        // Restore user input as the first user message if the session is from DB
+        // (in-memory resume already has the user message, only restore if missing)
+        if (userInput) {
+          get()._updateActiveSession((s) => {
+            const hasUserMsg = s.messages.some((m) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text === userInput));
+            if (hasUserMsg) return s;
+            const userMsg: ChatMessage = {
+              id: `msg-user-${traceId}`,
+              role: "user",
+              parts: [{ type: "text", text: userInput }],
+              createdAt: Date.now(),
+            };
+            return { ...s, messages: [userMsg, ...s.messages] };
+          });
         }
 
         break;

@@ -37,8 +37,8 @@ export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
-  // Guest 模式
-  const [guestId, setGuestId] = useState("");
+  // Guest 模式 — 不需要输入，直接创建访客
+  // (原来的 user_id 模式已被移除，访客必须走 /auth/guest 端点创建真实记录)
 
   // Passkey 注册模式
   const [passkeyName, setPasskeyName] = useState("");
@@ -85,14 +85,13 @@ export function LoginPage() {
   };
 
   const handleGuestLogin = async () => {
-    const id = guestId.trim() || `guest-${Date.now()}`;
     setLoading(true);
     setError("");
-    const result = await authStore.login({ user_id: id });
+    const result = await authStore.guestLogin();
     if (result.ok) {
       navigate(redirectTo, { replace: true });
     } else {
-      setError(result.message || "登录失败，请重试 — 请确认后端服务正在运行");
+      setError(result.message || "访客登录失败，请确认后端服务正在运行");
     }
     setLoading(false);
   };
@@ -307,18 +306,8 @@ export function LoginPage() {
 
             {/* 访客 */}
             <TabsContent value="guest" className="space-y-3 pt-4">
-              <div>
-                <Label>用户标识（可选）</Label>
-                <Input
-                  className="mt-1.5"
-                  placeholder="留空将自动生成"
-                  value={guestId}
-                  onChange={(e) => setGuestId(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleGuestLogin()}
-                />
-              </div>
               <p className="text-xs text-muted-foreground">
-                访客模式可使用写作功能，但无法管理后台。登录后 token 将保存在本地，刷新页面不丢失。
+                访客模式可使用写作功能，但无法管理后台。点击下方按钮将自动创建访客账号，登录后 token 保存在本地。
               </p>
               <Button
                 variant="outline"

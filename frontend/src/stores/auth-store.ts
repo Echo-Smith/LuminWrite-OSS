@@ -317,6 +317,8 @@ const ERROR_MESSAGES_ZH: Record<string, string> = {
   weak_password: "密码至少 6 位",
   bad_request: "请求参数有误",
   network_error: "网络错误，请检查连接",
+  guest_failed: "访客登录失败，请确认后端服务正在运行",
+  db_unavailable: "数据库不可用，请联系管理员",
 };
 
 function localizeError(code: string, fallback: string): string {
@@ -330,6 +332,15 @@ export const authStore = {
       return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
     }
     useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in);
+    return { ok: true };
+  },
+
+  guestLogin: async (): Promise<AuthResult> => {
+    const result = await callGuestAPI();
+    if (!result) {
+      return { ok: false, code: "guest_failed", message: "访客登录失败，请确认后端服务正在运行" };
+    }
+    useAuthStore.getState().login(result.token, result.user_id, result.username || "", result.role, result.expires_in);
     return { ok: true };
   },
 
