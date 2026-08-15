@@ -143,16 +143,18 @@ func (w *WebAuthnService) GenerateUserID() (string, error) {
 }
 
 // CreateRegistrationChallenge creates a new registration challenge.
-func (w *WebAuthnService) CreateRegistrationChallenge(userName, displayName string) (*RegistrationChallenge, error) {
+// The userID parameter is the database user ID — it will be base64url-encoded
+// and used as the WebAuthn user.id field. This ensures the userHandle returned
+// during authentication can be used to look up the user.
+func (w *WebAuthnService) CreateRegistrationChallenge(userName, displayName, dbUserID string) (*RegistrationChallenge, error) {
 	challenge, err := w.GenerateChallenge()
 	if err != nil {
 		return nil, err
 	}
 
-	userID, err := w.GenerateUserID()
-	if err != nil {
-		return nil, err
-	}
+	// Use the database user ID as the WebAuthn user.id (base64url-encoded)
+	// This ensures userHandle during login matches what we stored in the DB.
+	userID := base64.RawURLEncoding.EncodeToString([]byte(dbUserID))
 
 	rc := &RegistrationChallenge{
 		Challenge:       challenge,
@@ -864,7 +866,7 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		displayName = req.Name
 	}
 
-	challenge, err := s.webauthn.CreateRegistrationChallenge(req.UserName, displayName)
+	challenge, err := s.webauthn.CreateRegistrationChallenge(req.UserName, displayName, req.UserID)
 	if err != nil {
 		slog.Error("failed to create registration challenge", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to create challenge")
@@ -931,12 +933,17 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 
 	// Store credential in database
 	if s.adminRepo != nil && s.adminRepo.DB() != nil {
+		// Ensure transports is never nil (use empty slice for pgx compatibility)
+		transports := cred.Transports
+		if transports == nil {
+			transports = []string{}
+		}
 		_, err := s.adminRepo.DB().ExecContext(r.Context(), `
 			INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, device_type, backed_up, name, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, 'single_device', false, $8, NOW())
 			ON CONFLICT (credential_id) DO NOTHING
 		`, sc.userID, cred.CredentialID, cred.PublicKey, cred.AttestationType, cred.AAGUID,
-			cred.SignCount, fmt.Sprintf("{%s}", strings.Join(cred.Transports, ",")), sc.userInfo.DisplayName)
+			cred.SignCount, transports, sc.userInfo.DisplayName)
 		if err != nil {
 			slog.Error("failed to store passkey credential", "error", err)
 			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to store credential")
@@ -1059,9 +1066,26 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 		WHERE credential_id = $1
 	`, resp.RawID).Scan(&userID, &storedPubKey, &storedCount)
 	if err != nil {
-		slog.Warn("passkey credential not found", "credential_id", resp.RawID[:16]+"...", "error", err)
-		response.Err(w, http.StatusUnauthorized, "invalid_credentials", "credential not found")
-		return
+		// Fallback: if credential_id lookup failed, try using userHandle
+		// (discoverable credentials / username-less login).
+		// userHandle is the base64url-encoded database user ID that we
+		// set during registration.
+		if resp.UserHandle != "" {
+			handleBytes, decodeErr := base64.RawURLEncoding.DecodeString(resp.UserHandle)
+			if decodeErr == nil {
+				dbUserID := string(handleBytes)
+				err = s.adminRepo.DB().QueryRowContext(r.Context(), `
+					SELECT user_id, public_key, sign_count
+					FROM passkey_credentials
+					WHERE user_id = $1 AND credential_id = $2
+				`, dbUserID, resp.RawID).Scan(&userID, &storedPubKey, &storedCount)
+			}
+		}
+		if err != nil {
+			slog.Warn("passkey credential not found", "credential_id", resp.RawID, "error", err)
+			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "credential not found")
+			return
+		}
 	}
 
 	// Verify the authentication response

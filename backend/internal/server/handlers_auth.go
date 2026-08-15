@@ -61,15 +61,43 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mode 3: Anonymous/guest login (for public API access with rate limits)
+	// Mode 3: User ID login (for re-auth of existing users, e.g. after token expiry)
+	// This mode verifies the user exists in the database before issuing a token.
+	// It does NOT allow creating new users or impersonating admin.
 	if req.UserID != "" {
-		username := s.lookupUsername(r.Context(), req.UserID)
-		s.issueToken(w, req.UserID, "user", username)
+		// Block admin impersonation via user_id path — admin must use password or API key
+		if req.UserID == AdminUserID {
+			slog.Warn("login: blocked admin impersonation via user_id", "user_id", req.UserID)
+			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "admin login requires password or API key")
+			return
+		}
+
+		if s.adminRepo == nil || s.adminRepo.DB() == nil {
+			response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+			return
+		}
+
+		// Verify the user exists in the database and get their role
+		var (
+			dbUserID string
+			roleVal  string
+		)
+		err := s.adminRepo.DB().QueryRowContext(r.Context(), `
+			SELECT id::text, COALESCE(role, 'user') FROM users WHERE id = $1::uuid
+		`, req.UserID).Scan(&dbUserID, &roleVal)
+		if err != nil {
+			slog.Warn("login: user_id not found in database", "user_id", req.UserID, "error", err)
+			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "user not found")
+			return
+		}
+
+		username := s.lookupUsername(r.Context(), dbUserID)
+		s.issueToken(w, dbUserID, roleVal, username)
 		return
 	}
 
 	response.Err(w, http.StatusBadRequest, "bad_request",
-		"provide username/password, api_key, or user_id")
+		"provide username/password or api_key; for guest access use POST /api/v2/auth/guest")
 }
 
 // handleRefreshToken refreshes an existing valid JWT token.
