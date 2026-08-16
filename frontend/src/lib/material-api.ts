@@ -111,6 +111,13 @@ export async function deleteMaterial(id: string): Promise<void> {
   await fetchWithAuth(`${BASE}/materials/${id}`, { method: "DELETE" });
 }
 
+/** 获取单个素材的完整内容 */
+export async function getMaterialContent(id: string): Promise<UserMaterial> {
+  const json = await fetchWithAuth(`${BASE}/materials/${id}`);
+  const data = await json.json();
+  return (data.data ?? data) as UserMaterial;
+}
+
 /** 混合检索用户素材库 */
 export async function searchMaterials(
   query: string,

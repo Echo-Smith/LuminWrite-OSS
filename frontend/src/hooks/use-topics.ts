@@ -35,7 +35,7 @@ export function useTopics() {
   // ── 本地状态（每次 mount 初始化） ──
   const [topics, setTopics] = useState<Topic[]>([]);
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState<string>("user");
+  const [filter, setFilter] = useState<string>("hot");
 
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [fetchingHot, setFetchingHot] = useState(false);
@@ -230,6 +230,20 @@ export function useTopics() {
     } catch { /* ignore */ }
   }, [getAuthHeaders]);
 
+  // ── 刷新写作角度（换一批） ──
+  const refreshAngles = useCallback(async () => {
+    if (!detailTopic?.id) return;
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`/api/v2/topics/${detailTopic.id}/detail?force=1`, { headers: getAuthHeaders() });
+      const detailJson = await res.json();
+      const d = (detailJson.data ?? detailJson) as Record<string, unknown>;
+      setWritingAngles((d.writing_angles as WritingAngle[]) ?? []);
+      setRelatedArticles((d.related_articles as RelatedArticle[]) ?? []);
+    } catch { /* ignore */ }
+    finally { setDetailLoading(false); }
+  }, [detailTopic, getAuthHeaders]);
+
   return {
     // state
     topics, loading, filter, setFilter,
@@ -241,5 +255,6 @@ export function useTopics() {
     fetchHotTopics, refreshRecs, openDetail, setDetailTopic,
     toggleFavorite, toggleFavoriteFromCard,
     addTopic, deleteTopic, updateTopic,
+    refreshAngles,
   };
 }

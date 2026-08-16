@@ -1,11 +1,10 @@
 /**
  * TopicCard — 单个选题卡片
  */
-import { Star, Trash2, Pencil, Clock, Database } from "lucide-react";
+import { Trash2, Pencil, Clock, Database } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { platformLabel, platformColor } from "@/lib/topic-helpers";
 import type { Topic } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { listTopicMaterials } from "@/lib/material-api";
 
@@ -13,12 +12,11 @@ interface TopicCardProps {
   topic: Topic;
   favorited: boolean;
   onOpen: (topic: Topic) => void;
-  onToggleFavorite: (topic: Topic) => void;
   onDelete: (topicId: string) => void;
   onEdit?: (topic: Topic) => void;
 }
 
-export function TopicCard({ topic, favorited, onOpen, onToggleFavorite, onDelete, onEdit }: TopicCardProps) {
+export function TopicCard({ topic, favorited, onOpen, onDelete, onEdit }: TopicCardProps) {
   const [materialCount, setMaterialCount] = useState<number | null>(null);
 
   useEffect(() => {
@@ -35,16 +33,6 @@ export function TopicCard({ topic, favorited, onOpen, onToggleFavorite, onDelete
       className="group relative cursor-pointer rounded-lg border p-4 transition-shadow hover:shadow-md"
       onClick={() => onOpen(topic)}
     >
-      <button
-        className="absolute right-3 top-3 opacity-60 transition-opacity hover:opacity-100"
-        onClick={(e) => { e.stopPropagation(); onToggleFavorite(topic); }}
-      >
-        <Star className={cn(
-          "h-4 w-4",
-          favorited ? "fill-yellow-400 text-yellow-400" : "text-gray-400 dark:text-gray-500"
-        )} />
-      </button>
-
       {topic.source === "user" && (
         <div className="absolute right-3 top-8 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-60">
           {onEdit && (
@@ -89,7 +77,7 @@ export function TopicCard({ topic, favorited, onOpen, onToggleFavorite, onDelete
             </span>
           ) : topic.favorited_at ? (
             <span className="flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-500">
-              <Star className="h-3 w-3 fill-yellow-400" />
+              <Clock className="h-3 w-3" />
               {new Date(topic.favorited_at).toLocaleDateString()}
             </span>
           ) : <span />}

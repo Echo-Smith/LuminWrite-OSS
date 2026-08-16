@@ -438,6 +438,20 @@ func (c *SearchClient) FetchHotTopics(ctx context.Context, limit int) []map[stri
 		}
 	}
 
+	// ── Deduplicate by title (case-insensitive) ──
+	seen := make(map[string]bool)
+	deduped := make([]map[string]interface{}, 0, len(results))
+	for _, r := range results {
+		title, _ := r["title"].(string)
+		key := strings.ToLower(strings.TrimSpace(title))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		deduped = append(deduped, r)
+	}
+	results = deduped
+
 	if len(results) > limit*10 {
 		results = results[:limit*10]
 	}

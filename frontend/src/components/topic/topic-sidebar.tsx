@@ -2,7 +2,7 @@
  * TopicSidebar — 左侧导航栏
  */
 import {
-  Flame, Star, ChevronDown, ChevronRight, ListChecks, PenLine,
+  Flame, Star, ChevronDown, ChevronRight, PenLine,
 } from "lucide-react";
 import { platformLabel, platformDotColor } from "@/lib/topic-helpers";
 import type { PlatformStat } from "@/lib/types";
@@ -41,11 +41,6 @@ export function TopicSidebar({
   return (
     <aside className="w-56 flex-shrink-0 border-r bg-muted/30">
       <nav className="flex flex-col gap-0.5 p-3">
-        <button className={navItemClass(filter === "all")} onClick={() => setFilter("all")}>
-          <ListChecks className="h-4 w-4" />
-          全部选题
-        </button>
-
         {/* 热搜 (expandable) */}
         <div>
           <button

@@ -40,18 +40,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const switchSession = useAgentStore((s) => s.switchSession);
   const deleteSession = useAgentStore((s) => s.deleteSession);
 
-  const cancelWriting = useAgentStore((s) => s.cancelWriting);
-
   // 删除确认状态
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
-
-  // 取消写作确认状态
-  const [cancelTarget, setCancelTarget] = useState<{ id: string; title: string } | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-
-  // 已点击过的进行中会话（黄点点击一次后消失）
-  const [acknowledgedRunning, setAcknowledgedRunning] = useState<Set<string>>(new Set());
 
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
@@ -65,16 +56,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     deleteSession(deleteTarget.id);
     setDeleting(false);
     setDeleteTarget(null);
-  };
-
-  const handleConfirmCancel = async () => {
-    if (!cancelTarget) return;
-    setCancelling(true);
-    // 先切换到该会话再取消
-    switchSession(cancelTarget.id);
-    cancelWriting();
-    setCancelling(false);
-    setCancelTarget(null);
   };
 
   // 认证状态
@@ -164,7 +145,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               theme={theme}
               onToggleTheme={toggleTheme}
               onNavigate={(path) => navigate(path)}
-              onLogout={() => { logout(); navigate("/write", { replace: true }); }}
+              onLogout={() => {
+                logout();
+                // 重新初始化（自动创建游客 session），然后返回写作页
+                useAuthStore.getState().init();
+                navigate("/write", { replace: true });
+              }}
               onRegister={handleRegister}
             />
           </PopoverContent>
@@ -248,25 +234,19 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       : "hover:bg-accent/50 text-muted-foreground"
                   )}
                   onClick={() => {
-                    // 正在进行的写作 → 标记已知晓 + 提示取消
-                    if (session.status === "running" || session.status === "paused") {
-                      setAcknowledgedRunning((prev) => new Set(prev).add(session.id));
-                      setCancelTarget({ id: session.id, title: session.title });
-                      return;
-                    }
+                    // 直接切换会话（不再弹出确认对话框）
                     switchSession(session.id);
                   }}
                 >
-                  {/* 状态圆点 — 进行中黄点点击一次后消失 */}
+                  {/* 状态圆点 — 进行中显示黄色脉冲 */}
                   {(() => {
                     const isRunning = session.status === "running" || session.status === "paused";
-                    const showYellow = isRunning && !acknowledgedRunning.has(session.id);
-                    const dotColor = showYellow
+                    const dotColor = isRunning
                       ? "bg-amber-400"
                       : session.status === "error"
                         ? "bg-red-400"
                         : "bg-blue-400";
-                    return <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />;
+                    return (<span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor, isRunning && "animate-pulse")} />);
                   })()}
                   <span className="flex-1 min-w-0 truncate text-sm">{session.title}</span>
                   <button
@@ -323,7 +303,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               theme={theme}
               onToggleTheme={toggleTheme}
               onNavigate={(path) => navigate(path)}
-              onLogout={() => { logout(); navigate("/write", { replace: true }); }}
+              onLogout={() => {
+                logout();
+                useAuthStore.getState().init();
+                navigate("/write", { replace: true });
+              }}
               onRegister={handleRegister}
             />
           </PopoverContent>
@@ -353,28 +337,40 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </DialogContent>
       </Dialog>
 
-      {/* 取消写作确认对话框 */}
-      <Dialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-              该写作正在进行中
-            </DialogTitle>
-            <DialogDescription>
-              「{cancelTarget?.title}」正在写作中，点击取消将终止当前任务。确定要取消吗？
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" size="sm" onClick={() => setCancelTarget(null)} disabled={cancelling}>
-              返回
-            </Button>
-            <Button variant="destructive" size="sm" onClick={handleConfirmCancel} disabled={cancelling}>
-              {cancelling ? "取消中..." : "确认取消写作"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 写作任务持续运行通知条 */}
+      <RunningSessionBar />
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// 写作任务持续运行通知条 — 当非活跃会话有写作在进行时显示
+// ════════════════════════════════════════════════════════════
+
+function RunningSessionBar() {
+  const sessions = useAgentStore((s) => s.sessions);
+  const activeSessionId = useAgentStore((s) => s.activeSessionId);
+  const switchSession = useAgentStore((s) => s.switchSession);
+
+  // 找到非当前活跃的、正在运行或暂停的会话
+  const runningSession = sessions.find(
+    (s) => s.id !== activeSessionId && (s.status === "running" || s.status === "paused")
+  );
+
+  if (!runningSession) return null;
+
+  return (
+    <div
+      className="absolute bottom-0 left-0 right-0 z-20 flex items-center gap-2 border-t bg-amber-50/95 dark:bg-amber-950/50 px-3 py-2 backdrop-blur-sm cursor-pointer transition-ui hover:bg-amber-100 dark:hover:bg-amber-900/60 anim-slide-up"
+      onClick={() => switchSession(runningSession.id)}
+    >
+      <span className="flex h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-500" />
+      <span className="flex-1 min-w-0 truncate text-xs font-medium text-amber-900 dark:text-amber-200">
+        「{runningSession.title}」正在写作中
+      </span>
+      <span className="text-xs text-amber-700 dark:text-amber-400 shrink-0">
+        点击返回 →
+      </span>
     </div>
   );
 }

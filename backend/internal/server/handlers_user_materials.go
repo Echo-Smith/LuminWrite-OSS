@@ -260,6 +260,35 @@ func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleUserMaterialGet returns a single material's full details.
+func (s *Server) handleUserMaterialGet(w http.ResponseWriter, r *http.Request) {
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
+		return
+	}
+
+	userID := s.getUserID(r)
+	if userID == "" {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	materialID := chi.URLParam(r, "id")
+	if materialID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "material ID is required")
+		return
+	}
+
+	mat, err := s.kbMgr.GetMaterial(r.Context(), userID, materialID)
+	if err != nil || mat == nil {
+		slog.Warn("get material failed", "error", err, "material_id", materialID)
+		response.Err(w, http.StatusNotFound, "not_found", "material not found")
+		return
+	}
+
+	response.OK(w, mat)
+}
+
 // handleUserMaterialDelete deletes a material (from local KB + metadata).
 func (s *Server) handleUserMaterialDelete(w http.ResponseWriter, r *http.Request) {
 	if s.kbMgr == nil {

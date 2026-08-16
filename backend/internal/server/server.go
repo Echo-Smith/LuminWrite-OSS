@@ -618,6 +618,7 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 
 		// User Materials (Scheme B: per-user WeKnora KB)
 		r.With(s.jwtAuthMiddleware).Get("/materials", s.handleUserMaterialList)
+		r.With(s.jwtAuthMiddleware).Get("/materials/{id}", s.handleUserMaterialGet)
 		r.With(s.jwtAuthMiddleware).Post("/materials", s.handleUserMaterialCreate)
 		r.With(s.jwtAuthMiddleware).Post("/materials/upload", s.handleUserMaterialUpload)
 		r.With(s.jwtAuthMiddleware).Delete("/materials/{id}", s.handleUserMaterialDelete)
@@ -676,7 +677,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/auth/verify", s.handleVerifyToken)
 
 		// Passkey / WebAuthn
-		r.Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
+		r.With(s.jwtAuthMiddleware).Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
 		r.Post("/auth/passkey/register/complete", s.handlePasskeyRegisterComplete)
 		r.Post("/auth/passkey/login/begin", s.handlePasskeyLoginBegin)
 		r.Post("/auth/passkey/login/complete", s.handlePasskeyLoginComplete)
@@ -690,6 +691,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/artifacts", s.handleGetSessionArtifacts)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/events", s.handleGetSessionEvents)
 		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
+		r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
 
 		// Admin (protected by admin token)
 		r.Route("/admin", func(r chi.Router) {
