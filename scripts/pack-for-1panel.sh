@@ -88,7 +88,7 @@ step "2/6 构建文件清单（精简模式）"
 # 临时文件列表
 FILELIST="$(mktemp /tmp/luminbuddy-filelist.XXXXXX)"
 FILTERED_FILELIST="$(mktemp /tmp/luminbuddy-filtered.XXXXXX)"
-TEMP_TAR="$(mktemp /tmp/luminbuddy-archive.XXXXXX.tar)"
+TEMP_TAR="$(mktemp /tmp/luminbuddy-archive.XXXXXX)"
 trap 'rm -f "$FILELIST" "$FILTERED_FILELIST" "$TEMP_TAR"' EXIT
 
 # 使用 git ls-files 获取版本控制文件
@@ -159,6 +159,10 @@ while IFS= read -r f; do
             break
         fi
     done
+    # 跳过已删除的文件（git ls-files 包含已暂存删除但工作区不存在的文件）
+    if [ "$skip" = false ] && [ ! -e "$PROJECT_DIR/$f" ]; then
+        skip=true
+    fi
     if [ "$skip" = false ]; then
         echo "$f" >> "$FILTERED_FILELIST"
     fi
