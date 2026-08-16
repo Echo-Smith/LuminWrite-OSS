@@ -47,7 +47,7 @@ type Orchestrator struct {
 	retryMap  map[string]int // key: taskID+"|"+role → current retry count
 }
 
-// AgentExecutorAdapter 适配器 — 将 V2 的 Step/UnifiedAgent 适配为 AgentExecutor
+// AgentExecutorAdapter 适配器 — 将 V2 的 Step/Harness 适配为 AgentExecutor
 type AgentExecutorAdapter interface {
 	Role() AgentRole
 	Execute(ctx context.Context, ac *AgentContext, task *Task) (*Artifact, error)

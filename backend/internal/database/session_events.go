@@ -60,11 +60,13 @@ func (r *SessionEventRepo) AppendEvent(ctx context.Context, traceID, eventType, 
 	dataJSON, _ := json.Marshal(data)
 
 	// Use a CTE to atomically get the next sequence number and insert
+	// Note: $1 is used twice (in VALUES and in subquery WHERE), so we
+	// explicitly cast to VARCHAR to avoid "inconsistent types deduced for parameter $1"
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO session_events (trace_id, seq, event_type, step, data, created_at)
 		VALUES (
-			$1,
-			COALESCE((SELECT MAX(seq) + 1 FROM session_events WHERE trace_id = $1), 1),
+			$1::varchar,
+			COALESCE((SELECT MAX(seq) + 1 FROM session_events WHERE trace_id = $1::varchar), 1),
 			$2, $3, $4, NOW()
 		)
 	`, traceID, eventType, step, string(dataJSON))
@@ -97,8 +99,8 @@ func (r *SessionEventRepo) AppendEventBatch(ctx context.Context, events []Sessio
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO session_events (trace_id, seq, event_type, step, data, created_at)
 			VALUES (
-				$1,
-				COALESCE((SELECT MAX(seq) + 1 FROM session_events WHERE trace_id = $1), 1),
+				$1::varchar,
+				COALESCE((SELECT MAX(seq) + 1 FROM session_events WHERE trace_id = $1::varchar), 1),
 				$2, $3, $4, NOW()
 			)
 		`, evt.TraceID, evt.EventType, evt.Step, string(dataJSON))

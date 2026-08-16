@@ -19,14 +19,14 @@ import (
 //   - Tool categories for grouping in the UI
 //
 // The graph is built by constructing a temporary ToolRegistry with
-// the same tools and descriptors used by the UnifiedAgent.
+// the same tools and descriptors used by the pipeline agent.
 
 // handleToolGraph returns the tool dependency graph.
 //
 // GET /api/v2/tools/graph
 //
 // This endpoint constructs a temporary ToolRegistry (the same one used
-// by the UnifiedAgent) and returns its dependency graph. It requires
+// by the pipeline agent) and returns its dependency graph. It requires
 // no authentication because the tool graph is structural metadata,
 // not user-specific data.
 //
@@ -60,7 +60,7 @@ import (
 //	  ]
 //	}
 func (s *Server) handleToolGraph(w http.ResponseWriter, r *http.Request) {
-	// Build a temporary registry with the same tools used by the UnifiedAgent.
+	// Build a temporary registry with the same tools used by the pipeline agent.
 	// We use a nil execCtx (mode="auto") to include all default tools.
 	// The guided-only "outline" tool will be included if mode is "guided",
 	// but for the graph endpoint we show the full superset.

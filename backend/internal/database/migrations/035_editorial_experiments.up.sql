@@ -1,4 +1,4 @@
--- 对照实验框架：同一选题跑 Pipeline / UnifiedAgent / Editorial 三组对比
+-- 对照实验框架：同一选题跑 Pipeline / Harness / Editorial 三组对比
 CREATE TABLE IF NOT EXISTS editorial_experiments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,

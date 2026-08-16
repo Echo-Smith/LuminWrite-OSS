@@ -16,6 +16,16 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
+// harnessAgentRunner 适配 Harness 到 agent runner 接口。
+type harnessAgentRunner struct {
+	harness *agent.Harness
+	session *agent.WritingSession
+}
+
+func (r *harnessAgentRunner) Run(ctx context.Context, execCtx *engine.ExecutionContext) error {
+	return r.harness.Run(ctx, execCtx, r.session)
+}
+
 // ExperimentRunner 对照实验运行器
 type ExperimentRunner struct {
 	store     *Store
@@ -110,7 +120,7 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 		runFn    func(ctx context.Context, topic, styleSlug string, frozen []engine.SearchResult) ExperimentMetrics
 	}{
 		{name: "pipeline", delay: 0, runFn: r.runPipelineMode},
-		{name: "unified", delay: 10 * time.Second, runFn: r.runUnifiedMode},
+		{name: "harness", delay: 10 * time.Second, runFn: r.runHarnessMode},
 		{name: "editorial", delay: 20 * time.Second, runFn: r.runEditorialMode},
 	}
 
@@ -224,7 +234,7 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 
 	emitter := &noopEmitter{}
 
-	// 构建 Pipeline steps
+	// 构建 Pipeline steps（含审校+修正，与生产 Pipeline 一致）
 	var pipelineSteps []engine.Step
 	pipelineSteps = append(pipelineSteps,
 		steps.NewQueryPlanStep(r.llm),
@@ -232,13 +242,23 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 		steps.NewRelevanceStepWithEmbedding(r.embedding),
 		steps.NewCompressStep(r.llm),
 	)
+	var styleProfile *profile.StyleProfile
 	if r.profiles != nil {
-		if p, ok := r.profiles.Get(styleSlug); ok {
-			pipelineSteps = append(pipelineSteps,
-				steps.NewOutlineStep(r.llm),
-				steps.NewWriteStepWithSearch(r.llm, p, r.search),
-			)
-		}
+		styleProfile, _ = r.profiles.Get(styleSlug)
+	}
+	if styleProfile != nil {
+		pipelineSteps = append(pipelineSteps,
+			steps.NewOutlineStep(r.llm),
+			steps.NewWriteStepWithSearch(r.llm, styleProfile, r.search),
+			steps.NewPostReviewStepWithProfile(r.llm, nil, styleProfile),
+			steps.NewAutoFixStepWithProfile(r.llm, styleProfile),
+			steps.NewPostReviewStepWithProfile(r.llm, nil, styleProfile), // re-review after fix
+		)
+	} else {
+		pipelineSteps = append(pipelineSteps,
+			steps.NewOutlineStep(r.llm),
+			steps.NewWriteStepWithSearch(r.llm, nil, r.search),
+		)
 	}
 
 	eng := engine.NewAgentEngine(emitter, pipelineSteps)
@@ -261,7 +281,8 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 		excerpt = string([]rune(excerpt)[:200])
 	}
 
-	return ExperimentMetrics{
+	// 从 execCtx.ReviewResult 采集审校结果
+	metrics := ExperimentMetrics{
 		Mode:           "pipeline",
 		TokenCost:      execCtx.TotalTokens,
 		DurationMs:     time.Since(start).Milliseconds(),
@@ -270,20 +291,32 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 		ArticleTitle:   execCtx.ArticleTitle,
 		ArticleExcerpt: excerpt,
 		FullArticle:    execCtx.Article,
-		QualityScore:   0.5, // Pipeline 无审校，默认中等
 	}
+	if execCtx.ReviewResult != nil {
+		metrics.ReviewPassed = execCtx.ReviewResult.Passed
+		metrics.IssueCount = len(execCtx.ReviewResult.Issues)
+		if execCtx.ReviewResult.Passed {
+			metrics.QualityScore = 0.8
+		} else {
+			metrics.QualityScore = 0.5
+		}
+	} else {
+		metrics.QualityScore = 0.5 // 无审校结果时默认中等
+	}
+
+	return metrics
 }
 
-// runUnifiedMode 运行 Unified Agent 模式
-func (r *ExperimentRunner) runUnifiedMode(ctx context.Context, topic, styleSlug string, frozen []engine.SearchResult) ExperimentMetrics {
+// runHarnessMode 运行 Harness 模式（架构 C）
+func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug string, frozen []engine.SearchResult) ExperimentMetrics {
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("unified mode panicked", "error", r)
+			slog.Error("harness mode panicked", "error", r)
 		}
 	}()
 
-	execCtx := engine.NewExecutionContext("exp_unified_"+time.Now().Format("150405"), "experiment", topic)
+	execCtx := engine.NewExecutionContext("exp_harness_"+time.Now().Format("150405"), "experiment", topic)
 	execCtx.StyleSlug = styleSlug
 	execCtx.Mode = "guided"
 	execCtx.MaxTokens = 300000
@@ -297,52 +330,29 @@ func (r *ExperimentRunner) runUnifiedMode(ctx context.Context, topic, styleSlug 
 
 	emitter := &noopEmitter{}
 
-	// 构建工具注册表
-	registry := engine.NewToolRegistry()
-	registry.Register(engine.NewStepTool(
-		steps.NewQueryPlanStep(r.llm),
-		"检索规划：从用户输入提取话题和搜索查询",
-		false,
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewSearchStep(r.llm, r.search),
-		"多源搜索：并发执行搜索，返回结果",
-		false,
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewRelevanceStepWithEmbedding(r.embedding),
-		"相关性过滤：对搜索结果评分和去重",
-		false,
-	))
-	registry.Register(engine.NewStepTool(
-		steps.NewCompressStep(r.llm),
-		"素材压缩：将搜索结果压缩为研究简报",
-		false,
-	))
+	var styleProfile *profile.StyleProfile
 	if r.profiles != nil {
-		if p, ok := r.profiles.Get(styleSlug); ok {
-			registry.Register(engine.NewStepTool(
-				steps.NewOutlineStep(r.llm),
-				"提纲生成：为引导模式生成文章提纲",
-				false,
-			))
-			registry.Register(engine.NewStepTool(
-				steps.NewWriteStepWithSearch(r.llm, p, r.search),
-				"文章生成：按风格生成文章",
-				true,
-			))
+		styleProfile, _ = r.profiles.Get(styleSlug)
+	}
+
+	session := agent.NewWritingSession(execCtx.ConversationID, "experiment", styleSlug)
+	if len(frozen) > 0 {
+		for _, sr := range frozen {
+			session.SearchResults = append(session.SearchResults, sr)
 		}
 	}
 
-	unifiedAgent := agent.NewUnifiedAgent(registry, r.llm, emitter)
+	harness := agent.NewHarness(r.llm, r.search, styleProfile, nil, emitter)
+	harnessRunner := &harnessAgentRunner{harness: harness, session: session}
+
 	execCtx.ConfirmTimeout = 1 * time.Second
 
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	if err := unifiedAgent.Run(runCtx, execCtx); err != nil {
+	if err := harnessRunner.Run(runCtx, execCtx); err != nil {
 		return ExperimentMetrics{
-			Mode:      "unified",
+			Mode:      "harness",
 			DurationMs: time.Since(start).Milliseconds(),
 			Error:     err.Error(),
 		}
@@ -354,17 +364,30 @@ func (r *ExperimentRunner) runUnifiedMode(ctx context.Context, topic, styleSlug 
 		excerpt = string([]rune(excerpt)[:200])
 	}
 
-	return ExperimentMetrics{
-		Mode:           "unified",
+	// 从 session.ReviewResult 采集审校结果（Harness 的 review_article 工具会设置）
+	metrics := ExperimentMetrics{
+		Mode:           "harness",
 		TokenCost:      execCtx.TotalTokens,
 		DurationMs:     time.Since(start).Milliseconds(),
 		WordCount:      wordCount,
-		SourceCount:    len(execCtx.SearchResults),
+		SourceCount:    len(session.SearchResults),
 		ArticleTitle:   execCtx.ArticleTitle,
 		ArticleExcerpt: excerpt,
 		FullArticle:    execCtx.Article,
-		QualityScore:   0.5,
 	}
+	if session.ReviewResult != nil {
+		metrics.ReviewPassed = session.ReviewResult.Passed
+		metrics.IssueCount = len(session.ReviewResult.Issues)
+		if session.ReviewResult.Passed {
+			metrics.QualityScore = 0.8
+		} else {
+			metrics.QualityScore = 0.5
+		}
+	} else {
+		metrics.QualityScore = 0.5
+	}
+
+	return metrics
 }
 
 // runEditorialMode 运行 Editorial 模式
@@ -699,7 +722,7 @@ func (r *ExperimentRunner) judgeSingleArticle(ctx context.Context, article strin
 // buildSummary 构建对比汇总
 func (r *ExperimentRunner) buildSummary(results map[string]ExperimentMetrics) map[string]interface{} {
 	summary := map[string]interface{}{
-		"modes": []string{"pipeline", "unified", "editorial"},
+		"modes": []string{"pipeline", "harness", "editorial"},
 	}
 
 	// 找出每种指标的最优值

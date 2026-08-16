@@ -46,11 +46,11 @@ func (s *ShortTermMemoryStep) CanPause() bool         { return false }
 func (s *ShortTermMemoryStep) Timeout() time.Duration { return 15 * time.Second }
 func (s *ShortTermMemoryStep) Critical() bool         { return false }
 
-// ShouldSkip 跳过匿名用户和会话 ID 为空的情况
+// ShouldSkip 跳过会话 ID 为空的情况。
+// 匿名用户在有 ConversationID 时也加载历史，
+// 以支持多轮对话（如 A/B 测试场景）。
+// 长期记忆（MemoryGate/MemoryExtract）仍需 UUID，在各自步骤中独立跳过。
 func (s *ShortTermMemoryStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
-	if execCtx.UserID == "" || execCtx.UserID == "anonymous" {
-		return true
-	}
 	if execCtx.ConversationID == "" {
 		return true
 	}
@@ -154,9 +154,6 @@ func (s *ShortTermStoreStep) Timeout() time.Duration { return 15 * time.Second }
 func (s *ShortTermStoreStep) Critical() bool         { return false }
 
 func (s *ShortTermStoreStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
-	if execCtx.UserID == "" || execCtx.UserID == "anonymous" {
-		return true
-	}
 	if execCtx.ConversationID == "" {
 		return true
 	}

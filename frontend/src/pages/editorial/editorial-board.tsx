@@ -1758,14 +1758,14 @@ function ExperimentCard({
       {/* 详细结果 */}
       {expanded && hasResults && (
         <div className="grid grid-cols-3 gap-3 pt-2 border-t">
-          {(["pipeline", "unified", "editorial"] as const).map((mode) => {
+          {(["pipeline", "harness", "editorial"] as const).map((mode) => {
             const result = mode === "pipeline" ? experiment.pipeline_result
-              : mode === "unified" ? experiment.unified_result
+              : mode === "harness" ? experiment.unified_result
               : experiment.editorial_result;
             return (
               <div key={mode} className="rounded-lg border p-3 space-y-2">
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-xs">{mode === "pipeline" ? "Pipeline" : mode === "unified" ? "UnifiedAgent" : "Editorial"}</Badge>
+                  <Badge variant="outline" className="text-xs">{mode === "pipeline" ? "Pipeline" : mode === "harness" ? "Harness" : "Editorial"}</Badge>
                 </div>
                 {result ? (
                   <MetricsCard metrics={result} />

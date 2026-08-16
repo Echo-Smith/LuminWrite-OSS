@@ -341,8 +341,9 @@ func (c *LLMClient) ChatWithTools(
 	executor ToolExecutor,
 	opts ...ChatOption,
 ) (string, int, error) {
-	const maxIterations = 3
+	const maxIterations = 8 // 支持多轮工具调用：搜索→读取→写作→评审→修正
 	totalTokens := 0
+	totalCacheHitTokens := 0 // 累积 prompt cache 命中 token 数
 
 	// Work on a copy of messages so we can append tool call/result turns
 	conversation := make([]LLMMessage, len(messages))
@@ -357,15 +358,21 @@ func (c *LLMClient) ChatWithTools(
 		// reasoning_content is streamed via onReasoning in real-time.
 		// content is streamed via onDelta in real-time (optimistic).
 		// If tool_calls appear after content, onReset is called to roll back.
-		assistantMsg, tokens, err := c.chatStreamRound(ctx, conversation, onDelta, onReasoning, onReset, toolOpts...)
+		assistantMsg, tokens, cacheHit, err := c.chatStreamRound(ctx, conversation, onDelta, onReasoning, onReset, toolOpts...)
 		if err != nil {
 			return "", totalTokens, fmt.Errorf("agent loop iteration %d failed: %w", iter, err)
 		}
 		totalTokens += tokens
+		totalCacheHitTokens += cacheHit
 
 		if len(assistantMsg.ToolCalls) == 0 {
 			// No tool calls — this is the final answer.
 			// Content was already streamed in real-time via onDelta.
+			slog.Info("ChatWithTools completed",
+				"iterations", iter+1,
+				"total_tokens", totalTokens,
+				"cache_hit_tokens", totalCacheHitTokens,
+			)
 			return assistantMsg.Content, totalTokens, nil
 		}
 
@@ -401,7 +408,11 @@ func (c *LLMClient) ChatWithTools(
 	// Exhausted iterations — do a final streaming request without tools.
 	// Use the ORIGINAL messages (not the tool-call-laden conversation) to avoid
 	// confusing the model with a long history of failed/irrelevant tool results.
-	slog.Warn("agent loop: max iterations reached, doing final stream", "iterations", maxIterations)
+	slog.Warn("agent loop: max iterations reached, doing final stream",
+		"iterations", maxIterations,
+		"total_tokens", totalTokens,
+		"cache_hit_tokens", totalCacheHitTokens,
+	)
 	finalOpts := append([]ChatOption{}, opts...)
 	return c.ChatStreamWithReasoning(ctx, messages, onDelta, onReasoning, finalOpts...)
 }
@@ -426,18 +437,19 @@ func (c *LLMClient) chatStreamRound(
 	onReasoning func(string),
 	onReset func(),
 	opts ...ChatOption,
-) (LLMMessage, int, error) {
+) (LLMMessage, int, int, error) {
 	req := c.buildRequest(messages, true, opts...)
 
 	resp, err := c.doStreamRequest(ctx, req)
 	if err != nil {
-		return LLMMessage{}, 0, err
+		return LLMMessage{}, 0, 0, err
 	}
 	defer resp.Close()
 
 	var contentBuf strings.Builder
 	var reasoningBuf strings.Builder
 	totalTokens := 0
+	cacheHitTokens := 0 // prompt cache 命中 token 数
 
 	// Accumulate tool calls by index (OpenAI streams them as fragments)
 	toolCallMap := make(map[int]*ToolCall)
@@ -523,9 +535,10 @@ func (c *LLMClient) chatStreamRound(
 					}
 				}
 
-				if chunk.Usage != nil {
-					totalTokens = chunk.Usage.TotalTokens
-				}
+			if chunk.Usage != nil {
+				totalTokens = chunk.Usage.TotalTokens
+				cacheHitTokens = chunk.Usage.CacheHitTokens
+			}
 			}
 		}
 		if err != nil {
@@ -554,6 +567,7 @@ done:
 		"content_streamed", contentStreamed,
 		"reset_called", resetCalled,
 		"total_tokens", totalTokens,
+		"cache_hit_tokens", cacheHitTokens,
 	)
 
 	return LLMMessage{
@@ -561,7 +575,7 @@ done:
 		Content:          contentBuf.String(),
 		ReasoningContent: reasoningBuf.String(),
 		ToolCalls:        toolCalls,
-	}, totalTokens, nil
+	}, totalTokens, cacheHitTokens, nil
 }
 
 // flushChunked sends content to the callback in rune-sized chunks,

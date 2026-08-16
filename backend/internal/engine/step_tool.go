@@ -9,9 +9,9 @@ import (
 // ─── StepTool: Step → AgentTool Adapter ──────────────────
 //
 // StepTool wraps an existing engine.Step as an AgentTool.
-// This allows the UnifiedAgent to select and execute pipeline steps
+// This allows the Harness to select and execute pipeline steps
 // (intent, search, write, review, etc.) the same way it selects
-// MCP tools and built-in tools — via LLM-driven ReAct loop.
+// MCP tools and built-in tools — via LLM-driven agent loop.
 //
 // The adapter handles:
 //   - ShouldSkip: if the step would be skipped, returns immediately

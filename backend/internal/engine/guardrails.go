@@ -135,7 +135,7 @@ func SanitizeSearchResults(results []SearchResult) []SearchResult {
 //
 // This should be appended to the system prompt in:
 //   - WriteStep.Execute (pipeline mode)
-//   - UnifiedAgent.buildPlannerPrompt (unified mode)
+//   - Harness.buildSystemPrompt (harness mode)
 //   - CompressStep.Execute (compression LLM call)
 //   - Any other step that passes external content to the LLM
 const PromptInjectionDefenseDirective = `
