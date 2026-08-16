@@ -391,7 +391,7 @@ func parseAttestationObject(data []byte) (pubKey []byte, aaguid string, err erro
 		return nil, "", fmt.Errorf("cbor decode: %w", err)
 	}
 
-	obj, ok := m.(map[string]interface{})
+	obj, ok := m.(map[interface{}]interface{})
 	if !ok {
 		return nil, "", fmt.Errorf("attestation object is not a map")
 	}
@@ -460,8 +460,12 @@ func parseCOSEKey(data []byte) ([]byte, error) {
 		if mi, ok := key.(map[interface{}]interface{}); ok {
 			m = make(map[int]interface{})
 			for k, v := range mi {
-				if ki, ok := k.(int); ok {
+				// cborDecoder returns int64 for both unsigned and negative ints
+				switch ki := k.(type) {
+				case int:
 					m[ki] = v
+				case int64:
+					m[int(ki)] = v
 				}
 			}
 		} else {
