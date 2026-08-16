@@ -3,8 +3,8 @@
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Star, TrendingUp, Lightbulb, ArrowRight, Loader2,
-  Database, Plus, Trash2, Zap, FileText, Search,
+  TrendingUp, Lightbulb, ArrowRight, Loader2,
+  Database, Plus, Trash2, Zap, FileText, Star, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,7 @@ interface TopicDetailDialogProps {
   onToggleFavorite: () => void;
   onClose: () => void;
   onStartWriting: (angle?: WritingAngle) => void;
+  onRefreshAngles?: () => void;
 }
 
 // ─── Topic Materials Section ────────────────────────────
@@ -229,7 +230,7 @@ function TopicMaterialsSection({ topicId, topicTitle }: { topicId: string; topic
 
 export function TopicDetailDialog({
   topic, loading, writingAngles, relatedArticles, trendData,
-  isFavorited, onToggleFavorite, onClose, onStartWriting,
+  isFavorited, onToggleFavorite, onClose, onStartWriting, onRefreshAngles,
 }: TopicDetailDialogProps) {
   if (!topic) return null;
 
@@ -266,14 +267,6 @@ export function TopicDetailDialog({
                 </a>
               )}
             </div>
-            <button onClick={onToggleFavorite} className="flex-shrink-0 pt-1">
-              <Star className={cn(
-                "h-5 w-5 transition-colors",
-                isFavorited
-                  ? "fill-yellow-400 text-yellow-400"
-                  : "text-gray-400 hover:text-yellow-400 dark:text-gray-500 dark:hover:text-yellow-400"
-              )} />
-            </button>
           </div>
         </DialogHeader>
 
@@ -290,10 +283,18 @@ export function TopicDetailDialog({
 
             {!loading && writingAngles.length > 0 && (
               <div>
-                <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-                  <Lightbulb className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-                  AI 写作角度建议
-                </h3>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                    <Lightbulb className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                    AI 写作角度建议
+                  </h3>
+                  {onRefreshAngles && (
+                    <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" onClick={onRefreshAngles} disabled={loading}>
+                      <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+                      换一批
+                    </Button>
+                  )}
+                </div>
                 <div className="space-y-2">
                   {writingAngles.map((angle, i) => (
                     <div key={i} className="flex items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50">
@@ -307,9 +308,14 @@ export function TopicDetailDialog({
                         </div>
                         <p className="mt-1 text-xs text-muted-foreground">{angle.rationale}</p>
                       </div>
-                      <Button size="sm" variant="ghost" className="flex-shrink-0 gap-1" onClick={() => onStartWriting(angle)}>
-                        写作 <ArrowRight className="h-3 w-3" />
-                      </Button>
+                      <div className="flex flex-shrink-0 items-center gap-1">
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={onToggleFavorite} title="收藏选题">
+                          <Star className={cn("h-3.5 w-3.5", isFavorited && "fill-yellow-400 text-yellow-400")} />
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={() => onStartWriting(angle)}>
+                          写作 <ArrowRight className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -359,11 +365,7 @@ export function TopicDetailDialog({
           </div>
         </ScrollArea>
 
-        <div className="flex justify-between border-t pt-3">
-          <Button variant="ghost" onClick={onToggleFavorite} className="gap-1.5">
-            <Star className={cn("h-4 w-4", isFavorited && "fill-yellow-400 text-yellow-400")} />
-            {isFavorited ? "已收藏" : "收藏"}
-          </Button>
+        <div className="flex justify-end border-t pt-3">
           <Button onClick={() => onStartWriting()} className="gap-1.5">
             直接写作 <ArrowRight className="h-4 w-4" />
           </Button>

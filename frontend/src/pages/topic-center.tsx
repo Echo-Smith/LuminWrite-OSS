@@ -191,7 +191,7 @@ export function TopicCenter() {
 
           <ScrollArea className="flex-1">
             <div className="p-6">
-              {t.filter === "all" && (
+              {(t.filter === "all" || t.filter === "hot") && (
                 <RecommendationStrip
                   recommendations={t.recommendations}
                   loading={t.loadingRecs}
@@ -218,7 +218,6 @@ export function TopicCenter() {
                       topic={topic}
                       favorited={t.favoriteIds.has(topic.id)}
                       onOpen={t.openDetail}
-                      onToggleFavorite={t.toggleFavoriteFromCard}
                       onDelete={handleDeleteTopic}
                       onEdit={setEditTopic}
                     />
@@ -259,6 +258,7 @@ export function TopicCenter() {
         onToggleFavorite={() => t.detailTopic && t.toggleFavorite(t.detailTopic.id)}
         onClose={() => t.setDetailTopic(null)}
         onStartWriting={(angle) => t.detailTopic && handleStartWriting(t.detailTopic, angle)}
+        onRefreshAngles={t.refreshAngles}
       />
     </div>
   );

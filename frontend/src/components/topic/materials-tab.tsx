@@ -5,8 +5,9 @@
  * 保留素材列表、搜索、上传、分页等完整功能。
  */
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import {
-  Plus, Trash2, FileText, Link as LinkIcon, Search,
+  Plus, Trash2, FileText, Link as LinkIcon, Search, PenLine,
   Loader2, File, ChevronLeft, ChevronRight, AlertCircle, Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,9 +17,11 @@ import { Input } from "@/components/ui/input";
 import {
   type UserMaterial,
   type MaterialSearchResult,
-  listMaterials, deleteMaterial, searchMaterials,
+  listMaterials, deleteMaterial, searchMaterials, getMaterialContent,
 } from "@/lib/material-api";
 import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
+import { useAgentStore } from "@/stores/agent-store";
+import { toast } from "@/stores/toast-store";
 
 const SOURCE_ICONS: Record<string, typeof FileText> = {
   text: FileText,
@@ -47,6 +50,10 @@ function formatTime(ts: string): string {
 }
 
 export function MaterialsTab() {
+  const navigate = useNavigate();
+  const createSession = useAgentStore((s) => s.createSession);
+  const startWriting = useAgentStore((s) => s.startWriting);
+
   const [materials, setMaterials] = useState<UserMaterial[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -105,6 +112,34 @@ export function MaterialsTab() {
     } finally {
       setSearching(false);
     }
+  };
+
+  // ─── 从素材开始写作 ───
+  const handleStartWriting = async (mat: UserMaterial) => {
+    // 获取完整素材内容
+    let fullContent = mat.content_preview || "";
+    try {
+      const detail = await getMaterialContent(mat.id);
+      fullContent = detail.content_preview || fullContent;
+    } catch {
+      // 使用 preview 即可
+    }
+
+    // 创建会话
+    createSession();
+
+    const message = `请基于以下素材写一篇文章：\n\n素材标题：${mat.title}\n素材内容：${fullContent}`;
+
+    navigate("/write");
+
+    setTimeout(() => {
+      startWriting({
+        message,
+        mode: "writing",
+        user_materials: [`📎 ${mat.title}: ${fullContent}`],
+      });
+      toast.success("已注入素材", "正在以该素材为参考开始写作");
+    }, 200);
   };
 
   const totalPages = Math.ceil(total / pageSize);
@@ -231,15 +266,26 @@ export function MaterialsTab() {
                         {mat.file_size ? <span>{formatSize(mat.file_size)}</span> : null}
                       </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(mat.id)}
-                      title="删除"
-                      className="flex-shrink-0 text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <div className="flex flex-shrink-0 items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleStartWriting(mat)}
+                        title="以此素材写作"
+                        className="text-primary hover:text-primary/80"
+                      >
+                        <PenLine className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(mat.id)}
+                        title="删除"
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                 );
               })}

@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
@@ -308,4 +310,70 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.OK(w, map[string]interface{}{"changed": true})
+}
+
+// handleUpdateProfile allows an authenticated user to update their profile (username).
+//
+// POST /api/v2/auth/update-profile
+// Header: Authorization: Bearer <jwt>
+// Body: { "username": "..." }
+func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	var body struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+
+	if len(body.Username) < 2 || len(body.Username) > 64 {
+		response.Err(w, http.StatusBadRequest, "bad_request", "username must be 2-64 characters")
+		return
+	}
+
+	if s.adminRepo == nil || s.adminRepo.DB() == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Check username uniqueness (exclude current user)
+	var exists bool
+	err := s.adminRepo.DB().QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM users WHERE name = $1 AND id != $2)
+	`, body.Username, user.Sub).Scan(&exists)
+	if err != nil {
+		slog.Error("failed to check username uniqueness", "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to check username")
+		return
+	}
+	if exists {
+		response.Err(w, http.StatusConflict, "username_taken", "username already exists")
+		return
+	}
+
+	// Update username in users table (both uid and name columns)
+	_, err = s.adminRepo.DB().ExecContext(ctx, `
+		UPDATE users SET uid = $1, name = $1, updated_at = NOW() WHERE id = $2
+	`, body.Username, user.Sub)
+	if err != nil {
+		slog.Error("failed to update username", "error", err, "user_id", user.Sub)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to update profile")
+		return
+	}
+
+	slog.Info("user profile updated", "user_id", user.Sub, "new_username", body.Username)
+
+	response.OK(w, map[string]interface{}{
+		"updated":  true,
+		"username": body.Username,
+	})
 }

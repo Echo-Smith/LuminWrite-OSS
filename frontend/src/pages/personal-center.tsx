@@ -4,7 +4,7 @@
  * 左侧菜单 + 右侧内容区，包含「个人信息」「写作风格」「记忆管理」「账号管理」。
  * 居中悬浮，低阴影，点击遮罩区域不关闭。
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Brain, User, X, KeyRound, Fingerprint,
@@ -54,12 +54,15 @@ const MENU_ITEMS: MenuItem[] = [
 ];
 
 const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> = {
-  profile: { title: "个人信息", subtitle: "查看你的账号信息" },
-  styles: { title: "写作风格", subtitle: "管理自定义写作风格，可提交审核后全量上架" },
-  memory: { title: "记忆管理", subtitle: "AI 根据你的写作习惯自动学习，也可手动管理" },
-  settings: { title: "偏好设置", subtitle: "配置 AI 编排模式等偏好选项" },
-  account: { title: "账号管理", subtitle: "管理你的账号安全" },
+  profile: { title: "个人信息", subtitle: "查看和修改你的账号信息" },
+  styles: { title: "写作风格", subtitle: "管理你的自定义写作风格" },
+  memory: { title: "记忆管理", subtitle: "管理 AI 学习到的写作偏好" },
+  settings: { title: "偏好设置", subtitle: "配置默认写作风格和编排模式" },
+  account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },
 };
+
+// ─── 默认（内置）风格 slug 列表 — 不可删除 ──────────────
+const BUILTIN_STYLE_SLUGS = new Set(["yinyue", "shenlun", "xiaohongshu"]);
 
 // ─── 主组件 ──────────────────────────────────────────────
 
@@ -89,7 +92,7 @@ export function PersonalCenter() {
         >
           {/* ── 左侧菜单 ── */}
           <div className="w-48 shrink-0 border-r bg-muted/30 flex flex-col">
-            {/* 用户信息头部 — 与右侧标题区对齐 */}
+            {/* 用户信息头部 — 与右侧标题区对齐，横线对齐 admin 风格 */}
             <div className="flex h-[60px] items-center gap-2.5 px-4 border-b">
               <div className={cn(
                 "flex h-9 w-9 items-center justify-center rounded-full text-xs font-medium shrink-0",
@@ -132,9 +135,9 @@ export function PersonalCenter() {
           </div>
 
           {/* ── 右侧内容区 ── */}
-          <div className="flex-1 overflow-y-auto">
-            {/* 固定栏 — 左侧标题+副标题，右侧关闭按钮 */}
-            <div className="sticky top-0 z-10 flex h-[60px] items-center justify-between px-6 bg-background/80 backdrop-blur-sm">
+          <div className="flex-1 overflow-y-auto relative">
+            {/* 固定栏 — 左侧标题+副标题，右侧关闭按钮，横线对齐 admin 风格 */}
+            <div className="sticky top-0 z-10 flex h-[60px] items-center justify-between px-6 bg-background/80 backdrop-blur-sm border-b">
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold leading-tight">{SECTION_META[activeMenu].title}</h2>
                 <p className="text-sm text-muted-foreground leading-tight">{SECTION_META[activeMenu].subtitle}</p>
@@ -152,6 +155,15 @@ export function PersonalCenter() {
             {activeMenu === "memory" && <MemorySection />}
             {activeMenu === "settings" && <SettingsSection />}
             {activeMenu === "account" && <AccountSection />}
+
+            {/* ── 右下角圆形 + 按钮（写作风格/记忆管理用） ── */}
+            {(activeMenu === "styles" || activeMenu === "memory") && (
+              <FloatingAddButton onClick={() => {
+                // 通过自定义事件触发各子组件的添加操作
+                const event = new CustomEvent("personal-center-add");
+                window.dispatchEvent(event);
+              }} />
+            )}
           </div>
         </DialogPrimitive.Content>
       </DialogPortal>
@@ -159,17 +171,132 @@ export function PersonalCenter() {
   );
 }
 
+// ─── 右下角圆形 + 按钮 ──────────────────────────────────
+
+function FloatingAddButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="fixed bottom-8 right-8 z-20 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
+      title="新建"
+    >
+      <Plus className="h-5 w-5" />
+    </button>
+  );
+}
+
 // ─── 个人信息 ────────────────────────────────────────────
 
 function ProfileSection() {
   const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
+  const login = useAuthStore((s) => s.login);
   const isGuest = user?.role === "guest";
+
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(user?.username ?? "");
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [nameSuccess, setNameSuccess] = useState(false);
+
+  const handleSaveName = async () => {
+    if (newName.length < 2 || newName.length > 64) {
+      setNameError("用户名长度需要 2-64 个字符");
+      return;
+    }
+    setSavingName(true);
+    setNameError(null);
+    try {
+      const res = await fetch("/api/v2/auth/update-profile", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ username: newName }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        // 更新本地 store 中的用户名，保持 token 不变
+        if (user && token) {
+          const expiresAt = useAuthStore.getState().expiresAt ?? Math.floor(Date.now() / 1000) + 3600;
+          login(token, user.userId, newName, user.role, expiresAt - Math.floor(Date.now() / 1000));
+        }
+        setEditingName(false);
+        setNameSuccess(true);
+        setTimeout(() => setNameSuccess(false), 3000);
+      } else {
+        setNameError(json.error?.message ?? "修改失败");
+      }
+    } catch {
+      setNameError("网络错误");
+    } finally {
+      setSavingName(false);
+    }
+  };
 
   return (
     <div className="px-6 pb-12 space-y-6">
       <Separator />
       <div className="space-y-4">
-        <InfoRow label="用户名" value={user?.username ?? "-"} />
+        {/* 用户名 — 支持修改 */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">用户名</span>
+            {!isGuest && !editingName && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => { setEditingName(true); setNewName(user?.username ?? ""); setNameError(null); }}
+              >
+                <Pencil className="h-3 w-3" />
+                修改
+              </Button>
+            )}
+          </div>
+          {editingName ? (
+            <div className="space-y-2">
+              <Input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="输入新用户名"
+                className="max-w-xs"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !savingName) handleSaveName();
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+              />
+              {nameError && (
+                <div className="flex items-center gap-2 text-xs text-red-600">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  {nameError}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Button size="sm" onClick={handleSaveName} disabled={savingName || newName.length < 2}>
+                  {savingName ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1" />}
+                  保存
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => { setEditingName(false); setNameError(null); }}>
+                  取消
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{user?.username ?? "-"}</span>
+              {nameSuccess && (
+                <span className="flex items-center gap-1 text-xs text-green-600">
+                  <Check className="h-3 w-3" />
+                  已更新
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
         <InfoRow label="用户 ID" value={user?.userId ?? "-"} mono />
         <InfoRow label="角色" value={
           isGuest ? "游客" :
@@ -369,6 +496,13 @@ function StyleSection() {
     if (!isGuest) loadStyles();
   }, [loadStyles, isGuest]);
 
+  // 监听右下角 + 按钮事件
+  useEffect(() => {
+    const handler = () => setShowCreate(true);
+    window.addEventListener("personal-center-add", handler);
+    return () => window.removeEventListener("personal-center-add", handler);
+  }, []);
+
   const handleDelete = async (id: string) => {
     if (!confirm("确认删除这个写作风格？此操作不可撤销。")) return;
     try {
@@ -421,13 +555,6 @@ function StyleSection() {
 
   return (
     <div className="px-6 pb-12 space-y-5">
-      <div className="flex items-center justify-end">
-        <Button size="sm" className="gap-2" onClick={() => setShowCreate(true)}>
-          <Plus className="h-4 w-4" />
-          新建风格
-        </Button>
-      </div>
-
       {error && (
         <div className="flex items-center gap-2 text-xs text-red-600">
           <AlertCircle className="h-3.5 w-3.5" />
@@ -443,13 +570,15 @@ function StyleSection() {
         <div className="py-12 text-center">
           <Palette className="mx-auto h-12 w-12 text-muted-foreground/30" />
           <p className="mt-3 text-sm text-muted-foreground">
-            还没有自定义风格。点击「新建风格」开始创建。
+            还没有自定义风格。点击右下角 + 按钮开始创建。
           </p>
         </div>
       ) : (
         <div className="space-y-3">
           {styles.map((style) => {
             const statusMeta = STATUS_META[style.status] ?? STATUS_META.draft;
+            // 内置风格不可删除
+            const isBuiltin = BUILTIN_STYLE_SLUGS.has(style.slug);
             return (
               <Card key={style.id} className="overflow-hidden">
                 <CardContent className="py-3.5">
@@ -467,6 +596,11 @@ function StyleSection() {
                           <span className="text-xs text-muted-foreground">
                             v{style.current_version}
                           </span>
+                        )}
+                        {isBuiltin && (
+                          <Badge variant="secondary" className="text-xs text-muted-foreground">
+                            内置
+                          </Badge>
                         )}
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground line-clamp-1">
@@ -512,7 +646,7 @@ function StyleSection() {
                           审核中
                         </Badge>
                       )}
-                      {style.status !== "pending_review" && (
+                      {style.status !== "pending_review" && !isBuiltin && (
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1110,6 +1244,13 @@ function MemorySection() {
     fetchMemories();
   }, [fetchMemories]);
 
+  // 监听右下角 + 按钮事件
+  useEffect(() => {
+    const handler = () => setShowCreate(true);
+    window.addEventListener("personal-center-add", handler);
+    return () => window.removeEventListener("personal-center-add", handler);
+  }, []);
+
   const handleCreate = async () => {
     if (!newCategory || !newKey || !newValue) return;
     const ok = await createMemory(newCategory, newKey, newValue);
@@ -1129,54 +1270,6 @@ function MemorySection() {
 
   return (
     <div className="px-6 pb-12 space-y-5">
-      <div className="flex items-center justify-end">
-        <CreateDialog open={showCreate} onOpenChange={setShowCreate}>
-          <CreateDialogTrigger asChild>
-            <Button size="sm" className="gap-2">
-              <Plus className="h-4 w-4" />
-              添加偏好
-            </Button>
-          </CreateDialogTrigger>
-          <CreateDialogContent>
-            <CreateDialogHeader>
-              <CreateDialogTitle>添加硬偏好</CreateDialogTitle>
-            </CreateDialogHeader>
-            <div className="space-y-4 pt-2">
-              <div>
-                <Label>类别</Label>
-                <Input
-                  className="mt-1.5"
-                  placeholder="如：word_count, style, tone"
-                  value={newCategory}
-                  onChange={(e) => setNewCategory(e.target.value)}
-                />
-              </div>
-              <div>
-                <Label>标识</Label>
-                <Input
-                  className="mt-1.5"
-                  placeholder="如：preferred_length"
-                  value={newKey}
-                  onChange={(e) => setNewKey(e.target.value)}
-                />
-              </div>
-              <div>
-                <Label>内容</Label>
-                <Input
-                  className="mt-1.5"
-                  placeholder="如：偏好 800-1000 字"
-                  value={newValue}
-                  onChange={(e) => setNewValue(e.target.value)}
-                />
-              </div>
-              <Button className="w-full" onClick={handleCreate} disabled={!newCategory || !newKey || !newValue}>
-                创建
-              </Button>
-            </div>
-          </CreateDialogContent>
-        </CreateDialog>
-      </div>
-
       <Separator />
 
       {loading ? (
@@ -1241,6 +1334,47 @@ function MemorySection() {
           })}
         </div>
       )}
+
+      {/* 记忆创建弹窗 — 由右下角 + 按钮触发 */}
+      <CreateDialog open={showCreate} onOpenChange={setShowCreate}>
+        <CreateDialogContent>
+          <CreateDialogHeader>
+            <CreateDialogTitle>添加硬偏好</CreateDialogTitle>
+          </CreateDialogHeader>
+          <div className="space-y-4 pt-2">
+            <div>
+              <Label>类别</Label>
+              <Input
+                className="mt-1.5"
+                placeholder="如：word_count, style, tone"
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label>标识</Label>
+              <Input
+                className="mt-1.5"
+                placeholder="如：preferred_length"
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label>内容</Label>
+              <Input
+                className="mt-1.5"
+                placeholder="如：偏好 800-1000 字"
+                value={newValue}
+                onChange={(e) => setNewValue(e.target.value)}
+              />
+            </div>
+            <Button className="w-full" onClick={handleCreate} disabled={!newCategory || !newKey || !newValue}>
+              创建
+            </Button>
+          </div>
+        </CreateDialogContent>
+      </CreateDialog>
     </div>
   );
 }
@@ -1255,12 +1389,90 @@ const AGENT_MODE_OPTIONS: { value: AgentMode; label: string; description: string
 function SettingsSection() {
   const agentMode = useSettingsStore((s) => s.agentMode);
   const setAgentMode = useSettingsStore((s) => s.setAgentMode);
+  const token = useAuthStore((s) => s.token);
+
+  // 默认写作风格
+  const [defaultStyle, setDefaultStyle] = useState<string>("");
+  const [styles, setStyles] = useState<Array<{ slug: string; name: string }>>([]);
+  const [loadingStyles, setLoadingStyles] = useState(true);
+
+  // 加载可用风格列表
+  useEffect(() => {
+    fetch("/api/v2/styles", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && json.data?.styles) {
+          setStyles(json.data.styles.map((s: { slug: string; name: string }) => ({ slug: s.slug, name: s.name })));
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingStyles(false));
+  }, [token]);
+
+  // 加载当前默认风格
+  useEffect(() => {
+    fetch("/api/v2/preferences", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && json.data?.default_style) {
+          setDefaultStyle(json.data.default_style as string);
+        }
+      })
+      .catch(() => {});
+  }, [token]);
+
+  const handleSetDefaultStyle = (slug: string) => {
+    setDefaultStyle(slug);
+    // 同步到服务器
+    fetch("/api/v2/preferences", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ default_style: slug }),
+    }).catch(() => {});
+  };
 
   return (
     <div className="px-6 pb-12 space-y-6">
+      <Separator />
+
+      {/* 默认写作风格 */}
+      <div>
+        <Label className="text-base font-semibold">默认写作风格</Label>
+        <p className="mt-1 text-sm text-muted-foreground">
+          选择新建写作任务时的默认风格。可在写作时随时切换。
+        </p>
+        <div className="mt-3">
+          {loadingStyles ? (
+            <p className="text-sm text-muted-foreground">加载风格列表...</p>
+          ) : (
+            <Select value={defaultStyle} onValueChange={handleSetDefaultStyle}>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="选择默认写作风格" />
+              </SelectTrigger>
+              <SelectContent>
+                {styles.map((s) => (
+                  <SelectItem key={s.slug} value={s.slug}>
+                    {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+      </div>
+
+      <Separator />
+
       {/* 编排模式 */}
       <div>
-        <Label className="text-base font-semibold">AI 编排模式</Label>
+        <Label className="text-base font-semibold">默认写作模式</Label>
         <p className="mt-1 text-sm text-muted-foreground">
           选择 AI 执行写作任务的编排方式。设置跟随你的账号，换设备登录也会保持。
         </p>
@@ -1329,12 +1541,21 @@ function AccountSection() {
   const [pkRegName, setPkRegName] = useState("");
   const [pkRegLoading, setPkRegLoading] = useState(false);
   const [pkRegMsg, setPkRegMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [pkRegCountdown, setPkRegCountdown] = useState(0);
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (!isGuest) {
       fetchPasskeys();
     }
   }, [isGuest]);
+
+  // 清理倒计时定时器
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+    };
+  }, []);
 
   const fetchPasskeys = async () => {
     try {
@@ -1406,11 +1627,20 @@ function AccountSection() {
       setPkRegName("");
       // 刷新列表
       fetchPasskeys();
-      // 2 秒后关闭弹窗
-      setTimeout(() => {
-        setPkRegOpen(false);
-        setPkRegMsg(null);
-      }, 2000);
+      // 倒计时 3 秒后关闭弹窗
+      setPkRegCountdown(3);
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = setInterval(() => {
+        setPkRegCountdown((prev) => {
+          if (prev <= 1) {
+            if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+            setPkRegOpen(false);
+            setPkRegMsg(null);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
     } catch (e) {
       setPkRegMsg({ type: "error", text: getPasskeyErrorMessage(e) });
     } finally {
@@ -1511,54 +1741,57 @@ function AccountSection() {
 
         {loadingPasskeys ? (
           <div className="text-sm text-muted-foreground py-4 text-center">加载中...</div>
-        ) : passkeys.length === 0 ? (
+        ) : (
           <Card className="border-dashed">
-            <CardContent className="py-6 text-center">
-              <Fingerprint className="mx-auto h-10 w-10 text-muted-foreground/30" />
-              <p className="mt-2 text-sm text-muted-foreground">
-                尚未绑定任何 Passkey
-              </p>
+            <CardContent className="py-4 space-y-3">
+              {passkeys.length === 0 ? (
+                <div className="text-center py-2">
+                  <Fingerprint className="mx-auto h-10 w-10 text-muted-foreground/30" />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    尚未绑定任何 Passkey
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {passkeys.map((pk) => (
+                    <div key={pk.id} className="flex items-center gap-3 rounded-lg border p-2.5">
+                      <Fingerprint className="h-5 w-5 text-muted-foreground shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium">{pk.name || "未命名设备"}</p>
+                        <p className="text-xs text-muted-foreground">
+                          绑定于 {formatDate(pk.created_at)}
+                          {pk.last_used_at && ` · 最近使用 ${formatDate(pk.last_used_at)}`}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleDeletePasskey(pk.id)}
+                        className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                        title="删除"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* 绑定新 Passkey 按钮 — 直接放在内框中 */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full gap-2"
+                onClick={() => {
+                  setPkRegMsg(null);
+                  setPkRegName("");
+                  setPkRegCountdown(0);
+                  setPkRegOpen(true);
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                绑定新 Passkey
+              </Button>
             </CardContent>
           </Card>
-        ) : (
-          <div className="space-y-2">
-            {passkeys.map((pk) => (
-              <Card key={pk.id}>
-                <CardContent className="flex items-center gap-3 py-3">
-                  <Fingerprint className="h-5 w-5 text-muted-foreground shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{pk.name || "未命名设备"}</p>
-                    <p className="text-xs text-muted-foreground">
-                      绑定于 {formatDate(pk.created_at)}
-                      {pk.last_used_at && ` · 最近使用 ${formatDate(pk.last_used_at)}`}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleDeletePasskey(pk.id)}
-                    className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
-                    title="删除"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
         )}
-
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => {
-            setPkRegMsg(null);
-            setPkRegName("");
-            setPkRegOpen(true);
-          }}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          绑定新 Passkey
-        </Button>
       </div>
 
       {/* Passkey 注册弹窗 */}
@@ -1594,19 +1827,26 @@ function AccountSection() {
           <CreateDialogFooter>
             <Button
               variant="outline"
-              onClick={() => setPkRegOpen(false)}
-              disabled={pkRegLoading}
+              onClick={() => { setPkRegOpen(false); setPkRegMsg(null); setPkRegCountdown(0); }}
+              disabled={pkRegLoading || pkRegCountdown > 0}
             >
               取消
             </Button>
-            <Button onClick={handleRegisterPasskey} disabled={pkRegLoading}>
-              {pkRegLoading ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Fingerprint className="h-4 w-4 mr-2" />
-              )}
-              开始注册
-            </Button>
+            {pkRegCountdown > 0 ? (
+              <Button disabled className="gap-2">
+                <Check className="h-4 w-4" />
+                弹窗将在 {pkRegCountdown} 秒后关闭
+              </Button>
+            ) : (
+              <Button onClick={handleRegisterPasskey} disabled={pkRegLoading}>
+                {pkRegLoading ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Fingerprint className="h-4 w-4 mr-2" />
+                )}
+                开始注册
+              </Button>
+            )}
           </CreateDialogFooter>
         </CreateDialogContent>
       </CreateDialog>
