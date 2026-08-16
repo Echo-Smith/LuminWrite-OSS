@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,7 @@ type EmbeddingClient struct {
 	dimension  int
 	baseURL    string // e.g. "https://xxx.maas.aliyuncs.com/compatible-mode/v1"
 	httpClient *http.Client
+	mu         sync.RWMutex // protects apiKey, model, baseURL, dimension for hot-reload
 }
 
 // NewEmbeddingClient creates a new EmbeddingClient.
@@ -52,15 +54,18 @@ func (c *EmbeddingClient) IsConfigured() bool {
 	if c == nil {
 		return false
 	}
-	if c.apiKey == "" {
+	c.mu.RLock()
+	apiKey := c.apiKey
+	c.mu.RUnlock()
+	if apiKey == "" {
 		return false
 	}
 	// Reject common placeholder values
-	switch c.apiKey {
+	switch apiKey {
 	case "your-dashscope-api-key", "your-api-key", "placeholder":
 		return false
 	}
-	if strings.HasPrefix(c.apiKey, "your-") {
+	if strings.HasPrefix(apiKey, "your-") {
 		return false
 	}
 	return true
@@ -108,6 +113,15 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 	var allEmbeddings [][]float64
 	totalTokens := 0
 
+	// Read config once under lock (thread-safe for hot-reload)
+	c.mu.RLock()
+	model := c.model
+	dimension := c.dimension
+	apiKey := c.apiKey
+	baseURL := c.baseURL
+	httpClient := c.httpClient
+	c.mu.RUnlock()
+
 	for start := 0; start < len(texts); start += batchSize {
 		end := start + batchSize
 		if end > len(texts) {
@@ -116,9 +130,9 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		batch := texts[start:end]
 
 		reqBody := embeddingRequest{
-			Model:      c.model,
+			Model:      model,
 			Input:      batch,
-			Dimensions: c.dimension,
+			Dimensions: dimension,
 		}
 
 		data, err := json.Marshal(reqBody)
@@ -128,7 +142,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		}
 
 		// Construct the embeddings endpoint URL
-		embedURL := c.baseURL + "/embeddings"
+		embedURL := baseURL + "/embeddings"
 
 		req, err := http.NewRequestWithContext(ctx, "POST", embedURL, bytes.NewReader(data))
 		if err != nil {
@@ -137,9 +151,9 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), err)
 			return nil, 0, fmt.Errorf("embedding API request failed: %w", err)
@@ -174,10 +188,10 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float6
 	slog.Debug("embedding generated",
 		"texts", len(texts),
 		"embeddings", len(allEmbeddings),
-		"dimension", c.dimension,
+		"dimension", dimension,
 		"tokens", totalTokens,
-		"model", c.model,
-		"base_url", c.baseURL,
+		"model", model,
+		"base_url", baseURL,
 	)
 
 	RecordEmbeddingCall(time.Since(embedStart).Nanoseconds(), nil)
@@ -198,12 +212,51 @@ func (c *EmbeddingClient) EmbedSingle(ctx context.Context, text string) ([]float
 
 // Dimension returns the configured embedding dimension.
 func (c *EmbeddingClient) Dimension() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.dimension
 }
 
 // Model returns the configured embedding model name.
 func (c *EmbeddingClient) Model() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.model
+}
+
+// Reconfigure updates the embedding client's API key, base URL, model, and dimension.
+// This enables runtime hot-reload when admin updates the dashscope API key via frontend.
+// If dimension <= 0 or model is empty, the existing value is preserved.
+func (c *EmbeddingClient) Reconfigure(apiKey, baseURL, model string, dimension int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if apiKey != "" {
+		c.apiKey = apiKey
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL != "" {
+		c.baseURL = baseURL
+	}
+	if model != "" {
+		c.model = model
+	}
+	if dimension > 0 {
+		c.dimension = dimension
+	}
+}
+
+// BaseURL returns the configured base URL (thread-safe).
+func (c *EmbeddingClient) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+// APIKey returns the configured API key (thread-safe, for internal use only).
+func (c *EmbeddingClient) APIKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.apiKey
 }
 
 // FormatVectorForPG formats a float64 slice as a PostgreSQL vector string.

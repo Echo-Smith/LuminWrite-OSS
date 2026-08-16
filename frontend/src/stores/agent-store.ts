@@ -760,10 +760,18 @@ case "agent.paused": {
         const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"] };
 
         get()._updateLastAssistantMessage((m) => {
-          // 确保最后的 text part 不再 streaming
+          // 如果后端返回了 article，用 article 覆盖所有 text part 的内容
+          // 这样可以确保最终显示的是纯净的文章正文，而不是 LLM 在
+          // agent loop 中输出的混合内容（正文 + 评审说明等）
           const parts = m.parts.map((part) => {
-            if (part.type === "text" && part.streaming) {
-              return { ...part, streaming: false };
+            if (part.type === "text") {
+              if (article) {
+                // 有 article 时，用 article 覆盖 text part 内容
+                return { ...part, streaming: false, text: article };
+              }
+              if (part.streaming) {
+                return { ...part, streaming: false };
+              }
             }
             return part;
           });

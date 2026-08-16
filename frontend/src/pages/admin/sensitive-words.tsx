@@ -3,13 +3,16 @@
  * 占位页面，接口已预留，后续实现具体功能
  */
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Shield, AlertCircle, Info, Loader2 } from "lucide-react";
+import { Plus, Trash2, Shield, Info, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
 
 interface SensitiveWord {
   id: string;
@@ -139,7 +142,7 @@ export function SensitiveWordsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">敏感词库</h2>
-        <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
+        <Button size="sm" onClick={() => setShowAdd(true)}>
           <Plus className="h-4 w-4 mr-2" />
           添加敏感词
         </Button>
@@ -184,69 +187,70 @@ export function SensitiveWordsPage() {
         </CardContent>
       </Card>
 
-      {/* Add Form */}
-      {showAdd && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">添加敏感词</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-5 gap-4">
-              <div>
-                <Label>敏感词</Label>
-                <Input
-                  value={newWord.word}
-                  onChange={(e) => setNewWord({ ...newWord, word: e.target.value })}
-                  placeholder="如 震惊"
-                />
-              </div>
-              <div>
-                <Label>分类</Label>
-                <Select value={newWord.category} onValueChange={(v) => setNewWord({ ...newWord, category: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>严重程度</Label>
-                <Select value={newWord.severity} onValueChange={(v) => setNewWord({ ...newWord, severity: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {SEVERITIES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>动作</Label>
-                <Select value={newWord.action} onValueChange={(v) => setNewWord({ ...newWord, action: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {ACTIONS.map((a) => <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>替换词 (可选)</Label>
-                <Input
-                  value={newWord.replacement}
-                  onChange={(e) => setNewWord({ ...newWord, replacement: e.target.value })}
-                  placeholder="如 惊讶"
-                  disabled={newWord.action !== "replace"}
-                />
-              </div>
+      {/* Add Sensitive Word Dialog */}
+      <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !adding) setShowAdd(false); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>添加敏感词</DialogTitle>
+            <DialogDescription>
+              添加需要检测和过滤的敏感词。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>敏感词</Label>
+              <Input
+                value={newWord.word}
+                onChange={(e) => setNewWord({ ...newWord, word: e.target.value })}
+                placeholder="如 震惊"
+              />
             </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <Button variant="outline" size="sm" onClick={() => setShowAdd(false)}>取消</Button>
-              <Button size="sm" onClick={handleAdd} disabled={!newWord.word || adding}>
-                {adding ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
-                添加
-              </Button>
+            <div>
+              <Label>分类</Label>
+              <Select value={newWord.category} onValueChange={(v) => setNewWord({ ...newWord, category: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
-          </CardContent>
-        </Card>
-      )}
+            <div>
+              <Label>严重程度</Label>
+              <Select value={newWord.severity} onValueChange={(v) => setNewWord({ ...newWord, severity: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SEVERITIES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>动作</Label>
+              <Select value={newWord.action} onValueChange={(v) => setNewWord({ ...newWord, action: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ACTIONS.map((a) => <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="col-span-2">
+              <Label>替换词 (可选)</Label>
+              <Input
+                value={newWord.replacement}
+                onChange={(e) => setNewWord({ ...newWord, replacement: e.target.value })}
+                placeholder="如 惊讶"
+                disabled={newWord.action !== "replace"}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setShowAdd(false)} disabled={adding}>取消</Button>
+            <Button size="sm" onClick={handleAdd} disabled={!newWord.word || adding}>
+              {adding ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+              添加
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Words Table */}
       <div className="rounded-lg border">

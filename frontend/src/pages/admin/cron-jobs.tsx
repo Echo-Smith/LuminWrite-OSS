@@ -4,12 +4,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { Plus, Trash2, Pencil, Play, Clock, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
 
 interface CronJob {
   id: string;
@@ -116,15 +118,21 @@ export function CronJobsPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">定时任务</h2>
-        <Button size="sm" onClick={() => { setShowAdd(!showAdd); setEditing(null); }}>
+        <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", description: "", schedule: "", task_type: "topic_fetch", is_active: true }); }}>
           <Plus className="h-4 w-4 mr-2" /> 添加任务
         </Button>
       </div>
 
-      {showAdd && (
-        <Card>
-          <CardHeader><CardTitle className="text-sm">{editing ? "编辑任务" : "添加任务"}</CardTitle></CardHeader>
-          <CardContent>
+      {/* Add/Edit Task Dialog */}
+      <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) { setShowAdd(false); setEditing(null); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editing ? "编辑任务" : "添加任务"}</DialogTitle>
+            <DialogDescription>
+              配置定时任务的执行计划。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>任务名称</Label>
@@ -148,20 +156,20 @@ export function CronJobsPage() {
                 <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="每小时从微博/知乎抓取热榜" />
               </div>
             </div>
-            <div className="flex items-center gap-2 mt-4">
+            <div className="flex items-center gap-2">
               <Switch checked={form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: v })} />
               <Label>启用</Label>
             </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <Button variant="outline" size="sm" onClick={() => { setShowAdd(false); setEditing(null); }}>取消</Button>
-              <Button size="sm" onClick={handleSave} disabled={!form.name || !form.schedule || saving}>
-                {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
-                {editing ? "保存" : "添加"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => { setShowAdd(false); setEditing(null); }} disabled={saving}>取消</Button>
+            <Button size="sm" onClick={handleSave} disabled={!form.name || !form.schedule || saving}>
+              {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+              {editing ? "保存" : "添加"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="rounded-lg border">
         <table className="w-full">

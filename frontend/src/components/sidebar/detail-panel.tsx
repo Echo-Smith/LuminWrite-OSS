@@ -5,7 +5,7 @@
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
 import { useState, useEffect } from "react";
-import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, type LucideIcon } from "lucide-react";
+import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -95,11 +95,15 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   ) ?? []) as ToolCallPart[];
 
   // 从 search step 的 result 中提取素材
-  const searchStep = toolCallParts.find((p) => p.toolName === "search");
-  const searchResults = searchStep?.result as { results?: Array<Record<string, unknown>> } | undefined;
-  const results = searchResults?.results ?? [];
+  // 兼容 Pipeline 模式（toolName="search"）和 Harness 模式（toolName="search_web"）
+  const searchStep = toolCallParts.find((p) => p.toolName === "search" || p.toolName === "search_web");
+  const searchResults = searchStep?.result as { results?: Array<Record<string, unknown>> | number; items?: Array<Record<string, unknown>> } | undefined;
+  // Harness 模式的 result 中 items 是搜索结果数组，results 是数量（数字）
+  // Pipeline 模式的 result 中 results 是搜索结果数组
+  const results = Array.isArray(searchResults?.items) ? searchResults!.items! : (Array.isArray(searchResults?.results) ? searchResults!.results as Array<Record<string, unknown>> : []);
 
   // 从 memory_gate step 提取记忆检索结果
+  // 兼容 Pipeline 模式（toolName="memory_gate"）和 Harness 模式（无对应步骤）
   const memoryStep = toolCallParts.find((p) => p.toolName === "memory_gate");
   const memoryResult = memoryStep?.result as { memories?: Array<Record<string, unknown>>; hit?: boolean; reason?: string } | undefined;
   const memories = memoryResult?.memories ?? [];
@@ -110,6 +114,9 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   const queryPlanResult = queryPlanStep?.result as { queries?: string[]; keywords?: string[] } | undefined;
   const queries = queryPlanResult?.queries ?? [];
   const keywords = queryPlanResult?.keywords ?? [];
+
+  // 选题素材和用户素材
+  const injectedMaterials = session?.injectedMaterials ?? [];
 
   return (
     <div className="flex h-full w-80 flex-col border-l bg-surface anim-slide-left">
@@ -151,7 +158,7 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
             <AgentCollaborationFlow parts={toolCallParts} />
           </TabsContent>
           <TabsContent value="sources" className="p-3 m-0">
-            <SourcesList results={results} memories={memories} memoryHit={memoryHit} queries={queries} keywords={keywords} />
+            <SourcesList results={results} memories={memories} memoryHit={memoryHit} queries={queries} keywords={keywords} injectedMaterials={injectedMaterials} />
           </TabsContent>
           <TabsContent value="style" className="p-3 m-0">
             <StyleInfo slug={session?.style ?? "yinyue"} />
@@ -283,14 +290,16 @@ function SourcesList({
   memoryHit,
   queries,
   keywords,
+  injectedMaterials = [],
 }: {
   results: Array<Record<string, unknown>>;
   memories: Array<Record<string, unknown>>;
   memoryHit: boolean;
   queries: string[];
   keywords: string[];
+  injectedMaterials?: string[];
 }) {
-  const hasAnything = results.length > 0 || memories.length > 0 || queries.length > 0 || keywords.length > 0;
+  const hasAnything = results.length > 0 || memories.length > 0 || queries.length > 0 || keywords.length > 0 || injectedMaterials.length > 0;
 
   if (!hasAnything) {
     return (
@@ -309,6 +318,24 @@ function SourcesList({
 
   return (
     <div className="space-y-4">
+      {/* 选题素材 */}
+      {injectedMaterials.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <FileText className="h-3.5 w-3.5" />
+            选题素材
+            <span className="font-mono-sm">{injectedMaterials.length} 条</span>
+          </div>
+          {injectedMaterials.map((mat, i) => (
+            <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+              <div className="rounded-lg border border-amber-200/50 dark:border-amber-900/30 bg-amber-50/30 dark:bg-amber-950/10 p-2.5 hover:bg-amber-50/50 dark:hover:bg-amber-950/20 transition-ui">
+                <p className="text-xs text-muted-foreground line-clamp-4">{mat}</p>
+              </div>
+            </StaggerItem>
+          ))}
+        </div>
+      )}
+
       {/* 查询计划 */}
       {(queries.length > 0 || keywords.length > 0) && (
         <div className="space-y-2">

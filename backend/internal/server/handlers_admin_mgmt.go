@@ -251,6 +251,9 @@ func (s *Server) handleAdminCreateAPIKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Hot-reload embedding client if dashscope key was changed
+	s.reloadEmbeddingFromDB(r.Context(), req.Provider)
+
 	response.Created(w, created)
 }
 
@@ -275,6 +278,9 @@ func (s *Server) handleAdminUpdateAPIKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Hot-reload embedding client if dashscope key was changed
+	s.reloadEmbeddingFromDB(r.Context(), req.Provider)
+
 	response.OK(w, updated)
 }
 
@@ -286,9 +292,28 @@ func (s *Server) handleAdminDeleteAPIKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Get provider before deletion for hot-reload check
+	keys, err := s.adminRepo.ListAPIKeys(r.Context(), "")
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list api keys")
+		return
+	}
+	var deletedProvider string
+	for _, k := range keys {
+		if k.ID == id {
+			deletedProvider = k.Provider
+			break
+		}
+	}
+
 	if err := s.adminRepo.DeleteAPIKey(r.Context(), id); err != nil {
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to delete api key")
 		return
+	}
+
+	// If the deleted key was for dashscope, log a warning
+	if deletedProvider == "dashscope" {
+		slog.Warn("dashscope API key deleted — embedding client will use env var until server restart")
 	}
 
 	response.OK(w, map[string]interface{}{"message": "api key deleted"})
@@ -347,6 +372,12 @@ func (s *Server) handleAdminTestAPIKey(w http.ResponseWriter, r *http.Request) {
 		}
 	case "anysearch":
 		err := s.testAnySearchConnectivity(r.Context(), baseURL, keyValue)
+		if err != nil {
+			status = "fail"
+			errMsg = err.Error()
+		}
+	case "dashscope":
+		err := s.testEmbeddingConnectivity(r.Context(), baseURL, keyValue)
 		if err != nil {
 			status = "fail"
 			errMsg = err.Error()
@@ -445,6 +476,65 @@ func (s *Server) testAnySearchConnectivity(ctx context.Context, baseURL, apiKey 
 		return fmt.Errorf("AnySearch API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+// testEmbeddingConnectivity tests DashScope/OpenAI-compatible embedding API connectivity.
+// Sends a minimal embedding request and checks for a valid response.
+func (s *Server) testEmbeddingConnectivity(ctx context.Context, baseURL, apiKey string) error {
+	if baseURL == "" {
+		baseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	// Send a minimal embedding request
+	body := `{"model":"text-embedding-v3","input":["test"]}`
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/embeddings", strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Embedding API returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// reloadEmbeddingFromDB checks if the provider is dashscope and hot-reloads
+// the embedding client with the updated API key from the database.
+// This is called after Create/Update/Delete API key operations.
+func (s *Server) reloadEmbeddingFromDB(ctx context.Context, provider string) {
+	if provider != "dashscope" || s.embedding == nil || s.adminRepo == nil {
+		return
+	}
+
+	key, baseURL, err := s.adminRepo.GetAPIKeyValue(ctx, "dashscope")
+	if err != nil || key == "" {
+		slog.Debug("reloadEmbeddingFromDB: no dashscope key in DB")
+		return
+	}
+
+	model := s.cfg.Dashscope.Model
+	dimension := s.cfg.Dashscope.Dimension
+	if baseURL == "" {
+		baseURL = s.cfg.Dashscope.BaseURL
+	}
+
+	s.embedding.Reconfigure(key, baseURL, model, dimension)
+	slog.Info("embedding client hot-reloaded from DB",
+		"model", model,
+		"dimension", dimension,
+		"base_url", baseURL,
+	)
 }
 
 // ─── Admin: Token Usage Stats ────────────────────────────

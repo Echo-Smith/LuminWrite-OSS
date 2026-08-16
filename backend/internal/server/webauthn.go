@@ -172,7 +172,10 @@ func (w *WebAuthnService) CreateRegistrationChallenge(userName, displayName, dbU
 		{Type: "public-key", Alg: -8},   // EdDSA
 	}
 	rc.AuthenticatorSelection.UserVerification = "preferred"
-	rc.AuthenticatorSelection.ResidentKey = "preferred"
+	// Use "required" so the authenticator stores the credential on-device
+	// (discoverable credential). This ensures userHandle is always returned
+	// during authentication, enabling username-less login fallback.
+	rc.AuthenticatorSelection.ResidentKey = "required"
 
 	return rc, nil
 }
@@ -877,12 +880,27 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Store the challenge
-	s.passkeyChallenges.Store(challenge.Challenge, req.UserID, &WebAuthnUser{
-		ID:          challenge.UserID,
-		Name:        req.UserName,
-		DisplayName: displayName,
-	}, "registration")
+	// Store the challenge in the database (survives container restarts)
+	if s.adminRepo != nil && s.adminRepo.DB() != nil {
+		_, dbErr := s.adminRepo.DB().ExecContext(r.Context(), `
+			INSERT INTO passkey_challenges (challenge, user_id, purpose, created_at, expires_at, used)
+			VALUES ($1, $2, 'registration', NOW(), NOW() + INTERVAL '5 minutes', false)
+		`, challenge.Challenge, req.UserID)
+		if dbErr != nil {
+			slog.Warn("failed to store passkey registration challenge in DB, falling back to memory", "error", dbErr)
+			s.passkeyChallenges.Store(challenge.Challenge, req.UserID, &WebAuthnUser{
+				ID:          challenge.UserID,
+				Name:        req.UserName,
+				DisplayName: displayName,
+			}, "registration")
+		}
+	} else {
+		s.passkeyChallenges.Store(challenge.Challenge, req.UserID, &WebAuthnUser{
+			ID:          challenge.UserID,
+			Name:        req.UserName,
+			DisplayName: displayName,
+		}, "registration")
+	}
 
 	response.OK(w, challenge)
 }
@@ -915,16 +933,50 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Consume the challenge
-	sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
-	if !ok {
-		response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
-		return
-	}
-
-	if sc.purpose != "registration" {
-		response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
-		return
+	// Consume the challenge — try DB first, then fallback to in-memory
+	var regUserID string
+	var regUserInfo *WebAuthnUser
+	if s.adminRepo != nil && s.adminRepo.DB() != nil {
+		var dbUserID string
+		err = s.adminRepo.DB().QueryRowContext(r.Context(), `
+			UPDATE passkey_challenges
+			SET used = true
+			WHERE challenge = $1 AND purpose = 'registration' AND used = false AND expires_at > NOW()
+			RETURNING user_id
+		`, clientData.Challenge).Scan(&dbUserID)
+		if err != nil {
+			// Try in-memory fallback
+			sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
+			if !ok {
+				response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
+				return
+			}
+			if sc.purpose != "registration" {
+				response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
+				return
+			}
+			regUserID = sc.userID
+			regUserInfo = sc.userInfo
+		} else {
+			regUserID = dbUserID
+			regUserInfo = &WebAuthnUser{
+				ID:          base64.RawURLEncoding.EncodeToString([]byte(dbUserID)),
+				Name:        dbUserID,
+				DisplayName: dbUserID,
+			}
+		}
+	} else {
+		sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
+		if !ok {
+			response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
+			return
+		}
+		if sc.purpose != "registration" {
+			response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
+			return
+		}
+		regUserID = sc.userID
+		regUserInfo = sc.userInfo
 	}
 
 	// Verify the registration response
@@ -942,12 +994,16 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 		if transports == nil {
 			transports = []string{}
 		}
+		displayName := regUserID
+		if regUserInfo != nil && regUserInfo.DisplayName != "" {
+			displayName = regUserInfo.DisplayName
+		}
 		_, err := s.adminRepo.DB().ExecContext(r.Context(), `
 			INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, device_type, backed_up, name, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, 'single_device', false, $8, NOW())
 			ON CONFLICT (credential_id) DO NOTHING
-		`, sc.userID, cred.CredentialID, cred.PublicKey, cred.AttestationType, cred.AAGUID,
-			cred.SignCount, transports, sc.userInfo.DisplayName)
+		`, regUserID, cred.CredentialID, cred.PublicKey, cred.AttestationType, cred.AAGUID,
+			cred.SignCount, transports, displayName)
 		if err != nil {
 			slog.Error("failed to store passkey credential", "error", err)
 			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to store credential")
@@ -955,7 +1011,7 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	slog.Info("passkey registered", "user_id", sc.userID, "credential_id", cred.CredentialID[:16]+"...")
+	slog.Info("passkey registered", "user_id", regUserID, "credential_id", cred.CredentialID[:16]+"...")
 
 	response.OK(w, map[string]interface{}{
 		"success": true,
@@ -977,14 +1033,16 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	// If user_id is provided, fetch their credentials for allowCredentials
+	// If user_id is provided, fetch their credentials for allowCredentials.
+	// When user_id is omitted, we leave allowCredentials empty to trigger
+	// discoverable-credential (resident key) login — the browser will show
+	// all passkeys registered for this RP.
 	var allowedCreds []credDescriptor
 	if req.UserID != "" && s.adminRepo != nil && s.adminRepo.DB() != nil {
 		rows, err := s.adminRepo.DB().QueryContext(r.Context(), `
 			SELECT credential_id, transports FROM passkey_credentials WHERE user_id = $1
 		`, req.UserID)
 		if err == nil {
-			defer rows.Close()
 			for rows.Next() {
 				var credID string
 				var transports []string
@@ -997,6 +1055,7 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 					Transports: transports,
 				})
 			}
+			rows.Close()
 		}
 	}
 
@@ -1007,8 +1066,20 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Store the challenge
-	s.passkeyChallenges.Store(challenge.Challenge, req.UserID, nil, "authentication")
+	// Store the challenge in the database (survives container restarts)
+	if s.adminRepo != nil && s.adminRepo.DB() != nil {
+		_, dbErr := s.adminRepo.DB().ExecContext(r.Context(), `
+			INSERT INTO passkey_challenges (challenge, user_id, purpose, created_at, expires_at, used)
+			VALUES ($1, NULLIF($2, ''), 'authentication', NOW(), NOW() + INTERVAL '5 minutes', false)
+		`, challenge.Challenge, req.UserID)
+		if dbErr != nil {
+			slog.Warn("failed to store passkey challenge in DB, falling back to memory", "error", dbErr)
+			// Fallback to in-memory store
+			s.passkeyChallenges.Store(challenge.Challenge, req.UserID, nil, "authentication")
+		}
+	} else {
+		s.passkeyChallenges.Store(challenge.Challenge, req.UserID, nil, "authentication")
+	}
 
 	response.OK(w, challenge)
 }
@@ -1041,16 +1112,39 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Consume the challenge
-	sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
-	if !ok {
-		response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
-		return
-	}
-
-	if sc.purpose != "authentication" {
-		response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
-		return
+	// Consume the challenge — try DB first, then fallback to in-memory
+	var challengeUserID string
+	if s.adminRepo != nil && s.adminRepo.DB() != nil {
+		err = s.adminRepo.DB().QueryRowContext(r.Context(), `
+			UPDATE passkey_challenges
+			SET used = true
+			WHERE challenge = $1 AND purpose = 'authentication' AND used = false AND expires_at > NOW()
+			RETURNING NULLIF(user_id, '')
+		`, clientData.Challenge).Scan(&challengeUserID)
+		if err != nil {
+			// Try in-memory fallback (for sessions started before DB migration)
+			sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
+			if !ok {
+				response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
+				return
+			}
+			if sc.purpose != "authentication" {
+				response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
+				return
+			}
+			challengeUserID = sc.userID
+		}
+	} else {
+		sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
+		if !ok {
+			response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
+			return
+		}
+		if sc.purpose != "authentication" {
+			response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
+			return
+		}
+		challengeUserID = sc.userID
 	}
 
 	// Look up the credential in the database
@@ -1064,16 +1158,18 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 		storedPubKey []byte
 		storedCount   int64
 	)
+
+	// Primary lookup: by credential_id (works for both resident and non-resident credentials)
 	err = s.adminRepo.DB().QueryRowContext(r.Context(), `
 		SELECT user_id, public_key, sign_count
 		FROM passkey_credentials
 		WHERE credential_id = $1
 	`, resp.RawID).Scan(&userID, &storedPubKey, &storedCount)
 	if err != nil {
-		// Fallback: if credential_id lookup failed, try using userHandle
-		// (discoverable credentials / username-less login).
-		// userHandle is the base64url-encoded database user ID that we
-		// set during registration.
+		slog.Debug("passkey credential_id lookup failed, trying userHandle fallback",
+			"credential_id", resp.RawID, "has_userHandle", resp.UserHandle != "", "challenge_user_id", challengeUserID)
+
+		// Fallback 1: try using userHandle (discoverable credentials)
 		if resp.UserHandle != "" {
 			handleBytes, decodeErr := base64.RawURLEncoding.DecodeString(resp.UserHandle)
 			if decodeErr == nil {
@@ -1085,8 +1181,33 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 				`, dbUserID, resp.RawID).Scan(&userID, &storedPubKey, &storedCount)
 			}
 		}
+
+		// Fallback 2: try using the user_id from the challenge session
+		// (if the user provided user_id during login/begin)
+		if err != nil && challengeUserID != "" {
+			err = s.adminRepo.DB().QueryRowContext(r.Context(), `
+					SELECT user_id, public_key, sign_count
+					FROM passkey_credentials
+					WHERE user_id = $1 AND credential_id = $2
+				`, challengeUserID, resp.RawID).Scan(&userID, &storedPubKey, &storedCount)
+		}
+
+		// Fallback 3: try credential.id (browser base64url vs Go base64url encoding differences)
+		if err != nil && resp.ID != "" && resp.ID != resp.RawID {
+			err = s.adminRepo.DB().QueryRowContext(r.Context(), `
+					SELECT user_id, public_key, sign_count
+					FROM passkey_credentials
+					WHERE credential_id = $1
+				`, resp.ID).Scan(&userID, &storedPubKey, &storedCount)
+		}
+
 		if err != nil {
-			slog.Warn("passkey credential not found", "credential_id", resp.RawID, "error", err)
+			slog.Warn("passkey credential not found",
+				"credential_id", resp.RawID,
+				"credential_id_alt", resp.ID,
+				"has_userHandle", resp.UserHandle != "",
+				"challenge_user_id", challengeUserID,
+				"error", err)
 			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "credential not found")
 			return
 		}

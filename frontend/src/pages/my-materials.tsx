@@ -2,9 +2,9 @@
  * 我的素材库 — 用户端个人素材管理页面
  * 基于内置知识引擎（本地 PostgreSQL + pgvector + paradedb BM25 混合检索）
  */
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
-  Plus, Trash2, FileText, Link as LinkIcon, Upload, Search,
+  Plus, Trash2, FileText, Link as LinkIcon, Search,
   Loader2, File, ChevronLeft, ChevronRight, AlertCircle, Database,
   Compass, ArrowRight, ArrowLeft,
 } from "lucide-react";
@@ -12,15 +12,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { useNavigate } from "react-router-dom";
 import {
   type UserMaterial,
   type MaterialSearchResult,
-  listMaterials, createMaterial, uploadMaterial, deleteMaterial, searchMaterials,
+  listMaterials, deleteMaterial, searchMaterials,
 } from "@/lib/material-api";
+import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
 
 const SOURCE_ICONS: Record<string, typeof FileText> = {
   text: FileText,
@@ -57,14 +56,8 @@ export function MyMaterialsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Add panel
+  // Add dialog
   const [showAdd, setShowAdd] = useState(false);
-  const [addMode, setAddMode] = useState<"text" | "file">("text");
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -91,38 +84,6 @@ export function MyMaterialsPage() {
   useEffect(() => { load(); }, [load]);
 
   // ─── Actions ───────────────────────────────────────────
-
-  const handleAdd = async () => {
-    if (addMode === "text") {
-      if (!title.trim() || !content.trim()) return;
-      setUploading(true);
-      try {
-        await createMaterial(title, content);
-        setShowAdd(false);
-        setTitle("");
-        setContent("");
-        await load();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "创建失败");
-      } finally {
-        setUploading(false);
-      }
-    } else if (addMode === "file" && file) {
-      setUploading(true);
-      try {
-        await uploadMaterial(file, title || undefined);
-        setShowAdd(false);
-        setTitle("");
-        setFile(null);
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        await load();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "上传失败");
-      } finally {
-        setUploading(false);
-      }
-    }
-  };
 
   const handleDelete = async (id: string) => {
     if (!confirm("确定删除这个素材？")) return;
@@ -171,11 +132,19 @@ export function MyMaterialsPage() {
             去选题中心
             <ArrowRight className="h-3 w-3" />
           </Button>
-          <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
+          <Button size="sm" onClick={() => setShowAdd(true)}>
             <Plus className="h-4 w-4 mr-2" /> 添加素材
           </Button>
         </div>
       </header>
+
+      {/* ─── Add Material Dialog ─── */}
+      <AddMaterialDialog
+        open={showAdd}
+        onOpenChange={setShowAdd}
+        onAdded={load}
+        onError={(msg) => setError(msg)}
+      />
 
       {/* ─── Main ─── */}
       <div className="flex-1 overflow-y-auto">
@@ -205,92 +174,6 @@ export function MyMaterialsPage() {
               <Button size="sm" variant="ghost" onClick={() => setError(null)} className="ml-auto">
                 关闭
               </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Add Panel */}
-        {showAdd && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">添加素材</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant={addMode === "text" ? "default" : "outline"}
-                  onClick={() => setAddMode("text")}
-                >
-                  <FileText className="h-4 w-4 mr-1" /> 文本/Markdown
-                </Button>
-                <Button
-                  size="sm"
-                  variant={addMode === "file" ? "default" : "outline"}
-                  onClick={() => setAddMode("file")}
-                >
-                  <Upload className="h-4 w-4 mr-1" /> 上传文件
-                </Button>
-              </div>
-
-              <div>
-                <Label>标题</Label>
-                <Input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="给素材起个标题..."
-                  className="mt-1"
-                />
-              </div>
-
-              {addMode === "text" ? (
-                <div>
-                  <Label>内容</Label>
-                  <Textarea
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    placeholder="输入文本或 Markdown 内容..."
-                    className="mt-1 min-h-[200px] font-mono text-sm"
-                  />
-                </div>
-              ) : (
-                <div>
-                  <Label>选择文件</Label>
-                  <div
-                    className="mt-1 border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-accent/50 transition-colors"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      className="hidden"
-                      onChange={(e) => setFile(e.target.files?.[0] || null)}
-                    />
-                    {file ? (
-                      <div className="space-y-1">
-                        <File className="h-8 w-8 mx-auto text-muted-foreground" />
-                        <p className="text-sm font-medium">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">{formatSize(file.size)}</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        <Upload className="h-8 w-8 mx-auto text-muted-foreground" />
-                        <p className="text-sm text-muted-foreground">点击选择文件（PDF、Word、图片等）</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => setShowAdd(false)}>
-                  取消
-                </Button>
-                <Button size="sm" onClick={handleAdd} disabled={uploading}>
-                  {uploading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-                  {uploading ? "上传中..." : "保存"}
-                </Button>
-              </div>
             </CardContent>
           </Card>
         )}

@@ -92,6 +92,40 @@ func (r *Registry) Close() {
 	}
 }
 
+// Disconnect shuts down a single MCP server connection by name.
+// Returns an error if the server is not found.
+func (r *Registry) Disconnect(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	client, ok := r.clients[name]
+	if !ok {
+		return fmt.Errorf("MCP server %q not found", name)
+	}
+	client.Close()
+	delete(r.clients, name)
+	slog.Info("MCP server disconnected", "server", name)
+	return nil
+}
+
+// Reconnect disconnects (if connected) and reconnects to an MCP server.
+// This is used when admin updates a server configuration via the UI.
+func (r *Registry) Reconnect(ctx context.Context, cfg MCPClientConfig) error {
+	// Disconnect existing connection if any
+	r.Disconnect(cfg.Name)
+
+	// Connect with new config
+	return r.Connect(ctx, cfg)
+}
+
+// IsConnected returns true if a server with the given name is currently connected.
+func (r *Registry) IsConnected(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.clients[name]
+	return ok
+}
+
 // ServerNames returns the names of all connected MCP servers.
 func (r *Registry) ServerNames() []string {
 	r.mu.RLock()

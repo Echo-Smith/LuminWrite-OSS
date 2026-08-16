@@ -6,12 +6,15 @@
 import { useState, useEffect, useCallback, type ReactElement } from "react";
 import { Plus, Trash2, Pencil, Cpu, Star, Loader2, Key, Zap, Brain, Eye, Search, CheckCircle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
 
 interface ModelConfig {
   id: string;
@@ -185,6 +188,11 @@ export function ModelConfigsPage() {
     });
   };
 
+  const openAdd = () => {
+    resetForm();
+    setShowAdd(true);
+  };
+
   const handleEdit = (c: ModelConfig) => {
     setEditing(c);
     setForm({
@@ -220,17 +228,22 @@ export function ModelConfigsPage() {
             输入 Base URL 和 API Key，自动发现可用模型。密钥加密存储在模型配置中。
           </p>
         </div>
-        <Button size="sm" onClick={resetForm}>
+        <Button size="sm" onClick={openAdd}>
           <Plus className="h-4 w-4 mr-2" /> 添加模型
         </Button>
       </div>
 
-      {showAdd && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">{editing ? "编辑模型" : "添加模型"}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+      {/* Add/Edit Model Dialog */}
+      <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) resetForm(); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editing ? "编辑模型" : "添加模型"}</DialogTitle>
+            <DialogDescription>
+              输入 Base URL 和 API Key，自动发现可用模型。密钥加密存储。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
             {/* Step 1: Provider + Base URL + API Key + Discover */}
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -384,17 +397,17 @@ export function ModelConfigsPage() {
                 </div>
               </div>
             </div>
+          </div>
 
-            <div className="flex justify-end gap-2 pt-2 border-t">
-              <Button variant="outline" size="sm" onClick={resetForm}>取消</Button>
-              <Button size="sm" onClick={handleSave} disabled={!form.model_name || saving}>
-                {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
-                {editing ? "保存" : "添加"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={resetForm} disabled={saving}>取消</Button>
+            <Button size="sm" onClick={handleSave} disabled={!form.model_name || saving}>
+              {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+              {editing ? "保存" : "添加"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="rounded-lg border">
         <table className="w-full">

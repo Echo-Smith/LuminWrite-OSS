@@ -310,3 +310,36 @@ export async function updateKB(id: string, name: string, description?: string): 
 export async function deleteKB(id: string): Promise<void> {
   await fetch(`${BASE}/manage/${id}`, { method: "DELETE" });
 }
+
+// ─── Admin KB Operations ──────────────────────────────
+// These call the admin endpoints under /api/v2/admin/kb/*
+
+const ADMIN_BASE = "/api/v2/admin/kb";
+
+/** 为缺失嵌入的分块批量生成 Embedding */
+export async function generateEmbeddings(): Promise<{ generated: number; message: string }> {
+  const res = await fetch(`${ADMIN_BASE}/generate-embeddings`, { method: "POST" });
+  const json = await res.json();
+  return json.data ?? { generated: 0, message: "failed" };
+}
+
+/** 全库重新分块 */
+export async function rechunkAll(): Promise<{
+  documents: unknown[];
+  total_docs: number;
+  old_chunks: number;
+  new_chunks: number;
+  reduction: number;
+  reduction_pct: number;
+}> {
+  const res = await fetch(`${ADMIN_BASE}/rechunk`, { method: "POST" });
+  const json = await res.json();
+  return json.data ?? { documents: [], total_docs: 0, old_chunks: 0, new_chunks: 0, reduction: 0, reduction_pct: 0 };
+}
+
+/** 从原 URL 重新抓取并导入 */
+export async function reimportAll(): Promise<{ documents: unknown[]; total_docs: number; new_chunks: number }> {
+  const res = await fetch(`${ADMIN_BASE}/reimport`, { method: "POST" });
+  const json = await res.json();
+  return json.data ?? { documents: [], total_docs: 0, new_chunks: 0 };
+}
