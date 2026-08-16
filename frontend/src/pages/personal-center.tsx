@@ -33,6 +33,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useMemoryStore, type UserMemory } from "@/stores/memory-store";
 import { useSettingsStore, type AgentMode } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
+import { registerPasskey, getPasskeyErrorMessage } from "@/lib/passkey";
 
 // ─── 菜单项定义 ──────────────────────────────────────────
 
@@ -1247,7 +1248,7 @@ function MemorySection() {
 // ─── 偏好设置 ────────────────────────────────────────────
 
 const AGENT_MODE_OPTIONS: { value: AgentMode; label: string; description: string }[] = [
-  { value: "unified", label: "智能模式", description: "LLM 自主编排，灵活选择工具调用顺序，适合复杂写作任务" },
+  { value: "harness", label: "智能会话模式", description: "LLM 持续会话 + Harness 路由，支持多轮修改、对话、搜索，适合实际写作场景" },
   { value: "pipeline", label: "流水线模式", description: "固定步骤流水线，稳定可预测，适合标准化写作" },
 ];
 
@@ -1298,7 +1299,7 @@ function SettingsSection() {
       <div className="rounded-lg bg-muted/50 p-4">
         <p className="text-xs text-muted-foreground">
           <strong className="text-foreground">提示：</strong>
-          智能模式（Unified）让 AI 大脑自主决定工具调用顺序，可以更灵活地处理复杂选题；
+          智能会话模式（Harness）让 AI 在持续会话中自主搜索、写作、评审和修改，支持多轮对话和定向修改；
           流水线模式（Pipeline）使用固定步骤，更稳定但灵活性较低。
           如果对生成质量不满意，可以尝试切换模式体验差异。
         </p>
@@ -1322,6 +1323,12 @@ function AccountSection() {
   // Passkey state
   const [passkeys, setPasskeys] = useState<Array<{ id: string; name: string; created_at: string; last_used_at?: string }>>([]);
   const [loadingPasskeys, setLoadingPasskeys] = useState(true);
+
+  // Passkey 注册状态
+  const [pkRegOpen, setPkRegOpen] = useState(false);
+  const [pkRegName, setPkRegName] = useState("");
+  const [pkRegLoading, setPkRegLoading] = useState(false);
+  const [pkRegMsg, setPkRegMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     if (!isGuest) {
@@ -1383,6 +1390,31 @@ function AccountSection() {
       setPasskeys(passkeys.filter((p) => p.id !== id));
     } catch {
       // ignore
+    }
+  };
+
+  const handleRegisterPasskey = async () => {
+    setPkRegLoading(true);
+    setPkRegMsg(null);
+    try {
+      const result = await registerPasskey({
+        name: pkRegName.trim() || undefined,
+        userId: user?.userId,
+        userName: user?.username || "user",
+      });
+      setPkRegMsg({ type: "success", text: result.message || "Passkey 注册成功" });
+      setPkRegName("");
+      // 刷新列表
+      fetchPasskeys();
+      // 2 秒后关闭弹窗
+      setTimeout(() => {
+        setPkRegOpen(false);
+        setPkRegMsg(null);
+      }, 2000);
+    } catch (e) {
+      setPkRegMsg({ type: "error", text: getPasskeyErrorMessage(e) });
+    } finally {
+      setPkRegLoading(false);
     }
   };
 
@@ -1519,14 +1551,65 @@ function AccountSection() {
           size="sm"
           className="gap-2"
           onClick={() => {
-            // Navigate to passkey registration flow
-            window.location.href = "/login?mode=passkey_register";
+            setPkRegMsg(null);
+            setPkRegName("");
+            setPkRegOpen(true);
           }}
         >
           <Plus className="h-3.5 w-3.5" />
           绑定新 Passkey
         </Button>
       </div>
+
+      {/* Passkey 注册弹窗 */}
+      <CreateDialog open={pkRegOpen} onOpenChange={setPkRegOpen}>
+        <CreateDialogContent>
+          <CreateDialogHeader>
+            <CreateDialogTitle>绑定新 Passkey</CreateDialogTitle>
+          </CreateDialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              点击下方按钮，使用 Face ID、Touch ID 或安全密钥完成 Passkey 注册。
+            </p>
+            <div>
+              <Label className="text-xs">设备名称（可选）</Label>
+              <Input
+                className="mt-1"
+                placeholder="如 MacBook Touch ID"
+                value={pkRegName}
+                onChange={(e) => setPkRegName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !pkRegLoading && handleRegisterPasskey()}
+              />
+            </div>
+            {pkRegMsg && (
+              <div className={cn(
+                "flex items-center gap-2 text-sm",
+                pkRegMsg.type === "success" ? "text-green-600" : "text-red-600"
+              )}>
+                {pkRegMsg.type === "success" ? <Check className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                {pkRegMsg.text}
+              </div>
+            )}
+          </div>
+          <CreateDialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPkRegOpen(false)}
+              disabled={pkRegLoading}
+            >
+              取消
+            </Button>
+            <Button onClick={handleRegisterPasskey} disabled={pkRegLoading}>
+              {pkRegLoading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Fingerprint className="h-4 w-4 mr-2" />
+              )}
+              开始注册
+            </Button>
+          </CreateDialogFooter>
+        </CreateDialogContent>
+      </CreateDialog>
     </div>
   );
 }
