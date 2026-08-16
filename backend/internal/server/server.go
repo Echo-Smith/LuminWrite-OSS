@@ -1255,9 +1255,10 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// Create and run engine
 	// Mode selection: payload agent_mode > server config AGENT_MODE
-	// "unified" uses LLM-driven ReAct loop, "pipeline" uses fixed steps
+	// "harness" uses Harness-LLM single-layer continuous session (架构 C)
+	// "pipeline" uses fixed steps
 	agentMode := s.cfg.Agent.Mode
-	if p.AgentMode == "unified" || p.AgentMode == "pipeline" {
+	if p.AgentMode == "harness" || p.AgentMode == "pipeline" {
 		agentMode = p.AgentMode
 	}
 
@@ -1268,13 +1269,25 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		Run(context.Context, *engine.ExecutionContext) error
 	}
 
-	if agentMode == "unified" {
-		// Build tool registry with all steps + built-in tools + MCP tools
-		registry := s.buildToolRegistry(llmClient, styleProfile, execCtx)
+	if agentMode == "harness" {
+		// 架构 C: Harness-LLM 单层持续会话
+		writingSession := agent.NewWritingSession(execCtx.ConversationID, userID, execCtx.StyleSlug)
+		writingSession.UserMaterials = execCtx.UserMaterials
+		if execCtx.TopicURL != "" {
+			writingSession.UserMaterials = append(writingSession.UserMaterials, "选题链接: "+execCtx.TopicURL)
+		}
+		if execCtx.MemoryContext != nil {
+			writingSession.MemoryContext = execCtx.MemoryContext
+		}
 
-		agentRunner = agent.NewUnifiedAgent(registry, llmClient, emitter)
-		slog.Info("using unified agent (ReAct loop)", "trace_id", traceID)
-	} else {
+		h := agent.NewHarness(
+			llmClient, s.search, styleProfile,
+			&harnessSessionStore{svc: s.memorySvc},
+			emitter,
+		)
+		agentRunner = &harnessRunner{harness: h, session: writingSession}
+		slog.Info("using harness agent (单层持续会话)", "trace_id", traceID, "conversation_id", execCtx.ConversationID)
+	} else if agentMode == "pipeline" {
 		// Pipeline mode: build fixed step array
 		var engineSteps []engine.Step
 
@@ -1352,6 +1365,21 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 		agentRunner = ae
 		slog.Info("using fixed pipeline engine", "trace_id", traceID)
+	} else {
+		// Default fallback: harness mode (架构 C)
+		writingSession := agent.NewWritingSession(execCtx.ConversationID, userID, execCtx.StyleSlug)
+		writingSession.UserMaterials = execCtx.UserMaterials
+		if execCtx.TopicURL != "" {
+			writingSession.UserMaterials = append(writingSession.UserMaterials, "选题链接: "+execCtx.TopicURL)
+		}
+
+		h := agent.NewHarness(
+			llmClient, s.search, styleProfile,
+			&harnessSessionStore{svc: s.memorySvc},
+			emitter,
+		)
+		agentRunner = &harnessRunner{harness: h, session: writingSession}
+		slog.Info("using harness agent (default fallback)", "trace_id", traceID)
 	}
 
 	// Run in background
@@ -1551,9 +1579,29 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 				resumeMode = s.cfg.Agent.Mode
 			}
 
-			if resumeMode == "unified" {
-				registry := s.buildToolRegistry(llmClient, styleProfile, execCtx)
-				agentRunner = agent.NewUnifiedAgent(registry, llmClient, emitter)
+			if resumeMode == "harness" {
+				writingSession := agent.NewWritingSession(execCtx.ConversationID, execCtx.UserID, execCtx.StyleSlug)
+				writingSession.UserMaterials = execCtx.UserMaterials
+				if execCtx.TopicURL != "" {
+					writingSession.UserMaterials = append(writingSession.UserMaterials, "选题链接: "+execCtx.TopicURL)
+				}
+				if execCtx.MemoryContext != nil {
+					writingSession.MemoryContext = execCtx.MemoryContext
+				}
+				// 恢复已有文章和标题（断线重连后继续修改已有文章）
+				if execCtx.Article != "" {
+					writingSession.CurrentArticle = execCtx.Article
+				}
+				if execCtx.ArticleTitle != "" {
+					writingSession.ArticleTitle = execCtx.ArticleTitle
+				}
+
+				h := agent.NewHarness(
+					llmClient, s.search, styleProfile,
+					&harnessSessionStore{svc: s.memorySvc},
+					emitter,
+				)
+				agentRunner = &harnessRunner{harness: h, session: writingSession}
 			} else {
 				var engineSteps []engine.Step
 				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
@@ -1969,11 +2017,11 @@ func (s *Server) newPostReviewStepWithLLM(llm *tools.LLMClient, p *profile.Style
 
 // buildToolRegistry builds a ToolRegistry containing all pipeline steps as tools,
 // built-in function tools, and MCP tools (if MCP servers are configured).
-// This is used by the UnifiedAgent to give the LLM planner access to all capabilities.
+// This is used by the Harness to give the LLM planner access to all capabilities.
 //
 // Each tool is registered with a ToolDescriptor that declares its dependencies,
-// repeatability, terminal flag, and category. This replaces the hardcoded
-// nonRepeatableTools and toolDependencies maps in unified_agent.go.
+// repeatability, terminal flag, and category. This replaces the former hardcoded
+// nonRepeatableTools and toolDependencies maps (deleted with the old ReAct agent).
 func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *profile.StyleProfile, execCtx *engine.ExecutionContext) *engine.ToolRegistry {
 	registry := engine.NewToolRegistry()
 

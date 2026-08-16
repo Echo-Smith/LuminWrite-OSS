@@ -27,10 +27,15 @@ type responsesRequest struct {
 	Text            *responsesText `json:"text,omitempty"`
 }
 
-// responsesTool wraps a ToolDef in the Responses API format.
+// responsesTool represents a tool in the Responses API format.
+// Unlike Chat Completions API which nests fields under "function",
+// the Responses API uses a flat format: name/description/parameters
+// are top-level fields on the tool object.
 type responsesTool struct {
-	Type     string                `json:"type"` // "function"
-	Function ToolDefFunction       `json:"function"`
+	Type        string         `json:"type"`        // "function"
+	Name        string         `json:"name"`        // function name (top-level in Responses API)
+	Description string         `json:"description"` // function description
+	Parameters  map[string]any `json:"parameters"`  // JSON schema for parameters
 }
 
 // responsesText controls output format (e.g., JSON mode).
@@ -297,11 +302,14 @@ func (c *LLMClient) toResponsesRequest(req *LLMRequest, stream bool) *responsesR
 		rReq.Input = append(rReq.Input, msg)
 	}
 
-	// Convert tools
+	// Convert tools from Chat Completions format (nested function) to
+	// Responses API format (flat: name/description/parameters at top level)
 	for _, t := range req.Tools {
 		rReq.Tools = append(rReq.Tools, responsesTool{
-			Type:     t.Type,
-			Function: t.Function,
+			Type:        t.Type,
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			Parameters:  t.Function.Parameters,
 		})
 	}
 

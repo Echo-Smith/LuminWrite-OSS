@@ -178,10 +178,10 @@ type LogConfig struct {
 }
 
 // AgentConfig controls the agent execution mode and exit mechanisms.
-//   - "pipeline" (default): use the fixed []Step pipeline (AgentEngine)
-//   - "unified": use the LLM-driven ReAct loop (UnifiedAgent)
+//   - "harness" (default): Harness-LLM single-layer continuous session (架构 C)
+//   - "pipeline": use the fixed []Step pipeline (AgentEngine)
 type AgentConfig struct {
-	Mode                string        // "pipeline" | "unified"
+	Mode                string        // "harness" | "pipeline"
 	Timeout             time.Duration // global agent execution timeout (default 5m)
 	MaxTokens           int           // token budget per execution (default 300000, 0=unlimited)
 	MaxFixAttempts      int           // max review→fix loop iterations (default 2)
@@ -329,7 +329,7 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			FetchInterval: getEnvDuration("HOT_TOPICS_FETCH_INTERVAL", 10*time.Minute),
 		},
 		Agent: AgentConfig{
-			Mode:                getEnv("AGENT_MODE", "pipeline"),
+			Mode:                getEnv("AGENT_MODE", "harness"),
 			Timeout:             getEnvDuration("AGENT_TIMEOUT", 5*time.Minute),
 			MaxTokens:           getEnvInt("AGENT_MAX_TOKENS", 300000),
 			MaxFixAttempts:      getEnvInt("AGENT_MAX_FIX_ATTEMPTS", 2),

@@ -28,7 +28,7 @@ type Experiment struct {
 
 // ExperimentMetrics 单次执行的指标
 type ExperimentMetrics struct {
-	Mode         string  `json:"mode"`          // pipeline | unified | editorial
+	Mode         string  `json:"mode"`          // pipeline | harness | editorial
 	TokenCost    int     `json:"token_cost"`
 	DurationMs   int64   `json:"duration_ms"`
 	WordCount    int     `json:"word_count"`
@@ -153,7 +153,7 @@ func (s *Store) UpdateExperimentResult(ctx context.Context, id string, mode stri
 	switch mode {
 	case "pipeline":
 		col = "pipeline_result"
-	case "unified":
+	case "harness", "unified": // harness 是新名，unified 是向后兼容
 		col = "unified_result"
 	case "editorial":
 		col = "editorial_result"

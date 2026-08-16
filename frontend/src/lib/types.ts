@@ -5,6 +5,13 @@
 // ─── Agent 消息协议 ──────────────────────────────────────
 
 export type AgentStepName =
+  // ── Harness 模式（架构 C）新工具名 ──
+  | "search_web"
+  | "read_source"
+  | "write_article"
+  | "review_article"
+  | "revise_section"
+  // ── 旧 pipeline/unified 工具名（兼容历史会话回放）──
   | "intent"
   | "query_plan"
   | "search"
@@ -80,7 +87,7 @@ export interface AgentStartPayload {
   style?: string;
   mode?: WriteMode;
   model?: string;
-  agent_mode?: "pipeline" | "unified";
+  agent_mode?: "harness" | "pipeline";
   session_id?: string;
   user_materials?: string[];
   word_limit?: number;

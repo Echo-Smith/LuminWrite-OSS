@@ -256,7 +256,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 清理选题缓存，避免下一个用户看到上一个用户的数据
     import("@/stores/topic-cache-store").then((m) => m.useTopicCacheStore.getState().clearCache());
     // 重置偏好设置状态
-    import("@/stores/settings-store").then((m) => m.useSettingsStore.setState({ agentMode: "unified", loaded: false }));
+    import("@/stores/settings-store").then((m) => m.useSettingsStore.setState({ agentMode: "harness", loaded: false }));
   },
 
   refreshToken: async () => {

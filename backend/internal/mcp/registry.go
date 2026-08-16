@@ -20,7 +20,7 @@ import (
 //
 // The registry is created at server startup from config, connects to
 // all MCP servers, discovers their tools, and registers them in the
-// engine.ToolRegistry. Tools are available to the UnifiedAgent
+// engine.ToolRegistry. Tools are available to the Harness
 // alongside built-in tools and step tools.
 
 // Registry manages multiple MCP server connections.

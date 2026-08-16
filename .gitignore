@@ -52,3 +52,7 @@ data/
 agentops-*.zip
 agentops-*.md
 scripts/check_go_imports.py
+
+# ─── A/B 测试结果（临时产物） ──────────────────────────
+ab-test-results-*.json
+ab-test-report.html

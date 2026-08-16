@@ -15,11 +15,11 @@ import (
 //   - Micro tools: built-in Go functions (search_web, get_topic_context)
 //   - MCP tools: dynamically discovered from external MCP servers
 //
-// The UnifiedAgent calls LLM with all registered tools' OpenAI-compatible
-// schema, and the LLM decides which tool to invoke next (ReAct pattern).
+// The Harness calls LLM with all registered tools' OpenAI-compatible
+// schema, and the LLM decides which tool to invoke next (agent loop pattern).
 // This replaces the fixed []Step pipeline with LLM-driven orchestration.
 
-// AgentTool is a single capability that can be invoked by the UnifiedAgent.
+// AgentTool is a single capability that can be invoked by the Harness.
 type AgentTool interface {
 	// Name returns the unique tool identifier (e.g. "intent", "search_web", "mcp__fs__read_file").
 	Name() string
@@ -51,8 +51,8 @@ type ToolResult struct {
 // ─── ToolDescriptor: declarative tool metadata ─────────────
 //
 // ToolDescriptor carries dependency and repeatability metadata for a tool.
-// This replaces the hardcoded nonRepeatableTools and toolDependencies maps
-// in unified_agent.go, making tool relationships declarative and visible
+// This replaces the former hardcoded nonRepeatableTools and toolDependencies maps
+// (deleted with the old ReAct agent), making tool relationships declarative and visible
 // to the API layer for visualization.
 //
 // Inspired by dsh's plugin registration pattern where plugins declare
@@ -67,7 +67,7 @@ type ToolDescriptor struct {
 	Description string `json:"description"`
 
 	// DependsOn lists tools that must have executed before this tool.
-	// The UnifiedAgent uses this to hide tools whose dependencies haven't run.
+	// The Harness uses this to hide tools whose dependencies haven't run.
 	DependsOn []string `json:"depends_on,omitempty"`
 
 	// Repeatable indicates whether the tool can be invoked more than once.
