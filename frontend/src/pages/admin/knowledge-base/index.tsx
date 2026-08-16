@@ -5,11 +5,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { Plus, Database, CheckCircle, RefreshCw, FolderPlus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
 import {
   type KnowledgeDoc,
   type KBInfo,
@@ -175,7 +177,7 @@ export function KnowledgeBasePage() {
           <Button size="sm" variant="outline" onClick={doCheckConfig} title="刷新状态">
             <RefreshCw className="h-4 w-4" />
           </Button>
-          <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
+          <Button size="sm" onClick={() => setShowAdd(true)}>
             <Plus className="h-4 w-4 mr-2" /> 添加知识
           </Button>
         </div>
@@ -195,7 +197,7 @@ export function KnowledgeBasePage() {
             </option>
           ))}
         </select>
-        <Button size="sm" variant="outline" onClick={() => setShowCreateKB(!showCreateKB)}>
+        <Button size="sm" variant="outline" onClick={() => setShowCreateKB(true)}>
           <FolderPlus className="h-4 w-4 mr-1" /> 新建
         </Button>
         {selectedKB !== "default" && (
@@ -205,38 +207,46 @@ export function KnowledgeBasePage() {
         )}
       </div>
 
-      {/* Create KB Panel */}
-      {showCreateKB && (
-        <Card className="anim-fade-in">
-          <CardContent className="p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <FolderPlus className="h-4 w-4" />
-              <h3 className="text-sm font-semibold">新建知识库</h3>
+      {/* Create KB Dialog */}
+      <Dialog open={showCreateKB} onOpenChange={(v) => { if (!v) setShowCreateKB(false); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>新建知识库</DialogTitle>
+            <DialogDescription>
+              创建一个新的知识库用于分类管理文档。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-1 gap-3">
+            <div>
+              <Label>名称</Label>
+              <Input value={newKBName} onChange={(e) => setNewKBName(e.target.value)} placeholder="如：写作风格素材" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>名称</Label>
-                <Input value={newKBName} onChange={(e) => setNewKBName(e.target.value)} placeholder="如：写作风格素材" />
-              </div>
-              <div>
-                <Label>描述（可选）</Label>
-                <Input value={newKBDesc} onChange={(e) => setNewKBDesc(e.target.value)} placeholder="知识库用途说明" />
-              </div>
+            <div>
+              <Label>描述（可选）</Label>
+              <Input value={newKBDesc} onChange={(e) => setNewKBDesc(e.target.value)} placeholder="知识库用途说明" />
             </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setShowCreateKB(false)}>取消</Button>
-              <Button size="sm" onClick={handleCreateKB} disabled={!newKBName.trim()}>
-                <Plus className="h-4 w-4 mr-1" /> 创建
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setShowCreateKB(false)}>取消</Button>
+            <Button size="sm" onClick={handleCreateKB} disabled={!newKBName.trim()}>
+              <Plus className="h-4 w-4 mr-1" /> 创建
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {/* Add Panel */}
-      {showAdd && (
-        <KBAddPanel onAdd={handleAdd} onCancel={() => setShowAdd(false)} />
-      )}
+      {/* Add Knowledge Dialog */}
+      <Dialog open={showAdd} onOpenChange={(v) => { if (!v) setShowAdd(false); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>添加知识</DialogTitle>
+            <DialogDescription>
+              支持文本、URL、文件三种方式添加知识。
+            </DialogDescription>
+          </DialogHeader>
+          <KBAddPanel onAdd={handleAdd} onCancel={() => setShowAdd(false)} />
+        </DialogContent>
+      </Dialog>
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>

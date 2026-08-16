@@ -6,7 +6,7 @@ import { useState, useEffect, useMemo } from "react";
 import {
   Search, Plus, Trash2, Loader2, FileUp, Link2, FileText,
   RefreshCw, AlertCircle, ChevronDown, ChevronRight, Database,
-  Boxes, Network, Layers,
+  Boxes, Network, Layers, Wand2, DownloadCloud, Cpu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +25,7 @@ import {
   getDocumentChunks, getDocumentEntities, getStats,
   searchWithMode, type SearchMode,
   getGraph, type GraphNode, type GraphEdge,
+  generateEmbeddings, rechunkAll, reimportAll,
 } from "@/lib/kb-api";
 
 // ─── 未配置提示组件 ─────────────────────────────────────
@@ -85,69 +86,66 @@ export function KBAddPanel({
   };
 
   return (
-    <Card>
-      <CardHeader><CardTitle className="text-sm">添加知识</CardTitle></CardHeader>
-      <CardContent>
-        <Tabs value={addMode} onValueChange={(v) => setAddMode(v as AddMode)}>
-          <TabsList>
-            <TabsTrigger value="text"><FileText className="h-3.5 w-3.5 mr-1.5" /> 文本</TabsTrigger>
-            <TabsTrigger value="url"><Link2 className="h-3.5 w-3.5 mr-1.5" /> URL</TabsTrigger>
-            <TabsTrigger value="file"><FileUp className="h-3.5 w-3.5 mr-1.5" /> 文件</TabsTrigger>
-          </TabsList>
+    <div className="space-y-4">
+      <Tabs value={addMode} onValueChange={(v) => setAddMode(v as AddMode)}>
+        <TabsList>
+          <TabsTrigger value="text"><FileText className="h-3.5 w-3.5 mr-1.5" /> 文本</TabsTrigger>
+          <TabsTrigger value="url"><Link2 className="h-3.5 w-3.5 mr-1.5" /> URL</TabsTrigger>
+          <TabsTrigger value="file"><FileUp className="h-3.5 w-3.5 mr-1.5" /> 文件</TabsTrigger>
+        </TabsList>
 
-          <TabsContent value="text" className="space-y-3 mt-4">
-            <div>
-              <Label>标题</Label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="知识标题" />
-            </div>
-            <div>
-              <Label>内容（支持 Markdown）</Label>
-              <Textarea value={content} onChange={(e) => setContent(e.target.value)}
-                placeholder="输入知识内容..." className="min-h-[200px] font-mono text-sm" />
-            </div>
-          </TabsContent>
+        <TabsContent value="text" className="space-y-3 mt-4">
+          <div>
+            <Label>标题</Label>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="知识标题" />
+          </div>
+          <div>
+            <Label>内容（支持 Markdown）</Label>
+            <Textarea value={content} onChange={(e) => setContent(e.target.value)}
+              placeholder="输入知识内容..." className="min-h-[200px] font-mono text-sm" />
+          </div>
+        </TabsContent>
 
-          <TabsContent value="url" className="space-y-3 mt-4">
-            <div>
-              <Label>网页 URL</Label>
-              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/article" />
-            </div>
-            <div>
-              <Label>标题（可选）</Label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="自动提取网页标题" />
-            </div>
-          </TabsContent>
+        <TabsContent value="url" className="space-y-3 mt-4">
+          <div>
+            <Label>网页 URL</Label>
+            <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/article" />
+          </div>
+          <div>
+            <Label>标题（可选）</Label>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="自动提取网页标题" />
+          </div>
+        </TabsContent>
 
-          <TabsContent value="file" className="space-y-3 mt-4">
-            <div>
-              <Label>上传文件</Label>
-              <div className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-accent/30 transition-colors"
-                onClick={() => document.getElementById("kb-file-input")?.click()}>
-                <FileUp className="h-8 w-8 mx-auto text-muted-foreground" />
-                <p className="text-sm mt-2 text-muted-foreground">
-                  {file ? file.name : "点击选择文件"}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">支持 PDF / Word / Excel / PPT / 图片 / HTML / Markdown</p>
-                <input id="kb-file-input" type="file" className="hidden"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-              </div>
+        <TabsContent value="file" className="space-y-3 mt-4">
+          <div>
+            <Label>上传文件</Label>
+            <div className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-accent/30 transition-colors"
+              onClick={() => document.getElementById("kb-file-input")?.click()}>
+              <FileUp className="h-8 w-8 mx-auto text-muted-foreground" />
+              <p className="text-sm mt-2 text-muted-foreground">
+                {file ? file.name : "点击选择文件"}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">支持 PDF / Word / Excel / PPT / 图片 / HTML / Markdown</p>
+              <input id="kb-file-input" type="file" className="hidden"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
             </div>
-            <div>
-              <Label>标题（可选）</Label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="自动使用文件名" />
-            </div>
-          </TabsContent>
-        </Tabs>
+          </div>
+          <div>
+            <Label>标题（可选）</Label>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="自动使用文件名" />
+          </div>
+        </TabsContent>
+      </Tabs>
 
-        <div className="flex justify-end gap-2 mt-4">
-          <Button variant="outline" size="sm" onClick={onCancel}>取消</Button>
-          <Button size="sm" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
-            添加
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={onCancel}>取消</Button>
+        <Button size="sm" onClick={handleSubmit} disabled={!canSubmit || saving}>
+          {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+          添加
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -406,6 +404,19 @@ function DocDetailPanel({ docId }: { docId: string }) {
 export function KBStatsPanel({ kbId }: { kbId?: string }) {
   const [stats, setStats] = useState<KBStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [adminAction, setAdminAction] = useState<string | null>(null);
+  const [adminResult, setAdminResult] = useState<string | null>(null);
+  const [adminError, setAdminError] = useState<string | null>(null);
+
+  const reloadStats = async () => {
+    setLoading(true);
+    try {
+      const data = await getStats(kbId);
+      setStats(data);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -420,6 +431,54 @@ export function KBStatsPanel({ kbId }: { kbId?: string }) {
     })();
     return () => { cancelled = true; };
   }, [kbId]);
+
+  // ─── Admin Actions ──────────────────────────────────
+  const handleGenerateEmbeddings = async () => {
+    setAdminAction("embeddings");
+    setAdminResult(null);
+    setAdminError(null);
+    try {
+      const result = await generateEmbeddings();
+      setAdminResult(`已生成 ${result.generated} 条嵌入向量`);
+      await reloadStats();
+    } catch (e) {
+      setAdminError(e instanceof Error ? e.message : "操作失败");
+    } finally {
+      setAdminAction(null);
+    }
+  };
+
+  const handleRechunk = async () => {
+    if (!confirm("确定要全库重新分块？此操作会删除现有分块并重新创建。")) return;
+    setAdminAction("rechunk");
+    setAdminResult(null);
+    setAdminError(null);
+    try {
+      const result = await rechunkAll();
+      setAdminResult(`重新分块完成：${result.total_docs} 文档，${result.old_chunks} → ${result.new_chunks} 块（减少 ${result.reduction_pct.toFixed(1)}%）`);
+      await reloadStats();
+    } catch (e) {
+      setAdminError(e instanceof Error ? e.message : "操作失败");
+    } finally {
+      setAdminAction(null);
+    }
+  };
+
+  const handleReimport = async () => {
+    if (!confirm("确定要从原 URL 重新抓取并导入？此操作会重新下载所有 URL 来源的文档。")) return;
+    setAdminAction("reimport");
+    setAdminResult(null);
+    setAdminError(null);
+    try {
+      const result = await reimportAll();
+      setAdminResult(`重新导入完成：${result.total_docs} 文档，${result.new_chunks} 块`);
+      await reloadStats();
+    } catch (e) {
+      setAdminError(e instanceof Error ? e.message : "操作失败");
+    } finally {
+      setAdminAction(null);
+    }
+  };
 
   if (loading) {
     return <div className="p-8 text-center"><Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" /></div>;
@@ -500,6 +559,56 @@ export function KBStatsPanel({ kbId }: { kbId?: string }) {
             <div>GraphRAG (LLM 实体抽取 + 2-hop 遍历)</div>
             <div>RRF 融合排序 (BM25 0.3 + Dense 0.5 + Graph 0.2)</div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* 管理操作 */}
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Wand2 className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">管理操作</h3>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleGenerateEmbeddings}
+              disabled={adminAction !== null}
+            >
+              {adminAction === "embeddings" ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Cpu className="h-3.5 w-3.5 mr-1.5" />}
+              补齐 Embedding
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRechunk}
+              disabled={adminAction !== null}
+            >
+              {adminAction === "rechunk" ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Layers className="h-3.5 w-3.5 mr-1.5" />}
+              全库重新分块
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReimport}
+              disabled={adminAction !== null}
+            >
+              {adminAction === "reimport" ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <DownloadCloud className="h-3.5 w-3.5 mr-1.5" />}
+              重新导入 URL
+            </Button>
+          </div>
+          {adminResult && (
+            <p className="text-xs text-green-600 bg-green-50 dark:bg-green-950/20 rounded-md p-2">{adminResult}</p>
+          )}
+          {adminError && (
+            <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/20 rounded-md p-2">{adminError}</p>
+          )}
+          {stats.chunk_count > 0 && stats.chunk_with_embedding < stats.chunk_count && (
+            <p className="text-xs text-amber-600">
+              ⚠ 当前有 {stats.chunk_count - stats.chunk_with_embedding} 个分块缺少 Embedding，点击「补齐 Embedding」生成。
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -333,6 +333,7 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 		}
 	}
 
+	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("search_web", 0)
 	}
@@ -340,7 +341,7 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 	results := cfg.Search.Search(context.Background(), args.Query, 5)
 	if len(results) == 0 {
 		if cfg.Emitter != nil {
-			cfg.Emitter.StepComplete("search_web", map[string]any{"query": args.Query, "results": 0}, 0)
+			cfg.Emitter.StepComplete("search_web", map[string]any{"query": args.Query, "results": 0}, int64(time.Since(start).Milliseconds()))
 		}
 		return "未找到搜索结果", nil
 	}
@@ -358,7 +359,7 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 			"query":   args.Query,
 			"results": len(results),
 			"items":   results,
-		}, 0)
+		}, int64(time.Since(start).Milliseconds()))
 	}
 	return brief, nil
 }
@@ -379,13 +380,14 @@ func executeReadSource(cfg ToolExecutorConfig, arguments string) (string, error)
 	r := cfg.Session.SearchResults[args.Index-1]
 	formatted := fmt.Sprintf("标题: %s\n来源: %s\n摘要: %s\nURL: %s", r.Title, r.Source, r.Snippet, r.URL)
 
+	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("read_source", 0)
 		cfg.Emitter.StepComplete("read_source", map[string]any{
 			"index":  args.Index,
 			"title":  r.Title,
 			"source": r.Source,
-		}, 0)
+		}, int64(time.Since(start).Milliseconds()))
 	}
 	return formatted, nil
 }
@@ -397,8 +399,10 @@ func executeWriteArticle(cfg ToolExecutorConfig, arguments string) (string, erro
 	}
 	_ = json.Unmarshal([]byte(arguments), &args)
 
+	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("write_article", 0)
+		cfg.Emitter.StepComplete("write_article", map[string]any{"topic": args.Topic}, int64(time.Since(start).Milliseconds()))
 	}
 
 	// 返回指令，让 LLM 在下一轮直接输出文章
@@ -415,6 +419,7 @@ func executeReviewArticle(cfg ToolExecutorConfig, arguments string) (string, err
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("review_article", 0)
 	}
@@ -424,12 +429,13 @@ func executeReviewArticle(cfg ToolExecutorConfig, arguments string) (string, err
 
 	if cfg.Session != nil {
 		cfg.Session.ReviewResult = review
+		cfg.Session.Reviewed = true
 	}
 
 	formatted := formatReviewResult(review)
 
 	if cfg.Emitter != nil {
-		cfg.Emitter.StepComplete("review_article", review, 0)
+		cfg.Emitter.StepComplete("review_article", review, int64(time.Since(start).Milliseconds()))
 	}
 	return formatted, nil
 }
@@ -444,10 +450,15 @@ func executeReviseSection(cfg ToolExecutorConfig, arguments string) (string, err
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("revise_section", 0)
 		// 修正前先重置流式内容
 		cfg.Emitter.StreamReset()
+		cfg.Emitter.StepComplete("revise_section", map[string]any{
+			"section_hint": args.SectionHint,
+			"instruction": args.Instruction,
+		}, int64(time.Since(start).Milliseconds()))
 	}
 
 	return fmt.Sprintf("请修改「%s」：%s。直接输出修改后的完整文章。", args.SectionHint, args.Instruction), nil
@@ -470,6 +481,7 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 		args.Topic = cfg.ExecCtx.UserInput
 	}
 
+	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("generate_outline", 0)
 	}
@@ -538,7 +550,7 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 	cfg.ExecCtx.Outline = outline
 
 	if cfg.Emitter != nil {
-		cfg.Emitter.StepComplete("generate_outline", outline, 0)
+		cfg.Emitter.StepComplete("generate_outline", outline, int64(time.Since(start).Milliseconds()))
 	}
 
 	return fmt.Sprintf("提纲已确认。标题：%s。请开始按提纲写作，标题必须原样使用。", outline.Title), nil

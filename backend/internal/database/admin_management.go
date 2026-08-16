@@ -1007,3 +1007,144 @@ func (r *AdminRepo) GetPendingCronJobs(ctx context.Context) ([]*CronJob, error) 
 	}
 	return jobs, nil
 }
+
+// ─── MCP Servers ─────────────────────────────────────────
+
+// MCPServerConfig represents a row in the mcp_servers table.
+type MCPServerConfig struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Transport       string     `json:"transport"`
+	Command         string     `json:"command,omitempty"`
+	Args            []string   `json:"args,omitempty"`
+	Env             []string   `json:"env,omitempty"`
+	URL             string     `json:"url,omitempty"`
+	IsActive        bool       `json:"is_active"`
+	Description     string     `json:"description"`
+	LastStatus      string     `json:"last_status"`
+	LastError       string     `json:"last_error,omitempty"`
+	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// ListMCPServers returns all MCP server configurations.
+func (r *AdminRepo) ListMCPServers(ctx context.Context) ([]*MCPServerConfig, error) {
+	if r == nil || r.db == nil {
+		return []*MCPServerConfig{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id::text, name, transport, command, args, env, url,
+		       is_active, description, last_status, last_error, last_connected_at,
+		       created_at, updated_at
+		FROM mcp_servers ORDER BY is_active DESC, name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var servers []*MCPServerConfig
+	for rows.Next() {
+		var s MCPServerConfig
+		var argsJSON, envJSON []byte
+		if err := rows.Scan(&s.ID, &s.Name, &s.Transport, &s.Command, &argsJSON, &envJSON, &s.URL,
+			&s.IsActive, &s.Description, &s.LastStatus, &s.LastError, &s.LastConnectedAt,
+			&s.CreatedAt, &s.UpdatedAt); err != nil {
+			continue
+		}
+		if len(argsJSON) > 0 { json.Unmarshal(argsJSON, &s.Args) }
+		if len(envJSON) > 0  { json.Unmarshal(envJSON, &s.Env) }
+		servers = append(servers, &s)
+	}
+	return servers, nil
+}
+
+// CreateMCPServer inserts a new MCP server configuration.
+func (r *AdminRepo) CreateMCPServer(ctx context.Context, s *MCPServerConfig) (*MCPServerConfig, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	argsJSON, _ := json.Marshal(s.Args)
+	if s.Args == nil { argsJSON = []byte("[]") }
+	envJSON, _ := json.Marshal(s.Env)
+	if s.Env == nil { envJSON = []byte("[]") }
+
+	var result MCPServerConfig
+	var rArgsJSON, rEnvJSON []byte
+	err := r.db.QueryRowContext(ctx, `
+		INSERT INTO mcp_servers (name, transport, command, args, env, url, is_active, description)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id::text, name, transport, command, args, env, url,
+		          is_active, description, last_status, last_error, last_connected_at,
+		          created_at, updated_at
+	`, s.Name, s.Transport, s.Command, string(argsJSON), string(envJSON), s.URL, s.IsActive, s.Description).Scan(
+		&result.ID, &result.Name, &result.Transport, &result.Command, &rArgsJSON, &rEnvJSON, &result.URL,
+		&result.IsActive, &result.Description, &result.LastStatus, &result.LastError, &result.LastConnectedAt,
+		&result.CreatedAt, &result.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if len(rArgsJSON) > 0 { json.Unmarshal(rArgsJSON, &result.Args) }
+	if len(rEnvJSON) > 0  { json.Unmarshal(rEnvJSON, &result.Env) }
+	return &result, nil
+}
+
+// UpdateMCPServer updates an MCP server configuration.
+func (r *AdminRepo) UpdateMCPServer(ctx context.Context, id string, s *MCPServerConfig) (*MCPServerConfig, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	argsJSON, _ := json.Marshal(s.Args)
+	if s.Args == nil { argsJSON = []byte("[]") }
+	envJSON, _ := json.Marshal(s.Env)
+	if s.Env == nil { envJSON = []byte("[]") }
+
+	var result MCPServerConfig
+	var rArgsJSON, rEnvJSON []byte
+	err := r.db.QueryRowContext(ctx, `
+		UPDATE mcp_servers SET
+			name = $2, transport = $3, command = $4, args = $5, env = $6, url = $7,
+			is_active = $8, description = $9, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id::text, name, transport, command, args, env, url,
+		          is_active, description, last_status, last_error, last_connected_at,
+		          created_at, updated_at
+	`, id, s.Name, s.Transport, s.Command, string(argsJSON), string(envJSON), s.URL, s.IsActive, s.Description).Scan(
+		&result.ID, &result.Name, &result.Transport, &result.Command, &rArgsJSON, &rEnvJSON, &result.URL,
+		&result.IsActive, &result.Description, &result.LastStatus, &result.LastError, &result.LastConnectedAt,
+		&result.CreatedAt, &result.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if len(rArgsJSON) > 0 { json.Unmarshal(rArgsJSON, &result.Args) }
+	if len(rEnvJSON) > 0  { json.Unmarshal(rEnvJSON, &result.Env) }
+	return &result, nil
+}
+
+// DeleteMCPServer deletes an MCP server configuration.
+func (r *AdminRepo) DeleteMCPServer(ctx context.Context, id string) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `DELETE FROM mcp_servers WHERE id = $1`, id)
+	return err
+}
+
+// UpdateMCPServerStatus updates the connection status of an MCP server.
+func (r *AdminRepo) UpdateMCPServerStatus(ctx context.Context, id, status, errMsg string) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	if status == "connected" {
+		_, err := r.db.ExecContext(ctx, `
+			UPDATE mcp_servers SET last_status = $2, last_error = '', last_connected_at = NOW(), updated_at = NOW()
+			WHERE id = $1
+		`, id, status)
+		return err
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE mcp_servers SET last_status = $2, last_error = $3, updated_at = NOW()
+		WHERE id = $1
+	`, id, status, errMsg)
+	return err
+}

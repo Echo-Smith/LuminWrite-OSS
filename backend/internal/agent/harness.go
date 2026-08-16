@@ -113,6 +113,12 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	titleResolved := false
 	var articleTitle string
 
+	// savedArticle 保存正文内容。
+	// 当 LLM 输出正文后调用 review_article 等工具时，onReset 会触发，
+	// 此时 bodyBuf 中已有正文。我们在 onReset 中将正文保存到 savedArticle，
+	// 防止后续 LLM 输出的评审说明覆盖正文内容。
+	var savedArticle string
+
 	// 断线检测：创建可取消的 context，在 onDelta 中检查断线
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
@@ -159,7 +165,27 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	}
 
 	onReset := func() {
+		// 如果 bodyBuf 中已有正文内容，先保存它。
+		// 这样在 LLM 后续调用 review_article 等工具时，
+		// 正文不会被后续的评审说明覆盖。
+		if bodyBuf.Len() > 0 {
+			savedArticle = bodyBuf.String()
+			slog.Info("harness: saving article body before stream reset",
+				"trace_id", execCtx.TraceID,
+				"article_chars", len([]rune(savedArticle)),
+			)
+			// 先发送 StreamDone 将正文标记为已完成，
+			// 这样后续的 StreamReset 只会清空新的 streaming text parts，
+			// 不影响已标记为 streaming:false 的正文。
+			if h.emitter != nil {
+				h.emitter.StreamDone(savedArticle)
+			}
+		}
 		bodyBuf.Reset()
+		// StreamReset 只会清空前端 streaming:true 的 text parts。
+		// 上面已通过 StreamDone 将正文标记为 streaming:false，
+		// 所以这里调用 StreamReset 是安全的——它只清空本轮
+		// 乐观推送的非正文文本（如工具调用前的过渡文本）。
 		if h.emitter != nil {
 			h.emitter.StreamReset()
 		}
@@ -214,6 +240,25 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	// 9. 收尾
 	execCtx.TotalTokens = tokens
 	articleBody := bodyBuf.String()
+	// 如果 session.Reviewed 为 true 且 savedArticle 有值，
+	// 说明 LLM 在输出正文后调用了 review_article，
+	// onReset 保存了正文到 savedArticle，
+	// 而 bodyBuf 中的内容是评审说明/写作分析，不是正文。
+	// 此时优先使用 savedArticle 作为正文内容。
+	// 但如果 bodyBuf 的内容比 savedArticle 长很多（如 revise_section 后的新文章），
+	// 说明 bodyBuf 是新正文，应该用 bodyBuf。
+	if session.Reviewed && savedArticle != "" {
+		// 简单启发式：如果 bodyBuf 以 ## 开头（Markdown 标题），可能是新文章
+		if strings.HasPrefix(strings.TrimSpace(articleBody), "##") && len([]rune(articleBody)) > 200 {
+			// bodyBuf 看起来是新文章，使用它
+		} else {
+			// bodyBuf 不是文章格式，使用 savedArticle
+			articleBody = savedArticle
+		}
+	}
+	if articleBody == "" && savedArticle != "" {
+		articleBody = savedArticle
+	}
 	if articleBody == "" {
 		articleBody = fullText
 	}

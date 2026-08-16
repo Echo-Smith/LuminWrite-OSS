@@ -8,8 +8,7 @@
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { PenLine, Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2 } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart } from "@/stores/agent-store";
@@ -63,17 +62,8 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
   const hasContent = message.parts.length > 0;
 
   return (
-    <div className="flex gap-3 px-4 py-3 anim-fade-up">
-      <Avatar className="h-8 w-8 shrink-0">
-        <AvatarFallback className={cn(
-          "bg-muted text-foreground",
-          isRunning && "ring-2 ring-primary/40 ring-offset-1"
-        )}>
-          <PenLine className="h-4 w-4" />
-        </AvatarFallback>
-      </Avatar>
-
-      <div className="flex-1 min-w-0 space-y-2">
+    <div className="px-4 py-3 anim-fade-up">
+      <div className="space-y-2">
         {/* Agent 步骤流程（紧凑时间线，默认折叠） */}
         {toolCallParts.length > 0 && (
           <CompactStepTimeline parts={toolCallParts} isRunning={isRunning} />
@@ -91,23 +81,25 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             <DataPartRenderer key={`before-${i}`} part={part} traceId={traceId} />
           ))}
 
-        {/* 流式文章输出 */}
+        {/* 流式文章输出 — 无对话框包裹，直接输出内容 */}
         {textParts.length > 0 && (
-          <div className="codex-card p-4">
+          <div>
             {/* 版本标签 + 文章标题 */}
-            <div className="flex items-start justify-between gap-2 mb-3">
-              {message.articleTitle && (
-                <h2 className="text-xl font-bold text-foreground leading-tight flex-1">
-                  {message.articleTitle}
-                </h2>
-              )}
-              {totalVersions > 1 && (
-                <Badge variant="outline" className="shrink-0 text-xs gap-1">
-                  <FileText className="h-3 w-3" />
-                  v{version}/{totalVersions}
-                </Badge>
-              )}
-            </div>
+            {((message.articleTitle || totalVersions > 1) && (
+              <div className="flex items-start justify-between gap-2 mb-3">
+                {message.articleTitle && (
+                  <h2 className="text-xl font-bold text-foreground leading-tight flex-1">
+                    {message.articleTitle}
+                  </h2>
+                )}
+                {totalVersions > 1 && (
+                  <Badge variant="outline" className="shrink-0 text-xs gap-1">
+                    <FileText className="h-3 w-3" />
+                    v{version}/{totalVersions}
+                  </Badge>
+                )}
+              </div>
+            ))}
             {textParts.map((part, i) => (
               <div key={i}>
                 <MarkdownContent content={part.text} />

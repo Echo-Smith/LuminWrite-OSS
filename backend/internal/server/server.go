@@ -179,6 +179,61 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.Zhihu.Enabled = true
 			slog.Info("search config overridden from DB", "provider", "zhihu")
 		}
+
+		// ── Override DashScope/Embedding config from DB ──
+		// Allows admin to configure embedding API key via frontend MCP Keys page.
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "dashscope"); err == nil && key != "" {
+			cfg.Dashscope.APIKey = key
+			if baseURL != "" {
+				cfg.Dashscope.BaseURL = baseURL
+			}
+			slog.Info("embedding config overridden from DB", "provider", "dashscope")
+		}
+
+		// ── Override search engine configs from DB ──
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "tencent"); err == nil && key != "" {
+			_ = key // tencent uses CLI, no API key needed; baseURL override only
+			if baseURL != "" {
+				cfg.Tencent.BaseURL = baseURL
+			}
+			cfg.Tencent.Enabled = true
+			slog.Info("search config overridden from DB", "provider", "tencent")
+		}
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "weibo"); err == nil && key != "" {
+			_ = key
+			if baseURL != "" {
+				cfg.Weibo.BaseURL = baseURL
+			}
+			cfg.Weibo.Enabled = true
+			slog.Info("search config overridden from DB", "provider", "weibo")
+		}
+		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "bing"); err == nil && key != "" {
+			_ = key
+			if baseURL != "" {
+				cfg.Bing.BaseURL = baseURL
+			}
+			cfg.Bing.Enabled = true
+			slog.Info("search config overridden from DB", "provider", "bing")
+		}
+
+		// ── Reconfigure embedding client with DB-overridden DashScope config ──
+		if cfg.Dashscope.APIKey != "" {
+			embeddingClient.Reconfigure(
+				cfg.Dashscope.APIKey,
+				cfg.Dashscope.BaseURL,
+				cfg.Dashscope.Model,
+				cfg.Dashscope.Dimension,
+			)
+			if embeddingClient.IsConfigured() {
+				slog.Info("embedding client reconfigured from DB",
+					"model", cfg.Dashscope.Model,
+					"dimension", cfg.Dashscope.Dimension,
+					"base_url", cfg.Dashscope.BaseURL,
+				)
+			} else {
+				slog.Warn("embedding client reconfigured but key is placeholder")
+			}
+		}
 	}
 
 	searchClient := tools.NewSearchClient(
@@ -206,8 +261,25 @@ func New(cfg *config.Config) (*Server, error) {
 		profileLoader.WithL2Cache(profile.NewProfileL2Cache(l2Backend, 5*time.Minute))
 	}
 
+	// Create LLM service (dynamic client factory with DB-backed model configs)
+	// This must be created early so all subsystems (Evaluation, Memory, GraphRAG,
+	// StyleBuilder, Editorial) can use the dynamic client instead of static fallback.
+	llmSvc := services.NewLLMService(adminRepo, llm, cfg.DeepSeek.Timeout)
+
+	// Resolve the default LLM client from the DB-backed service.
+	// If DB has model configs with API keys, this returns a dynamic client;
+	// otherwise it falls back to the static env-based llm.
+	defaultLLM := llm
+	if llmSvc != nil {
+		if c := llmSvc.GetDefaultClient(context.Background()); c != nil {
+			defaultLLM = c
+			slog.Info("using DB-backed LLM client for subsystems")
+		}
+	}
+
 	// Create evaluation service
-	evalSvc := services.NewEvaluationService(evalRepo, llm, profileLoader)
+	// Uses defaultLLM (DB-backed) instead of static llm
+	evalSvc := services.NewEvaluationService(evalRepo, defaultLLM, profileLoader)
 
 	// Create reputation service
 	var reputationSvc *services.ReputationService
@@ -254,16 +326,16 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Create memory service (optional, requires DB + LLM + Embedding)
+	// Uses defaultLLM (DB-backed) instead of static llm
 	var memorySvc *memsvc.Service
 	if dbAvail {
-		memorySvc = memsvc.NewService(db, llm, embeddingClient, sensitiveSvc)
+		memorySvc = memsvc.NewService(db, defaultLLM, embeddingClient, sensitiveSvc)
 	}
-
-	// Create LLM service (dynamic client factory with DB-backed model configs)
-	llmSvc := services.NewLLMService(adminRepo, llm, cfg.DeepSeek.Timeout)
 
 	// Initialize MCP registry — connect to configured MCP servers
 	mcpRegistry := mcp.NewRegistry()
+
+	// 1. Connect env-var configured MCP servers (legacy)
 	for _, mcpCfg := range cfg.MCPServers {
 		_ = mcpRegistry.Connect(context.Background(), mcp.MCPClientConfig{
 			Name:      mcpCfg.Name,
@@ -273,6 +345,33 @@ func New(cfg *config.Config) (*Server, error) {
 			Env:       mcpCfg.Env,
 			URL:       mcpCfg.URL,
 		})
+	}
+
+	// 2. Connect DB-backed MCP servers (admin-managed)
+	if dbAvail && adminRepo != nil {
+		dbServers, err := adminRepo.ListMCPServers(context.Background())
+		if err != nil {
+			slog.Warn("failed to load MCP servers from DB", "error", err)
+		} else {
+			for _, srv := range dbServers {
+				if !srv.IsActive {
+					continue
+				}
+				mcpCfg := mcp.MCPClientConfig{
+					Name:      srv.Name,
+					Transport: srv.Transport,
+					Command:   srv.Command,
+					Args:      srv.Args,
+					Env:       srv.Env,
+					URL:       srv.URL,
+				}
+				if err := mcpRegistry.Connect(context.Background(), mcpCfg); err != nil {
+					adminRepo.UpdateMCPServerStatus(context.Background(), srv.ID, "failed", err.Error())
+				} else {
+					adminRepo.UpdateMCPServerStatus(context.Background(), srv.ID, "connected", "")
+				}
+			}
+		}
 	}
 
 	// Initialize ToolRegistry — unified registry for all tools
@@ -322,7 +421,7 @@ func New(cfg *config.Config) (*Server, error) {
 		s.userStyleStore = database.NewUserStyleStore(db)
 	}
 	if llm != nil {
-		s.styleBuilder = services.NewStyleBuilderService(llm)
+		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
 		// Wire LLM metrics (Prometheus instrumentation)
 		llm.SetMetricsRecorder(s.metrics)
 	}
@@ -332,8 +431,9 @@ func New(cfg *config.Config) (*Server, error) {
 		s.kbMgr = services.NewKbManager(adminRepo.DB().DB, embeddingClient)
 
 		// Wire GraphRAG — entity extraction + relation graph (replaces WeKnora's graph pipeline)
-		if llm != nil {
-			graphRAG := services.NewGraphRAGManager(adminRepo.DB().DB, embeddingClient, llm)
+	if llm != nil {
+		// Use defaultLLM (DB-backed) for GraphRAG instead of static llm
+		graphRAG := services.NewGraphRAGManager(adminRepo.DB().DB, embeddingClient, defaultLLM)
 			s.kbMgr.SetGraphRAG(graphRAG)
 			slog.Info("GraphRAG entity extraction wired into knowledge base",
 				"entity_types", "person/organization/location/event/concept/product",
@@ -367,15 +467,15 @@ func New(cfg *config.Config) (*Server, error) {
 
 		// Register Agent executors (adapt V2 Steps to editorial AgentExecutor)
 		if llm != nil {
-			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(llm, searchClient, embeddingClient, edStore))
+			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore))
 			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
-				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(llm, defaultProfile, searchClient, edStore))
-				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(llm, defaultProfile, searchClient, edStore))
+				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore))
+				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore))
 			}
 
 			// 初始化对照实验运行器
 			expRunner := editorial.NewExperimentRunner(
-				edStore, llm, searchClient, embeddingClient,
+				edStore, defaultLLM, searchClient, embeddingClient,
 				profileLoader, edSvc.Orchestrator(),
 			)
 			editorial.SetExperimentRunner(expRunner)
@@ -667,6 +767,12 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Get("/mcp/status", s.handleAdminMCPStatus)
             r.Get("/mcp/tools", s.handleAdminMCPTools)
             r.Get("/mcp/export", s.handleAdminMCPExport)
+            // MCP Server CRUD (DB-backed external server management)
+            r.Get("/mcp/servers", s.handleAdminListMCPServers)
+            r.Post("/mcp/servers", s.handleAdminCreateMCPServer)
+            r.Put("/mcp/servers/{id}", s.handleAdminUpdateMCPServer)
+            r.Delete("/mcp/servers/{id}", s.handleAdminDeleteMCPServer)
+            r.Post("/mcp/servers/{id}/reconnect", s.handleAdminReconnectMCPServer)
 
             // Tool Plugin Management (hot-pluggable tool sets)
             r.Get("/tool-plugins", s.handleAdminListToolPlugins)
