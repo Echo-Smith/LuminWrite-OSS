@@ -4,6 +4,7 @@
 import { Trash2, Pencil, Clock, Database } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { platformLabel, platformColor, platformGradient } from "@/lib/topic-helpers";
+import { cn } from "@/lib/utils";
 import type { Topic } from "@/lib/types";
 import { useState, useEffect } from "react";
 import { listTopicMaterials } from "@/lib/material-api";
