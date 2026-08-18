@@ -161,7 +161,7 @@ func (s *LLMService) InvalidateCache() {
 func defaultBaseURLForProvider(provider string) string {
 	switch provider {
 	case "deepseek":
-		return "https://api.deepseek.com/v1"
+		return "https://api.deepseek.com" // 不带 /v1 — 代码自动拼接 /chat/completions 和 /responses
 	case "openai":
 		return "https://api.openai.com/v1"
 	case "qwen":
@@ -171,6 +171,6 @@ func defaultBaseURLForProvider(provider string) string {
 	case "claude":
 		return "https://api.anthropic.com/v1"
 	default:
-		return "https://api.deepseek.com/v1"
+		return "https://api.deepseek.com" // 不带 /v1 — 代码自动拼接 /chat/completions 和 /responses
 	}
 }

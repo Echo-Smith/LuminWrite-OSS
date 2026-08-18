@@ -15,6 +15,8 @@ import { Switch } from "@/components/ui/switch";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
+import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
+import { AdminConfirmDialog, AdminPageHeader, AdminBulkActions } from "@/components/admin";
 
 interface ModelConfig {
   id: string;
@@ -48,7 +50,7 @@ const PROVIDERS = [
 ];
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
-  deepseek: "https://api.deepseek.com/v1",
+  deepseek: "https://api.deepseek.com",
   kimi: "https://api.moonshot.cn/v1",
   openai: "https://api.openai.com/v1",
   qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -87,15 +89,21 @@ export function ModelConfigsPage() {
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [discoverError, setDiscoverError] = useState("");
 
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const handleBatchAction = async (action: "delete" | "activate" | "deactivate") => {
+    const { success, data } = await adminMutate<{affected: number}>("/api/v2/admin/models/batch", { method: "POST", body: JSON.stringify({ ids: selectedIds, action }), successTitle: action === "delete" ? "Deleted" : "Updated" });
+    if (success) { setSelectedIds([]); load(); }
+  };
+
+  const toggleSelect = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/admin/models");
-      const json = await res.json();
-      if (json.success) setConfigs(json.data?.configs ?? []);
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<{ configs: ModelConfig[] }>("/api/v2/admin/models", { silent: true });
+    if (success && data) setConfigs(data.configs ?? []);
+    setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -117,23 +125,16 @@ export function ModelConfigsPage() {
     setDiscoverError("");
     setDiscoveredModels([]);
 
-    try {
-      const res = await fetch("/api/v2/admin/models/discover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ base_url: baseURL, api_key: form.api_key }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setDiscoveredModels(json.data?.models ?? []);
-      } else {
-        setDiscoverError(json.error?.message || "获取模型列表失败");
-      }
-    } catch (err) {
-      setDiscoverError(err instanceof Error ? err.message : "网络错误");
-    } finally {
-      setDiscovering(false);
+    const { success, data, error } = await adminFetch<{ models: DiscoveredModel[] }>(
+      "/api/v2/admin/models/discover",
+      { method: "POST", body: JSON.stringify({ base_url: baseURL, api_key: form.api_key }) },
+    );
+    if (success && data) {
+      setDiscoveredModels(data.models ?? []);
+    } else {
+      setDiscoverError(error?.message ?? "获取模型列表失败");
     }
+    setDiscovering(false);
   };
 
   // ─── Model Config handlers ──────────────────────────────
@@ -141,38 +142,37 @@ export function ModelConfigsPage() {
   const handleSave = async () => {
     if (!form.model_name) return;
     setSaving(true);
-    try {
-      const url = editing ? `/api/v2/admin/models/${editing.id}` : "/api/v2/admin/models";
-      const method = editing ? "PUT" : "POST";
-      const body: Record<string, unknown> = {
-        provider: form.provider,
-        model_name: form.model_name,
-        display_name: form.display_name || form.model_name,
-        base_url: form.base_url || DEFAULT_BASE_URLS[form.provider] || "",
-        api_key: form.api_key || undefined,
-        max_tokens: form.max_tokens,
-        temperature: form.temperature,
-        is_default: form.is_default,
-        is_active: form.is_active,
-        capabilities: {
-          stream: form.stream,
-          thinking: form.thinking,
-          vision: form.vision,
-        },
-      };
-      // Don't send api_key if empty (keep existing on update)
-      if (editing && !form.api_key) delete body.api_key;
+    const url = editing ? `/api/v2/admin/models/${editing.id}` : "/api/v2/admin/models";
+    const method = editing ? "PUT" : "POST";
+    const body: Record<string, unknown> = {
+      provider: form.provider,
+      model_name: form.model_name,
+      display_name: form.display_name || form.model_name,
+      base_url: form.base_url || DEFAULT_BASE_URLS[form.provider] || "",
+      api_key: form.api_key || undefined,
+      max_tokens: form.max_tokens,
+      temperature: form.temperature,
+      is_default: form.is_default,
+      is_active: form.is_active,
+      capabilities: {
+        stream: form.stream,
+        thinking: form.thinking,
+        vision: form.vision,
+      },
+    };
+    if (editing && !form.api_key) delete body.api_key;
 
-      await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+    const { success } = await adminMutate<ModelConfig>(url, {
+      method,
+      body: JSON.stringify(body),
+      successTitle: editing ? "模型已更新" : "模型已添加",
+      successDesc: form.display_name || form.model_name,
+    });
+    if (success) {
       resetForm();
       await load();
-    } finally {
-      setSaving(false);
     }
+    setSaving(false);
   };
 
   const resetForm = () => {
@@ -214,24 +214,29 @@ export function ModelConfigsPage() {
     setShowAdd(true);
   };
 
-  const handleDelete = async (id: string) => {
-    await fetch(`/api/v2/admin/models/${id}`, { method: "DELETE" });
-    await load();
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const ok = await adminDelete(
+      `/api/v2/admin/models/${deleteTarget}`,
+      "确认删除此模型配置？",
+      "模型已删除",
+    );
+    if (ok) await load();
+    setDeleteTarget(null);
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">模型配置</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            输入 Base URL 和 API Key，自动发现可用模型。密钥加密存储在模型配置中。
-          </p>
-        </div>
-        <Button size="sm" onClick={openAdd}>
-          <Plus className="h-4 w-4 mr-2" /> 添加模型
-        </Button>
-      </div>
+      <div className="p-6 space-y-6">
+        <AdminPageHeader
+          title="模型配置"
+          description="输入 Base URL 和 API Key，自动发现可用模型。密钥加密存储在模型配置中。"
+          action={
+            <Button size="sm" onClick={openAdd}>
+              <Plus className="h-4 w-4 mr-2" /> 添加模型
+            </Button>
+          }
+        />
+        <AdminBulkActions selectedIds={selectedIds} onClear={() => setSelectedIds([])} onBatchAction={handleBatchAction} />
 
       {/* Add/Edit Model Dialog */}
       <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) resetForm(); }}>
@@ -409,6 +414,16 @@ export function ModelConfigsPage() {
         </DialogContent>
       </Dialog>
 
+      <AdminConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}
+        title="删除模型"
+        description="确认删除此模型配置？此操作不可撤销。"
+        confirmText="删除"
+        variant="destructive"
+        onConfirm={handleDelete}
+      />
+
       <div className="rounded-lg border">
         <table className="w-full">
           <thead>
@@ -430,6 +445,7 @@ export function ModelConfigsPage() {
             ) : (
               configs.map((c) => (
                 <tr key={c.id} className="border-b last:border-0 hover:bg-accent/30">
+                  <td className="p-3"><input type="checkbox" checked={selectedIds.includes(c.id)} onChange={() => toggleSelect(c.id)} className="h-4 w-4 rounded border-border" /></td>
                   <td className="p-3 text-sm font-medium">
                     <div className="flex items-center gap-2">
                       <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
@@ -473,7 +489,7 @@ export function ModelConfigsPage() {
                       <Button variant="ghost" size="sm" onClick={() => handleEdit(c)} title="编辑">
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => handleDelete(c.id)} title="删除">
+                      <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(c.id)} title="删除">
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>

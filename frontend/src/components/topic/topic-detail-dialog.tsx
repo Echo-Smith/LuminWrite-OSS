@@ -33,6 +33,8 @@ interface TopicDetailDialogProps {
   onClose: () => void;
   onStartWriting: (angle?: WritingAngle) => void;
   onRefreshAngles?: () => void;
+  onFavoriteAngle?: (angle: WritingAngle) => void;
+  favoritedAngles?: Set<string>;
 }
 
 // ─── Topic Materials Section ────────────────────────────
@@ -231,6 +233,7 @@ function TopicMaterialsSection({ topicId, topicTitle }: { topicId: string; topic
 export function TopicDetailDialog({
   topic, loading, writingAngles, relatedArticles, trendData,
   isFavorited, onToggleFavorite, onClose, onStartWriting, onRefreshAngles,
+  onFavoriteAngle, favoritedAngles,
 }: TopicDetailDialogProps) {
   if (!topic) return null;
 
@@ -296,7 +299,10 @@ export function TopicDetailDialog({
                   )}
                 </div>
                 <div className="space-y-2">
-                  {writingAngles.map((angle, i) => (
+                  {writingAngles.map((angle, i) => {
+                    const angleKey = `${angle.angle}|${angle.style}`;
+                    const angleFavorited = favoritedAngles?.has(angleKey) ?? false;
+                    return (
                     <div key={i} className="flex items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50">
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
@@ -309,15 +315,18 @@ export function TopicDetailDialog({
                         <p className="mt-1 text-xs text-muted-foreground">{angle.rationale}</p>
                       </div>
                       <div className="flex flex-shrink-0 items-center gap-1">
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={onToggleFavorite} title="收藏选题">
-                          <Star className={cn("h-3.5 w-3.5", isFavorited && "fill-yellow-400 text-yellow-400")} />
-                        </Button>
+                        {onFavoriteAngle && (
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => onFavoriteAngle(angle)} title={angleFavorited ? "已收藏" : "收藏此角度"}>
+                            <Star className={cn("h-3.5 w-3.5", angleFavorited && "fill-yellow-400 text-yellow-400")} />
+                          </Button>
+                        )}
                         <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={() => onStartWriting(angle)}>
                           写作 <ArrowRight className="h-3 w-3" />
                         </Button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

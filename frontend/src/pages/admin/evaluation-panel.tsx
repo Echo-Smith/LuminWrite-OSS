@@ -13,6 +13,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { adminFetch, adminMutate } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
 
 interface EvalSet {
   id: string;
@@ -101,82 +103,59 @@ export function EvaluationPage() {
 
   const loadSets = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/evaluation/sets");
-      const json = await res.json();
-      if (json.success) {
-        setSets(json.data?.sets ?? []);
-      }
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<{ sets: EvalSet[] }>("/api/v2/evaluation/sets", { silent: true });
+    if (success && data) setSets(data.sets ?? []);
+    setLoading(false);
   }, []);
 
   const loadRuns = async (setId: string) => {
-    try {
-      const res = await fetch(`/api/v2/evaluation/runs?set_id=${setId}`);
-      const json = await res.json();
-      if (json.success) {
-        setRuns(json.data?.runs ?? []);
-      }
-    } catch (e) {
-      console.error("Failed to load runs", e);
-    }
+    const { success, data } = await adminFetch<{ runs: EvalRun[] }>(`/api/v2/evaluation/runs?set_id=${setId}`, { silent: true });
+    if (success && data) setRuns(data.runs ?? []);
   };
 
   const handleCreateSet = async () => {
     setCreating(true);
-    try {
-      const samples = newSetSamples
-        .split("\n")
-        .filter((s) => s.trim())
-        .map((s) => {
-          const [topic, prompt] = s.split("|").map((p) => p.trim());
-          return { topic: topic || s.trim(), input_prompt: prompt || topic || s.trim(), style_slug: newSetStyle };
-        });
-
-      const res = await fetch("/api/v2/evaluation/sets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newSetName,
-          style_slug: newSetStyle,
-          description: newSetDesc,
-          samples,
-        }),
+    const samples = newSetSamples
+      .split("\n")
+      .filter((s) => s.trim())
+      .map((s) => {
+        const [topic, prompt] = s.split("|").map((p) => p.trim());
+        return { topic: topic || s.trim(), input_prompt: prompt || topic || s.trim(), style_slug: newSetStyle };
       });
-      const json = await res.json();
-      if (json.success) {
-        await loadSets();
-        setNewSetName("");
-        setNewSetDesc("");
-        setNewSetSamples("");
-      }
-    } finally {
-      setCreating(false);
+
+    const { success } = await adminMutate("/api/v2/evaluation/sets", {
+      method: "POST",
+      body: JSON.stringify({
+        name: newSetName,
+        style_slug: newSetStyle,
+        description: newSetDesc,
+        samples,
+      }),
+      successTitle: "评测集已创建",
+      successDesc: newSetName,
+    });
+    if (success) {
+      await loadSets();
+      setNewSetName("");
+      setNewSetDesc("");
+      setNewSetSamples("");
     }
+    setCreating(false);
   };
 
   const handleRunEvaluation = async (setId: string) => {
-    try {
-      const res = await fetch("/api/v2/evaluation/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          set_id: setId,
-          profile_slug: selectedSet?.style_slug ?? "yinyue",
-          profile_version: 1,
-          trigger_type: "manual",
-        }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        // Refresh runs after a delay
-        setTimeout(() => loadRuns(setId), 2000);
-      }
-    } catch (e) {
-      console.error("Failed to start evaluation", e);
-    }
+    const { success } = await adminMutate("/api/v2/evaluation/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        set_id: setId,
+        profile_slug: selectedSet?.style_slug ?? "yinyue",
+        profile_version: 1,
+        trigger_type: "manual",
+      }),
+      successTitle: "评测已启动",
+      successDesc: "结果将在运行完成后显示",
+    });
+    if (success) setTimeout(() => loadRuns(setId), 2000);
   };
 
   const handleSelectSet = async (set: EvalSet) => {
@@ -186,70 +165,47 @@ export function EvaluationPage() {
   };
 
   const handleSelectRun = async (runId: string) => {
-    try {
-      const res = await fetch(`/api/v2/evaluation/runs/${runId}`);
-      const json = await res.json();
-      if (json.success) {
-        setSelectedRun(json.data);
-      }
-    } catch (e) {
-      console.error("Failed to load run", e);
-    }
+    const { success, data } = await adminFetch<EvalRun>(`/api/v2/evaluation/runs/${runId}`, { silent: true });
+    if (success && data) setSelectedRun(data);
   };
 
   const loadRedTeamCases = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v2/evaluation/redteam/cases");
-      const json = await res.json();
-      if (json.success) {
-        setRedTeamCases(json.data?.cases ?? []);
-      }
-    } catch (e) {
-      console.error("Failed to load red-team cases", e);
-    }
+    const { success, data } = await adminFetch<{ cases: RedTeamCase[] }>("/api/v2/evaluation/redteam/cases", { silent: true });
+    if (success && data) setRedTeamCases(data.cases ?? []);
   }, []);
 
   const handleSeedRedTeam = async () => {
     setRedTeamSeeding(true);
     setRedTeamMessage("");
-    try {
-      const res = await fetch("/api/v2/evaluation/redteam/seed", { method: "POST" });
-      const json = await res.json();
-      if (json.success) {
-        setRedTeamMessage("红队评估集已成功写入数据库");
-        await loadSets();
-      } else {
-        setRedTeamMessage("写入失败: " + (json.error?.message ?? "未知错误"));
-      }
-    } catch (e) {
-      setRedTeamMessage("请求失败: " + String(e));
-    } finally {
-      setRedTeamSeeding(false);
-      setTimeout(() => setRedTeamMessage(""), 5000);
+    const { success, error } = await adminMutate("/api/v2/evaluation/redteam/seed", {
+      method: "POST",
+      successTitle: "红队评估集已写入",
+    });
+    if (success) {
+      setRedTeamMessage("红队评估集已成功写入数据库");
+      await loadSets();
+    } else {
+      setRedTeamMessage("写入失败: " + (error?.message ?? "未知错误"));
     }
+    setRedTeamSeeding(false);
+    setTimeout(() => setRedTeamMessage(""), 5000);
   };
 
   const handleRunRedTeam = async () => {
     setRedTeamRunning(true);
     setRedTeamMessage("");
-    try {
-      const res = await fetch("/api/v2/evaluation/redteam/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setRedTeamMessage(`红队评估已启动，共 ${json.data?.cases ?? 20} 个测试用例，预计运行 ~15 分钟，结果请查看后端日志`);
-      } else {
-        setRedTeamMessage("启动失败: " + (json.error?.message ?? "未知错误"));
-      }
-    } catch (e) {
-      setRedTeamMessage("请求失败: " + String(e));
-    } finally {
-      setRedTeamRunning(false);
-      setTimeout(() => setRedTeamMessage(""), 8000);
+    const { success, data, error } = await adminMutate<{ cases: number }>("/api/v2/evaluation/redteam/run", {
+      method: "POST",
+      body: JSON.stringify({}),
+      successTitle: "红队评估已启动",
+    });
+    if (success) {
+      setRedTeamMessage(`红队评估已启动，共 ${data?.cases ?? 20} 个测试用例，预计运行 ~15 分钟，结果请查看后端日志`);
+    } else {
+      setRedTeamMessage("启动失败: " + (error?.message ?? "未知错误"));
     }
+    setRedTeamRunning(false);
+    setTimeout(() => setRedTeamMessage(""), 8000);
   };
 
   useEffect(() => {
@@ -264,69 +220,71 @@ export function EvaluationPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-semibold">评测面板</h2>
-          <Button
-            size="sm"
-            variant={showRedTeam ? "default" : "outline"}
-            onClick={() => setShowRedTeam(!showRedTeam)}
-          >
-            <Shield className="h-4 w-4 mr-2" />
-            {showRedTeam ? "返回常规评测" : "红队安全评估"}
-          </Button>
-        </div>
-        {!showRedTeam && (
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button size="sm">
-              <Plus className="h-4 w-4 mr-2" />
-              创建评测集
+      <AdminPageHeader
+        title="评测面板"
+        action={
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={showRedTeam ? "default" : "outline"}
+              onClick={() => setShowRedTeam(!showRedTeam)}
+            >
+              <Shield className="h-4 w-4 mr-2" />
+              {showRedTeam ? "返回常规评测" : "红队安全评估"}
             </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>创建评测集</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>名称</Label>
-                  <Input value={newSetName} onChange={(e) => setNewSetName(e.target.value)} placeholder="如：预设评论风格-标准评测" />
-                </div>
-                <div>
-                  <Label>风格</Label>
-                  <Select value={newSetStyle} onValueChange={setNewSetStyle}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {STYLES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div>
-                <Label>描述</Label>
-                <Input value={newSetDesc} onChange={(e) => setNewSetDesc(e.target.value)} placeholder="评测集用途说明" />
-              </div>
-              <div>
-                <Label>评测样本（每行一条，格式：题目 | 完整输入提示）</Label>
-                <Textarea
-                  value={newSetSamples}
-                  onChange={(e) => setNewSetSamples(e.target.value)}
-                  placeholder={"写一篇关于外卖骑手的评论 | 写一篇关于外卖骑手闯红灯现象的评论文章，1000-1500字\n写一篇关于城市垃圾分类的评论 | 写一篇关于城市垃圾分类政策的评论文章"}
-                  rows={6}
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button onClick={handleCreateSet} disabled={!newSetName || creating}>
-                {creating ? "创建中..." : "创建"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        )}
-      </div>
+            {!showRedTeam && (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button size="sm">
+                    <Plus className="h-4 w-4 mr-2" />
+                    创建评测集
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>创建评测集</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label>名称</Label>
+                        <Input value={newSetName} onChange={(e) => setNewSetName(e.target.value)} placeholder="如：预设评论风格-标准评测" />
+                      </div>
+                      <div>
+                        <Label>风格</Label>
+                        <Select value={newSetStyle} onValueChange={setNewSetStyle}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {STYLES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div>
+                      <Label>描述</Label>
+                      <Input value={newSetDesc} onChange={(e) => setNewSetDesc(e.target.value)} placeholder="评测集用途说明" />
+                    </div>
+                    <div>
+                      <Label>评测样本（每行一条，格式：题目 | 完整输入提示）</Label>
+                      <Textarea
+                        value={newSetSamples}
+                        onChange={(e) => setNewSetSamples(e.target.value)}
+                        placeholder={"写一篇关于外卖骑手的评论 | 写一篇关于外卖骑手闯红灯现象的评论文章，1000-1500字\n写一篇关于城市垃圾分类的评论 | 写一篇关于城市垃圾分类政策的评论文章"}
+                        rows={6}
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button onClick={handleCreateSet} disabled={!newSetName || creating}>
+                      {creating ? "创建中..." : "创建"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
+        }
+      />
 
       {/* Red-Team Security Evaluation Panel */}
       {showRedTeam ? (

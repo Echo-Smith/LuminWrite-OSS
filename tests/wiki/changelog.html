@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>版本日志 — 笔润智谈 LuminBuddy V2</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<script src="assets/js/nav.js"></script>
+
+<main>
+
+<!-- ═══ Hero ═══ -->
+<section class="hero" style="padding-top:64px;">
+  <div class="container">
+    <h1>版本日志</h1>
+    <p class="subtitle">
+      项目版本迭代记录与技术决策
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 更新日志 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>版本历史</h2>
+    <div class="desc">从 v0.1.0 到 v0.3.0</div>
+  </div>
+
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="version">v0.3.0</div>
+      <div class="date">2026-08-16</div>
+      <div class="content">
+        <ul>
+          <li><strong>Harness 架构</strong>：替换原 UnifiedAgent 嵌套 ReAct 为单层 LLM 持续会话编排，工具自主调用，会话状态跨轮持久化</li>
+          <li><strong>A/B 测试框架</strong>：编辑实验编排器 + 结果存储，支持对照组/实验组自动化评测与指标对比</li>
+          <li><strong>Passkey 认证</strong>：WebAuthn 无密码登录与设备管理，个人中心直接绑定/删除 Passkey</li>
+          <li><strong>Session Event Log</strong>：追加式事件日志，支持会话回放与断线重连</li>
+          <li><strong>Prompt 注入防御</strong>：chat 意图精简注入，Token 降 10.5%</li>
+          <li><strong>SQL 修复</strong>：<code>session_events.go</code> PostgreSQL 类型转换 bug</li>
+          <li><strong>打包脚本</strong>：修复 macOS mktemp 兼容性与已删除文件处理</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="timeline-item">
+      <div class="version">v0.2.0</div>
+      <div class="date">2026-Q2</div>
+      <div class="content">
+        <ul>
+          <li><strong>引导式提纲（Guided Mode）</strong>：提纲确认、编辑、最多五次重做</li>
+          <li><strong>Style Profile 灰度路由</strong>：版本管理、UID Hash 分流</li>
+          <li><strong>Post Review + Auto Fix</strong>：写后审校与自动修正</li>
+          <li><strong>分层记忆系统</strong>：硬偏好、行为模式、反馈信号</li>
+          <li><strong>Prometheus 指标</strong>：Trace 链路追踪</li>
+          <li><strong>游客模式</strong>：与注册升级流程</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="timeline-item">
+      <div class="version">v0.1.0</div>
+      <div class="date">2026-Q1</div>
+      <div class="content">
+        <ul>
+          <li><strong>React 19 写作工作台</strong> + Go Agent Pipeline</li>
+          <li><strong>WebSocket 流式事件</strong>：暂停/恢复/取消</li>
+          <li><strong>多源检索</strong>：与相关性过滤</li>
+          <li><strong>Docker Compose 一键部署</strong></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 技术决策记录 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>技术决策记录</h2>
+      <div class="desc">关键架构决策及其背景与理由</div>
+    </div>
+
+    <table>
+      <thead><tr><th>编号</th><th>决策</th><th>选择</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-blue">D-001</span></td>
+          <td>Agent 执行模式</td>
+          <td>双模式（Pipeline + Harness）</td>
+          <td>Pipeline 保证关键步骤不遗漏；Harness 提供灵活编排</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">D-002</span></td>
+          <td>知识库方案</td>
+          <td>本地 PG + paradedb</td>
+          <td>减少服务数量、统一数据层、BM25+Dense+GraphRAG 三路混合搜索</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">D-003</span></td>
+          <td>记忆系统架构</td>
+          <td>四层 + 文件层双向同步</td>
+          <td>文件层提供人类可读/可编辑记忆视图；DB 支持高效检索</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">D-004</span></td>
+          <td>编辑部编排模型</td>
+          <td>事件/决策双层</td>
+          <td>Agent 完成工作是客观事件（Event 驱动），需要选择时创建 Decision</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">D-005</span></td>
+          <td>MCP 集成</td>
+          <td>双向（客户端 + 服务端）</td>
+          <td>客户端扩展 Agent 能力；服务端允许其他工具调用搜索/知识库/记忆</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-amber">D-006</span></td>
+          <td>安全加固</td>
+          <td>红队评估 + Prompt Injection 防御</td>
+          <td>system prompt 防御 + 输入 sanitization 双重保障</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 项目阶段 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>项目阶段</h2>
+    <div class="desc">从 MVP 到规划中的自演进闭环</div>
+  </div>
+
+  <table>
+    <thead><tr><th>阶段</th><th>状态</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>MVP — 基础写作管线</td><td><span class="tag tag-green">✅ 完成</span></td><td>Intent → Search → Write → Review → AutoFix</td></tr>
+      <tr><td>多源搜索 + 知识库</td><td><span class="tag tag-green">✅ 完成</span></td><td>8+ 搜索源、BM25+Dense+RRF 混合搜索、GraphRAG</td></tr>
+      <tr><td>记忆系统</td><td><span class="tag tag-green">✅ 完成</span></td><td>四层记忆 + 文件层 + 实体网络</td></tr>
+      <tr><td>编辑部多 Agent</td><td><span class="tag tag-green">✅ 完成</span></td><td>研究→写作→审校三 Agent 编排</td></tr>
+      <tr><td>MCP 集成</td><td><span class="tag tag-green">✅ 完成</span></td><td>MCP 客户端 + 服务端</td></tr>
+      <tr><td>统一 Agent (ReAct)</td><td><span class="tag tag-green">✅ 完成</span></td><td>UnifiedAgent LLM 驱动编排</td></tr>
+      <tr><td>安全加固 + 生产化</td><td><span class="tag tag-amber">🔄 进行中</span></td><td>红队评估、Prompt Injection 防御、运维手册</td></tr>
+      <tr><td>自演进闭环</td><td><span class="tag tag-gray">📋 规划中</span></td><td>feedback → candidate → eval gate → rollout</td></tr>
+      <tr><td>多实例水平扩展</td><td><span class="tag tag-gray">📋 规划中</span></td><td>Docker Swarm / K8s</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══ Footer ═══ -->
+<section class="dark site-footer" style="padding:48px 32px;">
+  <div class="container">
+    <p>笔润智谈 LuminBuddy V2 · Wiki</p>
+    <div class="footer-links">
+      <a href="index.html">← 返回首页</a>
+      <a href="about.html">项目介绍</a>
+      <a href="architecture.html">系统架构</a>
+      <a href="tests.html">测试体系</a>
+    </div>
+    <p style="margin-top:16px;font-size:11px;color:var(--text-on-dark-muted);">MIT License · 工程 Beta · 2026</p>
+  </div>
+</section>
+
+</main>
+
+</body>
+</html>

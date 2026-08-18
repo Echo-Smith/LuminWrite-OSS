@@ -178,6 +178,19 @@ func (e *WSEmitter) Cancelled() {
 	})
 }
 
+func (e *WSEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string) {
+	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
+		Type: websocket.MsgAgentCompaction,
+		Payload: websocket.CompactionPayload{
+			TraceID:           e.traceID,
+			OriginalMessages:  originalMessages,
+			CompactedMessages: 1, // always compacted into a single summary message
+			SavedTokens:       savedTokens,
+			SummaryPreview:    summaryPreview,
+		},
+	})
+}
+
 // EmitMemoryUsed pushes the memory.used event to the client,
 // showing which memories were injected for this writing session.
 // Includes observability dimensions: user_id, session_id, recall counts, quality signals.

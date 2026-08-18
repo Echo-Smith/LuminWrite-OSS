@@ -14,6 +14,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { adminFetch } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
+import { toast } from "@/stores/toast-store";
 
 interface TraceSummary {
   trace_id: string;
@@ -114,39 +117,29 @@ export function TraceHistoryPage() {
 
   const loadTraces = useCallback(async () => {
     setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("page_size", String(pageSize));
-      if (statusFilter) params.set("status", statusFilter);
-      if (styleFilter) params.set("style", styleFilter);
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("page_size", String(pageSize));
+    if (statusFilter) params.set("status", statusFilter);
+    if (styleFilter) params.set("style", styleFilter);
 
-      const res = await fetch(`/api/v2/admin/traces?${params}`);
-      const json = await res.json();
-      if (json.success) {
-        setTraces(json.data?.traces ?? []);
-        setTotal(json.data?.total ?? 0);
-      }
-    } catch (e) {
-      console.error("Failed to load traces", e);
-    } finally {
-      setLoading(false);
+    const { success, data } = await adminFetch<{ traces: TraceSummary[]; total: number }>(`/api/v2/admin/traces?${params}`, { silent: true });
+    if (success && data) {
+      setTraces(data.traces ?? []);
+      setTotal(data.total ?? 0);
     }
+    setLoading(false);
   }, [page, pageSize, statusFilter, styleFilter]);
 
   const loadDetail = async (traceId: string) => {
     setDetailLoading(true);
-    try {
-      const res = await fetch(`/api/v2/admin/traces/${traceId}`);
-      const json = await res.json();
-      if (json.success) {
-        setSelectedTrace(json.data);
-      }
-    } catch (e) {
-      console.error("Failed to load trace detail", e);
-    } finally {
-      setDetailLoading(false);
+    const { success, data } = await adminFetch<TraceDetail>(`/api/v2/admin/traces/${traceId}`, { silent: true });
+    if (success && data) {
+      setSelectedTrace(data);
+    } else {
+      toast.error("加载失败", "无法获取 Trace 详情");
     }
+    setDetailLoading(false);
   };
 
   useEffect(() => {
@@ -158,13 +151,15 @@ export function TraceHistoryPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Trace 历史</h2>
-        <Button variant="outline" size="sm" onClick={loadTraces} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </Button>
-      </div>
+      <AdminPageHeader
+        title="Trace 历史"
+        action={
+          <Button variant="outline" size="sm" onClick={loadTraces} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            刷新
+          </Button>
+        }
+      />
 
       {/* Filters */}
       <div className="flex items-center gap-4">

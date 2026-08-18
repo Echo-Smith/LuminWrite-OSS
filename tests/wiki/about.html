@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>项目介绍 — 笔润智谈 LuminBuddy V2</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<script src="assets/js/nav.js"></script>
+
+<main>
+
+<!-- ═══ Hero ═══ -->
+<section class="hero" style="padding-top:64px;">
+  <div class="container">
+    <h1>项目介绍</h1>
+    <p class="subtitle">
+      面向中文内容生产者的 AI 写作工作台 — 把一次性生成变成可观察、可干预、可迭代的写作流程。
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 为什么做 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>为什么做</h2>
+    <div class="desc">通用对话模型可以很快给出一篇稿件，但真实写作任务通常卡在四个环节</div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card accent-border">
+      <div class="card-title"><span style="width:28px;height:28px;border-radius:50%;background:var(--red-bg);color:var(--red);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;">1</span> 意图理解</div>
+      <div class="card-desc">用户的真实意图、篇幅和风格约束没有被稳定理解。口语化需求与模型输出之间存在巨大鸿沟。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span style="width:28px;height:28px;border-radius:50%;background:var(--amber-bg);color:var(--amber);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;">2</span> 不可观察</div>
+      <div class="card-desc">素材检索、观点组织和成稿被压进一次不可观察的生成。用户看不到中间过程，也无法判断质量。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span style="width:28px;height:28px;border-radius:50%;background:var(--blue-bg);color:var(--blue);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;">3</span> 缺乏控制</div>
+      <div class="card-desc">用户无法在关键决策点确认提纲、暂停或调整方向。生成一旦开始就只能等待结果。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span style="width:28px;height:28px;border-radius:50%;background:var(--purple-bg);color:var(--purple);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;">4</span> 无反馈闭环</div>
+      <div class="card-desc">好坏反馈没有进入下一次生成，团队也难以定位失败发生在哪一步。每次写作都是从头开始。</div>
+    </div>
+  </div>
+
+  <div class="blockquote" style="margin-top:28px;">
+    LuminBuddy 将这些问题拆成可见的产品机制，而不是简单增加一个更长的 Prompt。
+  </div>
+</section>
+
+<!-- ═══ 核心体验 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>核心体验</h2>
+      <div class="desc">从需求理解到记忆沉淀的完整写作流程</div>
+    </div>
+
+    <div class="card dark" style="padding:0;overflow:hidden;margin-bottom:28px;">
+      <pre style="margin:0;border-radius:0;border:none;"><span class="comment"># 写作需求 → 意图识别 → 双引擎执行 → 质量保障 → 记忆沉淀</span>
+
+<span class="keyword">写作需求</span>
+  → 意图识别与任务归一化（规则优先，毫秒级路由）
+  → Harness 单层 LLM 编排（工具自主调用，会话状态跨轮保留）
+  → 检索计划与多源素材
+  → 相关性过滤与去重
+  → 提纲确认（引导模式）
+  → 风格化流式写作
+  → 写后审校与一次自动修正
+  → 分段反馈、A/B 评测与记忆沉淀</pre>
+    </div>
+
+    <table>
+      <thead><tr><th>用户阶段</th><th>产品机制</th><th>用户获得什么</th></tr></thead>
+      <tbody>
+        <tr><td>描述任务</td><td>规则优先、低置信度再调用 LLM 的意图路由</td><td>口语化需求也能落到写作、润色、压缩、扩写或自由对话</td></tr>
+        <tr><td>补充素材</td><td>Query Plan、多源检索、相关性过滤与语义去重</td><td>看得到素材从哪里来，减少无关信息进入成稿</td></tr>
+        <tr><td>决定结构</td><td>自动模式或 Guided Mode</td><td>可直接生成，也可先确认、修改或重做提纲</td></tr>
+        <tr><td>形成稿件</td><td>Style Profile + 流式输出 + 暂停/恢复</td><td>风格从代码逻辑中解耦，生成过程可干预</td></tr>
+        <tr><td>判断质量</td><td>Post Review、敏感检查、Auto Fix</td><td>低严重度问题自动修正，高风险问题保留人工判断</td></tr>
+        <tr><td>持续改进</td><td>分段反馈、A/B 评测集、分层记忆</td><td>将偏好和失败信号沉淀为下一轮可复用证据</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 关键产品判断 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>关键产品判断</h2>
+    <div class="desc">六个核心设计决策</div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card accent-border">
+      <div class="card-title"><span class="tag tag-blue">1</span> Harness 单层编排，LLM 自主执行</div>
+      <div class="card-desc">采用 Harness-LLM 单层持续会话架构：Harness 负责意图路由、工具注册、状态管理和断路保护；LLM 在持续会话中自主决定调用什么工具、何时写作、何时修正。不存在外层 ReAct + 内层 agent loop 的嵌套，降低延迟与输出漂移。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="tag tag-blue">2</span> 模型不负责所有确定性逻辑</div>
+      <div class="card-desc">意图识别先走规则评分，低置信度场景才交给模型；Pipeline 管理确定步骤，模型负责需要语义判断和生成的环节。确定性逻辑与创造性生成严格分离。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="tag tag-blue">3</span> 把"控制权"放在高代价决策点</div>
+      <div class="card-desc">Guided Mode 在提纲阶段设置人工门控，支持确认、编辑和最多五次重做。用户不必逐步配置全部参数，但能在成稿前改变最重要的结构方向。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="tag tag-blue">4</span> 风格不是一段藏在代码里的 Prompt</div>
+      <div class="card-desc">Style Profile 将风格规则、版本和灰度路由独立管理，使不同写作场景可以发布、回滚和评测，而不需要修改整条 Agent Pipeline。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="tag tag-blue">5</span> 记忆必须可解释、可冲突处理</div>
+      <div class="card-desc">记忆区分为硬偏好、行为模式和反馈信号，并提供质量门、冲突处理、强化与废弃状态。记忆用于辅助写作，不默认把每次输入都永久保存。</div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="tag tag-blue">6</span> 没有评测和观测，就没有可持续迭代</div>
+      <div class="card-desc">内置 A/B 测试框架，支持对照组与实验组的自动化评测与指标对比。后端暴露 HTTP、WebSocket、Agent、LLM、数据库、评测、缓存和灰度路由等指标；Trace 保存步骤、耗时和错误。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 已实现能力与边界 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>已实现能力与边界</h2>
+      <div class="desc">当前成熟度：工程 Beta</div>
+    </div>
+
+    <table>
+      <thead><tr><th>状态</th><th>能力</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-green">已实现</span></td>
+          <td>React 19 写作工作台、Go Harness Agent 引擎、WebSocket 流式事件、暂停/恢复/取消、Guided Mode、Style Profile、Post Review、Auto Fix、用户反馈、A/B 评测框架、分层记忆、Session Event Log、Trace 与 Prometheus 指标、Passkey/WebAuthn 认证、游客模式</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-amber">依赖配置</span></td>
+          <td>PostgreSQL 17 + pgvector/paradedb、模型 API、Embedding、外部检索信源、WebAuthn 或账号体系</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-amber">Demo / 早期能力</span></td>
+          <td>多信源稳定性、真实用户反馈闭环、评测集标注质量、长期记忆的实际收益</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-red">尚缺公开证据</span></td>
+          <td>活跃用户、重复使用、质量提升幅度、成本收益、内容采用或业务结果</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="margin-top:28px;text-align:center;">
+      <p style="font-size:13px;color:var(--text-on-dark-muted);">这是可运行的个人产品与工程项目，不代表已完成规模化市场验证。</p>
+      <div style="margin-top:20px;">
+        <a class="btn btn-primary" href="architecture.html">查看系统架构 →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Footer ═══ -->
+<section class="dark site-footer" style="padding:48px 32px;">
+  <div class="container">
+    <p>笔润智谈 LuminBuddy V2 · Wiki</p>
+    <div class="footer-links">
+      <a href="index.html">← 返回首页</a>
+      <a href="architecture.html">系统架构</a>
+      <a href="tests.html">测试体系</a>
+      <a href="changelog.html">版本日志</a>
+    </div>
+    <p style="margin-top:16px;font-size:11px;color:var(--text-on-dark-muted);">MIT License · 工程 Beta · 2026</p>
+  </div>
+</section>
+
+</main>
+
+</body>
+</html>

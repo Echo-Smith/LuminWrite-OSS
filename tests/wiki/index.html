@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>笔润智谈 LuminBuddy V2 — Wiki</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<script src="assets/js/nav.js"></script>
+
+<main>
+
+<!-- ═══ Hero ═══ -->
+<section class="hero" style="padding-top:64px;">
+  <div class="container">
+    <h1>笔润智谈 LuminBuddy V2</h1>
+    <p class="subtitle">
+      面向中文内容生产者的 AI 写作工作台 — 从需求理解、素材检索和提纲确认，到按风格成稿、写后自检、反馈与记忆沉淀。
+    </p>
+    <div class="hero-badges">
+      <span class="hero-badge green"><span class="dot"></span>工程 Beta</span>
+      <span class="hero-badge blue"><span class="dot"></span>Go 1.25 + React 19</span>
+      <span class="hero-badge amber"><span class="dot"></span>DeepSeek V4</span>
+      <span class="hero-badge purple"><span class="dot"></span>PostgreSQL 17 + pgvector</span>
+      <span class="hero-badge teal"><span class="dot"></span>Docker Compose</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 快速导航 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>快速导航</h2>
+    <div class="desc">探索项目的各个维度</div>
+  </div>
+
+  <div class="grid grid-4">
+    <a class="nav-card" href="about.html">
+      <div class="card">
+        <div class="card-title"><span class="icon">📖</span> 项目介绍</div>
+        <div class="card-desc">为什么做、核心体验、关键产品判断、已实现能力与边界</div>
+        <span class="arrow-link">了解更多 →</span>
+      </div>
+    </a>
+    <a class="nav-card" href="architecture.html">
+      <div class="card">
+        <div class="card-title"><span class="icon">🏗️</span> 系统架构</div>
+        <div class="card-desc">四容器编排、双引擎设计、16 步管道、6 层退出保护、外部集成</div>
+        <span class="arrow-link">查看架构 →</span>
+      </div>
+    </a>
+    <a class="nav-card" href="tests.html">
+      <div class="card">
+        <div class="card-title"><span class="icon">🧪</span> 测试体系</div>
+        <div class="card-desc">E2E 测试、A/B 对比、性能基准报告（五大指标维度）</div>
+        <span class="arrow-link">查看测试 →</span>
+      </div>
+    </a>
+    <a class="nav-card" href="changelog.html">
+      <div class="card">
+        <div class="card-title"><span class="icon">📋</span> 版本日志</div>
+        <div class="card-desc">v0.1.0 → v0.3.0 迭代记录与技术决策</div>
+        <span class="arrow-link">查看日志 →</span>
+      </div>
+    </a>
+  </div>
+</section>
+
+<!-- ═══ 核心数据 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>核心数据一览</h2>
+      <div class="desc">基于 2026-07-16 基准测试 · 9 个用例 · 100% 成功率</div>
+    </div>
+
+    <div class="grid grid-4">
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#34c759,#30d158);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">9/9</div>
+        <div class="label">用例通过率</div>
+        <div class="sub">100% 成功率</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#5ac8fa,#64d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">32.86<span style="font-size:18px;">s</span></div>
+        <div class="label">平均生成时间</div>
+        <div class="sub">P95: 55.65s</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#ff9500,#ffb340);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">75%</div>
+        <div class="label">评测通过率</div>
+        <div class="sub">AutoFix 成功率 100%</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#af52de,#da8fff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">¥0.003</div>
+        <div class="label">单篇 API 成本</div>
+        <div class="sub">3578 tokens / 篇</div>
+      </div>
+    </div>
+
+    <div style="margin-top:24px;"></div>
+
+    <div class="grid grid-3">
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#34c759,#30d158);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">74.45<span style="font-size:18px;">min</span></div>
+        <div class="label">相比人工节省</div>
+        <div class="sub">99.3% 时间节省率</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#5ac8fa,#64d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">136.9<span style="font-size:18px;">x</span></div>
+        <div class="label">加速倍数</div>
+        <div class="sub">vs 人工流程</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="background:linear-gradient(135deg,#c8956c,#d4a97a);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">4</div>
+        <div class="label">Docker 容器</div>
+        <div class="sub">Frontend · Backend · PG · Docreader</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 核心写作流程 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>核心写作流程</h2>
+    <div class="desc">从用户输入到成稿的完整管道</div>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <pre style="margin:0;border-radius:0;border:none;"><span class="comment"># 用户输入 → 意图路由 → 双引擎执行 → 成稿输出</span>
+
+<span class="keyword">用户输入</span>
+    │
+    ▼
+<span class="keyword">Harness 单层 LLM 编排</span> — 意图路由(规则,毫秒级) → 工具选择 → Agent Loop(max 12轮)
+    │
+    ├─ chat → ChatStep (注入历史+实体+工作记忆 → LLM 流式回复)
+    │
+    ▼ (writing)
+<span class="keyword">AgentEngine 状态机管道</span>
+    记忆 → 意图 → 检索计划 → <span class="keyword">多源搜索</span>(知乎/IMA/Tavily/腾讯/微博)
+    → 相关性过滤+去重 → 素材压缩 → 提纲(Guided) → <span class="keyword">风格化写作</span>(流式)
+    → 写后自检 → 自动修正 → 记忆提取 → 存储 → <span class="comment">输出成稿 + Trace 记录</span></pre>
+  </div>
+</section>
+
+<!-- ═══ 双引擎对比 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>双引擎设计</h2>
+      <div class="desc">Pipeline 与 Harness 按场景智能切换</div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card dark">
+        <div class="card-title"><span class="icon">⚙️</span> Pipeline (AgentEngine)</div>
+        <div class="card-desc">状态机管道模式：16 个 Step 顺序执行，每步可暂停/恢复，6 层退出保护。适合确定性流程。</div>
+        <ul class="feature-list" style="margin-top:14px;">
+          <li>步骤固定：记忆→意图→检索→过滤→压缩→提纲→写作→自检→修正</li>
+          <li>每步独立超时 + 优雅降级</li>
+          <li>关键步骤失败终止，非关键步骤失败跳过</li>
+          <li>Token 预算 30 万 + 断路器（3 次连续失败）</li>
+        </ul>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="icon">🧠</span> Harness (LLM Agent Loop)</div>
+        <div class="card-desc">单层 LLM 编排模式：LLM 自主决定调用工具，最多 12 轮迭代。会话状态跨轮保留。</div>
+        <ul class="feature-list" style="margin-top:14px;">
+          <li>工具粒度细：search_web / search_knowledge / read_source / write_article / review_article</li>
+          <li>意图判定走规则（毫秒级），不走 LLM</li>
+          <li>LLM 自主决定何时搜索、何时写作、何时修正</li>
+          <li>不存在外层 ReAct + 内层 agent loop 嵌套</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Footer ═══ -->
+<section class="dark site-footer" style="padding:48px 32px;">
+  <div class="container">
+    <p>笔润智谈 LuminBuddy V2 · Wiki</p>
+    <div class="footer-links">
+      <a href="https://github.com/luminbuddy/luminbuddy-writing-agent-v2">GitHub</a>
+      <a href="../../README.md">README</a>
+      <a href="../../docs/01-architecture.md">架构文档</a>
+      <a href="../../PROJECT_LEDGER.md">项目台账</a>
+    </div>
+    <p style="margin-top:16px;font-size:11px;color:var(--text-on-dark-muted);">MIT License · 工程 Beta · 2026</p>
+  </div>
+</section>
+
+</main>
+
+</body>
+</html>

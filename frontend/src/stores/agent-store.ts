@@ -21,7 +21,7 @@ import type { MemoryEntry } from "@/stores/memory-store";
 
 // ─── 消息 Part 模型 ──────────────────────────────────────
 
-export type MessagePartType = "text" | "tool-call" | "data" | "reasoning";
+export type MessagePartType = "text" | "tool-call" | "data" | "reasoning" | "compaction";
 
 export interface ToolCallPart {
   type: "tool-call";
@@ -52,9 +52,18 @@ export interface DataPart {
 export interface ReasoningPart {
   type: "reasoning";
   text: string;
+  completed?: boolean; // true when a new step has started
 }
 
-export type MessagePart = ToolCallPart | TextPart | DataPart | ReasoningPart;
+export interface CompactionPart {
+  type: "compaction";
+  originalMessages: number;
+  compactedMessages: number;
+  savedTokens: number;
+  summaryPreview?: string;
+}
+
+export type MessagePart = ToolCallPart | TextPart | DataPart | ReasoningPart | CompactionPart;
 
 // ─── 消息模型 ────────────────────────────────────────────
 
@@ -568,10 +577,17 @@ articleTitle: d.article_title,
           status: "running",
           startedAt: Date.now(),
         };
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          parts: [...m.parts, part],
-        }));
+        get()._updateLastAssistantMessage((m) => {
+          const parts = [...m.parts];
+          // Mark all existing reasoning parts as completed (they belong to previous steps)
+          for (let i = 0; i < parts.length; i++) {
+            if (parts[i].type === "reasoning") {
+              parts[i] = { ...(parts[i] as ReasoningPart), completed: true };
+            }
+          }
+          parts.push(part);
+          return { ...m, parts };
+        });
         break;
       }
 
@@ -653,10 +669,10 @@ articleTitle: d.article_title,
 
       case "agent.reasoning": {
         const delta = p.delta as string;
-        // 更新最后一条 assistant 消息的 reasoning part
+        // Update the last reasoning part in the last assistant message
         get()._updateLastAssistantMessage((m) => {
           const parts = [...m.parts];
-          // 查找最后一个 reasoning part
+          // Find the last reasoning part
           let lastReasoningIdx = -1;
           for (let i = parts.length - 1; i >= 0; i--) {
             if (parts[i].type === "reasoning") {
@@ -666,9 +682,14 @@ articleTitle: d.article_title,
           }
           if (lastReasoningIdx >= 0) {
             const reasoningPart = parts[lastReasoningIdx] as ReasoningPart;
-            parts[lastReasoningIdx] = { ...reasoningPart, text: reasoningPart.text + delta };
+            // If the last reasoning part is completed, start a new one
+            if (reasoningPart.completed) {
+              parts.push({ type: "reasoning", text: delta });
+            } else {
+              parts[lastReasoningIdx] = { ...reasoningPart, text: reasoningPart.text + delta };
+            }
           } else {
-            // 创建新的 reasoning part
+            // Create new reasoning part
             parts.push({ type: "reasoning", text: delta });
           }
           return { ...m, parts };
@@ -858,6 +879,27 @@ case "agent.paused": {
           parts: m.parts.map((part) =>
             part.type === "text" && part.streaming ? { ...part, streaming: false } : part
           ),
+        }));
+        break;
+      }
+
+      case "agent.compaction": {
+        const originalMessages = p.original_messages as number;
+        const compactedMessages = (p.compacted_messages as number) ?? 1;
+        const savedTokens = p.saved_tokens as number;
+        const summaryPreview = p.summary_preview as string | undefined;
+        get()._updateLastAssistantMessage((m) => ({
+          ...m,
+          parts: [
+            ...m.parts.filter((part) => part.type !== "compaction"),
+            {
+              type: "compaction" as const,
+              originalMessages,
+              compactedMessages,
+              savedTokens,
+              summaryPreview,
+            },
+          ],
         }));
         break;
       }

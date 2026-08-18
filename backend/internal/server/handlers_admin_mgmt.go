@@ -123,8 +123,8 @@ func (s *Server) handleAdminDeleteModelConfig(w http.ResponseWriter, r *http.Req
 }
 
 // handleAdminDiscoverModels fetches available models from a provider's API.
-// Request: { "base_url": "https://api.deepseek.com/v1", "api_key": "sk-..." }
-// Response: { "models": [{"id": "deepseek-chat", "owned_by": "deepseek"}, ...] }
+// Request: { "base_url": "https://api.deepseek.com", "api_key": "sk-..." }
+// Response: { "models": [{"id": "deepseek-v4-flash", "owned_by": "deepseek"}, ...] }
 func (s *Server) handleAdminDiscoverModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		BaseURL string `json:"base_url"`
@@ -141,7 +141,7 @@ func (s *Server) handleAdminDiscoverModels(w http.ResponseWriter, r *http.Reques
 	}
 
 	if req.BaseURL == "" {
-		req.BaseURL = "https://api.deepseek.com/v1"
+		req.BaseURL = "https://api.deepseek.com"
 	}
 
 	// OpenAI-compatible: GET {base_url}/models
@@ -252,7 +252,7 @@ func (s *Server) handleAdminCreateAPIKey(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Hot-reload embedding client if dashscope key was changed
-	s.reloadEmbeddingFromDB(r.Context(), req.Provider)
+	s.reloadFromDB(r.Context(), req.Provider)
 
 	response.Created(w, created)
 }
@@ -279,7 +279,7 @@ func (s *Server) handleAdminUpdateAPIKey(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Hot-reload embedding client if dashscope key was changed
-	s.reloadEmbeddingFromDB(r.Context(), req.Provider)
+	s.reloadFromDB(r.Context(), req.Provider)
 
 	response.OK(w, updated)
 }
@@ -311,9 +311,12 @@ func (s *Server) handleAdminDeleteAPIKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// If the deleted key was for dashscope, log a warning
-	if deletedProvider == "dashscope" {
+	// Log warnings for providers that need runtime config
+	switch deletedProvider {
+	case "dashscope":
 		slog.Warn("dashscope API key deleted — embedding client will use env var until server restart")
+	case "jiaozhen", "tencent_news":
+		slog.Warn("jiaozhen API key deleted — fact-checking will use env var until server restart", "provider", deletedProvider)
 	}
 
 	response.OK(w, map[string]interface{}{"message": "api key deleted"})
@@ -382,6 +385,17 @@ func (s *Server) handleAdminTestAPIKey(w http.ResponseWriter, r *http.Request) {
 			status = "fail"
 			errMsg = err.Error()
 		}
+	case "jiaozhen", "tencent_news":
+		// CLI-based service — verify key is non-empty and CLI is available
+		if keyValue == "" {
+			status = "fail"
+			errMsg = "empty key value"
+		} else if s.jiaozhen == nil || !s.jiaozhen.IsConfigured() {
+			status = "fail"
+			errMsg = "tencent-news-cli not found — install via: curl -fsSL https://mat1.gtimg.com/qqcdn/qqnews/cli/hub/tencent-news/setup.sh | sh"
+		} else {
+			slog.Info("jiaozhen API key test passed (CLI available)", "provider", target.Provider)
+		}
 	default:
 		// Generic check — just verify key is non-empty
 		if keyValue == "" {
@@ -403,7 +417,7 @@ func (s *Server) handleAdminTestAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) testLLMConnectivity(ctx context.Context, baseURL, apiKey string) error {
 	if baseURL == "" {
-		baseURL = "https://api.deepseek.com/v1"
+		baseURL = "https://api.deepseek.com"
 	}
 	// Simple models list request
 	url := strings.TrimSuffix(baseURL, "/") + "/models"
@@ -509,11 +523,21 @@ func (s *Server) testEmbeddingConnectivity(ctx context.Context, baseURL, apiKey 
 	return nil
 }
 
-// reloadEmbeddingFromDB checks if the provider is dashscope and hot-reloads
-// the embedding client with the updated API key from the database.
+// reloadFromDB hot-reloads service clients with the updated API key from the database.
 // This is called after Create/Update/Delete API key operations.
-func (s *Server) reloadEmbeddingFromDB(ctx context.Context, provider string) {
-	if provider != "dashscope" || s.embedding == nil || s.adminRepo == nil {
+// It handles dashscope (embedding) and jiaozhen (fact-checking) providers.
+func (s *Server) reloadFromDB(ctx context.Context, provider string) {
+	switch provider {
+	case "dashscope":
+		s.reloadEmbeddingFromDB(ctx)
+	case "jiaozhen", "tencent_news":
+		s.reloadJiaozhenFromDB(ctx)
+	}
+}
+
+// reloadEmbeddingFromDB hot-reloads the embedding client with the dashscope API key from DB.
+func (s *Server) reloadEmbeddingFromDB(ctx context.Context) {
+	if s.embedding == nil || s.adminRepo == nil {
 		return
 	}
 
@@ -535,6 +559,27 @@ func (s *Server) reloadEmbeddingFromDB(ctx context.Context, provider string) {
 		"dimension", dimension,
 		"base_url", baseURL,
 	)
+}
+
+// reloadJiaozhenFromDB hot-reloads the jiaozhen client with the API key from DB.
+// Supports both "jiaozhen" and "tencent_news" providers (they share the same CLI API key).
+func (s *Server) reloadJiaozhenFromDB(ctx context.Context) {
+	if s.jiaozhen == nil || s.adminRepo == nil {
+		return
+	}
+
+	// Try "jiaozhen" provider first, then "tencent_news" as fallback
+	key, _, err := s.adminRepo.GetAPIKeyValue(ctx, "jiaozhen")
+	if err != nil || key == "" {
+		key, _, err = s.adminRepo.GetAPIKeyValue(ctx, "tencent_news")
+		if err != nil || key == "" {
+			slog.Debug("reloadJiaozhenFromDB: no jiaozhen/tencent_news key in DB")
+			return
+		}
+	}
+
+	s.jiaozhen.Reconfigure(key)
+	slog.Info("jiaozhen client hot-reloaded from DB")
 }
 
 // ─── Admin: Token Usage Stats ────────────────────────────

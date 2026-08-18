@@ -8,11 +8,12 @@
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2 } from "lucide-react";
+import { Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart } from "@/stores/agent-store";
+import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, CompactionPart } from "@/stores/agent-store";
 import type { WriteMode } from "@/lib/types";
+import { exportMarkdown, exportWord, exportPDF } from "@/lib/export-utils";
 import { useAgentStore } from "@/stores/agent-store";
 import { MarkdownContent } from "./markdown-content";
 import { OutlineTool } from "@/components/tools/outline-tool";
@@ -44,8 +45,11 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
   const reasoningParts = message.parts.filter(
     (p): p is ReasoningPart => p.type === "reasoning"
   );
+  const compactionParts = message.parts.filter(
+    (p): p is CompactionPart => p.type === "compaction"
+  );
   const otherParts = message.parts.filter(
-    (p) => p.type !== "tool-call" && p.type !== "reasoning"
+    (p) => p.type !== "tool-call" && p.type !== "reasoning" && p.type !== "compaction"
   );
 
   // 找到第一个 text part 的位置（用于在 text 之前显示 tool-calls）
@@ -64,6 +68,11 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
   return (
     <div className="px-4 py-3 anim-fade-up">
       <div className="space-y-2">
+        {/* 对话历史压缩状态条 */}
+        {compactionParts.length > 0 && (
+          <CompactionBanner part={compactionParts[compactionParts.length - 1]} />
+        )}
+
         {/* Agent 步骤流程（紧凑时间线，默认折叠） */}
         {toolCallParts.length > 0 && (
           <CompactStepTimeline parts={toolCallParts} isRunning={isRunning} />
@@ -127,9 +136,9 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
           </div>
         )}
 
-        {/* text 之后的 data parts（如 review、feedback） */}
+        {/* text 之后的 data parts（仅 feedback，review 已移至右侧详情面板） */}
         {afterTextParts
-          .filter((p): p is DataPart => p.type === "data")
+          .filter((p): p is DataPart => p.type === "data" && p.dataType !== "review")
           .map((part, i) => (
             <DataPartRenderer key={`after-${i}`} part={part} traceId={traceId} article={textParts.map(t => t.text).join("")} />
           ))}
@@ -242,13 +251,17 @@ function CompactStepTimeline({ parts, isRunning }: { parts: ToolCallPart[]; isRu
 }
 
 /**
- * 思考过程面板 — 可折叠的 reasoning 内容区块
+ * 思考过程面板 — 仅显示当前步骤的思考内容
  *
- * 运行中默认展开（实时展示思考流），完成后默认折叠。
- * 点击标题可手动切换展开/折叠状态。
+ * 每步思考跟着步骤走（不再合并为一个文本块），
+ * 每步完成后自动隐藏，仅保留最新步骤的思考内容。
+ * 思考结束后输出文章。
  */
 function ThinkingPanel({ parts, isRunning }: { parts: ReasoningPart[]; isRunning: boolean }) {
-  const fullText = parts.map((p) => p.text).join("");
+  // Only show the last (current, non-completed) reasoning part
+  const lastPart = parts.length > 0 ? parts[parts.length - 1] : null;
+  // If the last part is completed, show nothing (it's from a previous step)
+  const currentText = lastPart && !lastPart.completed ? lastPart.text : "";
   const [open, setOpen] = useState(false);
   const [userToggled, setUserToggled] = useState(false);
 
@@ -266,7 +279,7 @@ function ThinkingPanel({ parts, isRunning }: { parts: ReasoningPart[]; isRunning
     setOpen(next);
   };
 
-  if (!fullText.trim()) return null;
+  if (!currentText.trim()) return null;
 
   return (
     <Collapsible open={open} onOpenChange={handleToggle}>
@@ -294,7 +307,7 @@ function ThinkingPanel({ parts, isRunning }: { parts: ReasoningPart[]; isRunning
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-1.5 rounded-lg border border-primary/20 bg-primary/5 dark:bg-primary/10 p-3 max-h-64 overflow-y-auto">
-          <MarkdownContent content={fullText} />
+          <MarkdownContent content={currentText} />
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -318,7 +331,8 @@ function DataPartRenderer({
       return <OutlineTool data={part.data as Parameters<typeof OutlineTool>[0]["data"]} attempt={part.attempt} maxAttempts={part.maxAttempts} />;
 
     case "review":
-      return <ReviewCard data={part.data as Record<string, unknown>} />;
+      // Review content is displayed in the right-side detail panel (post_review step)
+      return null;
 
     case "feedback": {
       // Use text parts article, or fall back to data.article
@@ -413,28 +427,15 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
  */
 function MessageActions({ text, title }: { text: string; title?: string }) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editedText, setEditedText] = useState(text);
+  const [showExport, setShowExport] = useState(false);
 
   const handleCopy = () => {
-    // 组合标题 + 正文，生成干净的纯文本
     const fullText = title ? `${title}\n\n${text}` : text;
     navigator.clipboard.writeText(fullText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleDownload = () => {
-    const fullText = title ? `# ${title}\n\n${text}` : text;
-    const blob = new Blob([fullText], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    // 文件名：取标题前 20 字，替换非法字符
-    const safeName = (title ?? "article").slice(0, 20).replace(/[<>:"/\\|?*\n]/g, "_");
-    a.download = `${safeName}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
   const handleRegenerate = () => {
@@ -515,13 +516,80 @@ function MessageActions({ text, title }: { text: string; title?: string }) {
         <span>扩写</span>
       </button>
       <button
-        onClick={handleDownload}
+        onClick={() => { setEditedText(text); setEditing(!editing); }}
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-        title="下载为 Markdown 文件"
+        title="在线编辑文章"
       >
-        <Download className="h-3.5 w-3.5" />
-        <span>下载</span>
+        <Pencil className="h-3.5 w-3.5" />
+        <span>{editing ? "完成编辑" : "编辑"}</span>
       </button>
+      <div className="relative">
+        <button
+          onClick={() => setShowExport(!showExport)}
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+          title="导出文章"
+        >
+          <Download className="h-3.5 w-3.5" />
+          <span>导出</span>
+          <ChevronDown className="h-3 w-3" />
+        </button>
+        {showExport && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setShowExport(false)} />
+            <div className="absolute right-0 top-full mt-1 z-20 rounded-md border border-border bg-background shadow-lg overflow-hidden anim-fade-in">
+              <button
+                onClick={() => { exportMarkdown(editing ? editedText : text, title); setShowExport(false); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-ui"
+              >
+                <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                <span>Markdown (.md)</span>
+              </button>
+              <button
+                onClick={() => { exportWord(editing ? editedText : text, title); setShowExport(false); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-ui"
+              >
+                <FileType className="h-3.5 w-3.5 text-blue-600" />
+                <span>Word (.doc)</span>
+              </button>
+              <button
+                onClick={() => { exportPDF(editing ? editedText : text, title); setShowExport(false); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-ui"
+              >
+                <FileType className="h-3.5 w-3.5 text-red-600" />
+                <span>PDF（打印）</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      {editing && (
+        <div className="w-full mt-2">
+          <textarea
+            value={editedText}
+            onChange={(e) => setEditedText(e.target.value)}
+            className="w-full min-h-[200px] rounded-md border border-border bg-background p-3 text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 transition-ui"
+            placeholder="编辑文章内容（Markdown 格式）..."
+          />
+          <div className="flex items-center gap-2 mt-1">
+            <button
+              onClick={() => { setEditing(false); }}
+              className="text-xs text-muted-foreground hover:text-foreground transition-ui"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(editedText);
+                toast.success("已复制", "编辑后的内容已复制到剪贴板");
+                setEditing(false);
+              }}
+              className="text-xs text-emerald-600 hover:text-emerald-700 transition-ui"
+            >
+              复制编辑结果
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -578,6 +646,47 @@ function WordCountProgress({ text }: { text: string }) {
         </span>
         <span className="text-muted-foreground/60">/ {targetMin}-{targetMax} 字</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * CompactionBanner — 对话历史压缩状态条
+ * 当 Harness 对对话历史执行 compaction 时显示，
+ * 告知用户历史已被压缩为摘要，节省了多少 token。
+ */
+function CompactionBanner({ part }: { part: CompactionPart }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-lg border border-blue-200/60 dark:border-blue-800/40 bg-blue-50/50 dark:bg-blue-950/20 px-3 py-2 anim-fade-in">
+      <div className="flex items-center gap-2">
+        <Layers className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 shrink-0" />
+        <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
+          对话历史已压缩
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {part.originalMessages} 条消息 → {part.compactedMessages} 条摘要
+        </span>
+        <Badge variant="outline" className="text-xs gap-0.5 text-emerald-600 border-emerald-300/50 dark:text-emerald-400 dark:border-emerald-700/40">
+          省 ~{part.savedTokens} tokens
+        </Badge>
+        {part.summaryPreview && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="ml-auto text-xs text-blue-500 dark:text-blue-400 hover:underline transition-ui"
+          >
+            {expanded ? "收起" : "查看摘要"}
+          </button>
+        )}
+      </div>
+      {expanded && part.summaryPreview && (
+        <div className="mt-2 pt-2 border-t border-blue-200/40 dark:border-blue-800/30">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {part.summaryPreview}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

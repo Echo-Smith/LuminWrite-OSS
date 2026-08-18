@@ -28,6 +28,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { adminFetch, adminMutate } from "@/lib/admin-api";
+import { toast } from "@/stores/toast-store";
 
 interface RolloutConfig {
   slug: string;
@@ -62,34 +64,11 @@ export function RolloutConfigDialog({ slug, onClose }: RolloutConfigDialogProps)
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${slug}/rollout`);
-      const json = await res.json();
-      if (json.success) {
-        setConfig(json.data ?? {
-          slug,
-          percentage: 0,
-          whitelist_uids: [],
-          blacklist_uids: [],
-          active_version: 1,
-          candidate_version: 1,
-          strategy: "percentage",
-          enabled: false,
-        });
-      } else {
-        // Use default config if not found
-        setConfig({
-          slug,
-          percentage: 0,
-          whitelist_uids: [],
-          blacklist_uids: [],
-          active_version: 1,
-          candidate_version: 1,
-          strategy: "percentage",
-          enabled: false,
-        });
-      }
-    } catch {
+    const { success, data } = await adminFetch<RolloutConfig>(`/api/v2/admin/styles/${slug}/rollout`, { silent: true });
+    if (success && data) {
+      setConfig(data);
+    } else {
+      // Use default config if not found
       setConfig({
         slug,
         percentage: 0,
@@ -100,9 +79,8 @@ export function RolloutConfigDialog({ slug, onClose }: RolloutConfigDialogProps)
         strategy: "percentage",
         enabled: false,
       });
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   }, [slug]);
 
   useEffect(() => {
@@ -113,39 +91,30 @@ export function RolloutConfigDialog({ slug, onClose }: RolloutConfigDialogProps)
     if (!config) return;
     setSaving(true);
     setError("");
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${slug}/rollout`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-      const json = await res.json();
-      if (!json.success) {
-        setError(json.error?.message ?? "保存失败");
-      }
-    } catch {
-      setError("网络错误");
-    } finally {
-      setSaving(false);
+    const { success, error: err } = await adminMutate(`/api/v2/admin/styles/${slug}/rollout`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+      successTitle: "灰度配置已保存",
+      successDesc: slug,
+    });
+    if (!success && err) {
+      setError(err.message ?? "保存失败");
     }
+    setSaving(false);
   };
 
   const handlePreview = async () => {
     if (!previewUid.trim()) return;
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${slug}/rollout/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid: previewUid.trim() }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setPreviewResult(json.data);
-      } else {
-        setPreviewResult(null);
-      }
-    } catch {
+    const { success, data } = await adminFetch<RolloutPreview>(`/api/v2/admin/styles/${slug}/rollout/preview`, {
+      method: "POST",
+      body: JSON.stringify({ uid: previewUid.trim() }),
+      silent: true,
+    });
+    if (success && data) {
+      setPreviewResult(data);
+    } else {
       setPreviewResult(null);
+      toast.error("预览失败", "请检查 UID 是否正确");
     }
   };
 

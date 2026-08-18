@@ -18,7 +18,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog as CreateDialog, DialogContent as CreateDialogContent,
@@ -237,7 +236,7 @@ function ProfileSection() {
 
   return (
     <div className="px-6 pb-12 space-y-6">
-      <Separator />
+      
       <div className="space-y-4">
         {/* 用户名 — 支持修改 */}
         <div className="space-y-2">
@@ -537,7 +536,7 @@ function StyleSection() {
   if (isGuest) {
     return (
       <div className="px-6 pb-12 space-y-6">
-        <Separator />
+        
         <Card className="border-amber-200/60 bg-amber-50/50 dark:bg-amber-950/20">
           <CardContent className="py-6 text-center">
             <Palette className="mx-auto h-10 w-10 text-amber-500/50" />
@@ -562,7 +561,7 @@ function StyleSection() {
         </div>
       )}
 
-      <Separator />
+      
 
       {loading ? (
         <div className="py-12 text-center text-muted-foreground text-sm">加载中...</div>
@@ -941,7 +940,7 @@ function StyleEditDialog({
                   placeholder="如 科技, 评论, 深度"
                 />
               </div>
-              <Separator />
+              
               <div>
                 <Label>字数范围</Label>
                 <div className="mt-1.5 flex items-center gap-3">
@@ -1084,7 +1083,7 @@ function StyleEditDialog({
                   placeholder="如 首在-重在-贵在"
                 />
               </div>
-              <Separator />
+              
               <div className="space-y-3">
                 <Label className="text-sm font-semibold">修辞要求</Label>
                 <label className="flex items-center gap-2 text-sm">
@@ -1270,7 +1269,7 @@ function MemorySection() {
 
   return (
     <div className="px-6 pb-12 space-y-5">
-      <Separator />
+      
 
       {loading ? (
         <div className="py-12 text-center text-muted-foreground text-sm">加载中...</div>
@@ -1440,7 +1439,7 @@ function SettingsSection() {
 
   return (
     <div className="px-6 pb-12 space-y-6">
-      <Separator />
+      
 
       {/* 默认写作风格 */}
       <div>
@@ -1468,7 +1467,7 @@ function SettingsSection() {
         </div>
       </div>
 
-      <Separator />
+      
 
       {/* 编排模式 */}
       <div>
@@ -1505,7 +1504,7 @@ function SettingsSection() {
         </div>
       </div>
 
-      <Separator />
+      
 
       {/* 提示信息 */}
       <div className="rounded-lg bg-muted/50 p-4">
@@ -1651,7 +1650,7 @@ function AccountSection() {
   if (isGuest) {
     return (
     <div className="px-6 pb-12 space-y-6">
-      <Separator />
+      
       <Card className="border-amber-200/60 bg-amber-50/50 dark:bg-amber-950/20">
           <CardContent className="py-6 text-center">
             <KeyRound className="mx-auto h-10 w-10 text-amber-500/50" />
@@ -1669,7 +1668,7 @@ function AccountSection() {
 
   return (
     <div className="px-6 pb-12 space-y-6">
-      <Separator />
+      
 
       {/* 密码修改 */}
       <div className="space-y-4">
@@ -1727,7 +1726,7 @@ function AccountSection() {
         </div>
       </div>
 
-      <Separator />
+      
 
       {/* Passkey 管理 */}
       <div className="space-y-4">

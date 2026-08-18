@@ -12,6 +12,8 @@ import { Switch } from "@/components/ui/switch";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
+import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
+import { AdminConfirmDialog, AdminPageHeader, AdminBulkActions } from "@/components/admin";
 
 interface CronJob {
   id: string;
@@ -60,15 +62,19 @@ export function CronJobsPage() {
     is_active: true,
   });
 
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const handleBatchAction = async (action: "delete" | "activate" | "deactivate") => {
+    const { success } = await adminMutate("/api/v2/admin/cron-jobs/batch", { method: "POST", body: JSON.stringify({ ids: selectedIds, action }), successTitle: action === "delete" ? "Deleted" : "Updated" });
+    if (success) { setSelectedIds([]); load(); }
+  };
+  const toggleSelect = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/admin/cron-jobs");
-      const json = await res.json();
-      if (json.success) setJobs(json.data?.jobs ?? []);
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<{ jobs: CronJob[] }>("/api/v2/admin/cron-jobs", { silent: true });
+    if (success && data) setJobs(data.jobs ?? []);
+    setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -76,21 +82,21 @@ export function CronJobsPage() {
   const handleSave = async () => {
     if (!form.name || !form.schedule || !form.task_type) return;
     setSaving(true);
-    try {
-      const url = editing ? `/api/v2/admin/cron-jobs/${editing.id}` : "/api/v2/admin/cron-jobs";
-      const method = editing ? "PUT" : "POST";
-      await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, task_config: {} }),
-      });
+    const url = editing ? `/api/v2/admin/cron-jobs/${editing.id}` : "/api/v2/admin/cron-jobs";
+    const method = editing ? "PUT" : "POST";
+    const { success } = await adminMutate<CronJob>(url, {
+      method,
+      body: JSON.stringify({ ...form, task_config: {} }),
+      successTitle: editing ? "任务已更新" : "任务已添加",
+      successDesc: form.name,
+    });
+    if (success) {
       setShowAdd(false);
       setEditing(null);
       setForm({ name: "", description: "", schedule: "", task_type: "topic_fetch", is_active: true });
       await load();
-    } finally {
-      setSaving(false);
     }
+    setSaving(false);
   };
 
   const handleEdit = (j: CronJob) => {
@@ -99,29 +105,39 @@ export function CronJobsPage() {
     setShowAdd(true);
   };
 
-  const handleDelete = async (id: string) => {
-    await fetch(`/api/v2/admin/cron-jobs/${id}`, { method: "DELETE" });
-    await load();
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const ok = await adminDelete(
+      `/api/v2/admin/cron-jobs/${deleteTarget}`,
+      "确认删除此定时任务？",
+      "任务已删除",
+    );
+    if (ok) await load();
+    setDeleteTarget(null);
   };
 
   const handleRun = async (id: string) => {
     setRunning(id);
-    try {
-      await fetch(`/api/v2/admin/cron-jobs/${id}/run`, { method: "POST" });
-      setTimeout(() => load(), 2000);
-    } finally {
-      setRunning(null);
-    }
+    const { success } = await adminMutate(`/api/v2/admin/cron-jobs/${id}/run`, {
+      method: "POST",
+      successTitle: "任务已触发",
+      successDesc: "请稍后查看执行结果",
+    });
+    if (success) setTimeout(() => load(), 2000);
+    setRunning(null);
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">定时任务</h2>
-        <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", description: "", schedule: "", task_type: "topic_fetch", is_active: true }); }}>
-          <Plus className="h-4 w-4 mr-2" /> 添加任务
-        </Button>
-      </div>
+      <div className="p-6 space-y-6">
+        <AdminBulkActions selectedIds={selectedIds} onClear={() => setSelectedIds([])} onBatchAction={handleBatchAction} />
+        <AdminPageHeader
+          title="定时任务"
+          action={
+            <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", description: "", schedule: "", task_type: "topic_fetch", is_active: true }); }}>
+              <Plus className="h-4 w-4 mr-2" /> 添加任务
+            </Button>
+          }
+        />
 
       {/* Add/Edit Task Dialog */}
       <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) { setShowAdd(false); setEditing(null); } }}>
@@ -170,6 +186,16 @@ export function CronJobsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AdminConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}
+        title="删除定时任务"
+        description="确认删除此定时任务？此操作不可撤销。"
+        confirmText="删除"
+        variant="destructive"
+        onConfirm={handleDelete}
+      />
 
       <div className="rounded-lg border">
         <table className="w-full">
@@ -220,7 +246,7 @@ export function CronJobsPage() {
                       <Button variant="ghost" size="sm" onClick={() => handleEdit(j)} title="编辑">
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => handleDelete(j.id)} title="删除">
+                      <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(j.id)} title="删除">
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>

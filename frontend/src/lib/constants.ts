@@ -10,6 +10,9 @@ export const STEP_LABELS: Record<AgentStepName, string> = {
   write_article: "文章生成",
   review_article: "质量评审",
   revise_section: "定向修正",
+  word_count_check: "字数检查",
+  rewrite_title: "标题优化",
+  fact_check: "事实核查",
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "意图识别",
   query_plan: "检索规划",
@@ -32,6 +35,9 @@ export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   write_article: "LLM 自主写作，流式输出文章",
   review_article: "多维度质量评审：事实/结构/风格/修辞/安全",
   revise_section: "定向修改文章某一部分",
+  word_count_check: "检查文章字数是否符合风格要求",
+  rewrite_title: "生成备选标题供选择",
+  fact_check: "提取并验证文章中的关键事实",
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "分析用户意图，确定写作任务类型",
   query_plan: "规划检索策略，生成搜索关键词",
@@ -54,6 +60,9 @@ export const STEP_ICONS: Record<AgentStepName, string> = {
   write_article: "PenLine",
   review_article: "ShieldCheck",
   revise_section: "Wrench",
+  word_count_check: "Hash",
+  rewrite_title: "Type",
+  fact_check: "SearchCheck",
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "Brain",
   query_plan: "Search",

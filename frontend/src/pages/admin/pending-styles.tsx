@@ -11,6 +11,8 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import { adminFetch, adminMutate } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
 
 interface PendingReview {
   id: string;
@@ -35,19 +37,13 @@ export function PendingStylesPage() {
   const loadReviews = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const res = await fetch("/api/v2/admin/pending-styles");
-      const json = await res.json();
-      if (json.success) {
-        setReviews(json.data?.reviews ?? []);
-      } else {
-        setError(json.error?.message ?? "加载失败");
-      }
-    } catch {
-      setError("网络错误");
-    } finally {
-      setLoading(false);
+    const { success, data, error: err } = await adminFetch<{ reviews: PendingReview[] }>("/api/v2/admin/pending-styles", { silent: true });
+    if (success && data) {
+      setReviews(data.reviews ?? []);
+    } else {
+      setError(err?.message ?? "加载失败");
     }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -56,45 +52,30 @@ export function PendingStylesPage() {
 
   const handleApprove = async (id: string) => {
     setActioning(id);
-    setError(null);
-    try {
-      const res = await fetch(`/api/v2/admin/pending-styles/${id}/approve`, { method: "POST" });
-      const json = await res.json();
-      if (json.success) {
-        await loadReviews();
-      } else {
-        setError(json.error?.message ?? "操作失败");
-      }
-    } catch {
-      setError("网络错误");
-    } finally {
-      setActioning(null);
-    }
+    const { success } = await adminMutate(`/api/v2/admin/pending-styles/${id}/approve`, {
+      method: "POST",
+      successTitle: "风格已通过",
+      successDesc: "已发布为正式风格",
+    });
+    if (success) await loadReviews();
+    setActioning(null);
   };
 
   const handleReject = async () => {
     if (!rejectDialog) return;
     setActioning(rejectDialog.id);
-    setError(null);
-    try {
-      const res = await fetch(`/api/v2/admin/pending-styles/${rejectDialog.id}/reject`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: rejectNote }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setRejectDialog(null);
-        setRejectNote("");
-        await loadReviews();
-      } else {
-        setError(json.error?.message ?? "驳回失败");
-      }
-    } catch {
-      setError("网络错误");
-    } finally {
-      setActioning(null);
+    const { success } = await adminMutate(`/api/v2/admin/pending-styles/${rejectDialog.id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ note: rejectNote }),
+      successTitle: "风格已驳回",
+      successDesc: rejectDialog.profile_name,
+    });
+    if (success) {
+      setRejectDialog(null);
+      setRejectNote("");
+      await loadReviews();
     }
+    setActioning(null);
   };
 
   const parseConfig = (configStr: string): Record<string, unknown> | null => {
@@ -107,18 +88,18 @@ export function PendingStylesPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">社区风格审核</h1>
-          <p className="text-sm text-muted-foreground mt-1">审核用户提交的自定义风格</p>
-        </div>
-        {reviews.length > 0 && (
-          <Badge variant="secondary" className="gap-1.5">
-            <Clock className="h-3 w-3" />
-            {reviews.length} 待审核
-          </Badge>
-        )}
-      </div>
+      <AdminPageHeader
+        title="社区风格审核"
+        description="审核用户提交的自定义风格"
+        action={
+          reviews.length > 0 ? (
+            <Badge variant="secondary" className="gap-1.5">
+              <Clock className="h-3 w-3" />
+              {reviews.length} 待审核
+            </Badge>
+          ) : undefined
+        }
+      />
 
       {error && (
         <div className="rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">

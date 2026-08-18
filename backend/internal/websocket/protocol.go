@@ -34,6 +34,7 @@ const (
 	MsgSessionResumed    = "session.resumed"
 	MsgMemoryUsed        = "memory.used"
 	MsgMemoryDismiss     = "memory.dismiss"
+	MsgAgentCompaction   = "agent.compaction"
 )
 
 // ClientMessage is a message from the client.
@@ -183,6 +184,18 @@ type PausedPayload struct {
 type ResumedPayload struct {
 	TraceID string `json:"trace_id"`
 	Step    string `json:"step"`
+}
+
+// CompactionPayload carries conversation history compaction info to the client.
+// Sent when the Harness compresses older conversation messages into a summary
+// to stay within the LLM's context window. The client uses this to display a
+// "history compressed" indicator in the chat UI.
+type CompactionPayload struct {
+	TraceID         string `json:"trace_id"`
+	OriginalMessages int   `json:"original_messages"`
+	CompactedMessages int  `json:"compacted_messages"`
+	SavedTokens       int   `json:"saved_tokens"`
+	SummaryPreview    string `json:"summary_preview,omitempty"`
 }
 
 // SessionResumePayload is sent by the client to resume a session after reconnect.

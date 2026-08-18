@@ -149,6 +149,9 @@ EXCLUDE_PATTERNS=(
     "node_modules/"
     "dist/"
     ".tar.gz"
+    "migrate_weknora_to_local.sh"
+    "verify_weknora_kb_limit.sh"
+    "luminbuddy-kb-data.tar.gz"
 )
 
 while IFS= read -r f; do
@@ -266,10 +269,14 @@ if [ "$EXPORT_IMAGES" = true ]; then
         warn "后端镜像不存在，正在构建..."
         docker compose build backend
     fi
+    if ! docker image inspect luminbuddy-v2-docreader:latest >/dev/null 2>&1; then
+        warn "Docreader 镜像不存在，正在构建..."
+        docker compose build docreader
+    fi
 
-    info "导出镜像（frontend + backend）..."
-    # 导出两个镜像到单个 tar
-    docker save luminbuddy-v2-frontend:latest luminbuddy-v2-backend:latest \
+    info "导出镜像（frontend + backend + docreader）..."
+    # 导出三个镜像到单个 tar
+    docker save luminbuddy-v2-frontend:latest luminbuddy-v2-backend:latest luminbuddy-v2-docreader:latest \
         | gzip > "$IMAGES_PATH"
 
     if [ "$(uname)" = "Darwin" ]; then

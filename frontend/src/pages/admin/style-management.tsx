@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RolloutConfigDialog } from "./rollout-config";
+import { adminFetch, adminMutate } from "@/lib/admin-api";
+import { toast } from "@/stores/toast-store";
+import { AdminPageHeader } from "@/components/admin";
 
 interface AdminStyle {
   slug: string;
@@ -92,85 +95,64 @@ export function StyleManagementPage() {
 
   const loadStyles = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/admin/styles");
-      const json = await res.json();
-      if (json.success) {
-        setStyles(json.data?.styles ?? []);
-      }
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<{ styles: AdminStyle[] }>("/api/v2/admin/styles", { silent: true });
+    if (success && data) setStyles(data.styles ?? []);
+    setLoading(false);
   }, []);
 
   const loadDetail = async (slug: string) => {
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${slug}`);
-      const json = await res.json();
-      if (json.success) {
-        setEditDetail(json.data);
-        setEditingSlug(slug);
-      }
-    } catch (e) {
-      console.error("Failed to load detail", e);
+    const { success, data } = await adminFetch<StyleDetail>(`/api/v2/admin/styles/${slug}`, { silent: true });
+    if (success && data) {
+      setEditDetail(data);
+      setEditingSlug(slug);
+    } else {
+      toast.error("加载失败", "无法获取风格详情");
     }
   };
 
   const handleSave = async () => {
     if (!editDetail || !editingSlug) return;
     setSaving(true);
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${editingSlug}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editDetail),
-      });
-      const json = await res.json();
-      if (json.success) {
-        await loadStyles();
-      }
-    } finally {
-      setSaving(false);
-    }
+    const { success } = await adminMutate(`/api/v2/admin/styles/${editingSlug}`, {
+      method: "PUT",
+      body: JSON.stringify(editDetail),
+      successTitle: "风格已保存",
+      successDesc: editDetail.name,
+    });
+    if (success) await loadStyles();
+    setSaving(false);
   };
 
   const handlePublish = async (changelog: string) => {
     if (!publishDialog) return;
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${publishDialog.slug}/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ changelog }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        await loadStyles();
-        setPublishDialog(null);
-      }
-    } catch (e) {
-      console.error("Failed to publish", e);
+    const { success } = await adminMutate(`/api/v2/admin/styles/${publishDialog.slug}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ changelog }),
+      successTitle: "风格已发布",
+      successDesc: `${publishDialog.name} 已生成新版本`,
+    });
+    if (success) {
+      await loadStyles();
+      setPublishDialog(null);
     }
   };
 
   const handleArchive = async (slug: string) => {
     if (!confirm(`确认归档风格 "${slug}"？`)) return;
-    try {
-      await fetch(`/api/v2/admin/styles/${slug}/archive`, { method: "POST" });
-      await loadStyles();
-    } catch (e) {
-      console.error("Failed to archive", e);
-    }
+    const { success } = await adminMutate(`/api/v2/admin/styles/${slug}/archive`, {
+      method: "POST",
+      successTitle: "风格已归档",
+      successDesc: slug,
+    });
+    if (success) await loadStyles();
   };
 
   const loadVersions = async (slug: string) => {
-    try {
-      const res = await fetch(`/api/v2/admin/styles/${slug}/versions`);
-      const json = await res.json();
-      if (json.success) {
-        setVersionHistory({ slug, versions: json.data?.versions ?? [] });
-      }
-    } catch (e) {
-      console.error("Failed to load versions", e);
+    const { success, data } = await adminFetch<{ versions: any[] }>(`/api/v2/admin/styles/${slug}/versions`, { silent: true });
+    if (success && data) {
+      setVersionHistory({ slug, versions: data.versions ?? [] });
+    } else {
+      toast.error("加载失败", "无法获取版本历史");
     }
   };
 
@@ -181,13 +163,15 @@ export function StyleManagementPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">风格管理</h2>
-        <Button size="sm" onClick={() => setShowCreate(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          新建风格
-        </Button>
-      </div>
+      <AdminPageHeader
+        title="风格管理"
+        action={
+          <Button size="sm" onClick={() => setShowCreate(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            新建风格
+          </Button>
+        }
+      />
 
       {/* Style List */}
       <div className="rounded-lg border">
@@ -598,65 +582,60 @@ function StyleCreateDialog({
 
     setCreating(true);
     setError("");
-    try {
-      const res = await fetch("/api/v2/admin/styles", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          slug: form.slug,
-          name: form.name,
-          description: form.description,
-          version: 1,
-          tags: [],
-          word_range: { min: 500, max: 1500, hard_limit: true },
-          structure: {
-            type: "free_form",
-            opening: "",
-            body: "",
-            conclusion: "",
-            argument_pattern: "",
-            argument_count: { min: 1, max: 3 },
-          },
-          rhetoric: {
-            required_metaphor: false,
-            required_parallelism: false,
-            required_rhetorical_question: false,
-            metaphor_description: "",
-          },
-          title_guidelines: {
-            length: { min: 5, max: 25 },
-            style: "",
-            forbidden_patterns: [],
-            examples: [],
-          },
-          system_prompt: "",
-          writing_standard: "",
-          fact_guard: {
-            future_tense_required: [],
-            forbidden_results: [],
-            user_material_priority: false,
-          },
-          output_format: {
-            use_markdown: true,
-            title_prefix: "## ",
-            separator: "",
-            include_modification_notes: false,
-            note_label: "",
-          },
-          length_profiles: {},
-        }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        onCreated();
-      } else {
-        setError(json.error?.message ?? "创建失败");
-      }
-    } catch (e) {
-      setError("网络错误");
-    } finally {
-      setCreating(false);
+    const { success, error } = await adminMutate("/api/v2/admin/styles", {
+      method: "POST",
+      body: JSON.stringify({
+        slug: form.slug,
+        name: form.name,
+        description: form.description,
+        version: 1,
+        tags: [],
+        word_range: { min: 500, max: 1500, hard_limit: true },
+        structure: {
+          type: "free_form",
+          opening: "",
+          body: "",
+          conclusion: "",
+          argument_pattern: "",
+          argument_count: { min: 1, max: 3 },
+        },
+        rhetoric: {
+          required_metaphor: false,
+          required_parallelism: false,
+          required_rhetorical_question: false,
+          metaphor_description: "",
+        },
+        title_guidelines: {
+          length: { min: 5, max: 25 },
+          style: "",
+          forbidden_patterns: [],
+          examples: [],
+        },
+        system_prompt: "",
+        writing_standard: "",
+        fact_guard: {
+          future_tense_required: [],
+          forbidden_results: [],
+          user_material_priority: false,
+        },
+        output_format: {
+          use_markdown: true,
+          title_prefix: "## ",
+          separator: "",
+          include_modification_notes: false,
+          note_label: "",
+        },
+        length_profiles: {},
+      }),
+      successTitle: "风格已创建",
+      successDesc: form.name,
+    });
+    if (success) {
+      onCreated();
+    } else {
+      setError(error?.message ?? "创建失败");
     }
+    setCreating(false);
   };
 
   return (

@@ -28,7 +28,6 @@ type KnowledgeSearcher interface {
 type SearchClient struct {
 	tavily            *TavilyClient
 	zhihu             *ZhihuClient
-	kbSearcher        KnowledgeSearcher // local KB search (replaces IMA)
 	tencent           *TencentNewsClient
 	tencentCLI        *TencentNewsCLIClient
 	weibo             *WeiboClient
@@ -83,14 +82,6 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	return c
 }
 
-// SetKnowledgeSearcher attaches a local knowledge base searcher.
-// This replaces the old SetWeKnoraClient and enables in-process hybrid search
-// (BM25 + Dense + RRF) directly on the local PostgreSQL.
-func (c *SearchClient) SetKnowledgeSearcher(s KnowledgeSearcher) {
-	c.kbSearcher = s
-	slog.Info("local knowledge base search source enabled")
-}
-
 // SetCredibilityLookup sets an optional credibility lookup provider.
 // When set, search results will be enriched with credibility scores
 // and sorted by combined relevance × credibility.
@@ -100,7 +91,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.kbSearcher != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.tavily != nil || c.zhihu != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -150,21 +141,6 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 			r, err := c.zhihu.Search(ctx, query, maxPerSource)
 			if err != nil {
 				slog.Warn("zhihu search failed", "error", err, "query", query)
-				return
-			}
-			mu.Lock()
-			results = append(results, r...)
-			mu.Unlock()
-		}()
-	}
-
-	if c.kbSearcher != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r, err := c.kbSearcher.SearchKB(ctx, query, maxPerSource)
-			if err != nil {
-				slog.Warn("local KB search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -326,9 +302,6 @@ func (c *SearchClient) activeSources() []string {
 	}
 	if c.zhihu != nil {
 		sources = append(sources, "zhihu")
-	}
-	if c.kbSearcher != nil {
-		sources = append(sources, "local_kb")
 	}
 	if c.tencent != nil {
 		sources = append(sources, "tencent")

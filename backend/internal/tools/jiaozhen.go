@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,7 @@ import (
 // It uses the `tencent-news-cli jiaozhen --query=<claim>` command.
 // It is optional — if not configured or if the CLI fails, it degrades gracefully.
 type JiaozhenClient struct {
+	mu        sync.RWMutex
 	enabled   bool
 	cliPath   string
 	apiKey    string
@@ -79,7 +81,20 @@ func detectTencentNewsCLI() string {
 
 // IsConfigured returns true if the client is enabled and the CLI path is set.
 func (c *JiaozhenClient) IsConfigured() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c != nil && c.enabled && c.cliPath != ""
+}
+
+// Reconfigure updates the jiaozhen client's API key at runtime.
+// This enables hot-reload when admin updates the jiaozhen API key via frontend.
+func (c *JiaozhenClient) Reconfigure(apiKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if apiKey != "" {
+		c.apiKey = apiKey
+		c.enabled = true
+	}
 }
 
 // JiaozhenResult holds the result of a fact check.
@@ -131,10 +146,15 @@ func compactClaim(s string) string {
 func (c *JiaozhenClient) CheckClaim(ctx context.Context, claim string) *JiaozhenResult {
 	normalizedClaim := compactClaim(claim)
 
-	if !c.enabled {
+	c.mu.RLock()
+	enabled := c.enabled
+	cliPath := c.cliPath
+	c.mu.RUnlock()
+
+	if !enabled {
 		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "disabled"}
 	}
-	if c.cliPath == "" {
+	if cliPath == "" {
 		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "cli_not_found"}
 	}
 	if !IsJiaozhenCandidate(normalizedClaim) {
@@ -151,10 +171,15 @@ func (c *JiaozhenClient) CheckClaim(ctx context.Context, claim string) *Jiaozhen
 func (c *JiaozhenClient) CheckClaimDirect(ctx context.Context, claim string) *JiaozhenResult {
 	normalizedClaim := compactClaim(claim)
 
-	if !c.enabled {
+	c.mu.RLock()
+	enabled := c.enabled
+	cliPath := c.cliPath
+	c.mu.RUnlock()
+
+	if !enabled {
 		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "disabled"}
 	}
-	if c.cliPath == "" {
+	if cliPath == "" {
 		return &JiaozhenResult{Claim: claim, Status: "skipped", Error: "cli_not_found"}
 	}
 
@@ -163,6 +188,11 @@ func (c *JiaozhenClient) CheckClaimDirect(ctx context.Context, claim string) *Ji
 
 // checkClaimDirect is the internal implementation that runs the CLI command.
 func (c *JiaozhenClient) checkClaimDirect(ctx context.Context, claim, normalizedClaim string) *JiaozhenResult {
+	c.mu.RLock()
+	cliPath := c.cliPath
+	apiKey := c.apiKey
+	timeout := c.timeout
+	c.mu.RUnlock()
 
 	// Build command: tencent-news-cli jiaozhen --query=<claim> --caller=jiaozhen-factcheck
 	args := []string{
@@ -171,18 +201,18 @@ func (c *JiaozhenClient) checkClaimDirect(ctx context.Context, claim, normalized
 		"--caller=jiaozhen-factcheck",
 	}
 
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, c.timeout)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctxWithTimeout, c.cliPath, args...)
+	cmd := exec.CommandContext(ctxWithTimeout, cliPath, args...)
 
 	// Inherit parent environment so the CLI can find its config file
 	cmd.Env = os.Environ()
-	if c.apiKey != "" {
+	if apiKey != "" {
 		cmd.Env = append(cmd.Env,
-			fmt.Sprintf("TENCENT_NEWS_API_KEY=%s", c.apiKey),
-			fmt.Sprintf("TENCENT_NEWS_APP_KEY=%s", c.apiKey),
-			fmt.Sprintf("TENCENT_NEWS_APPKEY=%s", c.apiKey),
+			fmt.Sprintf("TENCENT_NEWS_API_KEY=%s", apiKey),
+			fmt.Sprintf("TENCENT_NEWS_APP_KEY=%s", apiKey),
+			fmt.Sprintf("TENCENT_NEWS_APPKEY=%s", apiKey),
 		)
 	}
 
@@ -192,7 +222,7 @@ func (c *JiaozhenClient) checkClaimDirect(ctx context.Context, claim, normalized
 			"claim", normalizedClaim,
 			"error", err,
 			"output", string(output),
-			"cli_path", c.cliPath)
+			"cli_path", cliPath)
 		return &JiaozhenResult{
 			Claim:  claim,
 			Status: "error",
