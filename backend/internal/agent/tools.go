@@ -471,32 +471,68 @@ func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 			cfg.callCounts[name]++
 		}
 
-		switch name {
-		case "search_web":
-			return executeSearchWeb(cfg, arguments)
-		case "search_knowledge":
-			return executeSearchKnowledge(cfg, arguments)
-		case "read_source":
-			return executeReadSource(cfg, arguments)
-		case "generate_outline":
-			return executeGenerateOutline(cfg, arguments)
-		case "write_article":
-			return executeWriteArticle(cfg, arguments)
-		case "review_article":
-			return executeReviewArticle(cfg, arguments)
-		case "revise_section":
-			return executeReviseSection(cfg, arguments)
-		case "word_count_check":
-			return executeWordCountCheck(cfg, arguments)
-		case "rewrite_title":
-			return executeRewriteTitle(cfg, arguments)
-		case "fact_check":
-			return executeFactCheck(cfg, arguments)
-		case "retrieve_context":
-			return executeRetrieveContext(cfg, arguments)
-		default:
-			return "", fmt.Errorf("unknown tool: %s", name)
+		// ── Record step start in execCtx.StepHistory ──
+		startTime := time.Now()
+		cfg.ExecCtx.CurrentStep = engine.StepName(name)
+		stepRecord := engine.StepRecord{
+			Step:      engine.StepName(name),
+			Status:    "running",
+			StartedAt: &startTime,
 		}
+		cfg.ExecCtx.StepHistory = append(cfg.ExecCtx.StepHistory, stepRecord)
+
+		result, err := executeToolByName(name, cfg, arguments)
+		durationMs := time.Since(startTime).Milliseconds()
+
+		// ── Update step record with result ──
+		if len(cfg.ExecCtx.StepHistory) > 0 {
+			last := &cfg.ExecCtx.StepHistory[len(cfg.ExecCtx.StepHistory)-1]
+			completedAt := time.Now()
+			last.CompletedAt = &completedAt
+			last.DurationMs = durationMs
+			if err != nil {
+				last.Status = "error"
+				last.Error = err.Error()
+			} else {
+				last.Status = "complete"
+				// Extract step result from execCtx if available
+				if sr := engine.GetStepResult(engine.StepName(name), cfg.ExecCtx); sr != nil {
+					last.Result = sr
+				}
+			}
+		}
+
+		return result, err
+	}
+}
+
+// executeToolByName dispatches tool execution by name.
+func executeToolByName(name string, cfg ToolExecutorConfig, arguments string) (string, error) {
+	switch name {
+	case "search_web":
+		return executeSearchWeb(cfg, arguments)
+	case "search_knowledge":
+		return executeSearchKnowledge(cfg, arguments)
+	case "read_source":
+		return executeReadSource(cfg, arguments)
+	case "generate_outline":
+		return executeGenerateOutline(cfg, arguments)
+	case "write_article":
+		return executeWriteArticle(cfg, arguments)
+	case "review_article":
+		return executeReviewArticle(cfg, arguments)
+	case "revise_section":
+		return executeReviseSection(cfg, arguments)
+	case "word_count_check":
+		return executeWordCountCheck(cfg, arguments)
+	case "rewrite_title":
+		return executeRewriteTitle(cfg, arguments)
+	case "fact_check":
+		return executeFactCheck(cfg, arguments)
+	case "retrieve_context":
+		return executeRetrieveContext(cfg, arguments)
+	default:
+		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 }
 

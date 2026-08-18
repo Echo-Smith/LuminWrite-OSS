@@ -32,6 +32,7 @@ type Config struct {
 	Bing       BingConfig
 	AnySearch  AnySearchConfig
 	WebAuthn  WebAuthnConfig
+	WebPush   WebPushConfig
 	Jiaozhen  JiaozhenConfig
 	Log       LogConfig
 	HotTopics HotTopicsConfig
@@ -45,6 +46,12 @@ type WebAuthnConfig struct {
 	RPID     string
 	RPName   string
 	RPOrigin string
+}
+
+type WebPushConfig struct {
+	VapidPublicKey  string
+	VapidPrivateKey string
+	Subject         string // e.g. "mailto:admin@example.com"
 }
 
 type JiaozhenConfig struct {
@@ -320,6 +327,11 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),
 			RPName:   getEnv("WEBAUTHN_RP_NAME", "笔润智谈"),
 			RPOrigin: getEnv("WEBAUTHN_RP_ORIGIN", "http://localhost:5173"),
+		},
+		WebPush: WebPushConfig{
+			VapidPublicKey:  getEnv("VAPID_PUBLIC_KEY", ""),
+			VapidPrivateKey: getEnv("VAPID_PRIVATE_KEY", ""),
+			Subject:         getEnv("VAPID_SUBJECT", "mailto:admin@example.com"),
 		},
 		Jiaozhen: JiaozhenConfig{
 			Enabled:     getEnvBool("JIAOZHEN_ENABLED", true),
