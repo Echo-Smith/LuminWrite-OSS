@@ -696,3 +696,4 @@ func (n *noopEmitter) Resumed(step engine.StepName)                             
 func (n *noopEmitter) Error(code, message string, step engine.StepName)                              {}
 func (n *noopEmitter) Completed(article string, articleTitle string, review interface{}, tokenUsage interface{}) {}
 func (n *noopEmitter) Cancelled()                                                                    {}
+func (n *noopEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string)            {}

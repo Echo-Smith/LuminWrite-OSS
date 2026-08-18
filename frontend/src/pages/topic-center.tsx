@@ -42,12 +42,36 @@ export function TopicCenter() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editTopic, setEditTopic] = useState<Topic | null>(null);
   const [activeTab, setActiveTab] = useState<"topics" | "materials">("topics");
+  const [favoritedAngles, setFavoritedAngles] = useState<Set<string>>(new Set());
 
   const t = useTopics();
 
   const handleDeleteTopic = async (topicId: string) => {
     if (!confirm("确认删除这个选题？")) return;
     await t.deleteTopic(topicId);
+  };
+
+  // 收藏单个写作角度 — 将角度创建为独立自定义选题并收藏
+  const handleFavoriteAngle = async (angle: WritingAngle) => {
+    const angleKey = `${angle.angle}|${angle.style}`;
+    if (favoritedAngles.has(angleKey)) {
+      // 已收藏 — 取消收藏
+      setFavoritedAngles((prev) => { const n = new Set(prev); n.delete(angleKey); return n; });
+      return;
+    }
+    // 未收藏 — 创建自定义选题并自动收藏
+    const desc = [`风格: ${angle.style}`, angle.word_count > 0 ? `建议字数: ${angle.word_count}` : "", `理由: ${angle.rationale}`].filter(Boolean).join("\n");
+    try {
+      await fetch("/api/v2/topics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...({} as Record<string, string>) },
+        body: JSON.stringify({ title: angle.angle, description: desc }),
+      });
+      setFavoritedAngles((prev) => new Set(prev).add(angleKey));
+      toast.success("已收藏写作角度", angle.angle);
+    } catch {
+      toast.error("收藏失败", "请稍后重试");
+    }
   };
 
   // 直接在选题中心完成全部操作：建会话 + 开始写作 + 跳转
@@ -108,9 +132,7 @@ export function TopicCenter() {
         word_limit: wordLimit && wordLimit > 0 ? wordLimit : undefined,
         topic_url: topic.url || undefined,
       });
-      if (userMaterials.length > 1) {
-        toast.success(`已注入 ${userMaterials.length - 1} 条关联素材`, "素材将作为写作参考");
-      }
+      // 素材仅在右侧详情面板的"素材"页签中展示，不在对话框中提示
     }, 200);
   };
 
@@ -161,20 +183,20 @@ export function TopicCenter() {
           )}
         </div>
 
-        {/* 右侧操作按钮 — 根据 Tab 切换 */}
+        {/* 右侧操作按钮 — 根据 filter 状态切换 */}
         <div className="flex items-center gap-2">
-          {activeTab === "topics" ? (
-            <>
-              <Button variant="outline" size="sm" onClick={t.fetchHotTopics} disabled={t.fetchingHot} className="gap-1.5">
-                <RefreshCw className={cn("h-4 w-4", t.fetchingHot && "animate-spin")} />
-                {t.fetchingHot ? "抓取中..." : "刷新热搜"}
-              </Button>
-              <Button onClick={() => setShowAddDialog(true)} className="gap-1.5">
-                <Plus className="h-4 w-4" />
-                自定义选题
-              </Button>
-            </>
-          ) : null}
+          {activeTab === "topics" && (t.filter === "hot" || t.filter.startsWith("platform:")) && (
+            <Button variant="outline" size="sm" onClick={t.fetchHotTopics} disabled={t.fetchingHot} className="gap-1.5">
+              <RefreshCw className={cn("h-4 w-4", t.fetchingHot && "animate-spin")} />
+              {t.fetchingHot ? "抓取中..." : "刷新热搜"}
+            </Button>
+          )}
+          {activeTab === "topics" && t.filter === "user" && (
+            <Button onClick={() => setShowAddDialog(true)} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              自定义选题
+            </Button>
+          )}
         </div>
       </header>
 
@@ -259,6 +281,8 @@ export function TopicCenter() {
         onClose={() => t.setDetailTopic(null)}
         onStartWriting={(angle) => t.detailTopic && handleStartWriting(t.detailTopic, angle)}
         onRefreshAngles={t.refreshAngles}
+        onFavoriteAngle={handleFavoriteAngle}
+        favoritedAngles={favoritedAngles}
       />
     </div>
   );

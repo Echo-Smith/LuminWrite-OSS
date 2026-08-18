@@ -16,8 +16,8 @@ import (
 
 // ─── File Parser Service ───────────────────────────────
 // FileParser handles file upload and parsing for the knowledge base.
-// It uses the docreader gRPC sidecar (retained from WeKnora) for
-// high-quality parsing of PDF, Word, images, and other document formats.
+// It uses the docreader TCP sidecar (slim image, ~150MB) for
+// high-quality parsing of PDF, Word, Excel, and other document formats.
 //
 // For simple text formats (txt, md), it reads directly without docreader.
 //
@@ -127,8 +127,9 @@ func (f *FileParser) readDirect(fileContent io.Reader) (string, error) {
 	return string(data), nil
 }
 
-// parseWithDocreader sends the file to the docreader gRPC service for parsing.
-// The docreader service (from WeKnora) supports PDF, Word, PPT, Excel, images, etc.
+// parseWithDocreader sends the file to the docreader TCP service for parsing.
+// The slim docreader service supports PDF, Word, PPT, Excel, images, etc.
+// Protocol: send "PARSE <filepath>\n" over TCP, receive parsed text.
 func (f *FileParser) parseWithDocreader(ctx context.Context, filename string, fileContent io.Reader) (string, error) {
 	// Save to temporary file (docreader expects file paths)
 	tmpFile, err := os.CreateTemp("", "docreader-*"+filepath.Ext(filename))
@@ -145,7 +146,7 @@ func (f *FileParser) parseWithDocreader(ctx context.Context, filename string, fi
 	// Call docreader via gRPC
 	// The docreader gRPC API is based on WeKnora's docreader service.
 	// We use a simple gRPC client to send the file path and get parsed text.
-	content, err := f.callDocreaderGRPC(ctx, tmpFile.Name())
+	content, err := f.callDocreaderTCP(ctx, tmpFile.Name())
 	if err != nil {
 		return "", fmt.Errorf("docreader parsing failed: %w", err)
 	}
@@ -153,14 +154,11 @@ func (f *FileParser) parseWithDocreader(ctx context.Context, filename string, fi
 	return content, nil
 }
 
-// callDocreaderGRPC sends a file to the docreader gRPC service and returns parsed text.
-// This is a simplified gRPC client implementation.
-// The actual proto definition is based on WeKnora's docreader service.
-func (f *FileParser) callDocreaderGRPC(ctx context.Context, filePath string) (string, error) {
-	// Connect to docreader via gRPC
-	// The docreader service from WeKnora accepts a file path and returns parsed text.
-	// We use a raw TCP connection with a simple protocol for now.
-	// In production, this should use proper gRPC with proto definitions.
+// callDocreaderTCP sends a file to the docreader TCP service and returns parsed text.
+// Protocol: send "PARSE <filepath>\n" over TCP, receive parsed text until connection close.
+func (f *FileParser) callDocreaderTCP(ctx context.Context, filePath string) (string, error) {
+	// Connect to docreader via TCP
+	// The slim docreader service accepts a file path and returns parsed text.
 
 	conn, err := net.DialTimeout("tcp", f.docreaderAddr, 10*time.Second)
 	if err != nil {

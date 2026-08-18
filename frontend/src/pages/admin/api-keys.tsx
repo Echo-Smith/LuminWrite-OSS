@@ -5,6 +5,7 @@
  */
 import { useState, useEffect, useCallback, type ReactElement } from "react";
 import { Plus, Trash2, Pencil, Key, Zap, Loader2, CheckCircle, XCircle, Server, Wrench, Download } from "lucide-react";
+import { toast } from "@/stores/toast-store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +17,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { adminMutate } from "@/lib/admin-api";
+import { AdminPageHeader, AdminBulkActions } from "@/components/admin";
 
 interface APIKey {
   id: string;
@@ -36,10 +39,11 @@ interface APIKey {
 const MCP_PROVIDERS = [
   { value: "tavily", label: "Tavily Search" },
   { value: "zhihu", label: "知乎" },
-  { value: "weknora", label: "知识库" },
   { value: "dashscope", label: "DashScope (Embedding)" },
   { value: "anysearch", label: "AnySearch" },
   { value: "tencent", label: "腾讯新闻" },
+  { value: "tencent_news", label: "腾讯新闻 CLI (事实核查)" },
+  { value: "jiaozhen", label: "较真事实核查" },
   { value: "weibo", label: "微博" },
   { value: "bing", label: "Bing" },
 ];
@@ -68,6 +72,7 @@ interface MCPTool {
 }
 
 export function APIKeysPage() {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [keys, setKeys] = useState<APIKey[]>([]);
   const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -84,6 +89,12 @@ export function APIKeysPage() {
     base_url: "",
     is_active: true,
   });
+
+  const handleBatchAction = async (action: "delete" | "activate" | "deactivate") => {
+    const { success } = await adminMutate("/api/v2/admin/api-keys/batch", { method: "POST", body: JSON.stringify({ ids: selectedIds, action }), successTitle: action === "delete" ? "Deleted" : "Updated" });
+    if (success) { setSelectedIds([]); load(); }
+  };
+  const toggleSelect = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,15 +138,23 @@ export function APIKeysPage() {
       const method = editing ? "PUT" : "POST";
       const body: Record<string, unknown> = { ...form, category: "mcp" };
       if (editing && !form.key_value) delete body.key_value;
-      await fetch(url, {
+      const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast.error("保存失败", json.error?.message ?? "请检查权限或重试");
+        return;
+      }
+      toast.success(editing ? "密钥已更新" : "密钥已添加", form.name);
       setShowAdd(false);
       setEditing(null);
       setForm({ name: "", provider: "tavily", key_value: "", base_url: "", is_active: true });
       await load();
+    } catch {
+      toast.error("网络错误", "请检查网络连接后重试");
     } finally {
       setSaving(false);
     }
@@ -148,15 +167,40 @@ export function APIKeysPage() {
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/v2/admin/api-keys/${id}`, { method: "DELETE" });
-    await load();
+    if (!confirm("确认删除此密钥？")) return;
+    try {
+      const res = await fetch(`/api/v2/admin/api-keys/${id}`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast.error("删除失败", json.error?.message ?? "请检查权限或重试");
+        return;
+      }
+      toast.success("密钥已删除");
+      await load();
+    } catch {
+      toast.error("网络错误", "请检查网络连接后重试");
+    }
   };
 
   const handleTest = async (id: string) => {
     setTesting(id);
     try {
-      await fetch(`/api/v2/admin/api-keys/${id}/test`, { method: "POST" });
+      const res = await fetch(`/api/v2/admin/api-keys/${id}/test`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast.error("测试失败", json.error?.message ?? "请检查权限或重试");
+        await load();
+        return;
+      }
+      const status = json.data?.status as string;
+      if (status === "ok") {
+        toast.success("连通性测试通过", "服务可正常访问");
+      } else {
+        toast.error("连通性测试失败", json.data?.error ?? "请检查配置");
+      }
       await load();
+    } catch {
+      toast.error("网络错误", "请检查网络连接后重试");
     } finally {
       setTesting(null);
     }
@@ -164,17 +208,16 @@ export function APIKeysPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">MCP 服务密钥</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            管理搜索、知识库等 MCP 服务的 API 密钥。LLM 密钥请在「模型配置」中管理。
-          </p>
-        </div>
-        <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", provider: "tavily", key_value: "", base_url: "", is_active: true }); }}>
-          <Plus className="h-4 w-4 mr-2" /> 添加密钥
-        </Button>
-      </div>
+      <AdminBulkActions selectedIds={selectedIds} onClear={() => setSelectedIds([])} onBatchAction={handleBatchAction} />
+      <AdminPageHeader
+        title="MCP 服务密钥"
+        description="管理搜索、知识库等 MCP 服务的 API 密钥。LLM 密钥请在「模型配置」中管理。"
+        action={
+          <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", provider: "tavily", key_value: "", base_url: "", is_active: true }); }}>
+            <Plus className="h-4 w-4 mr-2" /> 添加密钥
+          </Button>
+        }
+      />
 
       {/* Add/Edit Key Dialog */}
       <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) { setShowAdd(false); setEditing(null); } }}>
@@ -470,6 +513,8 @@ function MCPServerManager() {
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.transport) return;
+    if (form.transport === "stdio" && !form.command.trim()) return;
+    if (form.transport === "sse" && !form.url.trim()) return;
     setSaving(true);
     try {
       const payload = {
@@ -491,11 +536,17 @@ function MCPServerManager() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (res.ok) {
-        setShowDialog(false);
-        resetForm();
-        await load();
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast.error("保存失败", json.error?.message ?? "请检查配置或重试");
+        return;
       }
+      toast.success(editing ? "服务器已更新" : "服务器已添加", form.name);
+      setShowDialog(false);
+      resetForm();
+      await load();
+    } catch {
+      toast.error("网络错误", "请检查网络连接后重试");
     } finally {
       setSaving(false);
     }
@@ -503,15 +554,39 @@ function MCPServerManager() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("确定删除此 MCP 服务器配置？")) return;
-    await fetch(`/api/v2/admin/mcp/servers/${id}`, { method: "DELETE" });
-    await load();
+    try {
+      const res = await fetch(`/api/v2/admin/mcp/servers/${id}`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast.error("删除失败", json.error?.message ?? "请检查权限或重试");
+        return;
+      }
+      toast.success("MCP 服务器已删除");
+      await load();
+    } catch {
+      toast.error("网络错误", "请检查网络连接后重试");
+    }
   };
 
   const handleReconnect = async (id: string) => {
     setReconnecting(id);
     try {
-      await fetch(`/api/v2/admin/mcp/servers/${id}/reconnect`, { method: "POST" });
+      const res = await fetch(`/api/v2/admin/mcp/servers/${id}/reconnect`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast.error("重连失败", json.error?.message ?? "请检查配置或重试");
+        await load();
+        return;
+      }
+      const status = json.data?.status as string;
+      if (status === "connected") {
+        toast.success("MCP 服务器已连接");
+      } else {
+        toast.error("连接失败", json.data?.message ?? "请检查服务器配置");
+      }
       await load();
+    } catch {
+      toast.error("网络错误", "请检查网络连接后重试");
     } finally {
       setReconnecting(null);
     }

@@ -13,6 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
+import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
+import { AdminConfirmDialog } from "@/components/admin";
 
 interface SensitiveWord {
   id: string;
@@ -70,65 +73,60 @@ export function SensitiveWordsPage() {
   });
   const [adding, setAdding] = useState(false);
 
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
   const loadWords = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/admin/sensitive-words");
-      const json = await res.json();
-      if (json.success) {
-        setWords(json.data?.words ?? []);
-      }
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<{ words: SensitiveWord[] }>("/api/v2/admin/sensitive-words", { silent: true });
+    if (success && data) setWords(data.words ?? []);
+    setLoading(false);
   }, []);
 
   const loadConfig = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v2/admin/sensitive-words/config");
-      const json = await res.json();
-      if (json.success) {
-        setStrictness(json.data?.strictness ?? "standard");
-      }
-    } catch (e) {
-      // Ignore — config endpoint is placeholder
-    }
+    const { success, data } = await adminFetch<{ strictness: string }>("/api/v2/admin/sensitive-words/config", { silent: true });
+    if (success && data) setStrictness(data.strictness ?? "standard");
   }, []);
 
   const handleAdd = async () => {
     if (!newWord.word) return;
     setAdding(true);
-    try {
-      await fetch("/api/v2/admin/sensitive-words", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          word: newWord.word,
-          category: newWord.category,
-          severity: newWord.severity,
-          action: newWord.action,
-          replacement: newWord.replacement || null,
-        }),
-      });
+    const { success } = await adminMutate("/api/v2/admin/sensitive-words", {
+      method: "POST",
+      body: JSON.stringify({
+        word: newWord.word,
+        category: newWord.category,
+        severity: newWord.severity,
+        action: newWord.action,
+        replacement: newWord.replacement || null,
+      }),
+      successTitle: "敏感词已添加",
+      successDesc: newWord.word,
+    });
+    if (success) {
       setNewWord({ word: "", category: "clickbait", severity: "medium", action: "warn", replacement: "" });
       setShowAdd(false);
       await loadWords();
-    } finally {
-      setAdding(false);
     }
+    setAdding(false);
   };
 
-  const handleDelete = async (id: string) => {
-    await fetch(`/api/v2/admin/sensitive-words/${id}`, { method: "DELETE" });
-    await loadWords();
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const ok = await adminDelete(
+      `/api/v2/admin/sensitive-words/${deleteTarget}`,
+      "确认删除此敏感词？",
+      "敏感词已删除",
+    );
+    if (ok) await loadWords();
+    setDeleteTarget(null);
   };
 
   const handleStrictnessChange = async (value: string) => {
     setStrictness(value);
-    await fetch("/api/v2/admin/sensitive-words/config", {
+    await adminMutate("/api/v2/admin/sensitive-words/config", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ strictness: value }),
+      successTitle: "严格程度已更新",
     });
   };
 
@@ -140,13 +138,15 @@ export function SensitiveWordsPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">敏感词库</h2>
-        <Button size="sm" onClick={() => setShowAdd(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          添加敏感词
-        </Button>
-      </div>
+      <AdminPageHeader
+        title="敏感词库"
+        action={
+          <Button size="sm" onClick={() => setShowAdd(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            添加敏感词
+          </Button>
+        }
+      />
 
       {/* Placeholder Notice */}
       <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4">
@@ -252,6 +252,16 @@ export function SensitiveWordsPage() {
         </DialogContent>
       </Dialog>
 
+      <AdminConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}
+        title="删除敏感词"
+        description="确认删除此敏感词？此操作不可撤销。"
+        confirmText="删除"
+        variant="destructive"
+        onConfirm={handleDelete}
+      />
+
       {/* Words Table */}
       <div className="rounded-lg border">
         <table className="w-full">
@@ -302,7 +312,7 @@ export function SensitiveWordsPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => handleDelete(word.id)}
+                      onClick={() => setDeleteTarget(word.id)}
                       title="删除"
                     >
                       <Trash2 className="h-3.5 w-3.5" />

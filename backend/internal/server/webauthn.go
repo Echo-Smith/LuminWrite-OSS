@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -769,9 +770,12 @@ func bytesToBigInt(b []byte) *big.Int {
 
 // ─── Passkey Challenge Store ───────────────────────────
 
-// passkeyChallengeStore stores challenges in memory with TTL.
+// passkeyChallengeStore stores challenges in the database (passkey_challenges table)
+// with TTL. This survives container restarts and works across multiple instances.
+// If the database is unavailable, it falls back to in-memory storage.
 type passkeyChallengeStore struct {
-	challenges map[string]*storedChallenge
+	db        *sql.DB
+	challenges map[string]*storedChallenge // in-memory fallback
 	mu         sync.Mutex
 }
 
@@ -784,17 +788,19 @@ type storedChallenge struct {
 	expiresAt time.Time
 }
 
-func newPasskeyChallengeStore() *passkeyChallengeStore {
+func newPasskeyChallengeStore(db *sql.DB) *passkeyChallengeStore {
 	store := &passkeyChallengeStore{
+		db:        db,
 		challenges: make(map[string]*storedChallenge),
 	}
 	go store.cleanup()
 	return store
 }
 
+// Store saves a challenge to the database (or in-memory fallback).
 func (s *passkeyChallengeStore) Store(challenge string, userID string, userInfo *WebAuthnUser, purpose string) {
+	// Always store in memory as a fallback / for single-instance setups
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
 	s.challenges[challenge] = &storedChallenge{
 		challenge: challenge,
@@ -804,9 +810,66 @@ func (s *passkeyChallengeStore) Store(challenge string, userID string, userInfo 
 		createdAt: now,
 		expiresAt: now.Add(5 * time.Minute),
 	}
+	s.mu.Unlock()
+
+	// Also store in database if available (survives restarts, works across instances)
+	if s.db != nil {
+		userInfoJSON, _ := json.Marshal(userInfo)
+		_, err := s.db.Exec(`
+			INSERT INTO passkey_challenges (challenge, user_id, purpose, created_at, expires_at, used)
+			VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '5 minutes', FALSE)
+			ON CONFLICT (challenge) DO NOTHING
+		`, challenge, userID, purpose)
+		if err != nil {
+			slog.Debug("passkey challenge DB store failed (using memory fallback)", "error", err)
+		} else {
+			_ = userInfoJSON // userInfo is kept in memory; DB stores user_id for lookup
+		}
+	}
 }
 
+// Consume retrieves and invalidates a challenge (single-use).
+// It checks the database first, then falls back to in-memory.
 func (s *passkeyChallengeStore) Consume(challenge string) (*storedChallenge, bool) {
+	// Try database first (works across instances and restarts)
+	if s.db != nil {
+		var (
+			dbUserID  string
+			dbPurpose string
+		)
+		err := s.db.QueryRow(`
+			SELECT user_id, purpose FROM passkey_challenges
+			WHERE challenge = $1 AND used = FALSE AND expires_at > NOW()
+		`, challenge).Scan(&dbUserID, &dbPurpose)
+		if err == nil {
+			// Mark as used (single-use)
+			_, _ = s.db.Exec(`
+				UPDATE passkey_challenges SET used = TRUE WHERE challenge = $1
+			`, challenge)
+
+			// Get userInfo from memory if available (DB doesn't store userInfo object)
+			s.mu.Lock()
+			memEntry, hasMem := s.challenges[challenge]
+			s.mu.Unlock()
+
+			sc := &storedChallenge{
+				challenge: challenge,
+				userID:    dbUserID,
+				purpose:   dbPurpose,
+			}
+			if hasMem && memEntry.userInfo != nil {
+				sc.userInfo = memEntry.userInfo
+			}
+			// Also delete from memory
+			s.mu.Lock()
+			delete(s.challenges, challenge)
+			s.mu.Unlock()
+
+			return sc, true
+		}
+	}
+
+	// Fallback to in-memory
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sc, ok := s.challenges[challenge]
@@ -825,6 +888,7 @@ func (s *passkeyChallengeStore) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
+		// Clean in-memory
 		s.mu.Lock()
 		now := time.Now()
 		for k, v := range s.challenges {
@@ -833,6 +897,13 @@ func (s *passkeyChallengeStore) cleanup() {
 			}
 		}
 		s.mu.Unlock()
+
+		// Clean database
+		if s.db != nil {
+			_, _ = s.db.Exec(`
+				DELETE FROM passkey_challenges WHERE expires_at < NOW() OR used = TRUE
+			`)
+		}
 	}
 }
 

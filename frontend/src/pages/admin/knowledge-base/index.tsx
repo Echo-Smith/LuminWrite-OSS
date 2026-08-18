@@ -8,7 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/stores/toast-store";
 import { Label } from "@/components/ui/label";
+import { AdminPageHeader } from "@/components/admin";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
@@ -56,14 +58,14 @@ export function KnowledgeBasePage() {
       const kbList = await listKBs();
       setKBs(kbList);
     } catch {
-      // ignore
+      toast.warning("加载失败", "无法获取知识库列表");
     }
 
     try {
       const status = await getStatus();
       setLocalKb(status.local_kb || status.enabled || false);
     } catch {
-      // ignore
+      toast.warning("加载失败", "无法获取知识库状态");
     }
   }, []);
 
@@ -143,11 +145,8 @@ export function KnowledgeBasePage() {
   if (configured === false) {
     return (
       <div className="p-6 space-y-6">
-        <div className="flex items-center gap-2">
-          <Database className="h-5 w-5" />
-          <h2 className="text-xl font-semibold">知识库</h2>
-        </div>
-        <KBNotConfigured onRetry={doCheckConfig} />
+      <AdminPageHeader title="知识库" />
+      <KBNotConfigured onRetry={doCheckConfig} />
       </div>
     );
   }
@@ -155,11 +154,11 @@ export function KnowledgeBasePage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <AdminPageHeader
+        title="知识库"
+        description="混合检索（BM25 + Dense + GraphRAG）· 多知识库 · 多格式文档解析"
+        action={
           <div className="flex items-center gap-2">
-            <Database className="h-5 w-5" />
-            <h2 className="text-xl font-semibold">知识库</h2>
             {configured && (
               <Badge className="bg-green-100 text-green-700">
                 <CheckCircle className="h-3 w-3 mr-1" /> 已连接
@@ -168,20 +167,15 @@ export function KnowledgeBasePage() {
             {localKb && (
               <Badge className="bg-blue-100 text-blue-700">本地引擎</Badge>
             )}
+            <Button size="sm" variant="outline" onClick={doCheckConfig} title="刷新状态">
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+            <Button size="sm" onClick={() => setShowAdd(true)}>
+              <Plus className="h-4 w-4 mr-2" /> 添加知识
+            </Button>
           </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            混合检索（BM25 + Dense + GraphRAG）· 多知识库 · 多格式文档解析
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={doCheckConfig} title="刷新状态">
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-          <Button size="sm" onClick={() => setShowAdd(true)}>
-            <Plus className="h-4 w-4 mr-2" /> 添加知识
-          </Button>
-        </div>
-      </div>
+        }
+      />
 
       {/* KB Selector */}
       <div className="flex items-center gap-3">

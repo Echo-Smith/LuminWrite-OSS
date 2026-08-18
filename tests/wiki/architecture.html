@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统架构 — 笔润智谈 LuminBuddy V2</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<script src="assets/js/nav.js"></script>
+
+<main>
+
+<!-- ═══ Hero ═══ -->
+<section class="hero" style="padding-top:64px;">
+  <div class="container">
+    <h1>系统架构</h1>
+    <p class="subtitle">
+      四容器编排 · 双引擎设计 · 16 步写作管道 · 6 层退出保护
+    </p>
+  </div>
+</section>
+
+<!-- ═══ SVG 架构图 ═══ -->
+<section class="wide">
+  <div class="section-header">
+    <h2>整体架构图</h2>
+    <div class="desc">从前端到数据库的完整数据流 — 手绘风格</div>
+  </div>
+
+  <div class="arch-diagram">
+    <svg viewBox="0 0 1000 720" xmlns="http://www.w3.org/2000/svg" style="font-family:var(--sans);font-size:13px;">
+      <defs>
+        <!-- 手绘滤镜 -->
+        <filter id="hand" x="-2%" y="-2%" width="104%" height="104%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="noise"/>
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.5" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
+        <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+          <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity="0.2"/>
+        </filter>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="6" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <!-- 渐变 -->
+        <linearGradient id="gradFrontend" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#2c2c3a"/><stop offset="100%" stop-color="#1e1e2e"/>
+        </linearGradient>
+        <linearGradient id="gradBackend" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#2a2a35"/><stop offset="100%" stop-color="#1a1a24"/>
+        </linearGradient>
+        <linearGradient id="gradDB" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#252530"/><stop offset="100%" stop-color="#181822"/>
+        </linearGradient>
+        <linearGradient id="gradAccent" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#c8956c"/><stop offset="100%" stop-color="#d4a97a"/>
+        </linearGradient>
+        <linearGradient id="gradBlue" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#5ac8fa"/><stop offset="100%" stop-color="#007aff"/>
+        </linearGradient>
+        <linearGradient id="gradGreen" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#34c759"/><stop offset="100%" stop-color="#30d158"/>
+        </linearGradient>
+        <linearGradient id="gradPurple" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#af52de"/><stop offset="100%" stop-color="#da8fff"/>
+        </linearGradient>
+        <marker id="arrowA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#c8956c" opacity="0.7"/>
+        </marker>
+        <marker id="arrowB" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#5ac8fa" opacity="0.7"/>
+        </marker>
+      </defs>
+
+      <!-- 背景网格 -->
+      <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.02)" stroke-width="1"/>
+      </pattern>
+      <rect width="1000" height="720" fill="url(#grid)"/>
+
+      <!-- ═══ 第一层：Frontend ═══ -->
+      <g filter="url(#shadow)">
+        <rect x="40" y="20" width="920" height="110" rx="14" fill="url(#gradFrontend)" stroke="rgba(200,149,108,0.2)" stroke-width="1.5"/>
+        <text x="80" y="48" fill="#c8956c" font-size="14" font-weight="700" font-family="var(--serif)">Frontend</text>
+        <text x="165" y="48" fill="#6e6e73" font-size="12">React 19 · Vite 7 · TailwindCSS · Zustand</text>
+        <!-- 四个模块 -->
+        <rect x="80" y="62" width="190" height="46" rx="8" fill="rgba(200,149,108,0.08)" stroke="rgba(200,149,108,0.25)" stroke-width="1"/>
+        <text x="175" y="82" fill="#d4a97a" font-size="12" font-weight="600" text-anchor="middle">写作工作台</text>
+        <text x="175" y="98" fill="#6e6e73" font-size="10" text-anchor="middle">Composer · 流式输出</text>
+
+        <rect x="290" y="62" width="190" height="46" rx="8" fill="rgba(90,200,250,0.08)" stroke="rgba(90,200,250,0.25)" stroke-width="1"/>
+        <text x="385" y="82" fill="#5ac8fa" font-size="12" font-weight="600" text-anchor="middle">选题中心</text>
+        <text x="385" y="98" fill="#6e6e73" font-size="10" text-anchor="middle">Topic Hub · 热搜聚合</text>
+
+        <rect x="500" y="62" width="190" height="46" rx="8" fill="rgba(175,82,222,0.08)" stroke="rgba(175,82,222,0.25)" stroke-width="1"/>
+        <text x="595" y="82" fill="#da8fff" font-size="12" font-weight="600" text-anchor="middle">风格选择</text>
+        <text x="595" y="98" fill="#6e6e73" font-size="10" text-anchor="middle">Style Profile · 灰度</text>
+
+        <rect x="710" y="62" width="210" height="46" rx="8" fill="rgba(52,199,89,0.08)" stroke="rgba(52,199,89,0.25)" stroke-width="1"/>
+        <text x="815" y="82" fill="#34c759" font-size="12" font-weight="600" text-anchor="middle">Admin Dashboard</text>
+        <text x="815" y="98" fill="#6e6e73" font-size="10" text-anchor="middle">A/B · 评测 · 指标</text>
+      </g>
+
+      <!-- 连接线 Frontend → Backend -->
+      <path d="M500,130 L500,155" stroke="url(#gradAccent)" stroke-width="2" fill="none" marker-end="url(#arrowA)" stroke-dasharray="6,4" opacity="0.6"/>
+      <text x="515" y="148" fill="#c8956c" font-size="10" opacity="0.8">WebSocket + REST</text>
+
+      <!-- ═══ 第二层：Backend ═══ -->
+      <g filter="url(#shadow)">
+        <rect x="40" y="160" width="920" height="380" rx="14" fill="url(#gradBackend)" stroke="rgba(90,200,250,0.15)" stroke-width="1.5"/>
+        <text x="80" y="188" fill="#5ac8fa" font-size="14" font-weight="700" font-family="var(--serif)">Backend</text>
+        <text x="160" y="188" fill="#6e6e73" font-size="12">Go 1.25 · chi router · pgx/v5</text>
+
+        <!-- Harness -->
+        <rect x="80" y="205" width="400" height="80" rx="10" fill="rgba(200,149,108,0.06)" stroke="rgba(200,149,108,0.2)" stroke-width="1.5"/>
+        <text x="100" y="228" fill="#c8956c" font-size="13" font-weight="700">Harness 单层 LLM 编排器</text>
+        <text x="100" y="248" fill="#8e8e93" font-size="11">意图路由(规则) → 工具选择 → Agent Loop(max 12轮) → 流式输出</text>
+        <text x="100" y="265" fill="#6e6e73" font-size="10">cancel · timeout · budget · disconnect · circuit · step-timeout</text>
+
+        <!-- AgentEngine -->
+        <rect x="500" y="205" width="420" height="80" rx="10" fill="rgba(90,200,250,0.06)" stroke="rgba(90,200,250,0.2)" stroke-width="1.5"/>
+        <text x="520" y="228" fill="#5ac8fa" font-size="13" font-weight="700">AgentEngine 状态机管道</text>
+        <text x="520" y="248" fill="#8e8e93" font-size="11">记忆 → 意图 → 检索 → 过滤 → 压缩 → 提纲 → 写作 → 自检 → 修正</text>
+        <text x="520" y="265" fill="#6e6e73" font-size="10">16 Steps · 可暂停/恢复 · 优雅降级</text>
+
+        <!-- 外部服务 -->
+        <text x="80" y="310" fill="#6e6e73" font-size="11" font-weight="600">外部服务集成</text>
+        <rect x="80" y="320" width="130" height="50" rx="8" fill="rgba(175,82,222,0.08)" stroke="rgba(175,82,222,0.2)" stroke-width="1"/>
+        <text x="145" y="342" fill="#da8fff" font-size="11" font-weight="600" text-anchor="middle">DeepSeek V4</text>
+        <text x="145" y="358" fill="#6e6e73" font-size="9" text-anchor="middle">flash / pro / thinking</text>
+
+        <rect x="225" y="320" width="110" height="50" rx="8" fill="rgba(255,149,0,0.08)" stroke="rgba(255,149,0,0.2)" stroke-width="1"/>
+        <text x="280" y="342" fill="#ffb340" font-size="11" font-weight="600" text-anchor="middle">多源搜索</text>
+        <text x="280" y="358" fill="#6e6e73" font-size="9" text-anchor="middle">知乎·Tavily·腾讯</text>
+
+        <rect x="350" y="320" width="110" height="50" rx="8" fill="rgba(0,122,255,0.08)" stroke="rgba(0,122,255,0.2)" stroke-width="1"/>
+        <text x="405" y="342" fill="#64d2ff" font-size="11" font-weight="600" text-anchor="middle">IMA 知识库</text>
+        <text x="405" y="358" fill="#6e6e73" font-size="9" text-anchor="middle">BM25 + Dense</text>
+
+        <rect x="475" y="320" width="110" height="50" rx="8" fill="rgba(52,199,89,0.08)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="530" y="342" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">Embedding</text>
+        <text x="530" y="358" fill="#6e6e73" font-size="9" text-anchor="middle">text-embedding-v3</text>
+
+        <rect x="600" y="320" width="100" height="50" rx="8" fill="rgba(255,59,48,0.08)" stroke="rgba(255,59,48,0.2)" stroke-width="1"/>
+        <text x="650" y="342" fill="#ff6b6b" font-size="11" font-weight="600" text-anchor="middle">较真核查</text>
+        <text x="650" y="358" fill="#6e6e73" font-size="9" text-anchor="middle">事实校验</text>
+
+        <rect x="715" y="320" width="100" height="50" rx="8" fill="rgba(200,149,108,0.08)" stroke="rgba(200,149,108,0.2)" stroke-width="1"/>
+        <text x="765" y="342" fill="#d4a97a" font-size="11" font-weight="600" text-anchor="middle">MCP 协议</text>
+        <text x="765" y="358" fill="#6e6e73" font-size="9" text-anchor="middle">Server + Client</text>
+
+        <!-- 中间层 -->
+        <text x="80" y="400" fill="#6e6e73" font-size="11" font-weight="600">核心服务层</text>
+        <rect x="80" y="410" width="130" height="44" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="145" y="430" fill="#a1a1a6" font-size="11" font-weight="600" text-anchor="middle">Style Profile</text>
+        <text x="145" y="444" fill="#6e6e73" font-size="9" text-anchor="middle">灰度路由 · 版本</text>
+
+        <rect x="225" y="410" width="130" height="44" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="290" y="430" fill="#a1a1a6" font-size="11" font-weight="600" text-anchor="middle">记忆系统</text>
+        <text x="290" y="444" fill="#6e6e73" font-size="9" text-anchor="middle">五层 · 实体网络</text>
+
+        <rect x="370" y="410" width="130" height="44" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="435" y="430" fill="#a1a1a6" font-size="11" font-weight="600" text-anchor="middle">编辑部系统</text>
+        <text x="435" y="444" fill="#6e6e73" font-size="9" text-anchor="middle">A/B · 评测 · 实验</text>
+
+        <rect x="515" y="410" width="130" height="44" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="580" y="430" fill="#a1a1a6" font-size="11" font-weight="600" text-anchor="middle">LLM 服务</text>
+        <text x="580" y="444" fill="#6e6e73" font-size="9" text-anchor="middle">封装 · 评测 · 调度</text>
+
+        <rect x="660" y="410" width="130" height="44" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="725" y="430" fill="#a1a1a6" font-size="11" font-weight="600" text-anchor="middle">WebSocket Hub</text>
+        <text x="725" y="444" fill="#6e6e73" font-size="9" text-anchor="middle">SSE · 流式事件</text>
+
+        <!-- HTTP/WS 入口 -->
+        <rect x="80" y="470" width="400" height="50" rx="8" fill="rgba(200,149,108,0.05)" stroke="rgba(200,149,108,0.15)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="280" y="490" fill="#8e8e93" font-size="11" text-anchor="middle">HTTP/WS 入口 — 31 个路由文件 · REST API · WebSocket Hub · SSE · 中间件</text>
+        <text x="280" y="506" fill="#6e6e73" font-size="10" text-anchor="middle">chi router · JWT · WebAuthn · 游客模式</text>
+      </g>
+
+      <!-- 连接线 Backend → DB -->
+      <path d="M500,540 L500,565" stroke="url(#gradBlue)" stroke-width="2" fill="none" marker-end="url(#arrowB)" stroke-dasharray="6,4" opacity="0.5"/>
+
+      <!-- ═══ 第三层：Database ═══ -->
+      <g filter="url(#shadow)">
+        <rect x="40" y="570" width="920" height="120" rx="14" fill="url(#gradDB)" stroke="rgba(52,199,89,0.2)" stroke-width="1.5"/>
+        <text x="80" y="598" fill="#34c759" font-size="14" font-weight="700" font-family="var(--serif)">PostgreSQL 17</text>
+        <text x="210" y="598" fill="#6e6e73" font-size="12">+ pgvector + paradedb (BM25)</text>
+
+        <!-- 数据表 -->
+        <rect x="80" y="612" width="100" height="56" rx="8" fill="rgba(52,199,89,0.06)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="130" y="632" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">styles</text>
+        <text x="130" y="648" fill="#6e6e73" font-size="9" text-anchor="middle">topics</text>
+        <text x="130" y="660" fill="#6e6e73" font-size="9" text-anchor="middle">feedback</text>
+
+        <rect x="195" y="612" width="100" height="56" rx="8" fill="rgba(52,199,89,0.06)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="245" y="632" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">trace</text>
+        <text x="245" y="648" fill="#6e6e73" font-size="9" text-anchor="middle">session_events</text>
+        <text x="245" y="660" fill="#6e6e73" font-size="9" text-anchor="middle">audit_logs</text>
+
+        <rect x="310" y="612" width="120" height="56" rx="8" fill="rgba(52,199,89,0.06)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="370" y="632" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">knowledge_base</text>
+        <text x="370" y="648" fill="#6e6e73" font-size="9" text-anchor="middle">entities</text>
+        <text x="370" y="660" fill="#6e6e73" font-size="9" text-anchor="middle">redteam</text>
+
+        <rect x="445" y="612" width="120" height="56" rx="8" fill="rgba(52,199,89,0.06)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="505" y="632" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">pgvector</text>
+        <text x="505" y="648" fill="#6e6e73" font-size="9" text-anchor="middle">向量存储</text>
+        <text x="505" y="660" fill="#6e6e73" font-size="9" text-anchor="middle">1024 维 Embedding</text>
+
+        <rect x="580" y="612" width="120" height="56" rx="8" fill="rgba(52,199,89,0.06)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="640" y="632" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">paradedb</text>
+        <text x="640" y="648" fill="#6e6e73" font-size="9" text-anchor="middle">BM25 全文检索</text>
+        <text x="640" y="660" fill="#6e6e73" font-size="9" text-anchor="middle">混合搜索 RRF</text>
+
+        <rect x="715" y="612" width="100" height="56" rx="8" fill="rgba(52,199,89,0.06)" stroke="rgba(52,199,89,0.2)" stroke-width="1"/>
+        <text x="765" y="632" fill="#34c759" font-size="11" font-weight="600" text-anchor="middle">59 Migrations</text>
+        <text x="765" y="648" fill="#6e6e73" font-size="9" text-anchor="middle">Schema 版本管理</text>
+        <text x="765" y="660" fill="#6e6e73" font-size="9" text-anchor="middle">自动迁移</text>
+      </g>
+
+      <!-- Docker 标签 -->
+      <rect x="860" y="8" width="100" height="24" rx="6" fill="rgba(200,149,108,0.12)" stroke="rgba(200,149,108,0.3)" stroke-width="1"/>
+      <text x="910" y="23" fill="#c8956c" font-size="10" font-weight="600" text-anchor="middle">Docker Compose</text>
+    </svg>
+  </div>
+
+  <div style="margin-top:28px;"></div>
+
+  <div class="grid grid-4">
+    <div class="card stat-card">
+      <div class="value" style="color:var(--blue);">Go 1.25</div>
+      <div class="label">后端语言</div>
+      <div class="sub">chi router + pgx/v5</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--purple);">React 19</div>
+      <div class="label">前端框架</div>
+      <div class="sub">Vite 7 + Zustand + TailwindCSS</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--green);">PG 17</div>
+      <div class="label">数据库</div>
+      <div class="sub">pgvector + paradedb (BM25)</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--amber);">4 容器</div>
+      <div class="label">Docker 编排</div>
+      <div class="sub">Frontend · Backend · PG · Docreader</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 后端分层 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>后端内部分层结构</h2>
+      <div class="desc">13 个内部包，模块边界清晰</div>
+    </div>
+
+    <table>
+      <thead><tr><th>包</th><th>职责</th><th>关键文件</th></tr></thead>
+      <tbody>
+        <tr><td><code>agent/</code></td><td><strong>Harness 单层 LLM 编排器</strong> — 意图路由 + 工具选择 + 会话状态 + Agent Loop</td><td><code>harness.go</code> · <code>tools.go</code> · <code>intent.go</code> · <code>session.go</code></td></tr>
+        <tr><td><code>engine/</code></td><td><strong>AgentEngine 状态机管道</strong> — Step 接口 + 执行循环 + 6 层退出 + 优雅降级</td><td><code>engine.go</code> · <code>context.go</code> · <code>step.go</code> · <code>guardrails.go</code></td></tr>
+        <tr><td><code>engine/steps/</code></td><td><strong>16 个管道步骤</strong> — 记忆→意图→检索→过滤→压缩→提纲→写作→自检→修正→记忆存储</td><td><code>steps.go</code> · <code>chat_step.go</code> · <code>compress.go</code> · <code>memory_steps.go</code></td></tr>
+        <tr><td><code>tools/</code></td><td><strong>外部服务客户端</strong> — DeepSeek、搜索（Bing/腾讯/知乎/微博）、Embedding、较真核查</td><td><code>deepseek.go</code> · <code>search.go</code> · <code>embedding.go</code> · <code>jiaozhen.go</code></td></tr>
+        <tr><td><code>services/</code></td><td><strong>业务服务层</strong> — LLM 封装、评测、风格构建、敏感检查、Cron 调度</td><td><code>llm_service.go</code> · <code>evaluation.go</code> · <code>style_builder.go</code></td></tr>
+        <tr><td><code>profile/</code></td><td><strong>风格 Profile 系统</strong> — 加载 / 缓存 / 灰度版本 / Prompt 构建</td><td><code>profile.go</code> · <code>cache.go</code> · <code>profile_prompt.go</code></td></tr>
+        <tr><td><code>routing/</code></td><td><strong>灰度路由</strong> — 白名单 + FNV-1a 哈希百分比分流</td><td><code>grayscale.go</code></td></tr>
+        <tr><td><code>memory/</code></td><td><strong>记忆服务</strong> — 短期 / 长期 / 实体网络 / Embedding / LLM 抽取</td><td><code>service.go</code> · <code>pg_store.go</code> · <code>dashscope_embedder.go</code></td></tr>
+        <tr><td><code>mcp/</code></td><td><strong>MCP 协议</strong> — 可作为 Server(stdio) 供 Claude Desktop 调用，也可作为 Client 连接外部 MCP</td><td><code>server.go</code> · <code>client.go</code> · <code>registry.go</code></td></tr>
+        <tr><td><code>editorial/</code></td><td><strong>编辑部系统</strong> — A/B 实验编排 + artifact 记录 + 评测</td><td><code>orchestrator.go</code> · <code>experiment_runner.go</code> · <code>service.go</code></td></tr>
+        <tr><td><code>server/</code></td><td><strong>HTTP/WS 入口</strong> — 31 个文件，路由、WebSocket Hub、SSE、中间件</td><td><code>server.go</code> · <code>handlers_*.go</code> · <code>middleware.go</code></td></tr>
+        <tr><td><code>database/</code></td><td><strong>数据访问层</strong> — PostgreSQL 连接 + 59 个 migration + 各 Repo</td><td><code>postgres.go</code> · <code>migrator.go</code> · <code>trace.go</code></td></tr>
+        <tr><td><code>pkg/memory/</code></td><td><strong>记忆 SDK</strong> — 短期/工作/长期/实体/文件记忆 + PII 检查 + 冲突解决</td><td><code>sdk.go</code> · <code>interfaces.go</code> · <code>file_store.go</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 双引擎设计 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>双引擎设计</h2>
+    <div class="desc">两套编排引擎按场景切换</div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card accent-border">
+      <div class="card-title"><span class="icon">⚙️</span> Pipeline (AgentEngine)</div>
+      <div class="card-desc">状态机管道模式：16 个 Step 顺序执行，每步可暂停/恢复，6 层退出保护。适合确定性流程。</div>
+      <ul class="feature-list" style="margin-top:14px;">
+        <li>步骤固定：记忆→意图→检索→过滤→压缩→提纲→写作→自检→修正</li>
+        <li>每步独立超时 + 优雅降级</li>
+        <li>关键步骤失败终止，非关键步骤失败跳过</li>
+        <li>Token 预算 30 万 + 断路器（3 次连续失败）</li>
+      </ul>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="icon">🧠</span> Harness (LLM Agent Loop)</div>
+      <div class="card-desc">单层 LLM 编排模式：LLM 自主决定调用工具，最多 12 轮迭代。会话状态跨轮保留。</div>
+      <ul class="feature-list" style="margin-top:14px;">
+        <li>工具粒度细：search_web / search_knowledge / read_source / write_article / review_article</li>
+        <li>意图判定走规则（毫秒级），不走 LLM</li>
+        <li>LLM 自主决定何时搜索、何时写作、何时修正</li>
+        <li>不存在外层 ReAct + 内层 agent loop 嵌套</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 6 层退出保护 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>6 层退出保护机制</h2>
+      <div class="desc">Agent Engine 在每个 Step 执行前按优先级依次检查 6 层退出条件</div>
+    </div>
+
+    <div class="grid grid-3">
+      <div class="card dark">
+        <div class="card-title"><span class="tag tag-red">L1</span> 用户取消</div>
+        <div class="card-desc">cancelCh 信号 → 发送 agent.cancelled，终止流程</div>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="tag tag-red">L2</span> 全局超时</div>
+        <div class="card-desc">context.WithTimeout (5min) → error{code:"timeout"}</div>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="tag tag-amber">L3</span> Token 预算</div>
+        <div class="card-desc">CheckBudget (300K tokens) → error{code:"budget_exceeded"}</div>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="tag tag-amber">L4</span> WS 断连</div>
+        <div class="card-desc">disconnectCh → paused{reason:"disconnect"}，暂停非终止</div>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="tag tag-red">L5</span> 断路器</div>
+        <div class="card-desc">ConsecutiveLLMFails ≥ 3 → error{code:"circuit_breaker"}</div>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="tag tag-amber">L6</span> 单步超时</div>
+        <div class="card-desc">Step.Timeout() → Critical 决定降级或终止</div>
+      </div>
+    </div>
+
+    <div style="margin-top:32px;"></div>
+
+    <h3 style="font-size:16px;margin-bottom:16px;color:var(--text-on-dark);">优雅降级策略</h3>
+    <table>
+      <thead><tr><th>步骤</th><th>关键</th><th>超时</th><th>降级行为</th></tr></thead>
+      <tbody>
+        <tr><td>IntentStep</td><td><span class="tag tag-red">关键</span></td><td>30s</td><td>失败 → 终止流程</td></tr>
+        <tr><td>SearchStep</td><td><span class="tag tag-amber">非关键</span></td><td>45s</td><td>失败 → 跳过，用已有素材继续</td></tr>
+        <tr><td>RelevanceStep</td><td><span class="tag tag-amber">非关键</span></td><td>30s</td><td>失败 → 跳过，不过滤</td></tr>
+        <tr><td>WriteStep</td><td><span class="tag tag-red">关键</span></td><td>180s</td><td>失败 → 终止流程</td></tr>
+        <tr><td>PostReviewStep</td><td><span class="tag tag-amber">非关键</span></td><td>60s</td><td>失败 → 跳过，不评分</td></tr>
+        <tr><td>AutoFixStep</td><td><span class="tag tag-amber">非关键</span></td><td>90s</td><td>失败 → 跳过，不修正</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 外部集成 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>外部服务集成</h2>
+    <div class="desc">LLM · 搜索 · 知识库 · 向量化 · 事实核查 · MCP 协议</div>
+  </div>
+
+  <div class="grid grid-3">
+    <div class="card">
+      <div class="card-title"><span class="icon">🤖</span> DeepSeek V4</div>
+      <div class="card-desc">主 LLM — flash/pro + thinking + tool calls + JSON mode。支持 1M 上下文 + 384K 输出。</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">🔗</span> 通义 DashScope</div>
+      <div class="card-desc">text-embedding-v3 向量化（1024 维），用于语义检索和去重。</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">🔍</span> 多源搜索</div>
+      <div class="card-desc">知乎（站内+全网）· IMA 知识库 · Tavily · 腾讯新闻 · 微博热搜 · Bing · AnySearch</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">📚</span> 知识库</div>
+      <div class="card-desc">160 篇预设评论风格文章 · BM25 + Dense + RRF 混合搜索 · GraphRAG 实体网络</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">✔️</span> 较真核查</div>
+      <div class="card-desc">事实核查服务，对接较真平台 API，在 PostReview 阶段校验事实性。</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">🔌</span> MCP 协议</div>
+      <div class="card-desc">双向集成：作为 Server(stdio) 供 Claude Desktop 调用，作为 Client 连接外部 MCP 工具。</div>
+    </div>
+  </div>
+
+  <div style="margin-top:36px;text-align:center;">
+    <a class="link" href="tests.html" style="font-size:15px;">查看测试体系 →</a>
+  </div>
+</section>
+
+<!-- ═══ Footer ═══ -->
+<section class="dark site-footer" style="padding:48px 32px;">
+  <div class="container">
+    <p>笔润智谈 LuminBuddy V2 · Wiki</p>
+    <div class="footer-links">
+      <a href="index.html">← 返回首页</a>
+      <a href="about.html">项目介绍</a>
+      <a href="tests.html">测试体系</a>
+      <a href="changelog.html">版本日志</a>
+    </div>
+    <p style="margin-top:16px;font-size:11px;color:var(--text-on-dark-muted);">MIT License · 工程 Beta · 2026</p>
+  </div>
+</section>
+
+</main>
+
+</body>
+</html>

@@ -34,13 +34,17 @@ services:
           memory: 1G
     restart: unless-stopped
 
-  # ── Docreader (document parsing sidecar, gRPC port 50051) ──
-  # High-quality PDF/Word/image parsing. Called by backend via gRPC.
+  # ── Docreader (document parsing sidecar, TCP port 50051) ──
+  # Lightweight document parsing. Called by backend via TCP protocol.
+  # Replaces the 5.53GB wechatopenai/weknora-docreader with a ~150MB slim image.
+  # Supports: PDF, Word (.docx/.doc), Excel (.xlsx/.xls), PowerPoint (.pptx/.ppt),
+  #           HTML, Markdown, CSV, JSON, plain text.
   docreader:
-    image: wechatopenai/weknora-docreader:latest
+    build:
+      context: ./docker/docreader
+      dockerfile: Dockerfile
+    image: luminbuddy-v2-docreader:latest
     container_name: luminbuddy-v2-docreader
-    environment:
-      GRPC_TLS_ENABLED: "false"
     volumes:
       - docreader_tmp:/tmp/docreader
     networks:
@@ -62,9 +66,9 @@ services:
       - .env.docker
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/writing_agent_v2?sslmode=disable
-      # Docreader gRPC address (sidecar for document parsing)
+      # Docreader TCP address (slim sidecar for document parsing)
       DOCREADER_ADDR: docreader:50051
-      DOCREADER_TRANSPORT: grpc
+      DOCREADER_TRANSPORT: tcp
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     networks:

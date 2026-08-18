@@ -16,6 +16,8 @@ import (
 // ─── 写作工具集 ────────────────────────────────────────────
 //
 // 工具按意图分组，LLM 在持续会话中自主调用。
+// search_web 和 search_knowledge 是并行关系 —— LLM 可在同一轮
+// 同时调用两个 tool，后端并发执行。
 //
 // 混合粒度设计：
 //   - write_article: 整篇流式输出（用于首次写作）
@@ -28,14 +30,15 @@ import (
 // ─── 工具定义 ───────────────────────────────────────────────
 
 // WritingToolDefs 是写作意图的完整工具集。
-// includeOutline=true 时包含 generate_outline 工具（用于 Guided 模式）。
+// 包含 search_web + search_knowledge + read_source + generate_outline + write_article + review_article + revise_section + retrieve_context。
+// 调用方通过 ToolsForIntent 按需裁剪（移除 search_knowledge/generate_outline/search_web）。
 func WritingToolDefs() []tools.ToolDef {
 	return append([]tools.ToolDef{
 		{
 			Type: "function",
 			Function: tools.ToolDefFunction{
 				Name:        "search_web",
-				Description: "搜索网络获取信息。用于补充写作素材或回答用户问题。返回搜索结果摘要列表。",
+				Description: "搜索互联网获取最新信息。适用于：时事热点、公开数据、新闻资讯、网络观点。返回结构化研究简报。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -51,8 +54,51 @@ func WritingToolDefs() []tools.ToolDef {
 		{
 			Type: "function",
 			Function: tools.ToolDefFunction{
+				Name:        "retrieve_context",
+				Description: "按需检索会话上下文。当你需要某段具体信息但当前 prompt 中没有提供时使用。支持检索：当前文章的特定段落、用户记忆偏好、历史对话中的关键决策、已收集的搜索素材等。",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "你想查询的内容描述。例如：'用户喜欢的修辞风格'、'文章第三段的内容'、'关于AI的搜索素材'、'用户之前的修改意见'",
+						},
+						"source": map[string]any{
+							"type":        "string",
+							"description": "检索来源：article(当前文章全文)、memory(用户写作偏好和历史记忆)、history(本轮对话历史)、search(已收集的搜索素材)、profile(当前风格配置)",
+							"enum":        []string{"article", "memory", "history", "search", "profile"},
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "返回结果的最大条数/段落数，默认3",
+						},
+					},
+					"required": []string{"query", "source"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: tools.ToolDefFunction{
+				Name:        "search_knowledge",
+				Description: "搜索内部知识库（预设评论风格文章库等）。适用于：写作风格规范、历史文章参考、内部观点、栏目调性、已发布的优质范文。返回精确到段落的检索结果。",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "检索关键词或自然语言问题",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: tools.ToolDefFunction{
 				Name:        "read_source",
-				Description: "读取已有搜索结果的完整内容。传入结果序号(1-based)获取更多详情。",
+				Description: "读取已有搜索结果的完整内容。传入结果序号(1-based)获取更多详情。涵盖 search_web 和 search_knowledge 的结果。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -137,17 +183,77 @@ func WritingToolDefs() []tools.ToolDef {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: tools.ToolDefFunction{
+				Name:        "word_count_check",
+				Description: "检查文章字数是否符合风格要求。返回当前字数、目标范围、达标状态和调整建议。在写完文章后、评审前调用。",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"article": map[string]any{
+							"type":        "string",
+							"description": "文章内容",
+						},
+					},
+					"required": []string{"article"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: tools.ToolDefFunction{
+				Name:        "rewrite_title",
+				Description: "标题优化器。传入当前标题和文章内容，返回3个备选标题及推荐理由。适用于对标题不满意时获取灵感。",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"current_title": map[string]any{
+							"type":        "string",
+							"description": "当前标题",
+						},
+						"article": map[string]any{
+							"type":        "string",
+							"description": "文章内容",
+						},
+					},
+					"required": []string{"current_title", "article"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: tools.ToolDefFunction{
+				Name:        "fact_check",
+				Description: "对文章中的关键事实进行核查。提取文章中的事实性声明，通过搜索验证其准确性。返回核查结果和建议。",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"article": map[string]any{
+							"type":        "string",
+							"description": "文章内容",
+						},
+						"focus": map[string]any{
+							"type":        "string",
+							"description": "重点核查的内容（如'数据'、'人名'、'事件时间'），可选",
+						},
+					},
+					"required": []string{"article"},
+				},
+			},
+		},
 	})
 }
 
-// ChatToolDefs 是对话意图的工具集（仅搜索和读取）。
-func ChatToolDefs() []tools.ToolDef {
-	return []tools.ToolDef{
+// ChatToolDefs 是对话意图的工具集（搜索 + 读取）。
+// hasKnowledge=true 时包含 search_knowledge 工具。
+func ChatToolDefs(hasKnowledge bool) []tools.ToolDef {
+	defs := []tools.ToolDef{
 		{
 			Type: "function",
 			Function: tools.ToolDefFunction{
 				Name:        "search_web",
-				Description: "搜索网络获取信息。当用户的问题需要查资料时调用。",
+				Description: "搜索互联网获取最新信息。适用于时事热点、公开数据、新闻资讯。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -160,29 +266,50 @@ func ChatToolDefs() []tools.ToolDef {
 				},
 			},
 		},
-		{
+	}
+	if hasKnowledge {
+		defs = append(defs, tools.ToolDef{
 			Type: "function",
 			Function: tools.ToolDefFunction{
-				Name:        "read_source",
-				Description: "读取搜索结果的完整内容。传入序号(1-based)。",
+				Name:        "search_knowledge",
+				Description: "搜索内部知识库。适用于写作风格规范、历史文章参考、栏目调性。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"index": map[string]any{
-							"type":        "integer",
-							"description": "搜索结果的序号(从1开始)",
+						"query": map[string]any{
+							"type":        "string",
+							"description": "检索关键词",
 						},
 					},
-					"required": []string{"index"},
+					"required": []string{"query"},
 				},
 			},
-		},
+		})
 	}
+	defs = append(defs, tools.ToolDef{
+		Type: "function",
+		Function: tools.ToolDefFunction{
+			Name:        "read_source",
+			Description: "读取搜索结果的完整内容。传入序号(1-based)。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"index": map[string]any{
+						"type":        "integer",
+						"description": "搜索结果的序号(从1开始)",
+					},
+				},
+				"required": []string{"index"},
+			},
+		},
+	})
+	return defs
 }
 
 // ReviseToolDefs 是修改意图的工具集（搜索 + 修正）。
-func ReviseToolDefs() []tools.ToolDef {
-	return []tools.ToolDef{
+// hasKnowledge=true 时包含 search_knowledge 工具。
+func ReviseToolDefs(hasKnowledge bool) []tools.ToolDef {
+	defs := []tools.ToolDef{
 		{
 			Type: "function",
 			Function: tools.ToolDefFunction{
@@ -200,70 +327,109 @@ func ReviseToolDefs() []tools.ToolDef {
 				},
 			},
 		},
-		{
+	}
+	if hasKnowledge {
+		defs = append(defs, tools.ToolDef{
 			Type: "function",
 			Function: tools.ToolDefFunction{
-				Name:        "revise_section",
-				Description: "定向修改文章的某一部分。调用后输出修改后的完整文章。",
+				Name:        "search_knowledge",
+				Description: "搜索知识库获取风格参考或历史文章。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"section_hint": map[string]any{
+						"query": map[string]any{
 							"type":        "string",
-							"description": "要修改的部分",
-						},
-						"instruction": map[string]any{
-							"type":        "string",
-							"description": "修改指令",
+							"description": "检索关键词",
 						},
 					},
-					"required": []string{"section_hint", "instruction"},
+					"required": []string{"query"},
 				},
 			},
-		},
+		})
 	}
+	defs = append(defs, tools.ToolDef{
+		Type: "function",
+		Function: tools.ToolDefFunction{
+			Name:        "revise_section",
+			Description: "定向修改文章的某一部分。调用后输出修改后的完整文章。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"section_hint": map[string]any{
+						"type":        "string",
+						"description": "要修改的部分",
+					},
+					"instruction": map[string]any{
+						"type":        "string",
+						"description": "修改指令",
+					},
+				},
+				"required": []string{"section_hint", "instruction"},
+			},
+		},
+	})
+	return defs
 }
 
 // ToolsForIntent 按意图返回工具集。
 // guided=true 时在写作工具集中加入 generate_outline 工具。
-func ToolsForIntent(intent Intent, hasSearch bool, guided ...bool) []tools.ToolDef {
-	isGuided := len(guided) > 0 && guided[0]
+// hasKnowledge=true 时加入 search_knowledge 工具。
+// 使用 variadic bool 参数保持向后兼容：[0]=guided, [1]=hasKnowledge
+func ToolsForIntent(intent Intent, hasSearch bool, flags ...bool) []tools.ToolDef {
+	isGuided := len(flags) > 0 && flags[0]
+	hasKB := len(flags) > 1 && flags[1]
 	switch intent {
 	case IntentWriting:
 		all := WritingToolDefs()
-		if !isGuided {
-			// 非 Guided 模式：移除 generate_outline（索引 2）
-			all = append(all[:2], all[3:]...)
-		}
-		if hasSearch {
-			return all
-		}
-		// 无搜索能力时移除 search_web 和 read_source
-		start := 0
-		if len(all) > 0 && all[0].Function.Name == "search_web" {
-			start = 2 // 跳过 search_web 和 read_source
-		}
-		return all[start:]
+		// 按 name 过滤，避免索引偏移问题
+		all = filterTools(all, func(name string) bool {
+			if !isGuided && name == "generate_outline" {
+				return false
+			}
+			if !hasKB && name == "search_knowledge" {
+				return false
+			}
+			if !hasSearch && (name == "search_web" || name == "read_source") {
+				return false
+			}
+			return true
+		})
+		return all
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
-		if hasSearch {
-			return ReviseToolDefs()
+		defs := ReviseToolDefs(hasKB)
+		if !hasSearch {
+			defs = filterTools(defs, func(name string) bool {
+				return name != "search_web"
+			})
 		}
-		return ReviseToolDefs()[1:] // 只保留 revise_section
+		return defs
 	case IntentChat:
-		if hasSearch {
-			return ChatToolDefs()
+		if hasSearch || hasKB {
+			return ChatToolDefs(hasKB)
 		}
-		return nil // 纯流式，不携带工具
+		return nil
 	default:
 		return nil
 	}
+}
+
+// filterTools 返回 names 中 keep(name)==true 的工具定义。
+func filterTools(defs []tools.ToolDef, keep func(string) bool) []tools.ToolDef {
+	result := make([]tools.ToolDef, 0, len(defs))
+	for _, d := range defs {
+		if keep(d.Function.Name) {
+			result = append(result, d)
+		}
+	}
+	return result
 }
 
 // ─── 工具执行器 ─────────────────────────────────────────────
 
 // ToolExecutorConfig 配置工具执行器。
 type ToolExecutorConfig struct {
-	Search     *tools.SearchClient
+	Search     *tools.SearchClient      // 网络搜索（Tavily/Bing/腾讯等）
+	KBSearcher tools.KnowledgeSearcher  // 知识库搜索（本地 BM25+Dense+GraphRAG）
 	Session    *WritingSession
 	ExecCtx    *engine.ExecutionContext
 	Emitter    engine.EventEmitter
@@ -271,14 +437,44 @@ type ToolExecutorConfig struct {
 	LLM        *tools.LLMClient
 	Jiaozhen   interface{} // *jiaozhen.Client — 事实核查
 	Sensitive  interface{} // 敏感词检查
+
+	// Guard: 声明式调用次数限制（tool name → max calls, 0=unlimited）
+	// 由 Harness 从 ToolDescriptor.MaxCalls 传入。
+	// 当工具调用次数达到上限时，返回礼貌消息而非执行。
+	MaxCalls   map[string]int
+	callCounts map[string]int // 运行时计数器（非导出，由 BuildToolExecutor 初始化）
 }
 
 // BuildToolExecutor 构建一个 ToolExecutor，用于在 ChatWithTools 中执行 LLM 的工具调用。
+//
+// Guard 机制：在执行任何工具前，先检查 MaxCalls 限制。
+// 如果工具调用次数已达上限，返回礼貌消息而非执行工具逻辑。
+// 这替代了以前硬编码在 executeSearchWeb 中的 SearchCallCount 检查。
 func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
+	if cfg.callCounts == nil {
+		cfg.callCounts = make(map[string]int)
+	}
 	return func(name string, arguments string) (string, error) {
+		// ── Guard: MaxCalls 检查 ──
+		if max, ok := cfg.MaxCalls[name]; ok && max > 0 {
+			current := cfg.callCounts[name]
+			if current >= max {
+				slog.Info("tool guard: max calls reached",
+					"tool", name,
+					"current", current,
+					"max", max,
+					"trace_id", cfg.ExecCtx.TraceID,
+				)
+				return fmt.Sprintf("已达到调用次数上限（%d次）。已有 %d 条搜索结果，请直接使用 read_source 读取详情或开始写作。", max, len(cfg.Session.SearchResults)), nil
+			}
+			cfg.callCounts[name]++
+		}
+
 		switch name {
 		case "search_web":
 			return executeSearchWeb(cfg, arguments)
+		case "search_knowledge":
+			return executeSearchKnowledge(cfg, arguments)
 		case "read_source":
 			return executeReadSource(cfg, arguments)
 		case "generate_outline":
@@ -289,6 +485,14 @@ func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 			return executeReviewArticle(cfg, arguments)
 		case "revise_section":
 			return executeReviseSection(cfg, arguments)
+		case "word_count_check":
+			return executeWordCountCheck(cfg, arguments)
+		case "rewrite_title":
+			return executeRewriteTitle(cfg, arguments)
+		case "fact_check":
+			return executeFactCheck(cfg, arguments)
+		case "retrieve_context":
+			return executeRetrieveContext(cfg, arguments)
 		default:
 			return "", fmt.Errorf("unknown tool: %s", name)
 		}
@@ -296,17 +500,6 @@ func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 }
 
 // executeSearchWeb 执行网络搜索，并用 LLM 将原始结果压缩为研究简报。
-// 单次会话最多搜索 3 次，防止 agent loop 过度消耗 token。
-//
-// 流程：
-//  1. 调用搜索引擎获取原始结果（标题 + 摘要 + URL）
-//  2. 将原始结果喂给 LLM，生成结构化研究简报（关键事实 + 数据 + 观点）
-//  3. 将简报返回给 agent loop，而非原始搜索结果
-//
-// 这样做的优势：
-//  - 原始结果可能 2000+ token，压缩后约 400-600 token，节省 70%+
-//  - LLM 预处理提取关键信息，减少后续 agent loop 的认知负担
-//  - 避免后续多轮请求重复携带冗长原始结果
 func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) {
 	var args struct {
 		Query string `json:"query"`
@@ -321,17 +514,8 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 		return "错误：搜索服务不可用", nil
 	}
 
-	// 搜索次数限制（防正 token 超支）
-	if cfg.Session != nil {
-		cfg.Session.SearchCallCount++
-		if cfg.Session.SearchCallCount > 3 {
-			slog.Info("search_web: call limit reached",
-				"trace_id", cfg.ExecCtx.TraceID,
-				"call_count", cfg.Session.SearchCallCount,
-			)
-			return fmt.Sprintf("已达到搜索次数上限（3次）。已有 %d 条搜索结果，请直接使用 read_source 读取详情或开始写作。", len(cfg.Session.SearchResults)), nil
-		}
-	}
+	// 注：搜索次数限制已移至 BuildToolExecutor 的声明式 MaxCalls guard，
+	// 不再在此处硬编码。由 Harness 通过 ToolExecutorConfig.MaxCalls 配置。
 
 	start := time.Now()
 	if cfg.Emitter != nil {
@@ -362,6 +546,63 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 		}, int64(time.Since(start).Milliseconds()))
 	}
 	return brief, nil
+}
+
+// executeSearchKnowledge 执行知识库搜索（BM25 + Dense + GraphRAG）。
+// 与 search_web 不同，这里直接返回 chunk 级精确内容，不做 LLM 压缩
+// —— 知识库内容是确定性知识，原始片段比 LLM 压缩更可靠。
+func executeSearchKnowledge(cfg ToolExecutorConfig, arguments string) (string, error) {
+	var args struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Query == "" {
+		return "错误：检索关键词不能为空", nil
+	}
+	if cfg.KBSearcher == nil {
+		return "错误：知识库不可用", nil
+	}
+
+	start := time.Now()
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepStart("search_knowledge", 0)
+	}
+
+	results, err := cfg.KBSearcher.SearchKB(context.Background(), args.Query, 5)
+	if err != nil {
+		slog.Warn("search_knowledge: search failed",
+			"error", err,
+			"query", args.Query,
+		)
+		if cfg.Emitter != nil {
+			cfg.Emitter.StepComplete("search_knowledge", map[string]any{"query": args.Query, "error": err.Error()}, int64(time.Since(start).Milliseconds()))
+		}
+		return fmt.Sprintf("知识库检索失败: %v", err), nil
+	}
+	if len(results) == 0 {
+		if cfg.Emitter != nil {
+			cfg.Emitter.StepComplete("search_knowledge", map[string]any{"query": args.Query, "results": 0}, int64(time.Since(start).Milliseconds()))
+		}
+		return "未找到相关知识", nil
+	}
+
+	// 保存到 session 供 read_source 复用
+	if cfg.Session != nil {
+		cfg.Session.SearchResults = append(cfg.Session.SearchResults, results...)
+	}
+
+	formatted := formatKnowledgeResults(results)
+
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepComplete("search_knowledge", map[string]any{
+			"query":   args.Query,
+			"results": len(results),
+			"items":   results,
+		}, int64(time.Since(start).Milliseconds()))
+	}
+	return formatted, nil
 }
 
 // executeReadSource 读取搜索结果全文。
@@ -405,12 +646,10 @@ func executeWriteArticle(cfg ToolExecutorConfig, arguments string) (string, erro
 		cfg.Emitter.StepComplete("write_article", map[string]any{"topic": args.Topic}, int64(time.Since(start).Milliseconds()))
 	}
 
-	// 返回指令，让 LLM 在下一轮直接输出文章
 	return "好的，请直接输出文章内容（Markdown格式，以##开头作为标题）。文章会实时展示给用户。", nil
 }
 
 // executeReviewArticle 对文章进行质量评审。
-// 复用现有 PostReviewStep 的评审逻辑。
 func executeReviewArticle(cfg ToolExecutorConfig, arguments string) (string, error) {
 	var args struct {
 		Article string `json:"article"`
@@ -424,7 +663,6 @@ func executeReviewArticle(cfg ToolExecutorConfig, arguments string) (string, err
 		cfg.Emitter.StepStart("review_article", 0)
 	}
 
-	// 使用 LLM 做快速评审
 	review := quickReviewArticle(context.Background(), cfg.LLM, args.Article, cfg.Profile)
 
 	if cfg.Session != nil {
@@ -453,23 +691,647 @@ func executeReviseSection(cfg ToolExecutorConfig, arguments string) (string, err
 	start := time.Now()
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("revise_section", 0)
-		// 修正前先重置流式内容
 		cfg.Emitter.StreamReset()
 		cfg.Emitter.StepComplete("revise_section", map[string]any{
 			"section_hint": args.SectionHint,
-			"instruction": args.Instruction,
+			"instruction":  args.Instruction,
 		}, int64(time.Since(start).Milliseconds()))
 	}
 
 	return fmt.Sprintf("请修改「%s」：%s。直接输出修改后的完整文章。", args.SectionHint, args.Instruction), nil
 }
 
+// executeWordCountCheck 检查文章字数是否符合风格要求。
+func executeWordCountCheck(cfg ToolExecutorConfig, arguments string) (string, error) {
+	var args struct {
+		Article string `json:"article"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Article == "" {
+		return "错误：文章内容不能为空", nil
+	}
+
+	start := time.Now()
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepStart("word_count_check", 0)
+	}
+
+	// 计算字数（去除 Markdown 标记和空白）
+	cleanText := strings.NewReplacer(
+		" ", "", "\t", "", "\n", "", "\r", "",
+		"#", "", "*", "", ">", "", "-", "", "`", "", "~", "", "_", "",
+	).Replace(args.Article)
+	count := len([]rune(cleanText))
+
+	// 从 Profile 获取目标字数范围
+	var targetMin, targetMax int
+	if cfg.Profile != nil && cfg.Profile.WordRange.Max > 0 {
+		targetMin = cfg.Profile.WordRange.Min
+		targetMax = cfg.Profile.WordRange.Max
+	}
+	if targetMin == 0 {
+		targetMin = 1000
+		targetMax = 2000
+	}
+
+	status := "达标"
+	suggestion := ""
+	if count < targetMin {
+		status = "偏少"
+		suggestion = fmt.Sprintf("建议扩充内容，至少再写 %d 字。", targetMin-count)
+	} else if count > targetMax {
+		status = "偏多"
+		suggestion = fmt.Sprintf("建议精简内容，删减约 %d 字。", count-targetMax)
+	}
+
+	result := fmt.Sprintf("字数检查结果：\n当前字数：%d 字\n目标范围：%d-%d 字\n状态：%s\n%s", count, targetMin, targetMax, status, suggestion)
+
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepComplete("word_count_check", map[string]any{
+			"count":      count,
+			"target_min": targetMin,
+			"target_max": targetMax,
+			"status":     status,
+		}, int64(time.Since(start).Milliseconds()))
+	}
+	return result, nil
+}
+
+// executeRewriteTitle 标题优化器，用 LLM 生成 3 个备选标题。
+func executeRewriteTitle(cfg ToolExecutorConfig, arguments string) (string, error) {
+	var args struct {
+		CurrentTitle string `json:"current_title"`
+		Article      string `json:"article"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Article == "" {
+		return "错误：文章内容不能为空", nil
+	}
+
+	start := time.Now()
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepStart("rewrite_title", 0)
+	}
+
+	// 截取文章前 500 字供 LLM 参考
+	articlePreview := args.Article
+	if len([]rune(articlePreview)) > 500 {
+		articlePreview = string([]rune(articlePreview)[:500]) + "…"
+	}
+
+	systemMsg := "你是标题优化专家。根据文章内容生成3个备选标题，每个标题附简要推荐理由。只返回 JSON。"
+	userMsg := fmt.Sprintf(`当前标题：%s
+
+文章内容（节选）：
+%s
+
+请生成3个备选标题，格式如下：
+{
+  "titles": [
+    {"title": "标题1", "reason": "推荐理由"},
+    {"title": "标题2", "reason": "推荐理由"},
+    {"title": "标题3", "reason": "推荐理由"}
+  ]
+}
+
+要求：
+1. 标题要简洁有力，15字以内
+2. 风格要匹配文章调性
+3. 第一个标题偏向正式，第二个偏向文艺，第三个偏向吸引眼球`, args.CurrentTitle, articlePreview)
+
+	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
+		{Role: "system", Content: systemMsg},
+		{Role: "user", Content: userMsg},
+	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.7), tools.WithThinking(false))
+	if err != nil {
+		if cfg.Emitter != nil {
+			cfg.Emitter.StepComplete("rewrite_title", map[string]any{"error": err.Error()}, int64(time.Since(start).Milliseconds()))
+		}
+		return fmt.Sprintf("标题生成失败: %v", err), nil
+	}
+
+	// 尝试解析 JSON
+	jsonStr := tools.ExtractJSONObject(resp)
+	result := resp
+	if jsonStr != "" {
+		var titles struct {
+			Titles []struct {
+				Title  string `json:"title"`
+				Reason string `json:"reason"`
+			} `json:"titles"`
+		}
+		if err := json.Unmarshal([]byte(jsonStr), &titles); err == nil && len(titles.Titles) > 0 {
+			var sb strings.Builder
+			sb.WriteString("备选标题：\n")
+			for i, t := range titles.Titles {
+				sb.WriteString(fmt.Sprintf("%d. %s\n   理由：%s\n", i+1, t.Title, t.Reason))
+			}
+			result = sb.String()
+		}
+	}
+
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepComplete("rewrite_title", map[string]any{
+			"current_title": args.CurrentTitle,
+			"suggestions":   3,
+		}, int64(time.Since(start).Milliseconds()))
+	}
+	return result, nil
+}
+
+// executeFactCheck 事实核查工具，提取关键事实并通过搜索验证。
+func executeFactCheck(cfg ToolExecutorConfig, arguments string) (string, error) {
+	var args struct {
+		Article string `json:"article"`
+		Focus   string `json:"focus"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Article == "" {
+		return "错误：文章内容不能为空", nil
+	}
+
+	start := time.Now()
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepStart("fact_check", 0)
+	}
+
+	// 用 LLM 提取文章中的事实性声明
+	systemMsg := "你是事实核查助理。从文章中提取需要核实的关键事实性声明（如数据、人名、事件、时间等）。只返回 JSON。"
+	userMsg := fmt.Sprintf(`文章内容：
+%s
+
+请提取文章中的关键事实性声明（最多5个），格式如下：
+{
+  "claims": [
+    {"claim": "事实声明", "type": "数据/人名/时间/事件", "verifiable": true}
+  ]
+}
+
+要求：
+1. 只提取事实性声明，不提取观点
+2. 优先提取具体的数字、日期、人名
+3. 如果文章中没有事实性声明，返回空列表`, args.Article)
+
+	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
+		{Role: "system", Content: systemMsg},
+		{Role: "user", Content: userMsg},
+	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.1), tools.WithThinking(false))
+	if err != nil {
+		if cfg.Emitter != nil {
+			cfg.Emitter.StepComplete("fact_check", map[string]any{"error": err.Error()}, int64(time.Since(start).Milliseconds()))
+		}
+		return fmt.Sprintf("事实核查失败: %v", err), nil
+	}
+
+	// 解析提取的声明
+	jsonStr := tools.ExtractJSONObject(resp)
+	var claims struct {
+		Claims []struct {
+			Claim      string `json:"claim"`
+			Type       string `json:"type"`
+			Verifiable bool   `json:"verifiable"`
+		} `json:"claims"`
+	}
+	if jsonStr != "" {
+		_ = json.Unmarshal([]byte(jsonStr), &claims)
+	}
+
+	if len(claims.Claims) == 0 {
+		result := "未检测到需要核实的事实性声明。文章中的内容以观点性表述为主。"
+		if cfg.Emitter != nil {
+			cfg.Emitter.StepComplete("fact_check", map[string]any{"claims": 0}, int64(time.Since(start).Milliseconds()))
+		}
+		return result, nil
+	}
+
+	// 对每个声明进行搜索验证（如果有搜索服务）
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("提取到 %d 条事实性声明：\n\n", len(claims.Claims)))
+
+	if cfg.Search != nil && cfg.Search.HasSources() {
+		for i, claim := range claims.Claims {
+			results := cfg.Search.Search(context.Background(), claim.Claim, 2)
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, claim.Type, claim.Claim))
+			if len(results) > 0 {
+				sb.WriteString(fmt.Sprintf("   搜索验证：\n   - %s\n   - %s\n", results[0].Title, results[0].Snippet))
+			} else {
+				sb.WriteString("   未找到相关搜索结果\n")
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("建议：以上为搜索到的参考信息，请人工核实关键数据和事实。")
+	} else {
+		for i, claim := range claims.Claims {
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, claim.Type, claim.Claim))
+		}
+		sb.WriteString("\n注意：搜索服务不可用，无法进行自动验证。请人工核实以上声明。")
+	}
+
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepComplete("fact_check", map[string]any{
+			"claims":    len(claims.Claims),
+			"verified":  cfg.Search != nil && cfg.Search.HasSources(),
+		}, int64(time.Since(start).Milliseconds()))
+	}
+	return sb.String(), nil
+}
+
+// executeRetrieveContext 按需检索会话上下文。
+// LLM 通过此工具主动获取所需信息，替代被动全量注入。
+func executeRetrieveContext(cfg ToolExecutorConfig, arguments string) (string, error) {
+	var args struct {
+		Query  string `json:"query"`
+		Source string `json:"source"`
+		Limit  int    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Query == "" {
+		return "错误：查询内容不能为空", nil
+	}
+	if args.Source == "" {
+		return "错误：检索来源不能为空", nil
+	}
+	if args.Limit == 0 {
+		args.Limit = 3
+	}
+
+	start := time.Now()
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepStart("retrieve_context", 0)
+	}
+
+	var result string
+	switch args.Source {
+	case "article":
+		result = retrieveFromArticle(cfg, args.Query, args.Limit)
+	case "memory":
+		result = retrieveFromMemory(cfg, args.Query, args.Limit)
+	case "history":
+		result = retrieveFromHistory(cfg, args.Query, args.Limit)
+	case "search":
+		result = retrieveFromSearch(cfg, args.Query, args.Limit)
+	case "profile":
+		result = retrieveFromProfile(cfg, args.Query, args.Limit)
+	default:
+		result = fmt.Sprintf("错误：未知的检索来源 '%s'。可选：article, memory, history, search, profile", args.Source)
+	}
+
+	if cfg.Emitter != nil {
+		cfg.Emitter.StepComplete("retrieve_context", map[string]any{
+			"query":  args.Query,
+			"source": args.Source,
+			"limit":  args.Limit,
+		}, int64(time.Since(start).Milliseconds()))
+	}
+	return result, nil
+}
+
+// retrieveFromArticle 从当前文章中检索相关段落。
+func retrieveFromArticle(cfg ToolExecutorConfig, query string, limit int) string {
+	if cfg.Session == nil || cfg.Session.CurrentArticle == "" {
+		return "当前没有文章。请先调用 write_article 写作。"
+	}
+
+	// 按段落分割文章
+	paragraphs := strings.Split(cfg.Session.CurrentArticle, "\n\n")
+	var matches []string
+
+	// 简单关键词匹配（后续可升级为向量检索）
+	keywords := extractKeywords(query)
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		score := matchScore(para, keywords)
+		if score > 0 {
+			matches = append(matches, para)
+		}
+	}
+
+	if len(matches) == 0 {
+		// 如果没有匹配，返回文章的前几段作为概览
+		var sb strings.Builder
+		sb.WriteString("未找到精确匹配的段落。以下是文章开头部分：\n\n")
+		count := 0
+		for _, para := range paragraphs {
+			para = strings.TrimSpace(para)
+			if para == "" {
+				continue
+			}
+			sb.WriteString(para)
+			sb.WriteString("\n\n")
+			count++
+			if count >= limit {
+				break
+			}
+		}
+		return sb.String()
+	}
+
+	// 返回匹配的段落
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("找到 %d 个相关段落：\n\n", len(matches)))
+	for i, m := range matches {
+		if i >= limit {
+			break
+		}
+		sb.WriteString(fmt.Sprintf("【段落 %d】\n%s\n\n", i+1, m))
+	}
+	return sb.String()
+}
+
+// retrieveFromMemory 从用户记忆中检索相关信息。
+func retrieveFromMemory(cfg ToolExecutorConfig, query string, limit int) string {
+	if cfg.Session == nil || cfg.Session.MemoryContext == nil {
+		return "暂无用户记忆。系统将自动从对话中提取偏好。"
+	}
+
+	memCtx, ok := cfg.Session.MemoryContext.(*memory.MemoryContext)
+	if !ok || memCtx == nil {
+		return "记忆服务暂不可用。"
+	}
+
+	var allEntries []memory.MemoryEntry
+	allEntries = append(allEntries, memCtx.Injected...)
+	allEntries = append(allEntries, memCtx.ReviewGuard...)
+
+	if len(allEntries) == 0 {
+		return "暂无用户写作偏好记录。"
+	}
+
+	// 关键词匹配
+	keywords := extractKeywords(query)
+	var matches []memory.MemoryEntry
+	for _, entry := range allEntries {
+		if matchScore(entry.Value, keywords) > 0 || matchScore(entry.Category, keywords) > 0 {
+			matches = append(matches, entry)
+		}
+	}
+
+	if len(matches) == 0 {
+		// 返回所有记忆作为概览
+		var sb strings.Builder
+		sb.WriteString("未找到精确匹配的记忆。以下是用户的所有写作偏好：\n\n")
+		for i, entry := range allEntries {
+			if i >= limit {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("- [%s] %s\n", entry.Category, entry.Value))
+		}
+		return sb.String()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("找到 %d 条相关记忆：\n\n", len(matches)))
+	for i, entry := range matches {
+		if i >= limit {
+			break
+		}
+		sb.WriteString(fmt.Sprintf("- [%s] %s\n", entry.Category, entry.Value))
+	}
+	return sb.String()
+}
+
+// retrieveFromHistory 从对话历史中检索相关信息。
+func retrieveFromHistory(cfg ToolExecutorConfig, query string, limit int) string {
+	if cfg.Session == nil || len(cfg.Session.Messages) == 0 {
+		return "暂无对话历史。"
+	}
+
+	keywords := extractKeywords(query)
+	var matches []memory.ConversationMessage
+
+	// 从最近的消息开始搜索
+	for i := len(cfg.Session.Messages) - 1; i >= 0; i-- {
+		msg := cfg.Session.Messages[i]
+		if matchScore(msg.Content, keywords) > 0 {
+			matches = append(matches, msg)
+		}
+	}
+
+	if len(matches) == 0 {
+		// 返回最近的几条消息
+		var sb strings.Builder
+		sb.WriteString("未找到精确匹配的历史消息。以下是最近的几轮对话：\n\n")
+		start := len(cfg.Session.Messages) - limit
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(cfg.Session.Messages); i++ {
+			msg := cfg.Session.Messages[i]
+			role := string(msg.Role)
+			content := msg.Content
+			if len(content) > 200 {
+				content = content[:200] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("[%s]: %s\n\n", role, content))
+		}
+		return sb.String()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("找到 %d 条相关历史消息：\n\n", len(matches)))
+	for i, msg := range matches {
+		if i >= limit {
+			break
+		}
+		role := string(msg.Role)
+		content := msg.Content
+		if len(content) > 500 {
+			content = content[:500] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("【%s】\n%s\n\n", role, content))
+	}
+	return sb.String()
+}
+
+// retrieveFromSearch 从已收集的搜索素材中检索相关信息。
+func retrieveFromSearch(cfg ToolExecutorConfig, query string, limit int) string {
+	if cfg.Session == nil || len(cfg.Session.SearchResults) == 0 {
+		return "暂无搜索素材。请先调用 search_web 或 search_knowledge 搜索。"
+	}
+
+	keywords := extractKeywords(query)
+	var matches []engine.SearchResult
+
+	for _, result := range cfg.Session.SearchResults {
+		if matchScore(result.Title+" "+result.Snippet, keywords) > 0 {
+			matches = append(matches, result)
+		}
+	}
+
+	if len(matches) == 0 {
+		// 返回所有搜索结果概览
+		var sb strings.Builder
+		sb.WriteString("未找到精确匹配的素材。以下是已收集的所有搜索结果：\n\n")
+		for i, r := range cfg.Session.SearchResults {
+			if i >= limit {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, r.Title, r.Snippet))
+		}
+		return sb.String()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("找到 %d 条相关素材：\n\n", len(matches)))
+	for i, r := range matches {
+		if i >= limit {
+			break
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n   来源: %s\n\n", i+1, r.Title, r.Snippet, r.Source))
+	}
+	return sb.String()
+}
+
+// retrieveFromProfile 从当前风格配置中检索相关信息。
+func retrieveFromProfile(cfg ToolExecutorConfig, query string, limit int) string {
+	if cfg.Profile == nil {
+		return "当前没有加载风格配置。"
+	}
+
+	keywords := extractKeywords(query)
+	var matches []string
+
+	// 检查各个配置字段
+	checkField := func(name, value string) {
+		if value != "" && matchScore(value, keywords) > 0 {
+			matches = append(matches, fmt.Sprintf("%s: %s", name, value))
+		}
+	}
+
+	checkField("结构类型", cfg.Profile.Structure.Type)
+	checkField("开头", cfg.Profile.Structure.Opening)
+	checkField("正文", cfg.Profile.Structure.Body)
+	checkField("结尾", cfg.Profile.Structure.Conclusion)
+	checkField("论证模式", cfg.Profile.Structure.ArgumentPattern)
+	checkField("修辞要求", cfg.Profile.Rhetoric.MetaphorDescription)
+	checkField("标题风格", cfg.Profile.TitleGuidelines.Style)
+
+	if len(matches) == 0 {
+		// 返回配置概览
+		var sb strings.Builder
+		sb.WriteString("未找到精确匹配的配置项。以下是当前风格配置的概览：\n\n")
+		sb.WriteString(fmt.Sprintf("结构: %s → %s → %s\n", cfg.Profile.Structure.Opening, cfg.Profile.Structure.Body, cfg.Profile.Structure.Conclusion))
+		if cfg.Profile.Rhetoric.RequiredMetaphor {
+			sb.WriteString(fmt.Sprintf("核心比喻: %s\n", cfg.Profile.Rhetoric.MetaphorDescription))
+		}
+		if cfg.Profile.TitleGuidelines.Style != "" {
+			sb.WriteString(fmt.Sprintf("标题风格: %s\n", cfg.Profile.TitleGuidelines.Style))
+		}
+		return sb.String()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("找到 %d 项相关配置：\n\n", len(matches)))
+	for i, m := range matches {
+		if i >= limit {
+			break
+		}
+		sb.WriteString(fmt.Sprintf("- %s\n", m))
+	}
+	return sb.String()
+}
+
+// extractKeywords 从查询中提取简单关键词（按空格/标点分割）。
+func extractKeywords(query string) []string {
+	// 去除常见停用词
+	stopWords := map[string]bool{
+		"的": true, "了": true, "是": true, "我": true, "你": true, "他": true,
+		"她": true, "它": true, "们": true, "这": true, "那": true, "有": true,
+		"在": true, "和": true, "与": true, "或": true, "就": true, "都": true,
+		"要": true, "会": true, "能": true, "可以": true, "请": true, "把": true,
+		"将": true, "让": true, "给": true, "对": true, "从": true, "到": true,
+		"为": true, "以": true, "及": true, "等": true, "着": true, "过": true,
+		"吗": true, "呢": true, "吧": true, "啊": true, "嗯": true, "哦": true,
+		"the": true, "a": true, "an": true, "is": true, "are": true, "was": true,
+		"were": true, "be": true, "been": true, "being": true, "have": true, "has": true,
+		"had": true, "do": true, "does": true, "did": true, "will": true, "would": true,
+		"could": true, "should": true, "may": true, "might": true, "can": true,
+		"i": true, "you": true, "he": true, "she": true, "it": true, "we": true, "they": true,
+		"me": true, "him": true, "her": true, "us": true, "them": true, "my": true, "your": true,
+		"his": true, "her": true, "its": true, "our": true, "their": true, "this": true, "that": true,
+		"these": true, "those": true, "and": true, "or": true, "but": true, "if": true, "then": true,
+		"else": true, "when": true, "where": true, "why": true, "how": true, "what": true, "which": true,
+		"who": true, "whom": true, "whose": true, "all": true, "any": true, "both": true, "each": true,
+		"few": true, "more": true, "most": true, "other": true, "some": true, "such": true, "no": true,
+		"nor": true, "not": true, "only": true, "own": true, "same": true, "so": true, "than": true,
+		"too": true, "very": true, "just": true, "now": true, "also": true, "get": true, "got": true,
+		"go": true, "went": true, "come": true, "came": true, "see": true, "saw": true, "know": true,
+		"knew": true, "think": true, "thought": true, "take": true, "took": true, "make": true, "made": true,
+		"want": true, "wanted": true, "use": true, "used": true, "work": true, "worked": true,
+		"call": true, "called": true, "try": true, "tried": true, "need": true, "needed": true,
+		"feel": true, "felt": true, "become": true, "became": true, "leave": true, "left": true,
+		"put": true, "mean": true, "meant": true, "keep": true, "kept": true, "let": true, "say": true,
+		"said": true, "tell": true, "told": true, "ask": true, "asked": true, "seem": true, "seemed": true,
+		"turn": true, "turned": true, "start": true, "started": true, "show": true, "showed": true,
+		"hear": true, "heard": true, "play": true, "played": true, "run": true, "ran": true, "move": true,
+		"moved": true, "live": true, "lived": true, "believe": true, "believed": true, "bring": true,
+		"brought": true, "happen": true, "happened": true, "stand": true, "stood": true, "lose": true,
+		"lost": true, "pay": true, "paid": true, "meet": true, "met": true, "include": true, "included": true,
+		"continue": true, "continued": true, "set": true, "learn": true, "learned": true, "change": true,
+		"changed": true, "lead": true, "led": true, "understand": true, "understood": true, "watch": true,
+		"watched": true, "follow": true, "followed": true, "stop": true, "stopped": true, "create": true,
+		"created": true, "speak": true, "spoke": true, "read": true, "allow": true, "allowed": true,
+		"add": true, "added": true, "spend": true, "spent": true, "grow": true, "grew": true, "open": true,
+		"opened": true, "walk": true, "walked": true, "win": true, "won": true, "offer": true, "offered": true,
+		"remember": true, "remembered": true, "love": true, "loved": true, "consider": true, "considered": true,
+		"appear": true, "appeared": true, "buy": true, "bought": true, "wait": true, "waited": true,
+		"serve": true, "served": true, "die": true, "died": true, "send": true, "sent": true, "expect": true,
+		"expected": true, "build": true, "built": true, "stay": true, "stayed": true, "fall": true, "fell": true,
+		"cut": true, "reach": true, "reached": true, "kill": true, "killed": true, "remain": true, "remained": true,
+		"suggest": true, "suggested": true, "raise": true, "raised": true, "pass": true, "passed": true,
+		"sell": true, "sold": true, "require": true, "required": true, "report": true, "reported": true,
+		"decide": true, "decided": true, "pull": true, "pulled": true, "of": true, "to": true, "in": true,
+		"for": true, "on": true, "with": true, "at": true, "by": true, "from": true, "as": true, "into": true,
+		"through": true, "during": true, "before": true, "after": true, "above": true, "below": true,
+		"between": true, "under": true, "again": true, "further": true, "then": true, "once": true,
+		"here": true, "there": true, "why": true, "how": true, "all": true, "any": true, "both": true,
+		"each": true, "few": true, "more": true, "most": true, "other": true, "some": true, "such": true,
+		"no": true, "nor": true, "not": true, "only": true, "own": true, "same": true, "so": true,
+		"than": true, "too": true, "very": true, "just": true, "now": true, "also": true,
+	}
+
+	// 分割并过滤
+	words := strings.FieldsFunc(query, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '，' || r == '.' || r == '。' ||
+			r == '!' || r == '！' || r == '?' || r == '？' || r == ':' || r == '：' || r == ';' || r == '；' ||
+			r == '(' || r == ')' || r == '（' || r == '）' || r == '"' || r == '"' || r == '"' || r == '"' ||
+			r == '[' || r == ']' || r == '【' || r == '】' || r == '-' || r == '_' || r == '/' || r == '|'
+	})
+
+	var result []string
+	for _, w := range words {
+		w = strings.ToLower(strings.TrimSpace(w))
+		if w != "" && !stopWords[w] && len(w) > 1 {
+			result = append(result, w)
+		}
+	}
+	return result
+}
+
+// matchScore 计算文本与关键词的匹配分数（简单实现）。
+func matchScore(text string, keywords []string) int {
+	textLower := strings.ToLower(text)
+	score := 0
+	for _, kw := range keywords {
+		if strings.Contains(textLower, kw) {
+			score++
+		}
+	}
+	return score
+}
+
 // executeGenerateOutline 生成文章提纲并等待用户确认。
-// 这是 Guided 模式的核心工具：
-//  1. 调用 LLM 生成提纲（标题 + 3-5 个要点）
-//  2. 通过 emitter.AwaitInput 推送给前端
-//  3. 阻塞等待用户确认/编辑/重新生成
-//  4. 将确认后的提纲存入 session 和 execCtx
 func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, error) {
 	var args struct {
 		Topic string `json:"topic"`
@@ -486,18 +1348,15 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 		cfg.Emitter.StepStart("generate_outline", 0)
 	}
 
-	// 1. 调用 LLM 生成提纲
 	outline, err := generateOutlineWithLLM(context.Background(), cfg.LLM, args.Topic, 0.3)
 	if err != nil {
 		return fmt.Sprintf("提纲生成失败: %v", err), nil
 	}
 
-	// 2. 推送给前端
 	if cfg.Emitter != nil {
 		cfg.Emitter.AwaitInput("generate_outline", outline, []string{"confirm", "edit", "regenerate"}, 1, 5)
 	}
 
-	// 3. 等待用户确认
 	if cfg.ExecCtx == nil {
 		return "错误：无法等待用户确认（execCtx 不可用）", nil
 	}
@@ -514,16 +1373,13 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 		}
 	}
 
-	// 4. 处理用户反馈
 	if confirmedData != nil {
 		if action, ok := confirmedData["action"].(string); ok && action == "regenerate" {
-			// 重新生成
 			outline, err = generateOutlineWithLLM(context.Background(), cfg.LLM, args.Topic, 0.6)
 			if err != nil {
 				return fmt.Sprintf("提纲重新生成失败: %v", err), nil
 			}
 		}
-		// 用户编辑了提纲
 		if title, ok := confirmedData["title"].(string); ok && title != "" {
 			outline.Title = title
 		}
@@ -543,7 +1399,6 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 		}
 	}
 
-	// 5. 存入 session 和 execCtx
 	if cfg.Session != nil {
 		cfg.Session.Outline = outline
 	}
@@ -599,23 +1454,28 @@ func generateOutlineWithLLM(ctx context.Context, llm *tools.LLMClient, topic str
 
 // ─── 辅助函数 ───────────────────────────────────────────────
 
+// formatKnowledgeResults 格式化知识库搜索结果。
+// 与 formatSearchResults 不同，这里保留更多内容（500字 vs 150字）
+// 因为知识库内容是确定性知识，值得完整呈现。
+func formatKnowledgeResults(results []engine.SearchResult) string {
+	var sb strings.Builder
+	for i, r := range results {
+		sb.WriteString(fmt.Sprintf("%d. [知识库] %s\n", i+1, r.Title))
+		snippet := r.Snippet
+		if len([]rune(snippet)) > 500 {
+			snippet = string([]rune(snippet)[:500]) + "…"
+		}
+		sb.WriteString(fmt.Sprintf("   %s\n\n", snippet))
+	}
+	return sb.String()
+}
+
 // compressSearchResults 用 LLM 将原始搜索结果压缩为结构化研究简报。
-//
-// 输入：搜索关键词 + 原始结果列表（标题 + 摘要 + URL）
-// 输出：结构化研究简报（关键事实、数据、观点、来源引用编号）
-//
-// 优势：
-//   - 原始结果可能 2000+ token，压缩后约 400-600 token，节省 70%+
-//   - LLM 预处理提取关键信息，减少后续 agent loop 的认知负担
-//   - 避免后续多轮请求重复携带冗长原始结果
-//
-// 如果 LLM 不可用或压缩失败，回退到 formatSearchResults（简单截断摘要）。
 func compressSearchResults(ctx context.Context, llm *tools.LLMClient, query string, results []engine.SearchResult) string {
 	if llm == nil || len(results) == 0 {
 		return formatSearchResults(results)
 	}
 
-	// 构建原始结果文本（带序号，供 LLM 引用）
 	var rawBuf strings.Builder
 	for i, r := range results {
 		snippet := r.Snippet
@@ -680,7 +1540,6 @@ func compressSearchResults(ctx context.Context, llm *tools.LLMClient, query stri
 }
 
 // formatSearchResults 是 compressSearchResults 的 fallback。
-// 当 LLM 不可用或压缩失败时，使用简单截断摘要。
 func formatSearchResults(results []engine.SearchResult) string {
 	var sb strings.Builder
 	for i, r := range results {
@@ -719,7 +1578,6 @@ func lenSafe(s *WritingSession) int {
 	return len(s.SearchResults)
 }
 
-// getString safely extracts a string from a map[string]interface{}.
 func getString(m map[string]interface{}, key string) string {
 	if v, ok := m[key].(string); ok {
 		return v
@@ -728,7 +1586,6 @@ func getString(m map[string]interface{}, key string) string {
 }
 
 // quickReviewArticle 使用 LLM 对文章做快速评审。
-// 这是 review_article 工具的后端实现。
 func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article string, p *profile.StyleProfile) *engine.ReviewResult {
 	if llm == nil || len(article) < 50 {
 		return &engine.ReviewResult{
@@ -795,4 +1652,44 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 	}
 
 	return &review
+}
+
+// ─── 声明式 Guard：MaxCalls 配置 ───────────────────────────
+//
+// defaultMaxCalls 按意图返回工具调用次数限制。
+// 这是声明式 guard 的配置层：工具名 → 最大调用次数（0=unlimited）。
+// 替代了以前硬编码在 executeSearchWeb 中的 SearchCallCount > 3 检查。
+//
+// 灵感来自 dsh 的 guard/ 包（声明式循环卫生）。
+func defaultMaxCalls(intent Intent) map[string]int {
+	switch intent {
+	case IntentWriting:
+		// 写作意图：搜索 3 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 5 次
+		return map[string]int{
+			"search_web":        3,
+			"search_knowledge":  3,
+			"review_article":    1,
+			"generate_outline": 1,
+			"word_count_check":  1,
+			"rewrite_title":     1,
+			"fact_check":        1,
+			"retrieve_context":  5,
+		}
+	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
+		// 修改意图：搜索 2 次、上下文检索 3 次
+		return map[string]int{
+			"search_web":       2,
+			"search_knowledge": 2,
+			"retrieve_context": 3,
+		}
+	case IntentChat:
+		// 对话意图：搜索 2 次、上下文检索 2 次
+		return map[string]int{
+			"search_web":       2,
+			"search_knowledge": 2,
+			"retrieve_context": 2,
+		}
+	default:
+		return nil
+	}
 }

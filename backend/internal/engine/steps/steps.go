@@ -1020,9 +1020,10 @@ func getString(m map[string]interface{}, key string) string {
 // ─── WriteStep ───────────────────────────────────────────
 
 type WriteStep struct {
-	llm     *tools.LLMClient
-	profile *profile.StyleProfile
-	search  *tools.SearchClient // optional, enables agent loop with tool calls
+	llm        *tools.LLMClient
+	profile    *profile.StyleProfile
+	search     *tools.SearchClient      // optional, enables agent loop with tool calls
+	kbSearcher tools.KnowledgeSearcher  // optional, enables search_knowledge tool
 }
 
 func NewWriteStep(llm *tools.LLMClient) *WriteStep {
@@ -1037,6 +1038,11 @@ func NewWriteStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *Wri
 // NewWriteStepWithSearch creates a WriteStep with a search client for agent loop support.
 func NewWriteStepWithSearch(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient) *WriteStep {
 	return &WriteStep{llm: llm, profile: p, search: search}
+}
+
+// NewWriteStepWithKB creates a WriteStep with search and knowledge base support.
+func NewWriteStepWithKB(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, kb tools.KnowledgeSearcher) *WriteStep {
+	return &WriteStep{llm: llm, profile: p, search: search, kbSearcher: kb}
 }
 
 func (s *WriteStep) Name() engine.StepName { return engine.StepWrite }
@@ -1268,10 +1274,10 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			"trace_id", execCtx.TraceID,
 			"search_results", len(execCtx.SearchResults))
 
-		toolExecutor := WritingToolExecutor(s.search, execCtx.SearchResults)
+		toolExecutor := WritingToolExecutor(s.search, s.kbSearcher, execCtx.SearchResults)
 		fullText, tokens, err = s.llm.ChatWithTools(
 			ctx, messages, streamCallback, onReasoning, onStreamReset,
-			WritingTools(), toolExecutor, streamOpts...,
+			WritingTools(s.kbSearcher != nil), toolExecutor, streamOpts...,
 		)
 	} else {
 		fullText, tokens, err = s.llm.ChatStreamWithReasoning(

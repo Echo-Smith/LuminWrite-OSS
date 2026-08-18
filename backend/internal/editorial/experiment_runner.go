@@ -342,7 +342,7 @@ func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug 
 		}
 	}
 
-	harness := agent.NewHarness(r.llm, r.search, styleProfile, nil, emitter)
+	harness := agent.NewHarness(r.llm, r.search, nil, styleProfile, nil, emitter)
 	harnessRunner := &harnessAgentRunner{harness: harness, session: session}
 
 	execCtx.ConfirmTimeout = 1 * time.Second

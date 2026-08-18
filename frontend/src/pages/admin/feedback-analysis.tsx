@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { adminFetch, adminMutate } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
+import { toast } from "@/stores/toast-store";
 
 interface Aggregation {
   style_slug: string;
@@ -55,63 +58,39 @@ export function FeedbackAnalysisPage() {
 
   const loadAggregations = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/feedback/aggregation");
-      const json = await res.json();
-      if (json.success) {
-        setAggregations(json.data?.aggregations ?? []);
-      }
-    } catch (e) {
-      console.error("Failed to load aggregations", e);
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<{ aggregations: AggregationListItem[] }>("/api/v2/feedback/aggregation", { silent: true });
+    if (success && data) setAggregations(data.aggregations ?? []);
+    setLoading(false);
   }, []);
 
   const loadDetail = async (style: string, version: number) => {
-    try {
-      const res = await fetch(`/api/v2/feedback/aggregation/${style}/${version}`);
-      const json = await res.json();
-      if (json.success) {
-        setSelected(json.data);
-      }
-    } catch (e) {
-      console.error("Failed to load detail", e);
-    }
+    const { success, data } = await adminFetch<Aggregation>(`/api/v2/feedback/aggregation/${style}/${version}`, { silent: true });
+    if (success && data) setSelected(data);
   };
 
   const handleAggregate = async () => {
     setLoading(true);
-    try {
-      // Aggregate for each style
-      const styles = ["yinyue", "shenlun", "xiaohongshu"];
-      for (const style of styles) {
-        await fetch("/api/v2/feedback/aggregate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ style_slug: style, profile_version: 1 }),
-        });
-      }
-      await loadAggregations();
-    } finally {
-      setLoading(false);
+    const styles = ["yinyue", "shenlun", "xiaohongshu"];
+    for (const style of styles) {
+      await adminMutate("/api/v2/feedback/aggregate", {
+        method: "POST",
+        body: JSON.stringify({ style_slug: style, profile_version: 1 }),
+        silent: true,
+      });
     }
+    toast.success("反馈已重新聚合");
+    await loadAggregations();
   };
 
   const handleGenerateSuggestions = async () => {
     if (!selected) return;
     setGenerating(true);
-    try {
-      const res = await fetch(`/api/v2/feedback/suggestions/${selected.style_slug}/${selected.profile_version}`, {
-        method: "POST",
-      });
-      const json = await res.json();
-      if (json.success) {
-        await loadDetail(selected.style_slug, selected.profile_version);
-      }
-    } finally {
-      setGenerating(false);
-    }
+    const { success } = await adminMutate(`/api/v2/feedback/suggestions/${selected.style_slug}/${selected.profile_version}`, {
+      method: "POST",
+      successTitle: "建议已生成",
+    });
+    if (success) await loadDetail(selected.style_slug, selected.profile_version);
+    setGenerating(false);
   };
 
   useEffect(() => {
@@ -120,13 +99,15 @@ export function FeedbackAnalysisPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">反馈分析</h2>
-        <Button variant="outline" size="sm" onClick={handleAggregate} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          重新聚合
-        </Button>
-      </div>
+      <AdminPageHeader
+        title="反馈分析"
+        action={
+          <Button variant="outline" size="sm" onClick={handleAggregate} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            重新聚合
+          </Button>
+        }
+      />
 
       {/* 指标卡片 */}
       <div className="grid grid-cols-4 gap-4">

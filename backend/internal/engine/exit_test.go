@@ -98,6 +98,8 @@ func (m *mockEmitter) Cancelled() {
 	m.cancelled = true
 }
 
+func (m *mockEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string) {}
+
 // ─── Test Step Implementations ──────────────────────────
 
 // configurableStep is a test step with configurable behavior.

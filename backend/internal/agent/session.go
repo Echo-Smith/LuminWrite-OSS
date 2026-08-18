@@ -50,7 +50,6 @@ type WritingSession struct {
 	ReviewResult     *engine.ReviewResult
 	UserMaterials    []string
 	Outline          *engine.OutlineData // Guided 模式下的用户确认提纲
-	SearchCallCount  int                 // 单次会话搜索次数（防 token 超支）
 	Reviewed         bool                // review_article 是否已执行
 
 	// 对话历史（从 DB 加载）

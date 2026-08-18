@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { adminFetch } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
 
 interface DashboardStats {
   today_writes: number;
@@ -115,32 +117,16 @@ export function OverviewPage() {
 
   const loadStats = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/v2/admin/stats");
-      const json = await res.json();
-      if (json.success) {
-        setStats(json.data);
-      }
-    } catch (e) {
-      console.error("Failed to load stats", e);
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<DashboardStats>("/api/v2/admin/stats", { silent: true });
+    if (success && data) setStats(data);
+    setLoading(false);
   }, []);
 
   const loadExitStats = useCallback(async () => {
     setExitLoading(true);
-    try {
-      const res = await fetch(`/api/v2/admin/exit-stats?days=${exitDays}`);
-      const json = await res.json();
-      if (json.success) {
-        setExitStats(json.data);
-      }
-    } catch (e) {
-      console.error("Failed to load exit stats", e);
-    } finally {
-      setExitLoading(false);
-    }
+    const { success, data } = await adminFetch<ExitStats>(`/api/v2/admin/exit-stats?days=${exitDays}`, { silent: true });
+    if (success && data) setExitStats(data);
+    setExitLoading(false);
   }, [exitDays]);
 
   useEffect(() => {
@@ -154,13 +140,15 @@ export function OverviewPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">概览</h2>
-        <Button variant="outline" size="sm" onClick={loadStats} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </Button>
-      </div>
+      <AdminPageHeader
+        title="概览"
+        action={
+          <Button variant="outline" size="sm" onClick={loadStats} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            刷新
+          </Button>
+        }
+      />
 
       {/* Metric Cards */}
       <div className="grid grid-cols-4 gap-4">

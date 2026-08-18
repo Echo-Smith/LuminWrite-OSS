@@ -81,6 +81,12 @@ type ToolDescriptor struct {
 	// Category groups tools for the dependency graph visualization.
 	// Common values: "planning", "retrieval", "writing", "review", "memory".
 	Category string `json:"category,omitempty"`
+
+	// MaxCalls limits the number of times this tool can be invoked per session.
+	// 0 means unlimited. When the limit is reached, the tool returns a
+	// polite message instead of executing, preventing token overspend.
+	// Inspired by dsh's guard/ package (declarative loop hygiene).
+	MaxCalls int `json:"max_calls,omitempty"`
 }
 
 // ToolRegistry is the central registry for all agent tools.
@@ -91,6 +97,7 @@ type ToolRegistry struct {
 	tools        map[string]AgentTool
 	descriptors  map[string]ToolDescriptor
 	plugins      *pluginManager
+	callCounts   map[string]int // per-session tool invocation counts (guard)
 }
 
 // NewToolRegistry creates an empty registry.
@@ -99,6 +106,7 @@ func NewToolRegistry() *ToolRegistry {
 		tools:       make(map[string]AgentTool),
 		descriptors: make(map[string]ToolDescriptor),
 		plugins:     newPluginManager(),
+		callCounts:  make(map[string]int),
 	}
 }
 
@@ -191,6 +199,49 @@ func (r *ToolRegistry) DependsOn(name string) []string {
 	return nil
 }
 
+// MaxCalls returns the per-session call limit for a tool (0 = unlimited).
+func (r *ToolRegistry) MaxCalls(name string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if desc, ok := r.descriptors[name]; ok {
+		return desc.MaxCalls
+	}
+	return 0
+}
+
+// CheckGuard checks whether the tool has exceeded its MaxCalls limit.
+// Returns (allowed, currentCount, maxCalls).
+// If MaxCalls is 0, always returns true (unlimited).
+func (r *ToolRegistry) CheckGuard(name string) (allowed bool, current int, max int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	max = 0
+	if desc, ok := r.descriptors[name]; ok {
+		max = desc.MaxCalls
+	}
+	current = r.callCounts[name]
+	if max > 0 && current >= max {
+		return false, current, max
+	}
+	return true, current, max
+}
+
+// IncrementCallCount increments the call counter for a tool and returns the new count.
+func (r *ToolRegistry) IncrementCallCount(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.callCounts[name]++
+	return r.callCounts[name]
+}
+
+// ResetCallCounts resets all call counters to zero.
+// Called at the start of each new session to clear per-session guard state.
+func (r *ToolRegistry) ResetCallCounts() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.callCounts = make(map[string]int)
+}
+
 // ToolDefs returns OpenAI-compatible tool definitions for all registered tools.
 // This is the array sent to the LLM in the tools parameter.
 func (r *ToolRegistry) ToolDefs() []map[string]any {
@@ -211,11 +262,31 @@ func (r *ToolRegistry) ToolDefs() []map[string]any {
 }
 
 // ExecuteTool looks up a tool by name and executes it.
+// ExecuteTool looks up a tool by name and executes it.
+// It also enforces the MaxCalls guard: if the tool has a MaxCalls limit
+// and it has been reached, the tool is not executed and a polite message
+// is returned instead.
 func (r *ToolRegistry) ExecuteTool(ctx context.Context, name string, args map[string]any, execCtx *ExecutionContext, emitter EventEmitter) (*ToolResult, error) {
 	tool := r.Get(name)
 	if tool == nil {
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+
+	// ── Guard: MaxCalls check ──
+	allowed, current, max := r.CheckGuard(name)
+	if !allowed {
+		slog.Info("tool guard: max calls reached, skipping execution",
+			"tool", name,
+			"current", current,
+			"max", max,
+		)
+		return &ToolResult{
+			Summary: fmt.Sprintf("已达到调用次数上限（%d次）。", max),
+			Done:    false,
+		}, nil
+	}
+	r.IncrementCallCount(name)
+
 	return tool.Execute(ctx, args, execCtx, emitter)
 }
 
@@ -229,6 +300,7 @@ type ToolGraphNode struct {
 	DependsOn   []string `json:"depends_on,omitempty"`
 	Repeatable  bool     `json:"repeatable"`
 	Terminal    bool     `json:"terminal"`
+	MaxCalls    int      `json:"max_calls,omitempty"`
 }
 
 // ToolGraphEdge represents a dependency relationship.
@@ -262,6 +334,7 @@ func (r *ToolRegistry) ToolGraph() ToolGraph {
 			DependsOn:   desc.DependsOn,
 			Repeatable:  desc.Repeatable,
 			Terminal:    desc.Terminal,
+			MaxCalls:    desc.MaxCalls,
 		}
 		// For tools without explicit descriptor (e.g. MCP tools),
 		// pull description from the tool itself

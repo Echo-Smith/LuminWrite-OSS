@@ -18,16 +18,14 @@ import (
 // autonomously request more context via tool calls.
 
 // WritingTools returns tool definitions available to the writing agent loop.
-// Currently defines:
-//   - search_web: search for additional information on a topic
-//   - get_topic_context: retrieve full-text content for a specific search result
-func WritingTools() []tools.ToolDef {
-	return []tools.ToolDef{
+// hasKnowledge=true adds search_knowledge for internal KB search.
+func WritingTools(hasKnowledge bool) []tools.ToolDef {
+	defs := []tools.ToolDef{
 		{
 			Type: "function",
 			Function: tools.ToolDefFunction{
 				Name:        "search_web",
-				Description: "搜索网络获取更多关于某个话题的信息。当已有素材不足以支撑写作时调用。",
+				Description: "搜索互联网获取最新信息。适用于时事热点、公开数据、新闻资讯。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -40,24 +38,44 @@ func WritingTools() []tools.ToolDef {
 				},
 			},
 		},
-		{
+	}
+	if hasKnowledge {
+		defs = append(defs, tools.ToolDef{
 			Type: "function",
 			Function: tools.ToolDefFunction{
-				Name:        "get_topic_context",
-				Description: "获取某个已有搜索结果的详细内容。传入搜索结果的序号(1-based)来获取更多信息。",
+				Name:        "search_knowledge",
+				Description: "搜索内部知识库。适用于写作风格规范、历史文章参考、栏目调性。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"index": map[string]any{
-							"type":        "integer",
-							"description": "搜索结果的序号(从1开始)",
+						"query": map[string]any{
+							"type":        "string",
+							"description": "检索关键词",
 						},
 					},
-					"required": []string{"index"},
+					"required": []string{"query"},
 				},
 			},
-		},
+		})
 	}
+	defs = append(defs, tools.ToolDef{
+		Type: "function",
+		Function: tools.ToolDefFunction{
+			Name:        "get_topic_context",
+				Description: "获取某个已有搜索结果的详细内容。传入搜索结果的序号(1-based)来获取更多信息。涵盖 search_web 和 search_knowledge 的结果。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"index": map[string]any{
+						"type":        "integer",
+						"description": "搜索结果的序号(从1开始)",
+					},
+				},
+				"required": []string{"index"},
+			},
+		},
+	})
+	return defs
 }
 
 // WritingToolExecutor creates a ToolExecutor for the writing agent loop.
@@ -65,6 +83,7 @@ func WritingTools() []tools.ToolDef {
 // can autonomously fetch more context during writing.
 func WritingToolExecutor(
 	search *tools.SearchClient,
+	kbSearcher tools.KnowledgeSearcher,
 	searchResults []engine.SearchResult,
 ) tools.ToolExecutor {
 	return func(name string, arguments string) (string, error) {
@@ -89,6 +108,32 @@ func WritingToolExecutor(
 			var sb strings.Builder
 			for i, r := range results {
 				sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.Snippet))
+			}
+			return sb.String(), nil
+
+		case "search_knowledge":
+			var args struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if args.Query == "" {
+				return "Error: query is required", nil
+			}
+			if kbSearcher == nil {
+				return "Error: knowledge base not available", nil
+			}
+			results, err := kbSearcher.SearchKB(context.Background(), args.Query, 5)
+			if err != nil {
+				return fmt.Sprintf("KB search error: %v", err), nil
+			}
+			if len(results) == 0 {
+				return "No results found", nil
+			}
+			var sb strings.Builder
+			for i, r := range results {
+				sb.WriteString(fmt.Sprintf("%d. [知识库] %s\n   %s\n", i+1, r.Title, r.Snippet))
 			}
 			return sb.String(), nil
 

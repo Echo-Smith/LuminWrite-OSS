@@ -29,19 +29,21 @@ import (
 
 // Harness 依赖项。
 type Harness struct {
-	llm          *tools.LLMClient
-	search       *tools.SearchClient
-	profile      *profile.StyleProfile
-	sessionStore SessionStore
-	emitter      engine.EventEmitter
+	llm           *tools.LLMClient
+	search        *tools.SearchClient
+	kbSearcher    tools.KnowledgeSearcher
+	profile       *profile.StyleProfile
+	sessionStore  SessionStore
+	emitter       engine.EventEmitter
 	maxIterations int
 }
 
-// NewHarness 创建一个 Harness 编排器。
-func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, p *profile.StyleProfile, store SessionStore, emitter engine.EventEmitter) *Harness {
+// NewHarness creates a Harness orchestrator.
+func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, kb tools.KnowledgeSearcher, p *profile.StyleProfile, store SessionStore, emitter engine.EventEmitter) *Harness {
 	return &Harness{
 		llm:           llm,
 		search:        search,
+		kbSearcher:    kb,
 		profile:       p,
 		sessionStore:  store,
 		emitter:       emitter,
@@ -87,21 +89,28 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	// 3. 构建 guided 标志（供 buildMessages 和 ToolsForIntent 使用）
 	isGuided := execCtx.Mode == "guided"
 
+	// 3b. 对话历史压缩（借鉴 dsh compaction 模式）
+	// 在构建消息前检查是否需要压缩历史，避免 token 溢出
+	h.maybeCompact(ctx, execCtx, session, intent)
+
 	// 4. 构建消息
 	messages := h.buildMessages(execCtx, session, intent, isGuided)
 
 	// 5. 选择工具集
 	hasSearch := h.search != nil && h.search.HasSources()
-	toolDefs := ToolsForIntent(intent, hasSearch, isGuided)
+	hasKB := h.kbSearcher != nil
+	toolDefs := ToolsForIntent(intent, hasSearch, isGuided, hasKB)
 
-	// 5. 构建工具执行器
+	// 5. 构建工具执行器（含声明式 MaxCalls guard）
 	executorCfg := ToolExecutorConfig{
-		Search:  h.search,
-		Session: session,
-		ExecCtx: execCtx,
-		Emitter: h.emitter,
-		Profile: h.profile,
-		LLM:     h.llm,
+		Search:     h.search,
+		KBSearcher: h.kbSearcher,
+		Session:    session,
+		ExecCtx:    execCtx,
+		Emitter:    h.emitter,
+		Profile:    h.profile,
+		LLM:        h.llm,
+		MaxCalls:   defaultMaxCalls(intent),
 	}
 	executor := BuildToolExecutor(executorCfg)
 
@@ -428,26 +437,34 @@ func (h *Harness) retrieveMemory(ctx context.Context, execCtx *engine.ExecutionC
 }
 
 // buildSystemPrompt 构建 system prompt。
-// 继承 Pipeline WriteStep 的完整 Profile 注入逻辑，确保 Harness 和 Pipeline 产出对等。
-// 对非写作意图（chat），精简注入以减少 Token 消耗。
+//
+// 设计演进（P2 按需上下文）：
+//   旧模式：全量注入（Profile + 文章全文 + 记忆 + 素材全部塞进 system prompt）
+//   新模式：精简常驻 + 按需查询（只放基础身份和任务指令，LLM 通过 retrieve_context 工具
+//          主动获取所需信息：文章段落、风格配置、用户记忆、搜索素材等）
+//
+// 好处：
+//   1. Token 大幅减少（system prompt 从 3000+ tokens 降到 500-800 tokens）
+//   2. 信息更精准（LLM 只获取它需要的信息，不被无关内容干扰）
+//   3. 上下文窗口更充裕（留出空间给对话历史和思考过程）
+//
+// 保留在 system prompt 中的内容（常驻层）：
+//   - 基础身份（你是谁）
+//   - 当前日期
+//   - 用户素材（用户主动上传的，优先级高）
+//   - 已确认提纲（Guided 模式，用户已确认的最终版本）
+//   - 任务指令（当前要做什么）
+//   - 注入防御
+//
+// 移至按需查询的内容（动态层）：
+//   - 风格配置详情（结构/修辞/标题指南/事实红线/价值导向）
+//   - 用户记忆偏好
+//   - 当前文章全文（改为通过 retrieve_context(source="article") 获取段落）
+//   - 搜索素材详情（改为通过 retrieve_context(source="search") 获取）
 func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGuided bool) string {
 	var sb strings.Builder
 
 	// ── 基础身份 ──
-	// 对 chat 意图，使用精简身份，避免注入完整写作 Profile
-	if intent == IntentChat {
-		if h.profile != nil && h.profile.SystemPrompt != "" {
-			sb.WriteString(h.profile.SystemPrompt)
-			sb.WriteString("\n")
-		} else {
-			sb.WriteString("你是笔润智谈，一个专业的中文写作助手。\n")
-		}
-		// Chat 意图只需基础身份 + 注入防御，跳过所有写作 Profile 注入
-		sb.WriteString(engine.PromptInjectionDefenseDirective)
-		return sb.String()
-	}
-
-	// ── 以下内容仅对写作/修改意图注入 ──
 	if h.profile != nil && h.profile.SystemPrompt != "" {
 		sb.WriteString(h.profile.SystemPrompt)
 		sb.WriteString("\n")
@@ -455,21 +472,10 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 		sb.WriteString("你是笔润智谈，一个专业的中文写作助手。\n")
 	}
 
-	// ── 当前文章（完整注入 system prompt，配合 prompt caching）──
-	// 文章全文放 system prompt 而非 messages，这样 DeepSeek 的前缀缓存
-	// 可以在多轮对话中命中缓存，避免每轮重复计费。
-	// assistant 的文章回复在 buildMessages 中被替换为轻量摘要。
-	if session.HasArticle() {
-		sb.WriteString(fmt.Sprintf("\n当前文章（全文）：\n%s\n", session.CurrentArticle))
-	}
+	// ── 当前日期 ──
+	sb.WriteString(fmt.Sprintf("\n当前日期：%s。", time.Now().Format("2006年1月2日")))
 
-	// ── 已有素材 ──
-	if len(session.SearchResults) > 0 {
-		sb.WriteString(fmt.Sprintf("\n已有素材：%d 条搜索结果可用。可以使用 read_source 工具读取详情。\n",
-			len(session.SearchResults)))
-	}
-
-	// ── 用户素材 ──
+	// ── 用户素材（优先级高，常驻）──
 	if len(session.UserMaterials) > 0 {
 		sb.WriteString("\n用户上传素材：\n")
 		for i, mat := range session.UserMaterials {
@@ -478,101 +484,7 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 		sb.WriteString("（用户素材优先级高于 AI 检索结果）\n")
 	}
 
-	// ── 当前日期 ──
-	sb.WriteString(fmt.Sprintf("\n当前日期：%s。", time.Now().Format("2006年1月2日")))
-
-	// ── 结构要求（写作意图）──
-	if intent == IntentWriting && h.profile != nil && h.profile.Structure.Type != "" {
-		sb.WriteString(fmt.Sprintf("\n结构要求：%s", h.profile.Structure.Opening))
-		if h.profile.Structure.Body != "" {
-			sb.WriteString(fmt.Sprintf(" → %s", h.profile.Structure.Body))
-		}
-		if h.profile.Structure.Conclusion != "" {
-			sb.WriteString(fmt.Sprintf(" → %s", h.profile.Structure.Conclusion))
-		}
-		sb.WriteString("\n")
-		if h.profile.Structure.ArgumentPattern != "" {
-			sb.WriteString(fmt.Sprintf("论证模式：%s\n", h.profile.Structure.ArgumentPattern))
-		}
-		if len(h.profile.Structure.ArgumentVariations) > 0 {
-			sb.WriteString(fmt.Sprintf("可选递进变式：%s\n", strings.Join(h.profile.Structure.ArgumentVariations, " / ")))
-		}
-		if h.profile.Structure.ArgumentInstruction != "" {
-			sb.WriteString(fmt.Sprintf("论述要求：%s\n", h.profile.Structure.ArgumentInstruction))
-		}
-	}
-
-	// ── 修辞要求（写作意图）──
-	if intent == IntentWriting && h.profile != nil {
-		var rhetoricParts []string
-		if h.profile.Rhetoric.RequiredMetaphor && h.profile.Rhetoric.MetaphorDescription != "" {
-			rhetoricParts = append(rhetoricParts, "正文核心比喻: "+h.profile.Rhetoric.MetaphorDescription+"（仅用于正文，不影响标题）")
-		}
-		if h.profile.Rhetoric.RequiredParallelism {
-			rhetoricParts = append(rhetoricParts, "正文必须使用排比")
-		}
-		if h.profile.Rhetoric.RequiredRhetoricalQuestion {
-			rhetoricParts = append(rhetoricParts, "正文必须使用设问")
-		}
-		if len(rhetoricParts) > 0 {
-			sb.WriteString(fmt.Sprintf("\n修辞要求：%s\n", strings.Join(rhetoricParts, "；")))
-		}
-	}
-
-	// ── 标题指南（写作意图，且无已有提纲标题）──
-	if intent == IntentWriting && h.profile != nil {
-		if len(h.profile.TitleGuidelines.ForbiddenPatterns) > 0 {
-			sb.WriteString(fmt.Sprintf("\n标题禁止模式（正则）：%s\n", strings.Join(h.profile.TitleGuidelines.ForbiddenPatterns, ", ")))
-		}
-		if h.profile.TitleGuidelines.Style != "" {
-			sb.WriteString(fmt.Sprintf("标题风格要求：%s\n", h.profile.TitleGuidelines.Style))
-		}
-		if len(h.profile.TitleGuidelines.Examples) > 0 {
-			sb.WriteString(fmt.Sprintf("标题参考示例：%s\n", strings.Join(h.profile.TitleGuidelines.Examples, " / ")))
-		}
-	}
-
-	// ── 事实红线 ──
-	if h.profile != nil {
-		if len(h.profile.FactGuard.ForbiddenResults) > 0 {
-			sb.WriteString(fmt.Sprintf("\n事实红线——禁止使用以下表述（已完成事件不得用结果性动词）：%s\n", strings.Join(h.profile.FactGuard.ForbiddenResults, ", ")))
-		}
-		if len(h.profile.FactGuard.FutureTenseRequired) > 0 {
-			sb.WriteString(fmt.Sprintf("事实红线——未发生事件须使用以下时态标记：%s\n", strings.Join(h.profile.FactGuard.FutureTenseRequired, ", ")))
-		}
-		if h.profile.FactGuard.UserMaterialPriority {
-			sb.WriteString("事实红线——用户提供的素材优先于 AI 检索结果，如有冲突以用户素材为准\n")
-		}
-	}
-
-	// ── 价值导向关键词（写作意图）──
-	if intent == IntentWriting && h.profile != nil && len(h.profile.ValueOrientation.Keywords) > 0 {
-		sb.WriteString(fmt.Sprintf("\n价值导向关键词（适当融入）：%s\n", strings.Join(h.profile.ValueOrientation.Keywords, ", ")))
-	}
-
-	// ── 用户记忆偏好注入 ──
-	if session.MemoryContext != nil {
-		if memCtx, ok := session.MemoryContext.(*memory.MemoryContext); ok && memCtx != nil {
-			if len(memCtx.Injected) > 0 {
-				sb.WriteString("\n--- 用户写作偏好（请参考但不强制）---\n")
-				for _, entry := range memCtx.Injected {
-					sb.WriteString("- ")
-				sb.WriteString(entry.Value)
-				sb.WriteString("\n")
-			}
-			}
-			if len(memCtx.ReviewGuard) > 0 {
-				sb.WriteString("\n--- 用户历史反馈（写作时请注意）---\n")
-				for _, entry := range memCtx.ReviewGuard {
-					sb.WriteString("- ")
-				sb.WriteString(entry.Value)
-				sb.WriteString("\n")
-			}
-			}
-		}
-	}
-
-	// ── 已确认提纲注入（Guided 模式）──
+	// ── 已确认提纲（Guided 模式，常驻）──
 	if session.Outline != nil && session.Outline.Title != "" {
 		sb.WriteString(fmt.Sprintf("\n【标题（必须原样使用，不得修改）】：%s\n", session.Outline.Title))
 		sb.WriteString("【写作提纲（必须严格按照以下提纲展开，每个要点对应一个段落，不得增删或更改要点顺序）】：\n")
@@ -591,19 +503,44 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 		sb.WriteString("\n")
 	}
 
+	// ── 上下文查询指引 ──
+	// 告知 LLM 可以通过 retrieve_context 工具按需获取信息
+	sb.WriteString("\n--- 上下文查询指引 ---\n")
+	sb.WriteString("当你需要以下信息时，请调用 retrieve_context 工具按需获取，而非猜测：\n")
+	sb.WriteString("- 当前文章的特定段落 → retrieve_context(source=\"article\", query=\"段落描述\")\n")
+	sb.WriteString("- 用户的写作偏好/历史记忆 → retrieve_context(source=\"memory\", query=\"偏好描述\")\n")
+	sb.WriteString("- 已收集的搜索素材 → retrieve_context(source=\"search\", query=\"素材关键词\")\n")
+	sb.WriteString("- 当前风格配置详情 → retrieve_context(source=\"profile\", query=\"配置项\")\n")
+	sb.WriteString("- 对话历史中的关键信息 → retrieve_context(source=\"history\", query=\"信息描述\")\n")
+
+	if session.HasArticle() {
+		sb.WriteString(fmt.Sprintf("\n当前已有文章（%d 字）。如需查看内容，请调用 retrieve_context(source=\"article\", query=\"文章相关描述\")。\n",
+			len([]rune(session.CurrentArticle))))
+	}
+	if len(session.SearchResults) > 0 {
+		sb.WriteString(fmt.Sprintf("\n已有 %d 条搜索素材。如需查看，请调用 retrieve_context(source=\"search\", query=\"素材关键词\")。\n",
+			len(session.SearchResults)))
+	}
+
 	// ── 意图相关指令 ──
 	switch intent {
 	case IntentWriting:
 		if isGuided && session.Outline == nil {
 			sb.WriteString("\n\n你现在要帮用户写一篇新文章（引导模式）。请按以下步骤操作：")
-			sb.WriteString("\n1. 如果已有素材不足，先用 search_web 搜索补充")
+			sb.WriteString("\n1. 如果已有素材不足，用 search_web 搜索网络信息，用 search_knowledge 检索知识库范文")
+			sb.WriteString("\n   - search_web：时事热点、公开数据、新闻资讯、网络观点")
+			sb.WriteString("\n   - search_knowledge：写作风格规范、历史范文、栏目调性、内部观点")
+			sb.WriteString("\n   - 两者可同时调用（并行），结果统一通过 read_source 读取详情")
 			sb.WriteString("\n2. 调用 generate_outline 生成提纲，等待用户确认")
 			sb.WriteString("\n3. 用户确认提纲后，调用 write_article 开始写作，然后在下一轮回复中直接输出文章（Markdown格式，##开头作为标题）")
 			sb.WriteString("\n4. 文章写完后调用 review_article 评审质量")
 			sb.WriteString("\n5. 如果评审发现问题，调用 revise_section 修正")
 		} else {
 			sb.WriteString("\n\n你现在要帮用户写一篇新文章。请按以下步骤操作：")
-			sb.WriteString("\n1. 如果已有素材不足，先用 search_web 搜索补充")
+			sb.WriteString("\n1. 如果已有素材不足，用 search_web 搜索网络信息，用 search_knowledge 检索知识库范文")
+			sb.WriteString("\n   - search_web：时事热点、公开数据、新闻资讯、网络观点")
+			sb.WriteString("\n   - search_knowledge：写作风格规范、历史范文、栏目调性、内部观点")
+			sb.WriteString("\n   - 两者可同时调用（并行），结果统一通过 read_source 读取详情")
 			sb.WriteString("\n2. 用 read_source 读取重要素材的详细内容")
 			sb.WriteString("\n3. 调用 write_article 开始写作，然后在下一轮回复中直接输出文章（Markdown格式，##开头作为标题）")
 			sb.WriteString("\n4. 文章写完后调用 review_article 评审质量")
@@ -612,9 +549,10 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
 		sb.WriteString("\n\n用户要修改已有文章。请调用 revise_section 定向修改，不要重写全文。")
 		sb.WriteString("\n调用后直接输出修改后的完整文章。")
+		sb.WriteString("\n如需查看文章特定段落，调用 retrieve_context(source=\"article\", query=\"段落描述\")。")
 	case IntentChat:
 		sb.WriteString("\n\n用户在和你对话。直接回复即可。")
-		sb.WriteString("\n如果需要查资料可以调用 search_web，但简单问题直接回答。")
+		sb.WriteString("\n如果需要查资料可以调用 search_web（网络信息）或 search_knowledge（内部知识库），但简单问题直接回答。")
 	}
 
 	sb.WriteString(engine.PromptInjectionDefenseDirective)

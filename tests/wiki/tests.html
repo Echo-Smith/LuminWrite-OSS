@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>测试体系 — 笔润智谈 LuminBuddy V2</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<script src="assets/js/nav.js"></script>
+
+<main>
+
+<!-- ═══ Hero ═══ -->
+<section class="hero" style="padding-top:64px;">
+  <div class="container">
+    <h1>测试体系</h1>
+    <p class="subtitle">
+      三层测试覆盖：端到端 WebSocket 测试 · A/B 对比实验 · Python 性能基准套件
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 测试概览 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>测试概览</h2>
+    <div class="desc">9 个用例 · 100% 成功率 · 2026-07-16 基准</div>
+  </div>
+
+  <div class="grid grid-4">
+    <div class="card stat-card">
+      <div class="value" style="color:var(--green);">9/9</div>
+      <div class="label">用例通过率</div>
+      <div class="sub">100% 成功率</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--blue);">32.86<span style="font-size:18px;">s</span></div>
+      <div class="label">平均生成时间</div>
+      <div class="sub">P95: 55.65s</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--amber);">75%</div>
+      <div class="label">评测通过率</div>
+      <div class="sub">AutoFix 成功率 100%</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--purple);">¥0.003</div>
+      <div class="label">单篇 API 成本</div>
+      <div class="sub">3578 tokens / 篇</div>
+    </div>
+  </div>
+
+  <div style="margin-top:28px;"></div>
+
+  <div class="grid grid-3">
+    <div class="card accent-border">
+      <div class="card-title"><span class="icon">🔌</span> E2E WebSocket 测试</div>
+      <div class="card-desc">完整的 WebSocket 端到端流程验证。覆盖 auto / writing / guided 三种模式，测试提纲确认、重做、暂停/恢复等核心交互路径。</div>
+      <div style="margin-top:14px;"><span class="tag tag-green">e2e-test.mjs</span> <span class="tag tag-blue">e2e-guided-test.mjs</span></div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="icon">⚖️</span> A/B 对比实验</div>
+      <div class="card-desc">Pipeline vs Harness 双引擎对比测试。覆盖 writing / guided / polish / chat 四种场景，测量延迟、质量、Token 消耗差异。</div>
+      <div style="margin-top:14px;"><span class="tag tag-purple">e2e-ab-test.mjs</span></div>
+    </div>
+    <div class="card accent-border">
+      <div class="card-title"><span class="icon">📊</span> 性能基准套件</div>
+      <div class="card-desc">Python 自动化基准测试，覆盖五大指标维度。9 个测试用例（写作 5 / 润色 2 / 缩写 1 / 对话 1），输出结构化 JSON 报告。</div>
+      <div style="margin-top:14px;"><span class="tag tag-amber">benchmark_test.py</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 指标 1: 生成时间 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>⏱ 指标 1：单篇生成时间</h2>
+      <div class="desc">各类别的文章生成耗时统计</div>
+    </div>
+
+    <div class="grid grid-4" style="margin-bottom:24px;">
+      <div class="card dark stat-card">
+        <div class="value">32.86<span style="font-size:18px;">s</span></div>
+        <div class="label">总体平均</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value">37.33<span style="font-size:18px;">s</span></div>
+        <div class="label">中位数</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="color:var(--green);">5.93<span style="font-size:18px;">s</span></div>
+        <div class="label">最快</div>
+        <div class="sub">chat 类</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="color:var(--red);">55.65<span style="font-size:18px;">s</span></div>
+        <div class="label">P95</div>
+        <div class="sub">writing 类</div>
+      </div>
+    </div>
+
+    <table>
+      <thead><tr><th>用例</th><th>类别</th><th>耗时</th><th>文章长度</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>AI教育变革评论</td><td><span class="tag tag-blue">writing</span></td><td>46.73s</td><td>1696 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>城市垃圾分类政策</td><td><span class="tag tag-blue">writing</span></td><td>50.77s</td><td>2227 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>新能源汽车市场竞争</td><td><span class="tag tag-blue">writing</span></td><td>30.28s</td><td>1354 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>远程办公效率管理</td><td><span class="tag tag-blue">writing</span></td><td>55.65s</td><td>1780 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>传统文化传承创新</td><td><span class="tag tag-blue">writing</span></td><td>37.33s</td><td>1500 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>润色科技短文</td><td><span class="tag tag-amber">polish</span></td><td>20.41s</td><td>1008 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>润色教育评论</td><td><span class="tag tag-amber">polish</span></td><td>37.33s</td><td>1494 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>缩写长文</td><td><span class="tag tag-purple">shorten</span></td><td>11.30s</td><td>175 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+        <tr><td>普通问答</td><td><span class="tag tag-gray">chat</span></td><td>5.93s</td><td>338 字</td><td><span class="tag tag-green">✅ 通过</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 指标 2: 人工对比 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>📊 指标 2：相比人工流程的步骤/时间减少</h2>
+    <div class="desc">从 75 分钟 → 0.55 分钟</div>
+  </div>
+
+  <div class="grid grid-3" style="margin-bottom:24px;">
+    <div class="card stat-card">
+      <div class="value" style="color:var(--green);">74.45<span style="font-size:18px;">min</span></div>
+      <div class="label">节省时间</div>
+      <div class="sub">从 75 min → 0.55 min</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--green);">99.3%</div>
+      <div class="label">时间节省率</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value" style="color:var(--blue);">136.9<span style="font-size:18px;">x</span></div>
+      <div class="label">加速倍数</div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>对比维度</th><th>人工流程</th><th>Agent V2</th></tr></thead>
+    <tbody>
+      <tr><td>总耗时</td><td>75 分钟</td><td>0.55 分钟（~33 秒）</td></tr>
+      <tr><td>步骤数</td><td>6 步</td><td>7 步（自动化）</td></tr>
+      <tr><td>步骤</td><td>选题与搜索 → 阅读整理 → 撰写初稿 → 自我审查 → 修改润色 → 最终校对</td><td>intent → query_plan → search → relevance → write → post_review → auto_fix</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══ 指标 3: 评测与修复 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>🔍 指标 3：自动评测通过率与修复率</h2>
+      <div class="desc">Post Review + Auto Fix 质量保障</div>
+    </div>
+
+    <div class="grid grid-4" style="margin-bottom:24px;">
+      <div class="card dark stat-card">
+        <div class="value" style="color:var(--green);">6/8</div>
+        <div class="label">评测通过</div>
+        <div class="sub">75.0%</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value" style="color:var(--green);">6/6</div>
+        <div class="label">AutoFix 成功</div>
+        <div class="sub">100.0%</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value">2</div>
+        <div class="label">评测不通过</div>
+      </div>
+      <div class="card dark stat-card">
+        <div class="value">0</div>
+        <div class="label">WS 错误</div>
+      </div>
+    </div>
+
+    <table>
+      <thead><tr><th>用例</th><th>通过</th><th>Issues</th><th>AutoFix</th><th>事实性</th><th>结构</th><th>风格</th><th>标题</th></tr></thead>
+      <tbody>
+        <tr><td>AI教育变革评论</td><td><span class="tag tag-red">FAIL</span></td><td>1</td><td><span class="tag tag-gray">N</span></td><td>0.90</td><td>0.95</td><td>0.90</td><td>1.00</td></tr>
+        <tr><td>城市垃圾分类政策</td><td><span class="tag tag-green">PASS</span></td><td>2</td><td><span class="tag tag-green">Y</span></td><td>0.90</td><td>1.00</td><td>0.95</td><td>0.95</td></tr>
+        <tr><td>新能源汽车市场竞争</td><td><span class="tag tag-green">PASS</span></td><td>0</td><td><span class="tag tag-green">Y</span></td><td>0.90</td><td>1.00</td><td>0.90</td><td>1.00</td></tr>
+        <tr><td>远程办公效率管理</td><td><span class="tag tag-green">PASS</span></td><td>3</td><td><span class="tag tag-green">Y</span></td><td>0.48</td><td>0.90</td><td>0.90</td><td>0.90</td></tr>
+        <tr><td>传统文化传承创新</td><td><span class="tag tag-green">PASS</span></td><td>2</td><td><span class="tag tag-green">Y</span></td><td>1.00</td><td>1.00</td><td>0.90</td><td>0.50</td></tr>
+        <tr><td>润色科技短文</td><td><span class="tag tag-red">FAIL</span></td><td>1</td><td><span class="tag tag-gray">N</span></td><td>1.00</td><td>0.90</td><td>0.95</td><td>1.00</td></tr>
+        <tr><td>润色教育评论</td><td><span class="tag tag-green">PASS</span></td><td>2</td><td><span class="tag tag-green">Y</span></td><td>0.90</td><td>0.90</td><td>0.90</td><td>0.50</td></tr>
+        <tr><td>缩写长文</td><td><span class="tag tag-green">PASS</span></td><td>0</td><td><span class="tag tag-green">Y</span></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>普通问答</td><td><span class="tag tag-gray">N/A</span></td><td>0</td><td><span class="tag tag-gray">N</span></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 指标 5: API 成本 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>💰 指标 5：单篇 API 成本</h2>
+    <div class="desc">DeepSeek V4 Flash 定价</div>
+  </div>
+
+  <div class="grid grid-4" style="margin-bottom:24px;">
+    <div class="card stat-card">
+      <div class="value" style="color:var(--green);">¥0.003</div>
+      <div class="label">平均成本/篇</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value">3,578</div>
+      <div class="label">平均 Token/篇</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value">32,202</div>
+      <div class="label">总 Token</div>
+    </div>
+    <div class="card stat-card">
+      <div class="value">¥0.028</div>
+      <div class="label">总成本</div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>用例</th><th>类别</th><th>Token 消耗</th><th>成本 (RMB)</th></tr></thead>
+    <tbody>
+      <tr><td>AI教育变革评论</td><td><span class="tag tag-blue">writing</span></td><td>3,755</td><td>¥0.0033</td></tr>
+      <tr><td>城市垃圾分类政策</td><td><span class="tag tag-blue">writing</span></td><td>2,306</td><td>¥0.0020</td></tr>
+      <tr><td>新能源汽车市场竞争</td><td><span class="tag tag-blue">writing</span></td><td>9,077</td><td>¥0.0079</td></tr>
+      <tr><td>远程办公效率管理</td><td><span class="tag tag-blue">writing</span></td><td>7,601</td><td>¥0.0067</td></tr>
+      <tr><td>传统文化传承创新</td><td><span class="tag tag-blue">writing</span></td><td>5,195</td><td>¥0.0045</td></tr>
+      <tr><td>润色科技短文</td><td><span class="tag tag-amber">polish</span></td><td>1,295</td><td>¥0.0011</td></tr>
+      <tr><td>润色教育评论</td><td><span class="tag tag-amber">polish</span></td><td>1,696</td><td>¥0.0015</td></tr>
+      <tr><td>缩写长文</td><td><span class="tag tag-purple">shorten</span></td><td>925</td><td>¥0.0008</td></tr>
+      <tr><td>普通问答</td><td><span class="tag tag-gray">chat</span></td><td>352</td><td>¥0.0003</td></tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:12px;color:var(--text-muted);margin-top:14px;">💡 定价模型：DeepSeek V4 Flash · 输入 ¥0.5/1M tokens · 输出 ¥2.0/1M tokens</p>
+</section>
+
+<!-- ═══ E2E 测试 ═══ -->
+<section class="dark">
+  <div class="container">
+    <div class="section-header">
+      <h2>E2E WebSocket 测试</h2>
+      <div class="desc">完整写作流程端到端验证 — 三种模式覆盖</div>
+    </div>
+
+    <div class="grid grid-3">
+      <div class="card dark">
+        <div class="card-title"><span class="icon">🚀</span> Auto 模式</div>
+        <div class="card-desc">全自动写作流程：意图识别 → 检索 → 写作 → 自检 → 修正。</div>
+        <pre style="margin-top:14px;font-size:11px;"><span class="comment"># 默认 auto 模式</span>
+node e2e-test.mjs
+
+<span class="comment"># 自定义消息 + writing 模式</span>
+node e2e-test.mjs "你的消息" --mode writing</pre>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="icon">📋</span> Guided 模式</div>
+        <div class="card-desc">引导式写作：提纲确认/编辑/重做 → 流式写作。测试暂停/恢复。</div>
+        <pre style="margin-top:14px;font-size:11px;"><span class="comment"># 提纲确认 + 暂停/恢复</span>
+node e2e-guided-test.mjs
+
+<span class="comment"># 测试提纲重做</span>
+node e2e-guided-test.mjs --regenerate</pre>
+      </div>
+      <div class="card dark">
+        <div class="card-title"><span class="icon">💡</span> Writing 模式</div>
+        <div class="card-desc">深度写作：启用 reasoning_content 推理链可视化。</div>
+        <pre style="margin-top:14px;font-size:11px;"><span class="comment"># 启用思维链可视化</span>
+node e2e-test.mjs --mode writing</pre>
+      </div>
+    </div>
+
+    <div style="margin-top:28px;"></div>
+
+    <h3 style="font-size:16px;margin-bottom:14px;">WebSocket 事件协议</h3>
+    <pre><span class="comment">客户端 → 服务端:</span>
+  { "type": "agent.start",   "payload": { "message": "...", "style": "yinyue", "mode": "guided" } }
+  { "type": "agent.pause",   "payload": { "traceId": "..." } }
+  { "type": "agent.resume",  "payload": { "traceId": "..." } }
+  { "type": "agent.cancel",  "payload": { "traceId": "..." } }
+  { "type": "agent.confirm", "payload": { "traceId": "...", "step": "outline", "data": { ... } } }
+
+<span class="comment">服务端 → 客户端:</span>
+  { "type": "agent.step.start",    "payload": { "traceId": "...", "step": "search" } }
+  { "type": "agent.step.complete", "payload": { "traceId": "...", "step": "search", "duration_ms": 5647 } }
+  { "type": "agent.stream",        "payload": { "traceId": "...", "delta": "文章片段..." } }
+  { "type": "agent.reasoning",     "payload": { "traceId": "...", "delta": "思考过程..." } }
+  { "type": "agent.completed",     "payload": { "traceId": "...", "article": "...", "review": {...} } }
+  { "type": "agent.error",         "payload": { "traceId": "...", "code": "timeout", "message": "..." } }</pre>
+  </div>
+</section>
+
+<!-- ═══ A/B 测试 ═══ -->
+<section>
+  <div class="section-header">
+    <h2>A/B 对比实验</h2>
+    <div class="desc">Pipeline vs Harness 双引擎对比 — 四种场景覆盖</div>
+  </div>
+
+  <table>
+    <thead><tr><th>场景</th><th>描述</th><th>测试消息</th><th>对比维度</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag tag-blue">writing</span></td><td>全新写作（有搜索）</td><td>"基于热搜写一篇关于外卖骑手闯红灯的评论"</td><td>延迟 · 质量 · Token</td></tr>
+      <tr><td><span class="tag tag-amber">guided</span></td><td>引导式写作（提纲确认）</td><td>同上，guided 模式</td><td>交互延迟 · 用户控制</td></tr>
+      <tr><td><span class="tag tag-purple">polish</span></td><td>多轮润色</td><td>"润色以下文章：..."</td><td>会话保持 · 质量递进</td></tr>
+      <tr><td><span class="tag tag-gray">chat</span></td><td>自由对话</td><td>"什么是三段式写作结构？"</td><td>响应延迟 · Token 消耗</td></tr>
+    </tbody>
+  </table>
+
+  <pre style="margin-top:24px;"><span class="comment"># 运行所有场景</span>
+node e2e-ab-test.mjs
+
+<span class="comment"># 只运行写作场景</span>
+node e2e-ab-test.mjs --scenario writing
+
+<span class="comment"># 环境变量</span>
+<span class="keyword">export</span> WS_URL=ws://localhost:8080/api/v2/ws/agent
+<span class="keyword">export</span> HTTP_URL=http://localhost:8080/api/v2
+<span class="keyword">export</span> ADMIN_TOKEN=change-this-in-production
+<span class="keyword">export</span> AB_DELAY=10000  <span class="comment"># 两组之间延迟 (ms)</span></pre>
+</section>
+
+<!-- ═══ Footer ═══ -->
+<section class="dark site-footer" style="padding:48px 32px;">
+  <div class="container">
+    <p>笔润智谈 LuminBuddy V2 · Wiki</p>
+    <div class="footer-links">
+      <a href="index.html">← 返回首页</a>
+      <a href="about.html">项目介绍</a>
+      <a href="architecture.html">系统架构</a>
+      <a href="changelog.html">版本日志</a>
+    </div>
+    <p style="margin-top:16px;font-size:11px;color:var(--text-on-dark-muted);">MIT License · 工程 Beta · 2026</p>
+  </div>
+</section>
+
+</main>
+
+</body>
+</html>

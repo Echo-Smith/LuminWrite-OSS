@@ -254,6 +254,15 @@ func (e *LoggingEmitter) Cancelled() {
 	go e.Flush()
 }
 
+func (e *LoggingEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string) {
+	e.inner.Compaction(originalMessages, savedTokens, summaryPreview)
+	e.enqueue(EventCompaction, "", map[string]interface{}{
+		"original_messages": originalMessages,
+		"saved_tokens":     savedTokens,
+		"summary_preview":  summaryPreview,
+	})
+}
+
 // EmitMemoryUsed delegates to WSEmitter's memory event.
 // This is not part of the EventEmitter interface but is called directly
 // by the server. We pass it through to the inner emitter if it supports it.
@@ -291,4 +300,5 @@ const (
 	EventCompleted      = "completed"
 	EventCancelled      = "cancelled"
 	EventMemoryUsed     = "memory.used"
+	EventCompaction     = "agent.compaction"
 )

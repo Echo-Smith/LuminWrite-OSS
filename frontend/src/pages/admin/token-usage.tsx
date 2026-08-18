@@ -6,6 +6,8 @@ import { TrendingUp, Coins, Calendar, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { adminFetch } from "@/lib/admin-api";
+import { AdminPageHeader } from "@/components/admin";
 
 interface TokenUsageStats {
   total_tokens: number;
@@ -31,13 +33,9 @@ export function TokenUsagePage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch(`/api/v2/admin/token-usage?days=${days}`);
-      const json = await res.json();
-      if (json.success) setStats(json.data);
-    } finally {
-      setLoading(false);
-    }
+    const { success, data } = await adminFetch<TokenUsageStats>(`/api/v2/admin/token-usage?days=${days}`, { silent: true });
+    if (success && data) setStats(data);
+    setLoading(false);
   }, [days]);
 
   useEffect(() => { load(); }, [load]);
@@ -46,17 +44,19 @@ export function TokenUsagePage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">用量统计</h2>
-        <Select value={days} onValueChange={setDays}>
-          <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7">近 7 天</SelectItem>
-            <SelectItem value="30">近 30 天</SelectItem>
-            <SelectItem value="90">近 90 天</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <AdminPageHeader
+        title="用量统计"
+        action={
+          <Select value={days} onValueChange={setDays}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7">近 7 天</SelectItem>
+              <SelectItem value="30">近 30 天</SelectItem>
+              <SelectItem value="90">近 90 天</SelectItem>
+            </SelectContent>
+          </Select>
+        }
+      />
 
       {loading ? (
         <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin" /></div>

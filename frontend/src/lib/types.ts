@@ -11,6 +11,9 @@ export type AgentStepName =
   | "write_article"
   | "review_article"
   | "revise_section"
+  | "word_count_check"
+  | "rewrite_title"
+  | "fact_check"
   // ── 旧 pipeline/unified 工具名（兼容历史会话回放）──
   | "intent"
   | "query_plan"
@@ -66,6 +69,8 @@ export type WSServerMessageType =
   | "agent.cancelled"
   | "session.resumed"
   | "memory.used"
+  | "memory.dismiss"
+  | "agent.compaction"
   | "editorial.event";
 
 export interface WSClientMessage {

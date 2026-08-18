@@ -156,7 +156,7 @@ type AnySearchConfig struct {
 // KbInternalConfig holds configuration for the internal knowledge base
 // (replaces the external WeKnora integration).
 type KbInternalConfig struct {
-	// Docreader gRPC sidecar address (for PDF/Word/image parsing)
+	// Docreader TCP sidecar address (for PDF/Word/image parsing)
 	DocreaderAddr     string
 	DocreaderTransport string
 	// Chunking configuration
@@ -249,7 +249,7 @@ EncryptionKey: getEnv("API_KEY_ENCRYPTION_KEY", ""),
 			Window:   getEnvDuration("RATE_LIMIT_WINDOW", time.Minute),
 		},
 DeepSeek: DeepSeekConfig{
-BaseURL:           getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+BaseURL:           getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), // 不带 /v1 — 代码自动拼接 /chat/completions 和 /responses
 APIKey:            getEnv("AI_API_KEY", ""),
 DefaultModel:      getEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-v4-flash"),
 Timeout:           getEnvDuration("DEEPSEEK_TIMEOUT", 120*time.Second),

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -215,6 +216,22 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.Bing.Enabled = true
 			slog.Info("search config overridden from DB", "provider", "bing")
 		}
+		// ── Override Jiaozhen (较真事实核查) config from DB ──
+		if key, _, err := adminRepo.GetAPIKeyValue(ctx, "jiaozhen"); err == nil && key != "" {
+			cfg.Jiaozhen.APIKey = key
+			cfg.Jiaozhen.Enabled = true
+			slog.Info("jiaozhen config overridden from DB", "provider", "jiaozhen")
+		}
+		// ── Override Tencent News CLI config from DB ──
+		// tencent_news and jiaozhen share the same CLI API key (TENCENT_NEWS_API_KEY).
+		// If a DB key exists for "tencent_news", apply it to jiaozhen as well.
+		if key, _, err := adminRepo.GetAPIKeyValue(ctx, "tencent_news"); err == nil && key != "" {
+			if cfg.Jiaozhen.APIKey == "" {
+				cfg.Jiaozhen.APIKey = key
+			}
+			cfg.Jiaozhen.Enabled = true
+			slog.Info("tencent_news config overridden from DB", "provider", "tencent_news")
+		}
 
 		// ── Reconfigure embedding client with DB-overridden DashScope config ──
 		if cfg.Dashscope.APIKey != "" {
@@ -405,7 +422,12 @@ func New(cfg *config.Config) (*Server, error) {
 		cronScheduler: cronSched,
 		metrics:       NewMetricsRegistry(),
 		webauthn:      NewWebAuthnService(cfg.WebAuthn.RPID, cfg.WebAuthn.RPName, cfg.WebAuthn.RPOrigin),
-		passkeyChallenges: newPasskeyChallengeStore(),
+		passkeyChallenges: newPasskeyChallengeStore(func() *sql.DB {
+			if dbAvail && db != nil {
+				return db.DB // *database.DB embeds *sql.DB
+			}
+			return nil
+		}()), // db may be nil — falls back to in-memory
 		sensitiveSvc:  sensitiveSvc,
 		jiaozhen:      jiaozhenClient,
 		memorySvc:     memorySvc,
@@ -447,9 +469,9 @@ func New(cfg *config.Config) (*Server, error) {
 			"chunk_overlap", cfg.Kb.ChunkOverlap,
 		)
 
-		// Wire local KB into the multi-source search pipeline
-		searchClient.SetKnowledgeSearcher(services.NewKbSearchAdapter(s.kbMgr))
-		slog.Info("local knowledge base wired into search pipeline (BM25 + Dense + RRF)")
+	// KB is now a standalone tool (search_knowledge), not mixed into SearchClient.
+	// The KbSearchAdapter is passed to Harness directly via NewHarness().
+	slog.Info("local knowledge base initialized (standalone search_knowledge tool)")
 	} else {
 		slog.Warn("knowledge manager skipped: database not available")
 	}
@@ -677,7 +699,9 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/auth/verify", s.handleVerifyToken)
 
 		// Passkey / WebAuthn
-		r.With(s.jwtAuthMiddleware).Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
+		// register/begin is public — allows registration from the login page before JWT is obtained.
+		// The handler resolves user_id from the request body (or falls back to AdminUserID).
+		r.Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
 		r.Post("/auth/passkey/register/complete", s.handlePasskeyRegisterComplete)
 		r.Post("/auth/passkey/login/begin", s.handlePasskeyLoginBegin)
 		r.Post("/auth/passkey/login/complete", s.handlePasskeyLoginComplete)
@@ -784,6 +808,14 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 
             // SSE Push (admin only)
             r.Post("/sse/push", s.handleSSEPushTopic)
+
+            // Audit Logs
+            r.Get("/audit-logs", s.handleAdminListAuditLogs)
+
+            // Batch Operations
+            r.Post("/models/batch", s.handleAdminBatchModels)
+            r.Post("/api-keys/batch", s.handleAdminBatchAPIKeys)
+            r.Post("/cron-jobs/batch", s.handleAdminBatchCronJobs)
 
             // Evidence System
             r.Get("/evidence/{traceId}", s.handleAdminGetEvidence)
@@ -1389,7 +1421,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 
 		h := agent.NewHarness(
-			llmClient, s.search, styleProfile,
+			llmClient, s.search, services.NewKbSearchAdapter(s.kbMgr), styleProfile,
 			&harnessSessionStore{svc: s.memorySvc},
 			emitter,
 		)
@@ -1449,7 +1481,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 
 		engineSteps = append(engineSteps,
-			steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+			steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, services.NewKbSearchAdapter(s.kbMgr)),
 			s.newPostReviewStepWithLLM(llmClient, styleProfile),
 			steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
 			s.newPostReviewStepWithLLM(llmClient, styleProfile), // re-review after fix
@@ -1482,7 +1514,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 
 		h := agent.NewHarness(
-			llmClient, s.search, styleProfile,
+			llmClient, s.search, services.NewKbSearchAdapter(s.kbMgr), styleProfile,
 			&harnessSessionStore{svc: s.memorySvc},
 			emitter,
 		)
@@ -1705,7 +1737,7 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 				}
 
 				h := agent.NewHarness(
-					llmClient, s.search, styleProfile,
+					llmClient, s.search, services.NewKbSearchAdapter(s.kbMgr), styleProfile,
 					&harnessSessionStore{svc: s.memorySvc},
 					emitter,
 				)
@@ -1751,7 +1783,7 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 					engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
 				}
 				engineSteps = append(engineSteps,
-					steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+					steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, services.NewKbSearchAdapter(s.kbMgr)),
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
 					steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
@@ -2258,7 +2290,7 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 
 	registry.RegisterWithDescriptor(
 		engine.NewStepTool(
-			steps.NewWriteStepWithSearch(llmClient, styleProfile, s.search),
+			steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, services.NewKbSearchAdapter(s.kbMgr)),
 			"文章生成：按风格 Profile 生成文章，支持流式输出和 Agent Loop",
 			true, // terminal — article is produced
 		),
