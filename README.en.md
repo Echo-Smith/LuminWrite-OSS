@@ -2,72 +2,210 @@
 
 [中文](README.md) · [Live workspace](https://luminbuddy2.ericdocmic.top/v2/) · [Changelog](#changelog)
 
-An AI writing workspace for Chinese content creators. It turns a one-shot generation request into an observable and interruptible product flow: intent routing, Harness-LLM orchestration, source retrieval, outline confirmation, style-aware writing, post-review, feedback, A/B evaluation, and tiered memory.
+> **An AI writing workspace for Chinese content creators**: from intent understanding, source retrieval, and outline confirmation, to style-aware drafting, post-review, feedback, and memory沉淀—transforming one-shot generation into an observable, interruptible, and iterative writing process.
 
 ![LuminBuddy writing workspace](docs/assets/luminbuddy-workspace.png)
 
-> **Maturity: engineering beta.** The repository contains a working frontend and backend, a single-layer Harness agent engine, an orchestrated writing pipeline, guided outlines, style profiles, A/B evaluation, feedback surfaces, tiered memory, session event logs, traces, and metrics. It does not yet claim public evidence of adoption, retention, or business outcomes.
+---
 
-## Product problem
+## About LuminBuddy
 
-General chat models can draft quickly, but real writing work still fails when the system misunderstands constraints, hides retrieval and reasoning inside one generation, offers no control at high-cost decisions, and loses user feedback after the session.
+**LuminBuddy** is an AI writing assistant designed for Chinese content production. It doesn't pursue "one-click generation" magic, but instead breaks down the writing process into observable, interruptible, and iterative engineering workflows—keeping creators in control at key decision points while AI assists in source gathering, structure planning, style adaptation, and quality checking.
 
-LuminBuddy separates those problems into explicit product mechanisms:
+**Current maturity: Engineering Beta**. The repository contains a complete frontend and backend, Harness single-layer Agent orchestration, writing Pipeline, guided outlines, style profiles, A/B evaluation, feedback system, tiered memory, and monitoring metrics; continuously iterating.
 
-```text
-request → intent routing (rule-first, ms-level)
-       → Harness LLM orchestration (autonomous tool calls, session state persisted)
-       → retrieval plan → sources → relevance
-       → outline gate → style-aware streaming draft
-       → post-review → feedback, A/B evaluation, and memory
+---
+
+## Problems Solved
+
+General chat models can draft quickly, but real writing work usually fails at four points:
+
+| Pain Point | Manifestation | LuminBuddy's Solution |
+|------------|--------------|----------------------|
+| **Unstable intent understanding** | User's real needs, length, and style constraints not accurately captured | Rule-first intent routing + low-confidence LLM fallback |
+| **Black-box generation** | Source retrieval, opinion organization, and drafting compressed into one unobservable generation | Harness single-layer orchestration, every step visible, pausable, resumable |
+| **Loss of control at key points** | Users can't intervene at high-cost decision points like outline confirmation or style adjustment | Guided Mode: confirm outline before drafting |
+| **Feedback doesn't accumulate** | Good/bad feedback doesn't enter next generation; team can't locate failure points | Section feedback + A/B evaluation + tiered memory system |
+
+---
+
+## How It Works
+
+### Core Architecture: Harness-LLM Single-Layer Continuous Session
+
+Inspired by DeepSeek Harness (dsh), adopts a **single-layer architecture**:
+
+```
+User Request
+  → Harness (intent routing, tool registration, state management, circuit breaking)
+    → LLM continuous session (autonomously decides which tools to call, when to write, when to revise)
+      ←→ Tool execution (search/knowledge base/write/review/revise)
+  → Streaming output to frontend
 ```
 
-| Stage | Mechanism | What users get |
-|---|---|---|
-| Describe task | Rule-first intent routing with LLM fallback | Casual phrasing resolves to write, polish, compress, expand, or free chat |
-| Add sources | Query plan, multi-source retrieval, relevance filtering, semantic dedup | Visible provenance, less irrelevant content in drafts |
-| Decide structure | Auto mode or Guided Mode | Generate directly, or confirm/edit/regenerate outline first |
-| Produce draft | Style Profile + streaming + pause/resume | Style decoupled from code, generation is interruptible |
-| Judge quality | Post Review, safety checks, Auto Fix | Low-severity issues auto-fixed; high-risk issues held for human judgment |
-| Improve over time | Section feedback, A/B evaluation sets, tiered memory | Preferences and failure signals become reusable evidence |
+**Key designs**:
+- **No nested ReAct + inner agent loop**, reducing latency and output drift
+- **1 LLM continuous session** replaces traditional Pipeline's 10+ independent calls, time-to-first-token from 30-60s to 3-5s
+- **Cross-turn session persistence**: articles, sources, search records accumulate and reuse within the same dialog
 
-## Product decisions
+### Smart Context Management
 
-- **Harness orchestrates, LLM executes.** A single-layer Harness manages intent routing, tool registration, session state, and circuit-breaking; the LLM autonomously decides which tools to call, when to write, and when to revise. No nested ReAct + inner agent loop.
-- **Rules before models where possible.** Deterministic intent signals run first; low-confidence cases can fall back to an LLM.
-- **Human control at the outline.** Guided Mode lets the user confirm, edit, or regenerate structure before the expensive drafting step.
-- **Style as a versioned product object.** Style Profiles can be managed, evaluated, rolled out, and rolled back independently of the pipeline.
-- **Governed memory.** Hard preferences, learned patterns, and feedback signals have quality gates and conflict states instead of becoming permanent by default.
-- **Evaluation and observability as product infrastructure.** Built-in A/B testing framework, step traces, and Prometheus-format metrics make failures diagnosable.
+**Compaction (dialog compression)**: When dialog history exceeds threshold (10 messages / 6000 tokens), automatically compress old messages into summary, frontend displays saved token count.
 
-## Current capability map
+**On-demand retrieval (retrieve_context)**: LLM can actively query based on current task needs:
+- `article` — specific paragraphs of current article
+- `memory` — user's writing preferences and historical memory
+- `history` — current dialog history
+- `search` — collected search sources
+- `profile` — current style configuration details
 
-| Status | Capability |
-|---|---|
-| Implemented | React 19 workspace, Go Harness agent engine, WebSocket events, pause/resume/cancel, Guided Mode, Style Profiles, post-review, auto-fix, user feedback, A/B evaluation framework, tiered memory, session event log, traces, metrics, grayscale routing, Passkey/WebAuthn auth, guest mode |
-| Requires configuration | PostgreSQL 17 + pgvector/paradedb, model APIs, embeddings, external search sources, authentication providers |
-| Early-stage | Multi-source reliability, labeled evaluation quality, long-term memory value, production feedback loops |
-| Missing public evidence | Active users, repeat usage, measured quality lift, cost benefit, content adoption, business outcomes |
+System Prompt reduced from full injection (3000+ tokens) to resident layer (500-800 tokens), more precise information, more ample context window.
 
-## Architecture
+### Writing Flow
 
 ```text
-React 19 + Vite
-       │ REST / WebSocket
-Go Harness Agent Engine
-       ├─ Intent Routing (rule-first) / Memory Gate
-       ├─ Harness LLM orchestration (autonomous tools, persistent session)
-       ├─ Query Plan / Search / Relevance / Outline / Write
-       ├─ Post Review / Auto Fix / Memory Extract
-       ├─ Style Profile / A/B Evaluation / Feedback
-       └─ Traces / Metrics / Session Event Log / Grayscale Routing
-       │
-PostgreSQL 17 + pgvector + paradedb (BM25)
+Writing Request
+  → Intent Recognition (rule-first, ms-level routing)
+  → Memory Retrieval (user preference injection)
+  → Source Retrieval (multi-source search + knowledge base + relevance filtering)
+  → Outline Confirmation (guided mode: confirm/edit/redo)
+  → Style-aware Streaming Writing (generate according to Profile rules)
+  → Post-review (quality scoring + safety check)
+  → Auto-fix (low-severity issues auto-fixed)
+  → Section Feedback + A/B Evaluation + Memory沉淀
 ```
 
-See the [architecture blueprint](docs/01-architecture.md) and [Harness design](docs/architecture-c-design.md) for implementation details.
+---
 
-## Run locally
+## Features
+
+### Writing Core
+
+| Feature | Description |
+|---------|-------------|
+| **Intent Recognition** | Rule-first routing, supports writing/polish/compress/expand/free chat |
+| **Multi-source Retrieval** | Web search (Tavily/Bing/Tencent News) + internal knowledge base (BM25 + Dense + GraphRAG) |
+| **Guided Mode** | Outline confirmation, editing, up to five regenerations |
+| **Style Configuration** | Style Profile independently managed, supports versioning, grayscale release and rollback |
+| **Streaming Output** | WebSocket real-time push, supports pause/resume/cancel |
+| **Quality Review** | 6-dimension scoring (factuality/structure/style/rhetoric/length/safety) |
+| **Auto-fix** | Auto-correct when review fails, up to 3 attempts |
+
+### Writing Toolset
+
+Tools LLM autonomously calls during continuous session:
+
+| Tool | Purpose |
+|------|---------|
+| `search_web` | Search internet for latest information |
+| `search_knowledge` | Retrieve internal knowledge base examples and style guidelines |
+| `read_source` | Read detailed content of search results |
+| `generate_outline` | Generate article outline for user confirmation |
+| `write_article` | Start streaming output of complete article |
+| `review_article` | Quality review of article |
+| `revise_section` | Directional modification of article section |
+| `word_count_check` | Check if word count meets style requirements |
+| `rewrite_title` | Generate 3 alternative titles with recommendations |
+| `fact_check` | Extract factual claims and verify through search |
+| `retrieve_context` | On-demand retrieval of session context |
+
+### Online Editing & Export
+
+- **Real-time editing**: Edit article directly in chat box (Markdown format)
+- **Multi-format export**: Markdown (.md) / Word (.doc) / PDF (print mode)
+- **Pure frontend implementation**: No backend API needed, browser directly generates files
+
+### Memory System
+
+Four-tier memory architecture:
+
+| Tier | Type | Purpose |
+|------|------|---------|
+| Tier 1 | Hard preferences | User explicitly set writing preferences |
+| Tier 2 | Behavioral patterns | Automatically extracted writing habits |
+| Tier 3 | Feedback signals | User feedback-driven improvement signals |
+| Tier 4 | Entity network | Topic, person, concept relationship graph |
+
+Supports file-layer bidirectional sync (Markdown file ↔ database), human-readable and editable.
+
+### Admin Dashboard
+
+- **Style Management**: Profile creation, editing, version control, grayscale release
+- **Model Configuration**: Multi-model access (DeepSeek/OpenAI compatible interface), key management
+- **A/B Evaluation**: Control/experiment group automated evaluation and metric comparison
+- **Feedback Analysis**: Section feedback statistics, quality trends
+- **Audit Logs**: Operation tracking, security audit
+- **Token Monitoring**: Usage statistics, cost analysis
+
+### Authentication & Security
+
+- **Passkey/WebAuthn**: Passwordless login, device-level security
+- **Guest Mode**: Experience without registration, supports subsequent upgrade
+- **Prompt Injection Defense**: Input sanitization + system prompt defense directives
+- **Sensitive Content Filter**: Built-in sensitive content filtering
+
+---
+
+## Technical Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    Frontend (React 19 + Vite)                 │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
+│  │ Writing  │ │ Topic    │ │ Personal │ │ Admin          │  │
+│  │ Workspace│ │ Center   │ │ Center   │ │ Dashboard      │  │
+│  └─────┬────┘ └─────┬────┘ └─────┬────┘ └───────┬────────┘  │
+│        └────────────┴────────────┘              │           │
+│                     │                           │           │
+│              WebSocket + REST                   │           │
+└─────────────────────┼───────────────────────────┼───────────┘
+                      │                           │
+┌─────────────────────┼───────────────────────────┼───────────┐
+│              Go Backend (chi router)             │           │
+│                     │                           │           │
+│  ┌──────────────────┴───────────────────────────┴────────┐  │
+│  │                   Harness Agent Engine                 │  │
+│  │  ┌────────┐  ┌─────────┐  ┌────────┐  ┌────────────┐  │  │
+│  │  │ Intent │→ │ Search  │→ │ Write  │→ │PostReview  │  │  │
+│  │  │Routing │  │  Plan   │  │ Step   │  │   Step     │  │  │
+│  │  └────────┘  └─────────┘  └────────┘  └────────────┘  │  │
+│  │                                                        │  │
+│  │  ┌────────┐  ┌─────────┐  ┌────────┐  ┌────────────┐  │  │
+│  │  │ Memory │  │  Style  │  │  A/B   │  │  Feedback  │  │  │
+│  │  │  Gate  │  │ Profile │  │  Eval  │  │  System    │  │  │
+│  │  └────────┘  └─────────┘  └────────┘  └────────────┘  │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                     │                                       │
+│  ┌──────────┬──────────┬──────────┬──────────┬──────────┐  │
+│  │ DeepSeek │  Tavily  │ Tencent  │ IMA KB   │ DashScope│  │
+│  │  Client  │  Client  │  News    │  Client  │ Embedding│  │
+│  └──────────┴──────────┴──────────┴──────────┴──────────┘  │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────┼───────────────────────────────────────┐
+│              PostgreSQL 17 + pgvector + paradedb             │
+│  ┌─────────┬──────────┬──────────┬──────────┬────────────┐  │
+│  │ User    │ Style    │ Knowledge│ Memory   │ Session    │  │
+│  │ Data    │ Profiles │ Base     │ System   │ Logs       │  │
+│  └─────────┴──────────┴──────────┴──────────┴────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui |
+| Backend | Go 1.22+, chi router, coder/websocket |
+| Database | PostgreSQL 17 + pgvector + paradedb (BM25) |
+| LLM | DeepSeek API (default), supports OpenAI compatible interface |
+| Embedding | DashScope text-embedding-v3 (1024-dim) |
+| Deployment | Docker Compose |
+| Monitoring | Prometheus metrics + slog structured logging + Trace tracking |
+
+---
+
+## Quick Start
 
 ### Docker Compose (recommended)
 
@@ -79,10 +217,13 @@ docker compose up -d
 
 Frontend at `http://localhost:3000`, backend health at `http://localhost:8080/api/v2/health`.
 
-### Separate frontend and backend
+### Local Development
 
 ```bash
+# Backend
 cd backend && cp .env.example .env && go run ./cmd/server/
+
+# Frontend
 cd frontend && npm ci && npm run dev
 ```
 
@@ -93,67 +234,78 @@ cd backend && go test ./...
 cd frontend && npm ci && npm run build
 ```
 
-End-to-end and A/B test scripts are in `backend/e2e-*.mjs`, requiring a reachable backend, database, and external service configuration.
-
-### Deployment packaging
+### Deployment Packaging
 
 ```bash
 # Source only
 ./scripts/pack-for-1panel.sh
 
-# Source + Docker images (recommended for servers in China)
+# Source + Docker images (recommended for China servers)
 ./scripts/pack-for-1panel.sh --images
 ```
 
-## Design documents
+---
+
+## Design Documents
 
 | Document | Contents |
-|---|---|
-| [Architecture](docs/01-architecture.md) | Agent engine, data flow, system boundaries |
-| [Harness design](docs/architecture-c-design.md) | Single-layer LLM orchestrator design and tool granularity |
-| [Database schema](docs/02-database-schema.md) | PostgreSQL, pgvector, migrations |
-| [API spec](docs/03-api-specification.md) | REST and WebSocket protocol |
+|----------|----------|
+| [Architecture Blueprint](docs/01-architecture.md) | Agent engine, data flow, system boundaries |
+| [Harness Design](docs/architecture-c-design.md) | Single-layer LLM orchestrator design and tool granularity |
+| [Database Schema](docs/02-database-schema.md) | PostgreSQL, pgvector, migrations |
+| [API Spec](docs/03-api-specification.md) | REST and WebSocket protocol |
 | [Style Profile](docs/04-style-profile.md) | Style versioning, rollout, rollback |
-| [Grayscale routing](docs/05-grayscale-routing.md) | Profile flags and UID hash routing |
+| [Grayscale Routing](docs/05-grayscale-routing.md) | Profile flags and UID hash routing |
 | [Evaluation](docs/06-evaluation.md) | Evaluation sets and triggers |
 | [Feedback](docs/07-feedback.md) | Section feedback and reputation weights |
 | [Admin Dashboard](docs/08-admin-dashboard.md) | Config, evaluation, observability |
-| [Memory system](docs/11-memory-system.md) | Hard preferences, behavioral patterns, feedback signals |
-| [Editorial system](docs/12-editorial-system.md) | Editorial task management and workflow |
+| [Memory System](docs/11-memory-system.md) | Hard preferences, behavioral patterns, feedback signals |
+| [Editorial System](docs/12-editorial-system.md) | Editorial task management and workflow |
+| [Runbook](docs/runbook.md) | Deployment, monitoring, troubleshooting |
 
-## Project disclaimer
-
-- This is a runnable personal product and engineering project, not a validated commercial deployment.
-- External model, retrieval, and data source availability depends on respective service configurations and terms.
-- The repository contains no production secrets; create local configuration from the example env files.
+---
 
 ## Changelog
 
+### v0.4.0 (2026-08-18)
+
+- **Smart Context Management**: `retrieve_context` tool lets LLM fetch information on demand, System Prompt tokens reduced 60%+
+- **Dialog History Compaction**: Inspired by dsh pattern, auto-compresses history, frontend displays saved tokens
+- **Writing Toolset Extension**: Added `word_count_check`, `rewrite_title`, `fact_check`
+- **Online Editing & Export**: Support Markdown/Word/PDF export
+- **Admin Dashboard Refactor**: Unified permission/poll/resource management hooks, added audit logs
+- **Slim docreader Image**: ~150MB replacing old 5.53GB
+
 ### v0.3.0 (2026-08-16)
 
-- **Harness architecture**: Replaced nested UnifiedAgent ReAct with single-layer LLM continuous session orchestration; autonomous tool calls, cross-turn session persistence
-- **A/B testing framework**: Editorial experiment orchestrator + result store for automated control/experiment group evaluation
-- **Passkey auth**: WebAuthn passwordless login and device management; bind/delete Passkey from personal center
-- **Session Event Log**: Append-only event log with session replay and reconnection support
-- **Prompt injection defense**: Lean injection for chat intent, Token reduced 10.5%
-- **SQL fix**: PostgreSQL type cast bug in `session_events.go`
-- **Packaging script**: Fixed macOS mktemp compatibility and deleted-file handling
+- **Harness Architecture**: Single-layer LLM continuous session orchestration
+- **A/B Testing Framework**: Control/experiment group automated evaluation
+- **Passkey Auth**: WebAuthn passwordless login
+- **Session Event Log**: Append-only event log with reconnection support
+- **Prompt Injection Defense**: Lean injection for chat intent, Token reduced 10.5%
 
 ### v0.2.0
 
-- Guided Mode: outline confirmation, editing, up to five regenerations
-- Style Profile grayscale routing: version management, UID hash routing
-- Post Review + Auto Fix: post-draft review and automatic correction
-- Tiered memory system: hard preferences, behavioral patterns, feedback signals
-- Prometheus metrics and trace pipeline
-- Guest mode with upgrade-to-register flow
+- Guided Mode outline confirmation
+- Style Profile grayscale routing
+- Post Review + Auto Fix
+- Tiered memory system
+- Prometheus metrics and Trace tracking
 
 ### v0.1.0
 
 - React 19 workspace + Go Agent Pipeline
-- WebSocket streaming events (pause/resume/cancel)
+- WebSocket streaming events
 - Multi-source retrieval and relevance filtering
 - Docker Compose one-command deployment
+
+---
+
+## Project Disclaimer
+
+- This is a runnable personal product and engineering project, not a validated commercial deployment.
+- External model, retrieval, and data source availability depends on respective service configurations and terms.
+- The repository contains no production secrets; create local configuration from the example env files.
 
 ## License
 
