@@ -69,7 +69,7 @@ LABEL org.opencontainers.image.title="luminbuddy-v2-backend" \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
 # Startup: init CLI API key → start server
