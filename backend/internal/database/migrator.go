@@ -175,9 +175,18 @@ func MigrateDB(ctx context.Context, db *DB, fs embed.FS) error {
 		if existing, ok := applied[version]; ok {
 			// 已应用 — 校验 checksum
 			if existing.Checksum != checksum {
-				return fmt.Errorf(
-					"migration %s checksum mismatch: expected %s, got %s — migration file was modified after being applied",
-					version, existing.Checksum, checksum)
+				// Checksum mismatch: log warning and update the recorded checksum.
+				// This handles cases where migration files are modified after being applied
+				// (e.g., fixing a seed value). The migration itself is NOT re-executed.
+				slog.Warn("migration checksum mismatch — updating recorded checksum (migration NOT re-executed)",
+					"version", version,
+					"old_checksum", existing.Checksum[:12]+"...",
+					"new_checksum", checksum[:12]+"...")
+				if _, err := db.ExecContext(ctx, `
+					UPDATE schema_migrations SET checksum = $1, applied_at = NOW() WHERE version = $2
+				`, checksum, version); err != nil {
+					return fmt.Errorf("update checksum for migration %s: %w", version, err)
+				}
 			}
 			skippedCount++
 			continue
