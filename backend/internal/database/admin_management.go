@@ -402,7 +402,7 @@ type APIKey struct {
 	LastUsedAt  *time.Time             `json:"last_used_at,omitempty"`
 	LastCheck   *time.Time             `json:"last_check,omitempty"`
 	LastStatus  string                 `json:"last_status"`
-	LastError   string                 `json:"last_error,omitempty"`
+	LastError   *string                `json:"last_error,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata"`
 	CreatedAt   time.Time              `json:"created_at"`
 	UpdatedAt   time.Time              `json:"updated_at"`
@@ -831,7 +831,7 @@ type CronJob struct {
 	LastRunAt   *time.Time             `json:"last_run_at,omitempty"`
 	NextRunAt   *time.Time             `json:"next_run_at,omitempty"`
 	LastStatus  string                 `json:"last_status"`
-	LastError   string                 `json:"last_error,omitempty"`
+	LastError   *string                `json:"last_error,omitempty"`
 	RunCount    int                    `json:"run_count"`
 	FailCount   int                    `json:"fail_count"`
 	CreatedAt   time.Time              `json:"created_at"`
@@ -1034,7 +1034,7 @@ type MCPServerConfig struct {
 	IsActive        bool       `json:"is_active"`
 	Description     string     `json:"description"`
 	LastStatus      string     `json:"last_status"`
-	LastError       string     `json:"last_error,omitempty"`
+	LastError       *string    `json:"last_error,omitempty"`
 	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
