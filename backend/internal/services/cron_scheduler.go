@@ -125,9 +125,7 @@ func (cs *CronScheduler) executeJob(job *database.CronJob, execFn func(*database
 }
 
 // updateNextRunAt calculates the next run time based on the schedule
-// and updates it in the database. For now, we use a simple interval
-// parsing: if schedule is "@every 30s", "@every 5m", "@hourly", etc.
-// More complex cron expressions require robfig/cron parser.
+// and updates it in the database.
 func (cs *CronScheduler) updateNextRunAt(job *database.CronJob) {
 	next := calculateNextRun(job.Schedule, time.Now())
 	if next.IsZero() || cs.adminRepo == nil {
@@ -138,15 +136,14 @@ func (cs *CronScheduler) updateNextRunAt(job *database.CronJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := cs.adminRepo.GetPendingCronJobs(ctx); err != nil {
+	// Actually update next_run_at in the database
+	if err := cs.adminRepo.UpdateCronJobNextRun(ctx, job.ID, next); err != nil {
+		slog.Warn("cron scheduler: failed to update next_run_at",
+			"job_id", job.ID, "error", err)
 		return
 	}
 
-	// Direct update via raw SQL would be ideal, but we use the existing repo pattern
-	// The UpdateCronJobStatus already sets last_run_at, we just need to also set next_run_at
-	// Since we don't have a dedicated method, we'll use a direct query
-	// This is a limitation of the current repo pattern
-	slog.Debug("cron scheduler: calculated next_run_at",
+	slog.Debug("cron scheduler: next_run_at updated",
 		"job_id", job.ID, "next_run", next.Format(time.RFC3339))
 }
 
@@ -195,21 +192,93 @@ func calculateNextRun(schedule string, from time.Time) time.Time {
 	}
 
 	// Standard 5-field cron expression: "minute hour day month weekday"
-	// For simplicity, we only handle "*/N * * * *" patterns
+	// We parse each field to compute the next run time.
 	parts := strings.Fields(schedule)
 	if len(parts) == 5 {
-		minuteField := parts[0]
-		if strings.HasPrefix(minuteField, "*/") {
-			intervalStr := strings.TrimPrefix(minuteField, "*/")
-			var interval int
-			if _, err := fmt.Sscanf(intervalStr, "%d", &interval); err == nil && interval > 0 {
-				return from.Add(time.Duration(interval) * time.Minute)
-			}
-		}
-		// Fall back to 1 minute
-		return from.Add(1 * time.Minute)
+		return calculateCronNextRun(parts, from)
 	}
 
 	// Unknown schedule, default to 1 hour
 	return from.Add(1 * time.Hour)
+}
+
+// calculateCronNextRun computes the next run time for a 5-field cron expression.
+// Supports: exact values (0), wildcards (*), step values (*/N), and lists (1,3,5).
+// Fields: minute hour day-of-month month day-of-week
+func calculateCronNextRun(parts []string, from time.Time) time.Time {
+	minuteField, hourField, dayField, monthField, dowField := parts[0], parts[1], parts[2], parts[3], parts[4]
+
+	// Start from the next minute after 'from'
+	candidate := time.Date(from.Year(), from.Month(), from.Day(), from.Hour(), from.Minute(), 0, 0, from.Location())
+	candidate = candidate.Add(1 * time.Minute)
+
+	// Search up to 7 days ahead (covers weekly schedules)
+	for i := 0; i < 7*24*60; i++ {
+		if cronFieldMatches(minuteField, candidate.Minute()) &&
+			cronFieldMatches(hourField, candidate.Hour()) &&
+			cronFieldMatches(dayField, candidate.Day()) &&
+			cronFieldMatches(monthField, int(candidate.Month())) &&
+			cronFieldMatches(dowField, int(candidate.Weekday())) {
+			return candidate
+		}
+		candidate = candidate.Add(1 * time.Minute)
+	}
+
+	// Fallback: should not happen for valid cron expressions
+	return from.Add(1 * time.Hour)
+}
+
+// cronFieldMatch checks if a cron field matches a value.
+// Supports: * (wildcard), exact number, */N (step), N,M,L (list).
+func cronFieldMatch(field string, val int) bool {
+	field = strings.TrimSpace(field)
+	if field == "*" {
+		return true
+	}
+
+	// Handle lists: 1,3,5
+	if strings.Contains(field, ",") {
+		for _, f := range strings.Split(field, ",") {
+			if cronFieldMatch(strings.TrimSpace(f), val) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Handle step: */N
+	if strings.HasPrefix(field, "*/") {
+		stepStr := strings.TrimPrefix(field, "*/")
+		var step int
+		if _, err := fmt.Sscanf(stepStr, "%d", &step); err == nil && step > 0 {
+			return val%step == 0
+		}
+		return false
+	}
+
+	// Handle range: N-M
+	if strings.Contains(field, "-") {
+		rangeParts := strings.SplitN(field, "-", 2)
+		var lo, hi int
+		if _, err := fmt.Sscanf(rangeParts[0], "%d", &lo); err != nil {
+			return false
+		}
+		if _, err := fmt.Sscanf(rangeParts[1], "%d", &hi); err != nil {
+			return false
+		}
+		return val >= lo && val <= hi
+	}
+
+	// Exact match
+	var num int
+	if _, err := fmt.Sscanf(field, "%d", &num); err == nil {
+		return val == num
+	}
+
+	return false
+}
+
+// cronFieldMatches is an alias for cronFieldMatch (used in calculateCronNextRun).
+func cronFieldMatches(field string, val int) bool {
+	return cronFieldMatch(field, val)
 }

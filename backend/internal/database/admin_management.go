@@ -971,6 +971,18 @@ func (r *AdminRepo) UpdateCronJobStatus(ctx context.Context, id, status, errMsg 
 	return err
 }
 
+// UpdateCronJobNextRun sets the next_run_at timestamp for a cron job.
+func (r *AdminRepo) UpdateCronJobNextRun(ctx context.Context, id string, nextRun time.Time) error {
+	if r.db == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE cron_jobs SET next_run_at = $2, updated_at = NOW()
+		WHERE id = $1
+	`, id, nextRun)
+	return err
+}
+
 // GetPendingCronJobs returns jobs that are due for execution.
 func (r *AdminRepo) GetPendingCronJobs(ctx context.Context) ([]*CronJob, error) {
 	if r.db == nil {

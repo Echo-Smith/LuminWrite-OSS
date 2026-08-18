@@ -35,7 +35,7 @@ func (s *Server) cronKbAutoImport(ctx context.Context, job *database.CronJob) er
 	cfg := job.TaskConfig
 	colURL := "https://www.hangzhou.com.cn/pinglun/node_152931.htm"
 	kbID := "yinyue"
-	maxPages := 1
+	maxPages := 5
 
 	if v, ok := cfg["url"].(string); ok && v != "" {
 		colURL = v

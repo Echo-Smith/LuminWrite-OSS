@@ -17,7 +17,7 @@ SELECT
     jsonb_build_object(
         'url', 'https://www.hangzhou.com.cn/pinglun/node_152931.htm',
         'kb_id', 'yinyue',
-        'max_pages', 1
+        'max_pages', 10
     ),
     true,
     NOW(),
