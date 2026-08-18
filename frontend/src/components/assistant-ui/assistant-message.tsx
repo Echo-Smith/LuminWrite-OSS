@@ -8,7 +8,7 @@
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType } from "lucide-react";
+import { Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType, Save, Loader2 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, CompactionPart } from "@/stores/agent-store";
@@ -131,7 +131,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             )}
             {/* 消息操作按钮 */}
             {!isRunning && textParts.some((p) => p.text.trim()) && (
-              <MessageActions text={textParts.map((t) => t.text).join("")} title={message.articleTitle} />
+              <MessageActions text={textParts.map((t) => t.text).join("")} title={message.articleTitle} traceId={traceId} />
             )}
           </div>
         )}
@@ -425,11 +425,13 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
 /**
  * 消息操作按钮 — Copy / Regenerate
  */
-function MessageActions({ text, title }: { text: string; title?: string }) {
+function MessageActions({ text, title, traceId }: { text: string; title?: string; traceId: string | null }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editedText, setEditedText] = useState(text);
-  const [showExport, setShowExport] = useState(false);
+const [showExport, setShowExport] = useState(false);
+const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const handleCopy = () => {
     const fullText = title ? `${title}\n\n${text}` : text;
@@ -570,9 +572,9 @@ function MessageActions({ text, title }: { text: string; title?: string }) {
             className="w-full min-h-[200px] rounded-md border border-border bg-background p-3 text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 transition-ui"
             placeholder="编辑文章内容（Markdown 格式）..."
           />
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-3 mt-1">
             <button
-              onClick={() => { setEditing(false); }}
+              onClick={() => { setEditing(false); setEditedText(text); }}
               className="text-xs text-muted-foreground hover:text-foreground transition-ui"
             >
               取消
@@ -581,12 +583,38 @@ function MessageActions({ text, title }: { text: string; title?: string }) {
               onClick={() => {
                 navigator.clipboard.writeText(editedText);
                 toast.success("已复制", "编辑后的内容已复制到剪贴板");
-                setEditing(false);
               }}
-              className="text-xs text-emerald-600 hover:text-emerald-700 transition-ui"
+              className="text-xs text-muted-foreground hover:text-foreground transition-ui"
             >
-              复制编辑结果
+              复制
             </button>
+            {traceId && (
+              <button
+                onClick={async () => {
+                  setSaving(true);
+                  const ok = await useAgentStore.getState().saveArticleEdit(traceId, editedText, title);
+                  setSaving(false);
+                  if (ok) {
+                    setSaved(true);
+                    setEditing(false);
+                    toast.success("已保存", "文章已更新，旧版本已自动归档");
+                    setTimeout(() => setSaved(false), 2000);
+                  } else {
+                    toast.error("保存失败", "无法保存文章，请稍后重试");
+                  }
+                }}
+                disabled={saving || editedText === text}
+                className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-700 transition-ui disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                保存
+              </button>
+            )}
+            {saved && (
+              <span className="text-xs text-emerald-600 flex items-center gap-1">
+                <Check className="h-3 w-3" /> 已保存
+              </span>
+            )}
           </div>
         </div>
       )}

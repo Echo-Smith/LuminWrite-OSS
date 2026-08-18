@@ -97,7 +97,15 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     return session?.status ?? "idle";
   });
 
-  const isRunning = sessionStatus === "running";
+  // Check if the session is waiting for user input (e.g. outline confirmation).
+  // In this state, we don't show pause/play buttons — the user needs to interact
+  // with the input widget (e.g. confirm/edit the outline), not control the agent.
+  const isAwaitingInput = useAgentStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return session?.awaitInputAt != null;
+  });
+
+  const isRunning = sessionStatus === "running" && !isAwaitingInput;
   const isPaused = sessionStatus === "paused";
 
   // 自动调整 textarea 高度

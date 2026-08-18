@@ -749,3 +749,168 @@ func (r *TraceRepo) UpsertHotTopics(ctx context.Context, topics []map[string]int
 	slog.Info("hot topics upserted", "count", count, "total_fetched", len(topics))
 	return count, nil
 }
+
+// ─── Article Version Management ──────────────────────────
+
+// SaveArticleVersion archives the current article from agent_traces into
+// article_versions before updating. This preserves history for rollback.
+func (r *TraceRepo) SaveArticleVersion(ctx context.Context, traceID, userID, article, articleTitle, versionNote string) error {
+	if r.db == nil {
+		return nil
+	}
+
+	var userIDArg interface{}
+	if userID != "" && userID != "anonymous" && isLikelyUUID(userID) {
+		userIDArg = userID
+	}
+
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO article_versions (trace_id, user_id, article, article_title, version_note)
+		VALUES ($1, $2, $3, $4, $5)
+	`, traceID, userIDArg, article, articleTitle, versionNote)
+	if err != nil {
+		slog.Warn("failed to save article version", "error", err, "trace_id", traceID)
+	}
+	return err
+}
+
+// UpdateTraceArticle updates the article content in agent_traces (latest version).
+// Before updating, it archives the current article into article_versions.
+// Only the trace owner (matching userID) can update the article.
+func (r *TraceRepo) UpdateTraceArticle(ctx context.Context, traceID, userID, newArticle, newTitle, versionNote string) error {
+	if r.db == nil {
+		return nil
+	}
+
+	// 1. Archive current article before overwriting
+	var (
+		oldArticle  *string
+		oldTitle    *string
+		traceUserID *string
+	)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT article, article_title, user_id::text
+		FROM agent_traces WHERE trace_id = $1
+	`, traceID).Scan(&oldArticle, &oldTitle, &traceUserID)
+	if err != nil {
+		return fmt.Errorf("trace not found: %w", err)
+	}
+
+	// 2. Verify ownership (userID must match trace owner)
+	// Admin access is handled at the handler layer before calling this method.
+	if traceUserID != nil && *traceUserID != "" && *traceUserID != userID {
+		return fmt.Errorf("unauthorized: user does not own this trace")
+	}
+
+	// 3. Archive old version if there was one
+	if oldArticle != nil && *oldArticle != "" && *oldArticle != newArticle {
+		var userIDArg interface{}
+		if traceUserID != nil && isLikelyUUID(*traceUserID) {
+			userIDArg = *traceUserID
+		}
+		note := versionNote
+		if note == "" {
+			note = "用户编辑前自动保存"
+		}
+		_, _ = r.db.ExecContext(ctx, `
+			INSERT INTO article_versions (trace_id, user_id, article, article_title, version_note)
+			VALUES ($1, $2, $3, $4, $5)
+		`, traceID, userIDArg, *oldArticle, oldTitle, note)
+	}
+
+	// 4. Update to new version
+	titleArg := newTitle
+	if titleArg == "" && oldTitle != nil {
+		titleArg = *oldTitle
+	}
+	_, err = r.db.ExecContext(ctx, `
+		UPDATE agent_traces
+		SET article = $1, article_title = $2, completed_at = COALESCE(completed_at, NOW())
+		WHERE trace_id = $3
+	`, newArticle, titleArg, traceID)
+	if err != nil {
+		slog.Warn("failed to update trace article", "error", err, "trace_id", traceID)
+	}
+	return err
+}
+
+// ListArticleVersions retrieves all historical versions of an article.
+func (r *TraceRepo) ListArticleVersions(ctx context.Context, traceID string) ([]map[string]interface{}, error) {
+	if r.db == nil {
+		return []map[string]interface{}{}, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id::text, article_title, version_note, created_at
+		FROM article_versions
+		WHERE trace_id = $1
+		ORDER BY created_at DESC
+		LIMIT 20
+	`, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var versions []map[string]interface{}
+	for rows.Next() {
+		var (
+			id          string
+			title       *string
+			note        *string
+			createdAt   time.Time
+		)
+		if err := rows.Scan(&id, &title, &note, &createdAt); err != nil {
+			continue
+		}
+		item := map[string]interface{}{
+			"version_id": id,
+			"created_at": createdAt,
+		}
+		if title != nil {
+			item["article_title"] = *title
+		}
+		if note != nil {
+			item["version_note"] = *note
+		}
+		versions = append(versions, item)
+	}
+	return versions, nil
+}
+
+// GetArticleVersion retrieves the full article text for a specific version.
+func (r *TraceRepo) GetArticleVersion(ctx context.Context, versionID string) (map[string]interface{}, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	var (
+		article     string
+		title       *string
+		note        *string
+		traceID     string
+		createdAt   time.Time
+	)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT article, article_title, version_note, trace_id, created_at
+		FROM article_versions
+		WHERE id = $1
+	`, versionID).Scan(&article, &title, &note, &traceID, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]interface{}{
+		"version_id": versionID,
+		"trace_id":   traceID,
+		"article":    article,
+		"created_at": createdAt,
+	}
+	if title != nil {
+		result["article_title"] = *title
+	}
+	if note != nil {
+		result["version_note"] = *note
+	}
+	return result, nil
+}

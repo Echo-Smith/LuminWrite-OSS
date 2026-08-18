@@ -68,9 +68,9 @@ func (r *TraceRepo) GetTopicByID(ctx context.Context, id string) (map[string]int
 }
 
 // ListRelatedTraces retrieves completed writing traces related to a topic title.
-// If userID is non-empty, results are filtered to that user only.
+// If userID is non-empty, results are filtered to that user only (article isolation).
 // If topicTitle is empty, returns recent completed traces (for recommendations).
-func (r *TraceRepo) ListRelatedTraces(ctx context.Context, topicTitle string, limit int) ([]map[string]interface{}, error) {
+func (r *TraceRepo) ListRelatedTraces(ctx context.Context, topicTitle string, limit int, userID ...string) ([]map[string]interface{}, error) {
 	if r.db == nil {
 		return []map[string]interface{}{}, nil
 	}
@@ -78,15 +78,26 @@ func (r *TraceRepo) ListRelatedTraces(ctx context.Context, topicTitle string, li
 		limit = 10
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
+	// Build query with optional user_id filter
+	query := `
 		SELECT id::text, user_id, style_slug, mode, status,
 		       article_title, article, created_at, completed_at
 		FROM agent_traces
 		WHERE user_input ILIKE '%' || $1 || '%'
-		  AND status = 'completed'
-		ORDER BY created_at DESC
-		LIMIT $2
-	`, topicTitle, limit)
+		  AND status = 'completed'`
+	args := []interface{}{topicTitle}
+	argIdx := 2
+
+	if len(userID) > 0 && userID[0] != "" && userID[0] != "anonymous" {
+		query += fmt.Sprintf(" AND user_id = $%d", argIdx)
+		args = append(args, userID[0])
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

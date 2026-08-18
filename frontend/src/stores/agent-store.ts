@@ -133,6 +133,8 @@ interface AgentStore {
   handleServerMessage: (msg: WSServerMessage) => void;
   resumeSession: (traceId: string) => void;
   markFeedbackSubmitted: (traceId: string) => void;
+  saveArticleEdit: (traceId: string, article: string, articleTitle?: string, versionNote?: string) => Promise<boolean>;
+  loadArticleVersion: (traceId: string, versionId: string) => Promise<boolean>;
 
   // 内部 helpers
   _getActiveSession: () => WritingSession | null;
@@ -544,7 +546,7 @@ articleTitle: d.article_title,
     if (session?.traceId) {
       get().sendWS("agent.cancel", { trace_id: session.traceId });
     }
-    get()._updateActiveSession((s) => ({ ...s, status: "idle" }));
+    get()._updateActiveSession((s) => ({ ...s, status: "idle", awaitInputAt: null }));
   },
 
   confirmOutline: (data) => {
@@ -556,6 +558,8 @@ articleTitle: d.article_title,
         data,
       });
     }
+    // Clear awaitInputAt since the user has confirmed
+    get()._updateActiveSession((s) => ({ ...s, awaitInputAt: null }));
   },
 
   regenerateOutline: () => {
@@ -566,8 +570,8 @@ articleTitle: d.article_title,
         step: "outline",
         data: { action: "regenerate" },
       });
-      // Mark session as running while the outline is being regenerated
-      get()._updateActiveSession((s) => ({ ...s, status: "running" }));
+      // Mark session as running and clear awaitInputAt while the outline is being regenerated
+      get()._updateActiveSession((s) => ({ ...s, status: "running", awaitInputAt: null }));
     }
   },
 
@@ -764,7 +768,10 @@ articleTitle: d.article_title,
             };
           });
         }
-        get()._updateActiveSession((s) => ({ ...s, status: "paused", awaitInputAt: Date.now() }));
+        // await_input is NOT a user-pausable state — the system is automatically
+        // waiting for user input (e.g. outline confirmation). Keep status as "running"
+        // so the UI shows the input widget instead of a play/pause button.
+        get()._updateActiveSession((s) => ({ ...s, status: "running", awaitInputAt: Date.now() }));
         break;
       }
 
@@ -1073,6 +1080,85 @@ case "agent.paused": {
         return { ...s, messages };
       }),
     }));
+  },
+
+  saveArticleEdit: async (traceId, article, articleTitle, versionNote) => {
+    try {
+      const res = await fetch(`/api/v2/sessions/${traceId}/article`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          article,
+          article_title: articleTitle,
+          version_note: versionNote,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        // Update the local session's article content
+        set((state) => ({
+          sessions: state.sessions.map((s) => {
+            if (s.traceId !== traceId) return s;
+            const messages = s.messages.map((m) => {
+              if (m.role !== "assistant") return m;
+              const parts = m.parts.map((part) => {
+                if (part.type === "text") {
+                  return { ...part, text: article };
+                }
+                return part;
+              });
+              return { ...m, parts };
+            });
+            return {
+              ...s,
+              messages,
+              articleTitle: articleTitle ?? s.articleTitle,
+            };
+          }),
+        }));
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error("Failed to save article edit:", e);
+      return false;
+    }
+  },
+
+  loadArticleVersion: async (traceId, versionId) => {
+    try {
+      const res = await fetch(`/api/v2/sessions/${traceId}/versions/${versionId}`);
+      const json = await res.json();
+      if (json.success && json.data?.article) {
+        const article = json.data.article as string;
+        const articleTitle = json.data.article_title as string | undefined;
+        set((state) => ({
+          sessions: state.sessions.map((s) => {
+            if (s.traceId !== traceId) return s;
+            const messages = s.messages.map((m) => {
+              if (m.role !== "assistant") return m;
+              const parts = m.parts.map((part) => {
+                if (part.type === "text") {
+                  return { ...part, text: article };
+                }
+                return part;
+              });
+              return { ...m, parts, articleTitle: articleTitle ?? m.articleTitle };
+            });
+            return {
+              ...s,
+              messages,
+              articleTitle: articleTitle ?? s.articleTitle,
+            };
+          }),
+        }));
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error("Failed to load article version:", e);
+      return false;
+    }
   },
 
   _getActiveSession: () => {

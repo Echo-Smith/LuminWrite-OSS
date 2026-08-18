@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -242,6 +243,129 @@ func (s *Server) handleGetSessionEvents(w http.ResponseWriter, r *http.Request) 
 		"total":  len(events),
 		"trace_id": traceID,
 	})
+}
+
+// handleUpdateSessionArticle updates the article content of a completed trace.
+// Before updating, the old article is archived into article_versions for rollback.
+//
+// PUT /api/v2/sessions/{traceId}/article
+// Header: Authorization: Bearer <jwt>
+// Body: { "article": "...", "article_title": "...", "version_note": "..." }
+func (s *Server) handleUpdateSessionArticle(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	var body struct {
+		Article     string `json:"article"`
+		ArticleTitle string `json:"article_title"`
+		VersionNote  string `json:"version_note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+
+	if len(body.Article) < 10 {
+		response.Err(w, http.StatusBadRequest, "too_short", "article content is too short")
+		return
+	}
+
+	if s.traces == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	err := s.traces.UpdateTraceArticle(r.Context(), traceID, user.Sub, body.Article, body.ArticleTitle, body.VersionNote)
+	if err != nil {
+		slog.Warn("failed to update session article", "error", err, "trace_id", traceID, "user_id", user.Sub)
+		response.Err(w, http.StatusInternalServerError, "update_failed", fmt.Sprintf("failed to update article: %v", err))
+		return
+	}
+
+	response.OK(w, map[string]interface{}{
+		"updated":       true,
+		"trace_id":      traceID,
+		"article_title": body.ArticleTitle,
+	})
+}
+
+// handleListArticleVersions lists all historical versions of a trace's article.
+//
+// GET /api/v2/sessions/{traceId}/versions
+// Header: Authorization: Bearer <jwt>
+func (s *Server) handleListArticleVersions(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	if s.traces == nil {
+		response.OK(w, map[string]interface{}{"versions": []interface{}{}})
+		return
+	}
+
+	versions, err := s.traces.ListArticleVersions(r.Context(), traceID)
+	if err != nil {
+		slog.Warn("failed to list article versions", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list versions")
+		return
+	}
+
+	if versions == nil {
+		versions = []map[string]interface{}{}
+	}
+
+	response.OK(w, map[string]interface{}{
+		"versions": versions,
+		"total":    len(versions),
+	})
+}
+
+// handleGetArticleVersion retrieves the full content of a specific article version.
+//
+// GET /api/v2/sessions/{traceId}/versions/{versionId}
+// Header: Authorization: Bearer <jwt>
+func (s *Server) handleGetArticleVersion(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	versionID := chi.URLParam(r, "versionId")
+	if versionID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "version_id is required")
+		return
+	}
+
+	if s.traces == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	version, err := s.traces.GetArticleVersion(r.Context(), versionID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "version not found")
+		return
+	}
+
+	response.OK(w, version)
 }
 
 // handleChangePassword allows an authenticated user to change their password.

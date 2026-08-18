@@ -4,14 +4,15 @@
  * 删除了冗余的"预览"Tab（文章已在主区域展示）
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
-import { useState, useEffect } from "react";
-import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, type LucideIcon } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useAgentStore } from "@/stores/agent-store";
 import type { ToolCallPart } from "@/stores/agent-store";
+import { toast } from "@/stores/toast-store";
 import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 import { AgentStepCard } from "@/components/tools/agent-step-card";
@@ -150,6 +151,10 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
               <Palette className="h-3.5 w-3.5 mr-1" />
               风格
             </TabsTrigger>
+            <TabsTrigger value="versions" className="flex-1">
+              <History className="h-3.5 w-3.5 mr-1" />
+              版本
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -162,6 +167,9 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
           </TabsContent>
           <TabsContent value="style" className="p-3 m-0">
             <StyleInfo slug={session?.style ?? "yinyue"} />
+          </TabsContent>
+          <TabsContent value="versions" className="p-3 m-0">
+            <VersionHistory traceId={session?.traceId ?? null} />
           </TabsContent>
         </ScrollArea>
       </Tabs>
@@ -435,6 +443,120 @@ function SourcesList({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── 版本历史 ────────────────────────────────────────────
+
+interface ArticleVersion {
+  version_id: string;
+  article_title?: string;
+  version_note?: string;
+  created_at: string;
+}
+
+function VersionHistory({ traceId }: { traceId: string | null }) {
+  const [versions, setVersions] = useState<ArticleVersion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingVersion, setLoadingVersion] = useState<string | null>(null);
+
+  const fetchVersions = useCallback(async () => {
+    if (!traceId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/v2/sessions/${traceId}/versions`);
+      const json = await res.json();
+      if (json.success) {
+        setVersions(json.data?.versions ?? []);
+      }
+    } catch {
+      // silent fail
+    } finally {
+      setLoading(false);
+    }
+  }, [traceId]);
+
+  useEffect(() => {
+    if (traceId) {
+      fetchVersions();
+    } else {
+      setVersions([]);
+    }
+  }, [traceId, fetchVersions]);
+
+  if (!traceId) {
+    return (
+      <div className="text-center text-xs text-muted-foreground py-8">
+        写作完成后将显示版本历史
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (versions.length === 0) {
+    return (
+      <div className="text-center text-xs text-muted-foreground py-8">
+        暂无历史版本
+      </div>
+    );
+  }
+
+  const handleRestore = async (versionId: string) => {
+    setLoadingVersion(versionId);
+    const ok = await useAgentStore.getState().loadArticleVersion(traceId, versionId);
+    setLoadingVersion(null);
+    if (ok) {
+      toast.info("已切换版本", "文章内容已更新为该版本");
+    } else {
+      toast.error("加载失败", "无法获取该版本内容");
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-1">
+        <History className="h-3.5 w-3.5" />
+        版本历史
+        <Badge variant="outline" className="text-[10px] py-0 px-1.5 ml-auto">
+          {versions.length}
+        </Badge>
+      </div>
+      {versions.map((v, i) => (
+        <StaggerItem key={v.version_id} index={i} interval={30} animation="fade-up">
+          <button
+            onClick={() => handleRestore(v.version_id)}
+            disabled={loadingVersion === v.version_id}
+            className="w-full text-left rounded-lg border border-border/60 bg-card/50 hover:bg-accent/50 hover:border-primary/30 transition-ui p-2.5 disabled:opacity-50 group"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium truncate group-hover:text-primary transition-ui">
+                  {v.article_title || `版本 ${versions.length - i}`}
+                </p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {v.version_note || "自动保存"}
+                </p>
+                <p className="text-[10px] text-muted-foreground/70">
+                  {new Date(v.created_at).toLocaleString("zh-CN")}
+                </p>
+              </div>
+              {loadingVersion === v.version_id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0 mt-0.5" />
+              ) : (
+                <FileText className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary shrink-0 mt-0.5 transition-ui" />
+              )}
+            </div>
+          </button>
+        </StaggerItem>
+      ))}
     </div>
   );
 }

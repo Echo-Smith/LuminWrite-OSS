@@ -192,6 +192,11 @@ func (s *Server) handleSSEPushTopic(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
+	// Also send Web Push to all subscribed users (best-effort, non-blocking)
+	if s.pushRepo != nil && s.pushSender != nil && s.pushSender.IsConfigured() {
+		go s.broadcastWebPush(r.Context(), "📢 新选题", req.Title+" — "+req.Description)
+	}
+
 	response.OK(w, map[string]interface{}{
 		"title":    req.Title,
 		"source":   req.Source,

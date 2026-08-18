@@ -51,6 +51,23 @@ export const PLATFORM_DOT_COLORS: Record<string, string> = {
   unknown: "bg-gray-400",
 };
 
+// 平台卡片渐变底色 — 用于选题卡片装饰背景
+export const PLATFORM_GRADIENTS: Record<string, string> = {
+  tencent: "bg-gradient-to-br from-blue-50 via-white to-blue-50/30 dark:from-blue-950/20 dark:via-card dark:to-blue-950/10",
+  weibo: "bg-gradient-to-br from-red-50 via-white to-red-50/30 dark:from-red-950/20 dark:via-card dark:to-red-950/10",
+  zhihu: "bg-gradient-to-br from-purple-50 via-white to-purple-50/30 dark:from-purple-950/20 dark:via-card dark:to-purple-950/10",
+  baidu: "bg-gradient-to-br from-green-50 via-white to-green-50/30 dark:from-green-950/20 dark:via-card dark:to-green-950/10",
+  douyin: "bg-gradient-to-br from-pink-50 via-white to-pink-50/30 dark:from-pink-950/20 dark:via-card dark:to-pink-950/10",
+  bilibili: "bg-gradient-to-br from-blue-50 via-white to-blue-50/30 dark:from-blue-950/20 dark:via-card dark:to-blue-950/10",
+  toutiao: "bg-gradient-to-br from-orange-50 via-white to-orange-50/30 dark:from-orange-950/20 dark:via-card dark:to-orange-950/10",
+  kuaishou: "bg-gradient-to-br from-yellow-50 via-white to-yellow-50/30 dark:from-yellow-950/20 dark:via-card dark:to-yellow-950/10",
+  qq_news: "bg-gradient-to-br from-blue-50 via-white to-blue-50/30 dark:from-blue-950/20 dark:via-card dark:to-blue-950/10",
+  "360": "bg-gradient-to-br from-emerald-50 via-white to-emerald-50/30 dark:from-emerald-950/20 dark:via-card dark:to-emerald-950/10",
+  user: "bg-gradient-to-br from-gray-50 via-white to-gray-50/30 dark:from-gray-900/20 dark:via-card dark:to-gray-900/10",
+  system: "bg-gradient-to-br from-gray-50 via-white to-gray-50/30 dark:from-gray-900/20 dark:via-card dark:to-gray-900/10",
+  unknown: "bg-gradient-to-br from-gray-50 via-white to-gray-50/30 dark:from-gray-900/20 dark:via-card dark:to-gray-900/10",
+};
+
 export function platformLabel(p?: string) {
   if (!p) return "未分类";
   return PLATFORM_LABELS[p] || p;
@@ -64,6 +81,11 @@ export function platformColor(p?: string) {
 export function platformDotColor(p?: string) {
   if (!p) return PLATFORM_DOT_COLORS.unknown;
   return PLATFORM_DOT_COLORS[p] || PLATFORM_DOT_COLORS.unknown;
+}
+
+export function platformGradient(p?: string) {
+  if (!p) return PLATFORM_GRADIENTS.unknown;
+  return PLATFORM_GRADIENTS[p] || PLATFORM_GRADIENTS.unknown;
 }
 
 export function styleLabel(style?: string) {

@@ -3,7 +3,7 @@
  */
 import { Trash2, Pencil, Clock, Database } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { platformLabel, platformColor } from "@/lib/topic-helpers";
+import { platformLabel, platformColor, platformGradient } from "@/lib/topic-helpers";
 import type { Topic } from "@/lib/types";
 import { useState, useEffect } from "react";
 import { listTopicMaterials } from "@/lib/material-api";
@@ -30,7 +30,10 @@ export function TopicCard({ topic, favorited, onOpen, onDelete, onEdit }: TopicC
 
   return (
     <div
-      className="group relative cursor-pointer rounded-lg border p-4 transition-shadow hover:shadow-md"
+      className={cn(
+        "group relative cursor-pointer rounded-lg border p-4 transition-shadow hover:shadow-md",
+        platformGradient(topic.platform)
+      )}
       onClick={() => onOpen(topic)}
     >
       {topic.source === "user" && (

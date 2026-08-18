@@ -140,6 +140,23 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// rejectGuestMiddleware rejects users with role "guest".
+// Must be used after jwtAuthMiddleware.
+func (s *Server) rejectGuestMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user := userFromContext(r.Context())
+		if user == nil {
+			response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+			return
+		}
+		if user.Role == "guest" {
+			response.Err(w, http.StatusForbidden, "forbidden", "guests cannot access this resource")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // jwtOptionalMiddleware works like jwtAuthMiddleware but does not reject
 // requests without a token. Useful for endpoints that behave differently
 // for authenticated vs anonymous users.

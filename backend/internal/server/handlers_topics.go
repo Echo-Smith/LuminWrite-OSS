@@ -37,11 +37,10 @@ func (s *Server) handleTopicDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get related completed traces (articles written for this topic)
+	// Filter by user_id to ensure article isolation — each user only sees their own articles
 	title, _ := topic["title"].(string)
-	relatedTraces, _ := s.traces.ListRelatedTraces(r.Context(), title, 5)
-
-	// Check if user has favorited this topic
 	userID := s.getUserIDFromRequest(r)
+	relatedTraces, _ := s.traces.ListRelatedTraces(r.Context(), title, 5, userID)
 	favorited := false
 	if userID != "" && userID != "anonymous" {
 		favorited, _ = s.traces.IsTopicFavorited(r.Context(), userID, topicID)

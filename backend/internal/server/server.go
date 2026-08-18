@@ -78,6 +78,10 @@ type Server struct {
 
 	// Route metadata registry for /api/v2/admin/routes discovery
 	routeReg *routeRegistry
+
+	// Web Push
+	pushRepo   *PushRepo
+	pushSender *PushSender
 }
 
 // New creates a new Server.
@@ -549,6 +553,24 @@ func New(cfg *config.Config) (*Server, error) {
 		s.initMCPServer(cfg)
 	}
 
+	// ── Web Push ──
+	if dbAvail && db != nil {
+		s.pushRepo = NewPushRepo(db)
+		slog.Info("push subscription repository initialized")
+	}
+	if cfg.WebPush.VapidPublicKey != "" && cfg.WebPush.VapidPrivateKey != "" {
+		s.pushSender = NewPushSender(
+			cfg.WebPush.VapidPublicKey,
+			cfg.WebPush.VapidPrivateKey,
+			cfg.WebPush.Subject,
+		)
+		slog.Info("web push sender initialized",
+			"subject", cfg.WebPush.Subject,
+		)
+	} else {
+		slog.Warn("web push disabled — VAPID keys not configured (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY)")
+	}
+
 	return s, nil
 }
 
@@ -717,6 +739,12 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/topics/stream", s.handleSSETopics) // alias per docs/03-api-specification.md
 		r.Get("/sse/stats", s.handleSSEStats)
 
+		// Web Push (JWT + reject guest)
+		r.Get("/push/vapid-public-key", s.handlePushVapidPublicKey)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/push/subscribe", s.handlePushSubscribe)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/push/unsubscribe", s.handlePushUnsubscribe)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/push/test", s.handlePushTest)
+
 		// Editorial (编辑部系统) — JWT-protected
 		if s.editorialHdlr != nil {
 			r.Group(func(r chi.Router) {
@@ -748,6 +776,9 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}", s.handleDeleteUserSession)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/artifacts", s.handleGetSessionArtifacts)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/events", s.handleGetSessionEvents)
+		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/article", s.handleUpdateSessionArticle)
+		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions", s.handleListArticleVersions)
+		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions/{versionId}", s.handleGetArticleVersion)
 		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 		r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
 
@@ -1863,7 +1894,17 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 		}
 
 		// Normal resume (agent is still running, just paused by user)
-		execCtx.Resume()
+		// Only send resume signal if the agent is actually in a paused state.
+		// If the agent is running (e.g. waiting for outline confirmation via await_input),
+		// the resume signal is irrelevant — the agent is not paused, it's waiting for
+		// a confirm signal via agent.confirm, not agent.resume.
+		if execCtx.Status == engine.StatusPaused {
+			execCtx.Resume()
+		} else {
+			slog.Debug("resume requested but agent is not paused, ignoring",
+				"trace_id", p.TraceID,
+				"status", execCtx.Status)
+		}
 	case "cancel":
 		execCtx.Cancel()
 	}
@@ -2048,12 +2089,14 @@ func (s *Server) handleSessionResume(client *websocket.Client, payload json.RawM
 			respPayload.StepHistory = execCtx.StepHistory
 		}
 
-		// Include outline if awaiting input (paused state)
-		if execCtx.Status == engine.StatusPaused && execCtx.Outline != nil {
+		// Include outline if awaiting input (paused state or running with outline pending)
+		if (execCtx.Status == engine.StatusPaused || execCtx.Status == engine.StatusRunning) && execCtx.Outline != nil {
 			respPayload.Outline = execCtx.Outline
 		}
 
-		// Mark as resumable if the session is paused (client can send agent.resume)
+		// Mark as resumable only if the session is paused due to client disconnect.
+		// If the session is running (e.g. waiting for outline confirmation), the client
+		// should use agent.confirm, not agent.resume.
 		if execCtx.Status == engine.StatusPaused {
 			respPayload.CanResume = true
 		}
