@@ -11,6 +11,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // ─── 写作工具集 ────────────────────────────────────────────
@@ -1244,8 +1245,9 @@ func retrieveFromProfile(cfg ToolExecutorConfig, query string, limit int) string
 
 // extractKeywords 从查询中提取简单关键词（按空格/标点分割）。
 func extractKeywords(query string) []string {
-	// 去除常见停用词
+	// 去除常见停用词（中英文）
 	stopWords := map[string]bool{
+		// 中文停用词
 		"的": true, "了": true, "是": true, "我": true, "你": true, "他": true,
 		"她": true, "它": true, "们": true, "这": true, "那": true, "有": true,
 		"在": true, "和": true, "与": true, "或": true, "就": true, "都": true,
@@ -1253,52 +1255,58 @@ func extractKeywords(query string) []string {
 		"将": true, "让": true, "给": true, "对": true, "从": true, "到": true,
 		"为": true, "以": true, "及": true, "等": true, "着": true, "过": true,
 		"吗": true, "呢": true, "吧": true, "啊": true, "嗯": true, "哦": true,
-		"the": true, "a": true, "an": true, "is": true, "are": true, "was": true,
-		"were": true, "be": true, "been": true, "being": true, "have": true, "has": true,
-		"had": true, "do": true, "does": true, "did": true, "will": true, "would": true,
-		"could": true, "should": true, "may": true, "might": true, "can": true,
+		// 英文停用词 - 代词
 		"i": true, "you": true, "he": true, "she": true, "it": true, "we": true, "they": true,
 		"me": true, "him": true, "her": true, "us": true, "them": true, "my": true, "your": true,
-		"his": true, "her": true, "its": true, "our": true, "their": true, "this": true, "that": true,
-		"these": true, "those": true, "and": true, "or": true, "but": true, "if": true, "then": true,
-		"else": true, "when": true, "where": true, "why": true, "how": true, "what": true, "which": true,
-		"who": true, "whom": true, "whose": true, "all": true, "any": true, "both": true, "each": true,
-		"few": true, "more": true, "most": true, "other": true, "some": true, "such": true, "no": true,
-		"nor": true, "not": true, "only": true, "own": true, "same": true, "so": true, "than": true,
-		"too": true, "very": true, "just": true, "now": true, "also": true, "get": true, "got": true,
-		"go": true, "went": true, "come": true, "came": true, "see": true, "saw": true, "know": true,
-		"knew": true, "think": true, "thought": true, "take": true, "took": true, "make": true, "made": true,
-		"want": true, "wanted": true, "use": true, "used": true, "work": true, "worked": true,
-		"call": true, "called": true, "try": true, "tried": true, "need": true, "needed": true,
-		"feel": true, "felt": true, "become": true, "became": true, "leave": true, "left": true,
-		"put": true, "mean": true, "meant": true, "keep": true, "kept": true, "let": true, "say": true,
+		"his": true, "its": true, "our": true, "their": true, "this": true, "that": true,
+		"these": true, "those": true,
+		// 英文停用词 - 动词/be动词
+		"am": true, "is": true, "are": true, "was": true, "were": true, "be": true, "been": true, "being": true,
+		"have": true, "has": true, "had": true, "do": true, "does": true, "did": true,
+		"will": true, "would": true, "could": true, "should": true, "may": true, "might": true, "can": true,
+		"shall": true, "must": true,
+		// 英文停用词 - 连词/介词
+		"and": true, "or": true, "but": true, "if": true, "then": true, "else": true,
+		"when": true, "where": true, "why": true, "how": true, "what": true, "which": true,
+		"who": true, "whom": true, "whose": true,
+		"of": true, "to": true, "in": true, "for": true, "on": true, "with": true, "at": true,
+		"by": true, "from": true, "as": true, "into": true, "through": true, "during": true,
+		"before": true, "after": true, "above": true, "below": true, "between": true, "under": true,
+		// 英文停用词 - 限定词
+		"the": true, "a": true, "an": true, "all": true, "any": true, "both": true, "each": true,
+		"few": true, "more": true, "most": true, "other": true, "some": true, "such": true,
+		"no": true, "nor": true, "not": true, "only": true, "own": true, "same": true,
+		"so": true, "than": true, "too": true, "very": true, "just": true, "now": true, "also": true,
+		"again": true, "further": true, "once": true, "here": true, "there": true,
+		// 英文停用词 - 常见动词
+		"get": true, "got": true, "go": true, "went": true, "come": true, "came": true,
+		"see": true, "saw": true, "know": true, "knew": true, "think": true, "thought": true,
+		"take": true, "took": true, "make": true, "made": true, "want": true, "wanted": true,
+		"use": true, "used": true, "work": true, "worked": true, "call": true, "called": true,
+		"try": true, "tried": true, "need": true, "needed": true, "feel": true, "felt": true,
+		"become": true, "became": true, "leave": true, "left": true, "put": true,
+		"mean": true, "meant": true, "keep": true, "kept": true, "let": true, "say": true,
 		"said": true, "tell": true, "told": true, "ask": true, "asked": true, "seem": true, "seemed": true,
 		"turn": true, "turned": true, "start": true, "started": true, "show": true, "showed": true,
-		"hear": true, "heard": true, "play": true, "played": true, "run": true, "ran": true, "move": true,
-		"moved": true, "live": true, "lived": true, "believe": true, "believed": true, "bring": true,
-		"brought": true, "happen": true, "happened": true, "stand": true, "stood": true, "lose": true,
-		"lost": true, "pay": true, "paid": true, "meet": true, "met": true, "include": true, "included": true,
-		"continue": true, "continued": true, "set": true, "learn": true, "learned": true, "change": true,
-		"changed": true, "lead": true, "led": true, "understand": true, "understood": true, "watch": true,
-		"watched": true, "follow": true, "followed": true, "stop": true, "stopped": true, "create": true,
-		"created": true, "speak": true, "spoke": true, "read": true, "allow": true, "allowed": true,
-		"add": true, "added": true, "spend": true, "spent": true, "grow": true, "grew": true, "open": true,
-		"opened": true, "walk": true, "walked": true, "win": true, "won": true, "offer": true, "offered": true,
-		"remember": true, "remembered": true, "love": true, "loved": true, "consider": true, "considered": true,
-		"appear": true, "appeared": true, "buy": true, "bought": true, "wait": true, "waited": true,
-		"serve": true, "served": true, "die": true, "died": true, "send": true, "sent": true, "expect": true,
-		"expected": true, "build": true, "built": true, "stay": true, "stayed": true, "fall": true, "fell": true,
+		"hear": true, "heard": true, "play": true, "played": true, "run": true, "ran": true,
+		"move": true, "moved": true, "live": true, "lived": true, "believe": true, "believed": true,
+		"bring": true, "brought": true, "happen": true, "happened": true, "stand": true, "stood": true,
+		"lose": true, "lost": true, "pay": true, "paid": true, "meet": true, "met": true,
+		"include": true, "included": true, "continue": true, "continued": true, "set": true,
+		"learn": true, "learned": true, "change": true, "changed": true, "lead": true, "led": true,
+		"understand": true, "understood": true, "watch": true, "watched": true, "follow": true, "followed": true,
+		"stop": true, "stopped": true, "create": true, "created": true, "speak": true, "spoke": true,
+		"read": true, "allow": true, "allowed": true, "add": true, "added": true, "spend": true, "spent": true,
+		"grow": true, "grew": true, "open": true, "opened": true, "walk": true, "walked": true,
+		"win": true, "won": true, "offer": true, "offered": true, "remember": true, "remembered": true,
+		"love": true, "loved": true, "consider": true, "considered": true, "appear": true, "appeared": true,
+		"buy": true, "bought": true, "wait": true, "waited": true, "serve": true, "served": true,
+		"die": true, "died": true, "send": true, "sent": true, "expect": true, "expected": true,
+		"build": true, "built": true, "stay": true, "stayed": true, "fall": true, "fell": true,
 		"cut": true, "reach": true, "reached": true, "kill": true, "killed": true, "remain": true, "remained": true,
 		"suggest": true, "suggested": true, "raise": true, "raised": true, "pass": true, "passed": true,
 		"sell": true, "sold": true, "require": true, "required": true, "report": true, "reported": true,
-		"decide": true, "decided": true, "pull": true, "pulled": true, "of": true, "to": true, "in": true,
-		"for": true, "on": true, "with": true, "at": true, "by": true, "from": true, "as": true, "into": true,
-		"through": true, "during": true, "before": true, "after": true, "above": true, "below": true,
-		"between": true, "under": true, "again": true, "further": true, "then": true, "once": true,
-		"here": true, "there": true, "why": true, "how": true, "all": true, "any": true, "both": true,
-		"each": true, "few": true, "more": true, "most": true, "other": true, "some": true, "such": true,
-		"no": true, "nor": true, "not": true, "only": true, "own": true, "same": true, "so": true,
-		"than": true, "too": true, "very": true, "just": true, "now": true, "also": true,
+		"decide": true, "decided": true, "pull": true, "pulled": true,
 	}
 
 	// 分割并过滤
