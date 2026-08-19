@@ -1,8 +1,10 @@
 # WABench V2 发版集成审计
 
-日期：2026-08-19  
-审计分支：`codex/release-wabench-v2-review`  
-发版基线：`origin/main` (`23f03cc`)  
+日期：2026-08-19
+
+审计分支：`codex/release-wabench-v2-review`
+
+发版基线：`origin/main` (`23f03cc`)
 纳入能力：Task 8 数据层、Task 9 真实 Harness 评测执行层
 
 ## 结论
