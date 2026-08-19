@@ -847,8 +847,17 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 
 			// WritingAgentBench V2 shadow evaluation
 			r.Put("/evaluation/wabench/candidates/{id}", s.handleAdminUpsertWABenchCandidate)
+			r.Get("/evaluation/wabench/overview", s.handleAdminWABenchOverview)
+			r.Get("/evaluation/wabench/suites", s.handleAdminWABenchSuites)
+			r.Get("/evaluation/wabench/candidates", s.handleAdminWABenchCandidates)
+			r.Get("/evaluation/wabench/runs", s.handleAdminWABenchRuns)
 			r.Post("/evaluation/wabench/runs", s.handleAdminCreateWABenchRun)
 			r.Get("/evaluation/wabench/runs/{id}", s.handleAdminGetWABenchRun)
+			r.Get("/evaluation/wabench/reviews", s.handleAdminWABenchReviews)
+			r.Get("/evaluation/wabench/reviews/template.xlsx", s.handleAdminWABenchReviewTemplate)
+			r.Post("/evaluation/wabench/reviews/import", s.handleAdminImportWABenchReviews)
+			r.Get("/evaluation/wabench/badcases", s.handleAdminWABenchBadcases)
+			r.Get("/evaluation/wabench/releases", s.handleAdminWABenchReleases)
 			r.Post("/evaluation/wabench/red-team/seed", s.handleAdminSeedWABenchRedTeam)
 
             // Route Discovery — list all registered API routes
