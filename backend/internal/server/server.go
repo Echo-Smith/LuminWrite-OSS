@@ -46,9 +46,11 @@ type Server struct {
 	traces        *database.TraceRepo
 	feedback      *database.FeedbackRepo
 	evalRepo      *database.EvaluationRepo
+	wabenchRepo   *database.WABenchRepo
 	adminRepo     *database.AdminRepo
 	kbRepo        *database.KnowledgeBaseRepo
 	evalSvc       *services.EvaluationService
+	wabenchSvc    *services.WABenchEvaluationService
 	reputationSvc *services.ReputationService
 	dbAvail       bool
 	sessions      sync.Map // traceID → *engine.ExecutionContext
@@ -126,6 +128,7 @@ func New(cfg *config.Config) (*Server, error) {
 	var traceRepo *database.TraceRepo
 	var feedbackRepo *database.FeedbackRepo
 	var evalRepo *database.EvaluationRepo
+	var wabenchRepo *database.WABenchRepo
 	var adminRepo *database.AdminRepo
 	var kbRepo *database.KnowledgeBaseRepo
 	var evidenceRepo *database.EvidenceRepo
@@ -139,6 +142,7 @@ func New(cfg *config.Config) (*Server, error) {
 		traceRepo = database.NewTraceRepo(db)
 		feedbackRepo = database.NewFeedbackRepo(db)
 		evalRepo = database.NewEvaluationRepo(db)
+		wabenchRepo = database.NewWABenchRepo(db)
 		adminRepo = database.NewAdminRepo(db)
 		if cfg.Admin.EncryptionKey != "" {
 			adminRepo = adminRepo.WithEncryptionKey(crypto.DeriveKey(cfg.Admin.EncryptionKey))
@@ -414,6 +418,7 @@ func New(cfg *config.Config) (*Server, error) {
 		traces:        traceRepo,
 		feedback:      feedbackRepo,
 		evalRepo:      evalRepo,
+		wabenchRepo:   wabenchRepo,
 		adminRepo:     adminRepo,
 		kbRepo:        kbRepo,
 		evalSvc:       evalSvc,
@@ -474,6 +479,26 @@ func New(cfg *config.Config) (*Server, error) {
 	slog.Info("local knowledge base initialized (standalone search_knowledge tool)")
 	} else {
 		slog.Warn("knowledge manager skipped: database not available")
+	}
+
+	// WABench V2 shadow runner uses the same Harness and runtime dependencies
+	// as the user-facing writing path; it does not bypass retrieval or tools.
+	if wabenchRepo != nil && defaultLLM != nil {
+		wabenchAdapter := services.NewHarnessWABenchExecutorWithResolver(
+			s.llmSvc,
+			s.search,
+			services.NewKbSearchAdapter(s.kbMgr),
+			s.profiles,
+			s.userStyleStore,
+			&harnessSessionStore{svc: s.memorySvc},
+			s.traces,
+		)
+		s.wabenchSvc = services.NewWABenchEvaluationService(
+			wabenchRepo,
+			wabenchAdapter,
+			services.NewLLMWABenchJudgeWithResolver(s.llmSvc),
+		)
+		slog.Info("WABench V2 shadow runner initialized", "adapter", services.LuminbuddyV2AdapterID)
 	}
 
 	// ── Editorial system initialization ──
@@ -819,6 +844,12 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 
             // Evidence System
             r.Get("/evidence/{traceId}", s.handleAdminGetEvidence)
+
+			// WritingAgentBench V2 shadow evaluation
+			r.Put("/evaluation/wabench/candidates/{id}", s.handleAdminUpsertWABenchCandidate)
+			r.Post("/evaluation/wabench/runs", s.handleAdminCreateWABenchRun)
+			r.Get("/evaluation/wabench/runs/{id}", s.handleAdminGetWABenchRun)
+			r.Post("/evaluation/wabench/red-team/seed", s.handleAdminSeedWABenchRedTeam)
 
             // Route Discovery — list all registered API routes
             r.Get("/routes", s.handleAdminRoutes)
