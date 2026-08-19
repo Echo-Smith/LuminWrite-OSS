@@ -364,13 +364,7 @@ func (s *WABenchEvaluationService) evaluateCase(ctx context.Context, execution d
 		"knowledgeProviders": trace.KnowledgeProviders,
 		"sourceMode":         item.SourceMode,
 	}
-	if execution.Suite.Visibility == "public" && item.PrivacyLevel == "synthetic" {
-		output.TextStorage = "inline_public"
-		output.OutputText = trace.Article
-	} else if trace.TracePersisted && trace.TraceID != "" {
-		output.TextStorage = "private_ref"
-		output.PrivateRef = "agent_trace:" + trace.TraceID
-	}
+	applyWABenchTextStorage(&output, execution.Suite, item, trace)
 
 	output.Checks = append(output.Checks, buildGenerationCheck(trace.Article, generationErr))
 	output.Checks = append(output.Checks, buildRoutingChecks(item, trace)...)
@@ -459,6 +453,24 @@ func (s *WABenchEvaluationService) evaluateCase(ctx context.Context, execution d
 		}
 	}
 	return output, result
+}
+
+func applyWABenchTextStorage(output *database.WABenchOutputWrite, suite database.WABenchSuite, item database.WABenchCase, trace *WABenchAgentTrace) {
+	if strings.TrimSpace(trace.Article) == "" {
+		output.TextStorage = "hash_only"
+		output.OutputText = ""
+		output.PrivateRef = ""
+		return
+	}
+	if suite.Visibility == "public" && item.PrivacyLevel == "synthetic" {
+		output.TextStorage = "inline_public"
+		output.OutputText = trace.Article
+		return
+	}
+	if trace.TracePersisted && trace.TraceID != "" {
+		output.TextStorage = "private_ref"
+		output.PrivateRef = "agent_trace:" + trace.TraceID
+	}
 }
 
 func BuildWABenchGateDecision(suite database.WABenchSuite, accumulator wabenchRunAccumulator) database.WABenchGateDecisionWrite {

@@ -123,3 +123,22 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 		t.Fatalf("resolved custom profile = %s v%d", resolved.Slug, resolved.Version)
 	}
 }
+
+func TestWABenchPublicRuleProfilesResolveToFrozenBuiltinStyles(t *testing.T) {
+	executor := NewHarnessWABenchExecutor(nil, nil, nil, profile.NewLoader(), nil, nil, nil)
+	wants := map[string]string{
+		"wabench.public.general-writing": "yinyue",
+		"wabench.public.deep-commentary": "yinyue",
+		"wabench.public.policy-essay":    "shenlun",
+		"wabench.public.social-note":     "xiaohongshu",
+	}
+	for ref, want := range wants {
+		got, err := executor.resolveProfile(context.Background(), []string{ref})
+		if err != nil {
+			t.Fatalf("resolve %s: %v", ref, err)
+		}
+		if got.Slug != want {
+			t.Fatalf("resolve %s = %s, want %s", ref, got.Slug, want)
+		}
+	}
+}

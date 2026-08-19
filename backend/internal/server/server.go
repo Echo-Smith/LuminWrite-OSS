@@ -142,7 +142,16 @@ func New(cfg *config.Config) (*Server, error) {
 		traceRepo = database.NewTraceRepo(db)
 		feedbackRepo = database.NewFeedbackRepo(db)
 		evalRepo = database.NewEvaluationRepo(db)
-		wabenchRepo = database.NewWABenchRepo(db)
+		if cfg.Evaluation.WABenchPrivateInputJSONL != "" {
+			privateResolver, resolverErr := database.NewJSONLWABenchPrivateInputResolver(cfg.Evaluation.WABenchPrivateInputJSONL)
+			if resolverErr != nil {
+				return nil, fmt.Errorf("initialize WABench private input resolver: %w", resolverErr)
+			}
+			wabenchRepo = database.NewWABenchRepo(db, privateResolver)
+			slog.Info("WABench private input resolver enabled")
+		} else {
+			wabenchRepo = database.NewWABenchRepo(db)
+		}
 		adminRepo = database.NewAdminRepo(db)
 		if cfg.Admin.EncryptionKey != "" {
 			adminRepo = adminRepo.WithEncryptionKey(crypto.DeriveKey(cfg.Admin.EncryptionKey))
@@ -853,6 +862,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 			r.Get("/evaluation/wabench/runs", s.handleAdminWABenchRuns)
 			r.Post("/evaluation/wabench/runs", s.handleAdminCreateWABenchRun)
 			r.Get("/evaluation/wabench/runs/{id}", s.handleAdminGetWABenchRun)
+			r.Get("/evaluation/wabench/runs/{id}/bundle", s.handleAdminGetWABenchRunBundle)
 			r.Get("/evaluation/wabench/reviews", s.handleAdminWABenchReviews)
 			r.Get("/evaluation/wabench/reviews/template.xlsx", s.handleAdminWABenchReviewTemplate)
 			r.Post("/evaluation/wabench/reviews/import", s.handleAdminImportWABenchReviews)

@@ -36,6 +36,7 @@ type WABenchCase struct {
 	InputText         string
 	InputRef          string
 	InputHash         string
+	RedactedInputHash string
 	Context           map[string]interface{}
 	SourceMode        string
 	SourceFixtureRefs []string
@@ -408,7 +409,7 @@ func (r *WABenchRepo) ListCases(ctx context.Context, suitePK string) ([]WABenchC
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id::text, case_id, suite_pk::text, task_type, difficulty,
-		       input_storage, COALESCE(input_text, ''), COALESCE(input_ref, ''), input_hash,
+		       input_storage, COALESCE(input_text, ''), COALESCE(input_ref, ''), input_hash, COALESCE(redacted_input_hash, ''),
 		       context, source_mode, source_fixture_refs, expected_behavior,
 		       must_have, must_not_have, hard_gate_ids, rubric_weights,
 		       rule_profile_refs, privacy_level
@@ -424,7 +425,7 @@ func (r *WABenchRepo) ListCases(ctx context.Context, suitePK string) ([]WABenchC
 		var contextRaw, weightsRaw []byte
 		if err := rows.Scan(
 			&item.PK, &item.CaseID, &item.SuitePK, &item.TaskType, &item.Difficulty,
-			&item.InputStorage, &item.InputText, &item.InputRef, &item.InputHash,
+			&item.InputStorage, &item.InputText, &item.InputRef, &item.InputHash, &item.RedactedInputHash,
 			&contextRaw, &item.SourceMode, pq.Array(&item.SourceFixtureRefs), &item.ExpectedBehavior,
 			pq.Array(&item.MustHave), pq.Array(&item.MustNotHave), pq.Array(&item.HardGateIDs), &weightsRaw,
 			pq.Array(&item.RuleProfileRefs), &item.PrivacyLevel,
@@ -458,6 +459,13 @@ func (r *WABenchRepo) ResolveCaseInput(ctx context.Context, item WABenchCase) (s
 				return "", fmt.Errorf("%w: resolve legacy ref for %s: %v", ErrWABenchInputUnavailable, item.CaseID, err)
 			}
 			return input, nil
+		}
+		if r.privateInputResolver != nil {
+			expectedHash := item.RedactedInputHash
+			if expectedHash == "" {
+				expectedHash = item.InputHash
+			}
+			return r.privateInputResolver.ResolveWABenchInput(ctx, item.InputRef, expectedHash)
 		}
 		return "", fmt.Errorf("%w: unsupported private ref for %s", ErrWABenchInputUnavailable, item.CaseID)
 	case "hash_only":

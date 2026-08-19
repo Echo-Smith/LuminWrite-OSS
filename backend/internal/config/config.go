@@ -36,6 +36,7 @@ type Config struct {
 	Log       LogConfig
 	HotTopics HotTopicsConfig
 	Agent     AgentConfig
+	Evaluation EvaluationConfig
 	MCPServers []MCPServerConfig
 	MCPServer  InProcessMCPServerConfig
 }
@@ -66,6 +67,10 @@ type DatabaseConfig struct {
 	URL          string
 	MaxOpenConns int
 	MaxIdleConns int
+}
+
+type EvaluationConfig struct {
+	WABenchPrivateInputJSONL string
 }
 
 type RedisConfig struct {
@@ -227,6 +232,9 @@ func Load() *Config {
 			URL:          getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/writing_agent_v2?sslmode=disable"),
 			MaxOpenConns: getEnvInt("DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns: getEnvInt("DB_MAX_IDLE_CONNS", 5),
+		},
+		Evaluation: EvaluationConfig{
+			WABenchPrivateInputJSONL: getEnv("WABENCH_PRIVATE_INPUT_JSONL", ""),
 		},
 		Redis: RedisConfig{
 			URL:     getEnv("REDIS_URL", "redis://localhost:6379/0"),
