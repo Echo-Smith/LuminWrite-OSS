@@ -264,6 +264,7 @@ cd frontend && npm ci && npm run build
 | [管理后台](docs/08-admin-dashboard.md) | 配置、评测与可观测入口 |
 | [记忆系统](docs/11-memory-system.md) | 硬偏好、行为模式与反馈信号 |
 | [编辑部系统](docs/12-editorial-system.md) | 编辑任务管理与工作流 |
+| [WritingAgentBench 数据层](docs/13-wabench-data-layer.md) | WABench v1 表、Legacy importer、分区、隐私和内置/自定义风格引用 |
 | [运维手册](docs/runbook.md) | 部署、监控与故障排查 |
 
 ---

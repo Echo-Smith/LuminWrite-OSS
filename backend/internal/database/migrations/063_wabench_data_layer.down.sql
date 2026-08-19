@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS wabench_gate_decisions;
+DROP TABLE IF EXISTS wabench_outcomes;
+DROP TABLE IF EXISTS wabench_reviews;
+DROP TABLE IF EXISTS wabench_checks;
+DROP TABLE IF EXISTS wabench_outputs;
+DROP TABLE IF EXISTS wabench_runs;
+DROP TABLE IF EXISTS wabench_candidates;
+DROP TABLE IF EXISTS wabench_cases;
+DROP TABLE IF EXISTS wabench_source_fixtures;
+DROP TABLE IF EXISTS wabench_suites;
