@@ -28,6 +28,13 @@ var (
 	userStyleRefPattern    = regexp.MustCompile(`^luminbuddy\.user-style\.([a-f0-9]{32})\.v([1-9][0-9]*)$`)
 )
 
+var publicWABenchStyleRefs = map[string]string{
+	"wabench.public.general-writing": "yinyue",
+	"wabench.public.deep-commentary": "yinyue",
+	"wabench.public.policy-essay":    "shenlun",
+	"wabench.public.social-note":     "xiaohongshu",
+}
+
 type WABenchAgentRequest struct {
 	RunID         string
 	Input         string
@@ -157,6 +164,15 @@ func manifestModelName(manifest map[string]interface{}, key string) string {
 
 func (e *HarnessWABenchExecutor) resolveProfile(ctx context.Context, refs []string) (*profile.StyleProfile, error) {
 	for _, ref := range refs {
+		if slug, ok := publicWABenchStyleRefs[ref]; ok {
+			if e.profiles == nil {
+				return nil, fmt.Errorf("style profile loader is unavailable")
+			}
+			if result, exists := e.profiles.Get(slug); exists {
+				return result, nil
+			}
+			return nil, fmt.Errorf("public WABench style profile %s is unavailable", slug)
+		}
 		if matches := builtinStyleRefPattern.FindStringSubmatch(ref); len(matches) == 2 {
 			if e.profiles == nil {
 				return nil, fmt.Errorf("style profile loader is unavailable")

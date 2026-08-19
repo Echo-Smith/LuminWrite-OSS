@@ -115,6 +115,26 @@ func (s *Server) handleAdminGetWABenchRun(w http.ResponseWriter, r *http.Request
 	response.OK(w, report)
 }
 
+func (s *Server) handleAdminGetWABenchRunBundle(w http.ResponseWriter, r *http.Request) {
+	if s.wabenchRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "wabench_unavailable", "WABench repository is unavailable")
+		return
+	}
+	batchID := r.URL.Query().Get("batchId")
+	batchContentHash := r.URL.Query().Get("batchContentHash")
+	if batchID == "" || batchContentHash == "" {
+		response.Err(w, http.StatusBadRequest, "batch_identity_required", "batchId and batchContentHash are required")
+		return
+	}
+	bundle, err := s.wabenchRepo.GetNormalizedRunBundle(r.Context(), chi.URLParam(r, "id"), batchID, batchContentHash)
+	if err != nil {
+		slog.Warn("export normalized WABench bundle failed", "run_id", chi.URLParam(r, "id"), "error", err)
+		response.Err(w, http.StatusBadRequest, "bundle_export_failed", err.Error())
+		return
+	}
+	response.OK(w, bundle)
+}
+
 func (s *Server) handleAdminSeedWABenchRedTeam(w http.ResponseWriter, r *http.Request) {
 	if s.wabenchSvc == nil {
 		response.Err(w, http.StatusServiceUnavailable, "wabench_unavailable", "WABench V2 runner is unavailable")

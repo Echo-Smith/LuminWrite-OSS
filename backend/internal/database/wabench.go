@@ -98,11 +98,16 @@ type WABenchCaseDraft struct {
 }
 
 type WABenchRepo struct {
-	db *DB
+	db                   *DB
+	privateInputResolver WABenchPrivateInputResolver
 }
 
-func NewWABenchRepo(db *DB) *WABenchRepo {
-	return &WABenchRepo{db: db}
+func NewWABenchRepo(db *DB, resolver ...WABenchPrivateInputResolver) *WABenchRepo {
+	repo := &WABenchRepo{db: db}
+	if len(resolver) > 0 {
+		repo.privateInputResolver = resolver[0]
+	}
+	return repo
 }
 
 func ValidateWABenchPartition(partition string) error {

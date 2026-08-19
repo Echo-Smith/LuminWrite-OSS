@@ -43,3 +43,11 @@ func TestWABenchReviewTemplateHandler(t *testing.T) {
 		t.Fatalf("unexpected sheets: %v", got)
 	}
 }
+
+func TestWABenchBundleHandlerRequiresRepository(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	(&Server{}).handleAdminGetWABenchRunBundle(recorder, httptest.NewRequest(http.MethodGet, "/?batchId=test&batchContentHash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+}

@@ -76,6 +76,18 @@ func TestWABenchGateHardFailuresAndRedTeamTakePrecedence(t *testing.T) {
 	}
 }
 
+func TestWABenchFailedPublicOutputUsesHashOnlyStorage(t *testing.T) {
+	output := database.WABenchOutputWrite{TextStorage: "inline_public"}
+	applyWABenchTextStorage(&output, database.WABenchSuite{Visibility: "public"}, database.WABenchCase{PrivacyLevel: "synthetic"}, &WABenchAgentTrace{})
+	if output.TextStorage != "hash_only" || output.OutputText != "" || output.PrivateRef != "" {
+		t.Fatalf("failed public output storage = %+v", output)
+	}
+	applyWABenchTextStorage(&output, database.WABenchSuite{Visibility: "public"}, database.WABenchCase{PrivacyLevel: "synthetic"}, &WABenchAgentTrace{Article: "合成正文"})
+	if output.TextStorage != "inline_public" || output.OutputText != "合成正文" {
+		t.Fatalf("successful public output storage = %+v", output)
+	}
+}
+
 type fakeWABenchAgent struct {
 	failCase string
 }
