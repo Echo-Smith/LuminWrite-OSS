@@ -246,3 +246,51 @@
   display: block !important;
   width: 100% !important;
 }
+
+/* ── Eval Center：工业化评测控制台 ── */
+@layer components {
+  .eval-center {
+    --eval-ink: #161917;
+    --eval-paper: #f4f3ee;
+    --eval-surface: #f8f7f2;
+    --eval-rail: #ebe9e1;
+    --eval-pass: #1e6b52;
+    --eval-warn: #b7791f;
+    --eval-fail: #b33a3a;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .eval-data-table th {
+    @apply border-b border-border/80 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground;
+  }
+
+  .eval-data-table td {
+    @apply border-b border-border/60 px-4 py-4 align-top;
+  }
+
+  .eval-data-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .eval-data-table tbody tr {
+    transition: background-color 140ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .eval-data-table tbody tr:hover {
+    background-color: color-mix(in srgb, var(--eval-rail) 55%, transparent);
+  }
+
+  .dark .eval-data-table tbody tr:hover {
+    background-color: hsl(var(--muted) / 0.45);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eval-center *,
+  .eval-center *::before,
+  .eval-center *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
