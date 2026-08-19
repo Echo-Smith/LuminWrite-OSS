@@ -17,6 +17,7 @@ import { MyStylesPage } from "@/pages/my-styles";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
 import { ToastContainer } from "@/components/ui/toast";
+import { useSSENotifications } from "@/hooks/use-sse-notifications";
 
 export function App() {
   const init = useAuthStore((s) => s.init);
@@ -29,6 +30,9 @@ export function App() {
   useEffect(() => {
     init();
   }, [init]);
+
+  // 全局 SSE 通知监听（文章完成、管理员广播等）
+  useSSENotifications();
 
   return (
     <TooltipProvider>

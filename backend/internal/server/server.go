@@ -79,9 +79,6 @@ type Server struct {
 	// Route metadata registry for /api/v2/admin/routes discovery
 	routeReg *routeRegistry
 
-	// Web Push
-	pushRepo   *PushRepo
-	pushSender *PushSender
 }
 
 // New creates a new Server.
@@ -553,24 +550,6 @@ func New(cfg *config.Config) (*Server, error) {
 		s.initMCPServer(cfg)
 	}
 
-	// ── Web Push ──
-	if dbAvail && db != nil {
-		s.pushRepo = NewPushRepo(db)
-		slog.Info("push subscription repository initialized")
-	}
-	if cfg.WebPush.VapidPublicKey != "" && cfg.WebPush.VapidPrivateKey != "" {
-		s.pushSender = NewPushSender(
-			cfg.WebPush.VapidPublicKey,
-			cfg.WebPush.VapidPrivateKey,
-			cfg.WebPush.Subject,
-		)
-		slog.Info("web push sender initialized",
-			"subject", cfg.WebPush.Subject,
-		)
-	} else {
-		slog.Warn("web push disabled — VAPID keys not configured (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY)")
-	}
-
 	return s, nil
 }
 
@@ -739,11 +718,6 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/topics/stream", s.handleSSETopics) // alias per docs/03-api-specification.md
 		r.Get("/sse/stats", s.handleSSEStats)
 
-		// Web Push (JWT + reject guest)
-		r.Get("/push/vapid-public-key", s.handlePushVapidPublicKey)
-		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/push/subscribe", s.handlePushSubscribe)
-		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/push/unsubscribe", s.handlePushUnsubscribe)
-		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/push/test", s.handlePushTest)
 
 		// Editorial (编辑部系统) — JWT-protected
 		if s.editorialHdlr != nil {
@@ -871,8 +845,8 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Get("/tool-plugins/{name}", s.handleAdminGetToolPlugin)
             r.Delete("/tool-plugins/{name}", s.handleAdminDeleteToolPlugin)
 
-            // SSE Push (admin only)
-            r.Post("/sse/push", s.handleSSEPushTopic)
+            // SSE Notifications (admin test notification)
+            r.Post("/sse/notify", s.handleSSESendNotification)
 
             // Audit Logs
             r.Get("/audit-logs", s.handleAdminListAuditLogs)
@@ -1709,6 +1683,25 @@ func (s *Server) runAgent(
 		// ── Completed successfully ──
 		if s.traces != nil {
 			s.traces.CompleteTrace(ctx, execCtx)
+		}
+
+		// Broadcast article:completed via SSE to all connected clients
+		if s.sseHub != nil {
+			topic := ""
+			if execCtx.WritingTask != nil {
+				topic = execCtx.WritingTask.Topic
+			}
+			s.sseHub.Broadcast(&SSEEvent{
+				Event: "article:completed",
+				Data: map[string]interface{}{
+					"trace_id":      traceID,
+					"user_id":       execCtx.UserID,
+					"style_slug":    execCtx.StyleSlug,
+					"topic":         topic,
+					"article_title": execCtx.ArticleTitle,
+					"timestamp":     time.Now().Format(time.RFC3339),
+				},
+			})
 		}
 		if s.metrics != nil {
 			s.metrics.AgentExecutionsTotal.Inc(execCtx.StyleSlug, "completed")

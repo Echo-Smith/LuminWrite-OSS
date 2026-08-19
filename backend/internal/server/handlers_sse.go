@@ -155,12 +155,11 @@ func (s *Server) handleSSETopics(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSSEPushTopic allows external systems (or admin) to push a topic to all SSE clients.
-func (s *Server) handleSSEPushTopic(w http.ResponseWriter, r *http.Request) {
+// handleSSESendNotification allows admin to send a test notification to all SSE clients.
+func (s *Server) handleSSESendNotification(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Source      string `json:"source"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
@@ -168,41 +167,28 @@ func (s *Server) handleSSEPushTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Title == "" {
-		response.Err(w, http.StatusBadRequest, "bad_request", "title is required")
-		return
+		req.Title = "测试通知"
+	}
+	if req.Body == "" {
+		req.Body = "这是一条来自管理员的测试通知"
 	}
 
-	if req.Source == "" {
-		req.Source = "manual"
-	}
-
-	// Save to database if available
-	if s.traces != nil {
-		s.traces.CreateTopic(r.Context(), req.Title, req.Description, "")
-	}
-
-	// Broadcast to SSE clients
+	// Broadcast notification to all SSE clients
 	s.sseHub.Broadcast(&SSEEvent{
-		Event: "topic:new",
+		Event: "notification",
 		Data: map[string]interface{}{
-			"title":       req.Title,
-			"description": req.Description,
-			"source":      req.Source,
-			"timestamp":   time.Now().Format(time.RFC3339),
+			"title":     req.Title,
+			"body":      req.Body,
+			"timestamp": time.Now().Format(time.RFC3339),
 		},
 	})
 
-	// Also send Web Push to all subscribed users (best-effort, non-blocking)
-	if s.pushRepo != nil && s.pushSender != nil && s.pushSender.IsConfigured() {
-		go s.broadcastWebPush(r.Context(), "📢 新选题", req.Title+" — "+req.Description)
-	}
-
 	response.OK(w, map[string]interface{}{
 		"title":    req.Title,
-		"source":   req.Source,
+		"body":     req.Body,
 		"pushed":   true,
 		"clients":  s.sseHub.ClientCount(),
-		"message":  "topic pushed to all SSE clients",
+		"message":  "notification sent to all SSE clients",
 	})
 }
 

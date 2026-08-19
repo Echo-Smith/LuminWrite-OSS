@@ -1,1 +1,1 @@
-DROP TABLE IF EXISTS push_subscriptions;
+-- No-op: table already dropped in up migration.

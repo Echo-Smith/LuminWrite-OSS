@@ -8,6 +8,8 @@
  * - 回调通过 ref 持有，connect 函数永远稳定（空依赖），
  *   回调变化不会导致 SSE 重连。
  * - 支持 onNewTopic（新增）和 onUpdateTopic（更新）两个回调。
+ * - 通知事件（article:completed, notification）由全局 useSSENotifications hook 处理，
+ *   此处不再重复监听，避免双重 toast。
  *
  * 文档来源: docs/03-api-specification.md — SSE API
  */
