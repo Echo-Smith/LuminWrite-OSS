@@ -55,7 +55,10 @@ GIT_BRANCH="$(git branch --show-current 2>/dev/null || echo 'unknown')"
 GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 GIT_DATE="$(git log -1 --format='%cd' --date='format:%Y%m%d-%H%M' 2>/dev/null || echo "$(date +%Y%m%d-%H%M)")"
 PROJECT_NAME="luminbuddy-v2"
-ARCHIVE_NAME="${PROJECT_NAME}-${GIT_BRANCH}-${GIT_COMMIT}-${GIT_DATE}.tar.gz"
+# Git worktrees store .git as a file, and branch names commonly contain '/'.
+# Neither should make a valid release package fail or create nested output paths.
+SAFE_GIT_BRANCH="${GIT_BRANCH//\//-}"
+ARCHIVE_NAME="${PROJECT_NAME}-${SAFE_GIT_BRANCH}-${GIT_COMMIT}-${GIT_DATE}.tar.gz"
 ARCHIVE_PATH="${OUTPUT_DIR%/}/${ARCHIVE_NAME}"
 
 info "项目目录:   $PROJECT_DIR"
@@ -69,8 +72,8 @@ echo ""
 # ── Step 1: 预检查 ────────────────────────────────────
 step "1/6 预检查"
 
-if [ ! -d "$PROJECT_DIR/.git" ]; then
-    error "不在 Git 仓库中，请确保在项目根目录运行"
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    error "不在 Git 工作树中，请确保在项目根目录运行"
 fi
 if [ ! -f "$PROJECT_DIR/docker-compose.yml" ]; then
     error "未找到 docker-compose.yml，请确保在项目根目录运行"
