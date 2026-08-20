@@ -33,3 +33,16 @@ The release candidate is the audited replay branch in draft PR #1. It deliberate
 5. Complete applicable quality, cost, latency, hard-failure, and human-review evidence before requesting a production gate switch.
 
 Until all exit criteria are met, the WABench result remains a shadow decision aid and the existing production release path stays authoritative.
+
+## 2026-08-20 fault finding
+
+The first controlled database outage exposed a gap: the hybrid local knowledge search converted an unavailable PostgreSQL dependency into an ordinary zero-result response. This is a failed shadow exit check, not a pass. The search path now probes the database only after every fallback returns no result; an unavailable database returns an explicit error, while a healthy empty knowledge base remains a valid zero-result response. The controlled outer-path case must be rerun after this correction.
+
+### Rerun evidence
+
+The rerun used a fresh local PostgreSQL database, a loopback-only V2 backend, and a deterministic OpenAI-compatible stub that only selected `search_knowledge`. The real V2 WebSocket/JWT/Harness/local PostgreSQL path remained under test.
+
+- Healthy path: redacted run `v2_auth_e2e_20260820140520279_ed25f2` rejected unauthenticated access, emitted `search_knowledge=complete` with a healthy zero-result response, and completed a same-conversation follow-up.
+- Fault path: redacted run `v2_auth_e2e_20260820140413880_6edd42` rejected unauthenticated access, emitted `search_knowledge=error` when its explicitly named disposable PostgreSQL dependency was stopped, completed with a degraded usable terminal response, and restored the database in `finally`.
+
+Neither case is a quality, cost, production-provider, or production-token equivalence claim. They close the Task 12 shadow routing/abnormal outer-path evidence only.

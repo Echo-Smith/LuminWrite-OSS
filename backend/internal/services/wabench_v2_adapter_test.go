@@ -69,6 +69,44 @@ func TestLuminbuddyV2AdapterExecutesRealHarness(t *testing.T) {
 	}
 }
 
+type fixtureWABenchKnowledgeSearcher struct{}
+
+func (fixtureWABenchKnowledgeSearcher) SearchKB(context.Context, string, int) ([]engine.SearchResult, error) {
+	return []engine.SearchResult{{Title: "fixture", Snippet: "fixture", Source: "local_kb"}}, nil
+}
+
+func TestLuminbuddyV2AdapterLabelsLocalKnowledgeProvider(t *testing.T) {
+	var rounds atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if rounds.Add(1) == 1 {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_kb\",\"type\":\"function\",\"function\":{\"name\":\"search_knowledge\",\"arguments\":\"{\\\"query\\\":\\\"fixture\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		} else {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"## 完成\\n\\n受控输出\"},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":2}}\n\n")
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	llm := tools.NewLLMClient(server.URL, "test-key", "test-model", 2048, 0.1, 5*time.Second)
+	executor := NewHarnessWABenchExecutor(llm, nil, fixtureWABenchKnowledgeSearcher{}, profile.NewLoader(), nil, nil, nil)
+	trace, err := executor.Execute(context.Background(), WABenchAgentRequest{
+		RunID: "run_local_kb",
+		Input: "请参考内部知识库写作",
+		Case: database.WABenchCase{
+			CaseID: "case_local_kb", TaskType: "writing", SourceMode: "live",
+			InputHash: "sha256:" + strings.Repeat("b", 64), RuleProfileRefs: []string{"luminbuddy.builtin-style.yinyue"},
+		},
+		Candidate: database.WABenchCandidate{ModelManifest: map[string]interface{}{"model": "test-model"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trace.KnowledgeTriggered || len(trace.KnowledgeProviders) != 1 || trace.KnowledgeProviders[0] != "local-pg-kb" {
+		t.Fatalf("local KB routing label = triggered:%v providers:%v", trace.KnowledgeTriggered, trace.KnowledgeProviders)
+	}
+}
+
 type recordingWABenchLLMResolver struct {
 	client        *tools.LLMClient
 	resolvedModel *atomic.Value

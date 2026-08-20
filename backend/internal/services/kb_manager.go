@@ -661,6 +661,17 @@ func (m *KbManager) HybridSearch(ctx context.Context, userID, query string, limi
 		combined = m.mergeDocResults(combined, docResults)
 	}
 
+	// The lower-level retrieval variants intentionally fall back among ParadeDB,
+	// PostgreSQL FTS, and document-level search. If all of them return no rows,
+	// distinguish a healthy empty knowledge base from an unavailable database;
+	// callers must be able to degrade explicitly instead of presenting an outage
+	// as a normal zero-result lookup.
+	if len(combined) == 0 {
+		if err := m.db.PingContext(ctx); err != nil {
+			return nil, fmt.Errorf("local knowledge base unavailable: %w", err)
+		}
+	}
+
 	// Sort by combined score and limit
 	if len(combined) > limit {
 		combined = combined[:limit]
