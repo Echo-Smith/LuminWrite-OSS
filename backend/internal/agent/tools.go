@@ -429,8 +429,8 @@ func filterTools(defs []tools.ToolDef, keep func(string) bool) []tools.ToolDef {
 
 // ToolExecutorConfig 配置工具执行器。
 type ToolExecutorConfig struct {
-	Search     *tools.SearchClient      // 网络搜索（Tavily/Bing/腾讯等）
-	KBSearcher tools.KnowledgeSearcher  // 知识库搜索（本地 BM25+Dense+GraphRAG）
+	Search     *tools.SearchClient     // 网络搜索（Tavily/Bing/腾讯等）
+	KBSearcher tools.KnowledgeSearcher // 知识库搜索（本地 BM25+Dense+GraphRAG）
 	Session    *WritingSession
 	ExecCtx    *engine.ExecutionContext
 	Emitter    engine.EventEmitter
@@ -807,7 +807,7 @@ func executeRewriteTitle(cfg ToolExecutorConfig, arguments string) (string, erro
 	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.7), tools.WithThinking(false))
+	}, tools.WithTemperature(0.7), tools.WithThinking(false))
 	if err != nil {
 		if cfg.Emitter != nil {
 			cfg.Emitter.StepComplete("rewrite_title", map[string]any{"error": err.Error()}, int64(time.Since(start).Milliseconds()))
@@ -882,7 +882,7 @@ func executeFactCheck(cfg ToolExecutorConfig, arguments string) (string, error) 
 	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.1), tools.WithThinking(false))
+	}, tools.WithTemperature(0.1), tools.WithThinking(false))
 	if err != nil {
 		if cfg.Emitter != nil {
 			cfg.Emitter.StepComplete("fact_check", map[string]any{"error": err.Error()}, int64(time.Since(start).Milliseconds()))
@@ -936,8 +936,8 @@ func executeFactCheck(cfg ToolExecutorConfig, arguments string) (string, error) 
 
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepComplete("fact_check", map[string]any{
-			"claims":    len(claims.Claims),
-			"verified":  cfg.Search != nil && cfg.Search.HasSources(),
+			"claims":   len(claims.Claims),
+			"verified": cfg.Search != nil && cfg.Search.HasSources(),
 		}, int64(time.Since(start).Milliseconds()))
 	}
 	return sb.String(), nil
@@ -1313,7 +1313,7 @@ func extractKeywords(query string) []string {
 	words := strings.FieldsFunc(query, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '，' || r == '.' || r == '。' ||
 			r == '!' || r == '！' || r == '?' || r == '？' || r == ':' || r == '：' || r == ';' || r == '；' ||
-			r == '(' || r == ')' || r == '（' || r == '）' || r == '"' || r == '"' || r == '"' || r == '"' ||
+			r == '(' || r == ')' || r == '（' || r == '）' || r == '"' || r == '\'' || r == '“' || r == '”' ||
 			r == '[' || r == ']' || r == '【' || r == '】' || r == '-' || r == '_' || r == '/' || r == '|'
 	})
 
@@ -1442,7 +1442,7 @@ func generateOutlineWithLLM(ctx context.Context, llm *tools.LLMClient, topic str
 
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
-	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
+	}, tools.WithInstructions(systemMsg), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
 	}
@@ -1524,7 +1524,7 @@ func compressSearchResults(ctx context.Context, llm *tools.LLMClient, query stri
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.1), tools.WithThinking(false))
+	}, tools.WithTemperature(0.1), tools.WithThinking(false))
 
 	if err != nil {
 		slog.Warn("compressSearchResults: LLM compression failed, falling back",
@@ -1625,7 +1625,7 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	}, tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 
 	if err != nil {
 		return &engine.ReviewResult{
@@ -1674,14 +1674,14 @@ func defaultMaxCalls(intent Intent) map[string]int {
 	case IntentWriting:
 		// 写作意图：搜索 3 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 5 次
 		return map[string]int{
-			"search_web":        3,
-			"search_knowledge":  3,
-			"review_article":    1,
+			"search_web":       3,
+			"search_knowledge": 3,
+			"review_article":   1,
 			"generate_outline": 1,
-			"word_count_check":  1,
-			"rewrite_title":     1,
-			"fact_check":        1,
-			"retrieve_context":  5,
+			"word_count_check": 1,
+			"rewrite_title":    1,
+			"fact_check":       1,
+			"retrieve_context": 5,
 		}
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
 		// 修改意图：搜索 2 次、上下文检索 3 次

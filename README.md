@@ -133,6 +133,7 @@ LLM 在持续会话中自主调用的工具：
 - **风格管理**：Profile 创建、编辑、版本控制、灰度发布
 - **模型配置**：多模型接入（DeepSeek/OpenAI 兼容接口）、密钥管理
 - **A/B 评测**：对照组/实验组自动化评测与指标对比
+- **Luminbuddy Eval Center**：以 WABench 统一管理数据集、冻结候选、Shadow Run、人工评审、Badcase 与发布证据
 - **反馈分析**：分段反馈统计、质量趋势
 - **审计日志**：操作追踪、安全审计
 - **Token 监控**：用量统计、成本分析
@@ -264,6 +265,9 @@ cd frontend && npm ci && npm run build
 | [管理后台](docs/08-admin-dashboard.md) | 配置、评测与可观测入口 |
 | [记忆系统](docs/11-memory-system.md) | 硬偏好、行为模式与反馈信号 |
 | [编辑部系统](docs/12-editorial-system.md) | 编辑任务管理与工作流 |
+| [WritingAgentBench 数据层](docs/13-wabench-data-layer.md) | WABench v1 表、Legacy importer、分区、隐私和内置/自定义风格引用 |
+| [Luminbuddy Eval Center](docs/16-wabench-eval-center.md) | 七个评测工作区、中文 Excel、评审溯源、仲裁、隐私与发布边界 |
+| [WritingAgentBench V2 执行](docs/14-wabench-v2-evaluation.md) | 真实 Harness Adapter、五项 Rubric、失败优先、独立红队和 Shadow 门禁 |
 | [运维手册](docs/runbook.md) | 部署、监控与故障排查 |
 
 ---

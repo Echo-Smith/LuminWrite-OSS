@@ -201,6 +201,162 @@ export interface EvaluationRun {
   completed_at?: string;
 }
 
+// ─── WritingAgentBench Eval Center ──────────────────────────────
+
+export type WABenchPartition = "development" | "public_holdout" | "private_holdout" | "red_team" | "live_probe";
+export type WABenchGateDecision = "pass" | "fail" | "conditional" | "rollback" | "";
+export type WABenchArbitrationStatus = "not_required" | "pending" | "resolved";
+
+export interface WABenchOverview {
+  suiteCount: number;
+  candidateCount: number;
+  runCount: number;
+  reviewCount: number;
+  runningCount: number;
+  failedRunCount: number;
+  averageScore: number | null;
+  hardFailureRate: number | null;
+  acceptanceRate: number | null;
+  modificationBurden: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  sourceBoundaryFailureCount: number;
+  latestGateDecision: WABenchGateDecision;
+  costStatus: "observed" | "estimated" | "unavailable";
+}
+
+export interface WABenchSuiteItem {
+  suiteId: string;
+  name: string;
+  version: string;
+  description: string;
+  partition: WABenchPartition;
+  visibility: "public" | "private";
+  status: string;
+  caseCount: number;
+  coverage: Record<string, unknown>;
+  privacy: Record<string, unknown>;
+  contentHash?: string;
+  taskCounts: Record<string, number>;
+  privacyLabel: "public" | "redacted" | "private";
+  createdAt: string;
+}
+
+export interface WABenchCandidateItem {
+  candidateId: string;
+  name: string;
+  promptHash: string;
+  memoryHash?: string;
+  modelManifest: Record<string, unknown>;
+  codeHash: string;
+  toolManifest: Record<string, unknown>;
+  featureFlags: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface WABenchRunItem {
+  runId: string;
+  suiteId: string;
+  suiteName: string;
+  candidateId: string;
+  candidateName: string;
+  adapterId: string;
+  runnerVersion: string;
+  environment: string;
+  trafficType: "user" | "smoke" | "replay";
+  status: string;
+  totalCases: number;
+  completedCases: number;
+  failedCases: number;
+  scoredCases: number;
+  averageWeightedScore: number | null;
+  gateDecision: WABenchGateDecision;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+export interface WABenchReviewItem {
+  reviewId: string;
+  runId: string;
+  outputId: string;
+  caseId: string;
+  outputStatus: string;
+  textStorage: "inline_public" | "private_ref" | "hash_only";
+  privacyLevel: "synthetic" | "anonymized" | "private";
+  contentAvailable: boolean;
+  reviewerId: string;
+  reviewerRole: string;
+  reviewerType: "human" | "model" | "rule";
+  reviewMethod: string;
+  labelSource: string;
+  isBlind: boolean;
+  taskCompliance: number;
+  sourceFidelity: number;
+  structureReasoning: number;
+  styleConsistency: number;
+  directUsability: number;
+  acceptanceLabel: "direct_use" | "light_edit" | "heavy_edit" | "reject" | "unknown";
+  modificationBurden?: number;
+  hardFailureIds: string[];
+  primaryRootCause?: WABenchRootCause;
+  secondaryRootCauses: WABenchRootCause[];
+  arbitrationStatus: WABenchArbitrationStatus;
+  isArbitration: boolean;
+  reviewedAt: string;
+}
+
+export type WABenchRootCause = "input" | "retrieval" | "prompt" | "memory" | "tool" | "model" | "interaction";
+
+export interface WABenchBadcaseItem {
+  runId: string;
+  outputId: string;
+  caseId: string;
+  outputStatus: string;
+  symptoms: Array<Record<string, unknown>>;
+  primaryRootCause?: WABenchRootCause;
+  hardFailureIds: string[];
+  owner?: string;
+  fixVersion?: string;
+  regressionStatus: string;
+  privacyLevel: "synthetic" | "anonymized" | "private";
+  traceRef?: string;
+  createdAt: string;
+}
+
+export interface WABenchReleaseItem {
+  decisionId: string;
+  runId: string;
+  candidateId: string;
+  suiteId: string;
+  decision: Exclude<WABenchGateDecision, "">;
+  evidence: Record<string, unknown>;
+  exceptions: Array<Record<string, unknown>>;
+  rollbackConditions: Array<Record<string, unknown>>;
+  ownerRef: string;
+  decidedAt: string;
+}
+
+export interface WABenchListResponse<T> {
+  items: T[];
+  count: number;
+}
+
+export interface WABenchWorkbookValidationError {
+  row: number;
+  column?: string;
+  message: string;
+}
+
+export interface WABenchReviewImportResult {
+  fileName?: string;
+  sheetName: string;
+  importedRows?: number;
+  totalRows?: number;
+  validRows?: number;
+  errors?: WABenchWorkbookValidationError[];
+}
+
 // ─── Feedback 相关 ────────────────────────────────────────
 
 export interface FeedbackAggregation {

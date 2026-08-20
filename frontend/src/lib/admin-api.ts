@@ -33,12 +33,15 @@ export async function adminFetch<T>(
   const { silent, ...fetchOptions } = options ?? {};
 
   try {
+    const isFormData = typeof FormData !== "undefined" && fetchOptions.body instanceof FormData;
     const res = await fetch(endpoint, {
       ...fetchOptions,
-      headers: {
-        "Content-Type": "application/json",
-        ...fetchOptions?.headers,
-      },
+      headers: isFormData
+        ? fetchOptions?.headers
+        : {
+            "Content-Type": "application/json",
+            ...fetchOptions?.headers,
+          },
     });
 
     const json: AdminApiResponse<T> = await res.json();
@@ -48,7 +51,11 @@ export async function adminFetch<T>(
         const msg = json.error?.message ?? `请求失败 (${res.status})`;
         toast.error("操作失败", msg);
       }
-      return { success: false, error: json.error ?? { code: "http_error", message: `HTTP ${res.status}` } };
+      return {
+        success: false,
+        data: json.data,
+        error: json.error ?? { code: "http_error", message: `HTTP ${res.status}` },
+      };
     }
 
     return { success: true, data: json.data };
@@ -58,6 +65,53 @@ export async function adminFetch<T>(
       toast.error("网络错误", msg);
     }
     return { success: false, error: { code: "network_error", message: err instanceof Error ? err.message : "网络错误" } };
+  }
+}
+
+export async function adminUpload<T>(
+  endpoint: string,
+  file: File,
+  options: { silent?: boolean; fieldName?: string } = {},
+): Promise<AdminApiResponse<T>> {
+  const form = new FormData();
+  form.append(options.fieldName ?? "file", file);
+  return adminMutate<T>(endpoint, {
+    method: "POST",
+    body: form,
+    silent: options.silent,
+  });
+}
+
+export async function adminDownload(endpoint: string, fallbackFileName: string): Promise<boolean> {
+  try {
+    const res = await fetch(endpoint);
+    if (!res.ok) {
+      let message = `下载失败 (${res.status})`;
+      try {
+        const payload = await res.json() as AdminApiResponse<never>;
+        message = payload.error?.message ?? message;
+      } catch {
+        // The response may not be JSON (for example, an upstream proxy error page).
+      }
+      toast.error("下载失败", message);
+      return false;
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    const match = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+    const fileName = match?.[1] ? decodeURIComponent(match[1]) : fallbackFileName;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (err) {
+    toast.error("下载失败", err instanceof Error ? err.message : "网络错误，请稍后重试");
+    return false;
   }
 }
 

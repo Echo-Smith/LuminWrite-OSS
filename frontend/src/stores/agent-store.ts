@@ -17,7 +17,10 @@ import type {
   WritingArtifact,
 } from "@/lib/types";
 import { useAuthStore } from "@/stores/auth-store";
-import type { MemoryEntry } from "@/stores/memory-store";
+import { useAuthModal } from "@/stores/auth-modal-store";
+import { useEditorialStore } from "@/stores/editorial-store";
+import { useMemoryStore, type MemoryEntry } from "@/stores/memory-store";
+import { resolveConversationId } from "@/lib/conversation-session";
 
 // ─── 消息 Part 模型 ──────────────────────────────────────
 
@@ -84,7 +87,8 @@ export interface WritingSession {
   id: string;
   title: string;          // 显示标题：优先用 article_title，其次 user_input 截断
   messages: ChatMessage[];
-  traceId: string | null;
+  traceId: string | null; // 当前轮次 trace，用于暂停、恢复和取消
+  conversationId: string | null; // 首轮 trace，后续请求用它加载同一会话历史
   status: "idle" | "running" | "paused" | "completed" | "error";
   style: string;
   mode: string;
@@ -160,6 +164,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       title: "新写作",
       messages: [],
       traceId: null,
+      conversationId: null,
       status: "idle",
       style: "yinyue",
       mode: "auto",
@@ -232,6 +237,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         articleTitle: t.article_title || null,
         messages: [], // 延迟加载，点击时通过 loadSessionDetail 获取
         traceId: t.trace_id,
+        conversationId: t.trace_id,
         status: (t.status === "completed" ? "completed" :
                 t.status === "failed" ? "error" :
                 t.status === "running" ? "running" : "idle") as WritingSession["status"],
@@ -455,12 +461,19 @@ articleTitle: d.article_title,
     if (!sessionId) {
       sessionId = state.createSession();
     }
+    const activeSession = get().sessions.find((session) => session.id === sessionId);
+    // Keep the first trace as the stable conversation ID. The current trace is
+    // deliberately replaced on every request for pause/resume/cancel actions.
+    const requestPayload: AgentStartPayload = {
+      ...payload,
+      session_id: resolveConversationId(payload.session_id, activeSession),
+    };
 
     // 添加用户消息
     const userMessage: ChatMessage = {
       id: genMsgId(),
       role: "user",
-      parts: [{ type: "text", text: payload.message }],
+      parts: [{ type: "text", text: requestPayload.message }],
       createdAt: Date.now(),
     };
 
@@ -479,12 +492,12 @@ articleTitle: d.article_title,
         sess.id === sessionId
           ? {
               ...sess,
-              title: payload.message.slice(0, 30) || "新写作",
-              style: payload.style || sess.style,
-              mode: payload.mode || sess.mode,
+              title: requestPayload.message.slice(0, 30) || "新写作",
+              style: requestPayload.style || sess.style,
+              mode: requestPayload.mode || sess.mode,
               status: "running",
               messages: [...sess.messages, userMessage, assistantMessage],
-              injectedMaterials: payload.user_materials,
+              injectedMaterials: requestPayload.user_materials,
             }
           : sess
       ),
@@ -497,14 +510,14 @@ articleTitle: d.article_title,
     // 等待连接后发送
     const { ws } = get();
     if (ws && ws.readyState === WebSocket.OPEN) {
-      get().sendWS("agent.start", payload as unknown as Record<string, unknown>);
+      get().sendWS("agent.start", requestPayload as unknown as Record<string, unknown>);
     } else {
       // 等待连接
       const interval = setInterval(() => {
         const current = get().ws;
         if (current && current.readyState === WebSocket.OPEN) {
           clearInterval(interval);
-          get().sendWS("agent.start", payload as unknown as Record<string, unknown>);
+          get().sendWS("agent.start", requestPayload as unknown as Record<string, unknown>);
         }
       }, 100);
       // 10秒超时
@@ -565,7 +578,12 @@ articleTitle: d.article_title,
     switch (type) {
       case "agent.created": {
         const traceId = p.trace_id as string;
-        get()._updateActiveSession((s) => ({ ...s, traceId, status: "running" }));
+        get()._updateActiveSession((s) => ({
+          ...s,
+          traceId,
+          conversationId: s.conversationId || traceId,
+          status: "running",
+        }));
         break;
       }
 
@@ -847,13 +865,10 @@ case "agent.paused": {
 
         // Guest limit reached — auto-open register modal
         if (errorCode === "guest_limit_reached") {
-          // Use dynamic import to avoid circular dependency
-          import("./auth-modal-store").then(({ useAuthModal }) => {
-            const token = useAuthStore.getState().token;
-            useAuthModal.getState().openAuth({
-              guestToken: token ?? undefined,
-              defaultTab: "register",
-            });
+          const token = useAuthStore.getState().token;
+          useAuthModal.getState().openAuth({
+            guestToken: token ?? undefined,
+            defaultTab: "register",
           });
         }
 
@@ -922,9 +937,10 @@ case "agent.paused": {
           console.warn("Session resume failed:", p.message);
           // Clear the stale trace ID and reset session status so user can start fresh
           get()._updateActiveSession((s) => ({
-            ...s,
-            traceId: null,
-            status: "idle",
+          ...s,
+          traceId: null,
+          conversationId: null,
+          status: "idle",
           }));
           // Stop any streaming indicator
           get()._updateLastAssistantMessage((m) => ({
@@ -940,6 +956,7 @@ case "agent.paused": {
         get()._updateActiveSession((s) => ({
           ...s,
           traceId,
+          conversationId: conversationId || s.conversationId || traceId,
           status: status as WritingSession["status"],
           style: style || s.style,
           mode: mode || s.mode,
@@ -1015,12 +1032,10 @@ case "agent.paused": {
       case "memory.used": {
         // Store the memory context for this writing session
         const memCtx = p as unknown as { injected: unknown[]; review_guard: unknown[]; dismissed: string[] };
-        import("./memory-store").then(({ useMemoryStore }) => {
-          useMemoryStore.getState().setContext({
-            injected: (memCtx.injected as MemoryEntry[]) ?? [],
-            review_guard: (memCtx.review_guard as MemoryEntry[]) ?? [],
-            dismissed: memCtx.dismissed ?? [],
-          });
+        useMemoryStore.getState().setContext({
+          injected: (memCtx.injected as MemoryEntry[]) ?? [],
+          review_guard: (memCtx.review_guard as MemoryEntry[]) ?? [],
+          dismissed: memCtx.dismissed ?? [],
         });
         break;
       }
@@ -1028,9 +1043,7 @@ case "agent.paused": {
       case "editorial.event": {
         // Forward editorial events to the editorial store for auto-refresh
         const evt = p as unknown as { type: string; task_id: string; payload: Record<string, unknown>; timestamp: string };
-        import("./editorial-store").then(({ useEditorialStore }) => {
-          useEditorialStore.getState().pushEvent(evt);
-        });
+        useEditorialStore.getState().pushEvent(evt);
         break;
       }
     }

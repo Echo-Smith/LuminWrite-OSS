@@ -283,6 +283,25 @@ func (s *UserStyleStore) GetVersion(ctx context.Context, versionID string) (*Use
 	return &v, nil
 }
 
+// GetVersionByNumber returns the immutable snapshot used by a frozen
+// WABench rule-profile reference. Unlike GetLatestVersion, this never follows
+// later edits to the user's style.
+func (s *UserStyleStore) GetVersionByNumber(ctx context.Context, profileID string, version int) (*UserStyleProfileVersion, error) {
+	if version < 1 {
+		return nil, fmt.Errorf("style version must be positive")
+	}
+	var v UserStyleProfileVersion
+	err := s.db.QueryRowContext(ctx, `
+		SELECT `+versionColumns+`
+		FROM user_style_profile_versions
+		WHERE profile_id = $1 AND version = $2
+	`, profileID, version).Scan(&v.ID, &v.ProfileID, &v.Version, &v.Config, &v.Changelog, &v.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get user style profile version %d: %w", version, err)
+	}
+	return &v, nil
+}
+
 // ListVersions returns all versions for a profile.
 func (s *UserStyleStore) ListVersions(ctx context.Context, profileID string) ([]UserStyleProfileVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `
