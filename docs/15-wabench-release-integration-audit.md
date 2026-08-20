@@ -85,6 +85,8 @@ Task 8—9 可以从 `origin/main` 独立集成，不依赖本地 `main` 超前�
 
 ## 发版约束
 
+> 2026-08-20 后续：本文记录的 Go vet、ESLint 缺失、npm 依赖风险和大 chunk 问题已在独立工程质量提交中补齐，详见 [`16-engineering-quality-followup.md`](./16-engineering-quality-followup.md)。本文原始审计数字保留作为当时证据。
+
 - 本审计未 push、未部署、未改动 `main`。
 - 本分支不包含本地 `main` 的 9 个未发布提交。
 - 不应把旧 WebPush migration、checksum 自动吞错逻辑和 WABench 放进同一个未经拆分的 release PR。
