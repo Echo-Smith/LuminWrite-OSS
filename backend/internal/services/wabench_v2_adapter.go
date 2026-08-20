@@ -319,7 +319,7 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		if strings.HasPrefix(result.Source, "local_kb") || strings.HasPrefix(result.Source, "frozen_fixture:") {
 			provider := strings.TrimPrefix(result.Source, "frozen_fixture:")
 			if provider == "local_kb" || provider == "" {
-				provider = "luminbuddy-local-kb"
+				provider = "local-pg-kb"
 			}
 			providers[provider] = true
 		}
