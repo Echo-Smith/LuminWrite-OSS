@@ -18,6 +18,7 @@ import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
 import { ToastContainer } from "@/components/ui/toast";
 import { useSSENotifications } from "@/hooks/use-sse-notifications";
+import { PageTransition } from "@/components/animation";
 
 export function App() {
   const init = useAuthStore((s) => s.init);
@@ -43,7 +44,9 @@ export function App() {
             path="/write"
             element={
               <ProtectedRoute>
-                <WritingWorkspace />
+                <PageTransition>
+                  <WritingWorkspace />
+                </PageTransition>
               </ProtectedRoute>
             }
           />
@@ -51,7 +54,9 @@ export function App() {
             path="/write/:topicId"
             element={
               <ProtectedRoute>
-                <WritingWorkspace />
+                <PageTransition>
+                  <WritingWorkspace />
+                </PageTransition>
               </ProtectedRoute>
             }
           />
@@ -59,7 +64,9 @@ export function App() {
             path="/topics"
             element={
               <ProtectedRoute>
-                <TopicCenter />
+                <PageTransition>
+                  <TopicCenter />
+                </PageTransition>
               </ProtectedRoute>
             }
           />
@@ -67,8 +74,10 @@ export function App() {
             path="/profile"
             element={
               <ProtectedRoute>
-                <WritingWorkspace />
-                <PersonalCenter />
+                <PageTransition>
+                  <WritingWorkspace />
+                  <PersonalCenter />
+                </PageTransition>
               </ProtectedRoute>
             }
           />
@@ -77,7 +86,9 @@ export function App() {
             path="/my-styles"
             element={
               <ProtectedRoute>
-                <MyStylesPage />
+                <PageTransition>
+                  <MyStylesPage />
+                </PageTransition>
               </ProtectedRoute>
             }
           />
@@ -100,14 +111,16 @@ export function App() {
             path="/editorial"
             element={
               <ProtectedRoute>
-                <EditorialBoard />
+                <PageTransition>
+                  <EditorialBoard />
+                </PageTransition>
               </ProtectedRoute>
             }
           />
 
           {/* 法律页面 — 公开访问，无需登录 */}
-          <Route path="/terms" element={<TermsPage />} />
-          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<PageTransition><TermsPage /></PageTransition>} />
+          <Route path="/privacy" element={<PageTransition><PrivacyPage /></PageTransition>} />
 
           {/* 默认重定向 */}
           <Route path="/" element={<Navigate to="/write" replace />} />

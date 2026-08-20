@@ -42,6 +42,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   const [showMaterials, setShowMaterials] = useState(false);
   const [materialInput, setMaterialInput] = useState("");
   const [uploading, setUploading] = useState(false);
+  // Composer 抖动状态（空消息发送时触发）
+  const [shakeKey, setShakeKey] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -124,7 +126,12 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   }), []);
 
   const handleSend = useCallback(() => {
-    if (!message.trim() || isRunning) return;
+    if (isRunning) return;
+    if (!message.trim()) {
+      // 空消息发送 → 触发 Composer 抖动
+      setShakeKey((k) => k + 1);
+      return;
+    }
 
     startWriting({
       message: message.trim(),
@@ -154,6 +161,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     if (materialInput.trim()) {
       setMaterials([...materials, materialInput.trim()]);
       setMaterialInput("");
+    } else {
+      // 空素材添加 → 触发 Composer 抖动
+      setShakeKey((k) => k + 1);
     }
   };
 
@@ -221,7 +231,10 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       )}
 
       {/* ── Composer 药丸容器 ── */}
-      <div className="composer-shell overflow-hidden">
+      <div
+        key={`composer-${shakeKey}`}
+        className={cn("composer-shell overflow-hidden", shakeKey > 0 && "anim-shake")}
+      >
         {/* 素材标签（在容器内顶部） */}
         {materials.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-4 pt-3 anim-fade-in">
@@ -343,7 +356,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
                 title="暂停"
               >
-                <Pause className="h-4 w-4" />
+                <span key="pause-icon" className="anim-fade-scale flex items-center justify-center">
+                  <Pause className="h-4 w-4" />
+                </span>
               </button>
             )}
 
@@ -353,7 +368,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
                 title="继续"
               >
-                <Play className="h-4 w-4" />
+                <span key="play-icon" className="anim-fade-scale flex items-center justify-center">
+                  <Play className="h-4 w-4" />
+                </span>
               </button>
             )}
 
@@ -363,7 +380,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 className="flex items-center justify-center h-8 w-8 rounded-full border border-destructive/30 text-destructive transition-transform-precise hover:scale-105 active:scale-95 hover:bg-destructive/10"
                 title="停止"
               >
-                <Square className="h-3.5 w-3.5" />
+                <span key="stop-icon" className="anim-fade-scale flex items-center justify-center">
+                  <Square className="h-3.5 w-3.5" />
+                </span>
               </button>
             )}
 
@@ -379,12 +398,14 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 )}
                 title="发送"
               >
-                <PenLine className="h-4 w-4" />
+                <span key="send-icon" className="anim-fade-scale flex items-center justify-center">
+                  <PenLine className="h-4 w-4" />
+                </span>
               </button>
             )}
 
             {isRunning && message.trim() && (
-              <span className="text-xs text-muted-foreground px-1" title="当前写作完成后可发送">
+              <span className="text-xs text-muted-foreground px-1 anim-fade-in" title="当前写作完成后可发送">
                 待发
               </span>
             )}

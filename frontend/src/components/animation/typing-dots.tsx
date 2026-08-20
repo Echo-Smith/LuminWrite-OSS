@@ -4,6 +4,7 @@
  * @example
  * <TypingDots />
  * <TypingDots label="正在思考" />
+ * <TypingDots label="正在思考" shimmer />
  */
 import { cn } from "@/lib/utils";
 
@@ -12,12 +13,15 @@ interface TypingDotsProps {
   label?: string;
   /** 点的颜色类（默认使用 muted-foreground） */
   color?: string;
+  /** label 是否使用 shimmer 渐变扫过效果 */
+  shimmer?: boolean;
   className?: string;
 }
 
 export function TypingDots({
   label,
   color,
+  shimmer = false,
   className,
 }: TypingDotsProps) {
   return (
@@ -28,7 +32,12 @@ export function TypingDots({
         <span style={color ? { background: color } : undefined} />
       </span>
       {label && (
-        <span className="text-sm text-muted-foreground">{label}</span>
+        <span className={cn(
+          "text-sm",
+          shimmer ? "anim-shimmer-text" : "text-muted-foreground"
+        )}>
+          {label}
+        </span>
       )}
     </span>
   );

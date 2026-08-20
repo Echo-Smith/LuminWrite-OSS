@@ -11,3 +11,6 @@ export { PulseIndicator } from "./pulse-indicator";
 export { StaggerList, StaggerItem } from "./stagger-list";
 export { StreamingCursor } from "./streaming-cursor";
 export { AnimatedBar } from "./animated-bar";
+export { AnimatedCheck } from "./animated-check";
+export { PageTransition } from "./page-transition";
+export { ConfettiBurst } from "./confetti-burst";

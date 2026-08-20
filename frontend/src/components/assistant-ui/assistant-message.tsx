@@ -21,7 +21,7 @@ import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { STEP_LABELS } from "@/lib/constants";
 import { toast } from "@/stores/toast-store";
 import { cn } from "@/lib/utils";
-import { TypingDots, StreamingCursor, PulseIndicator } from "@/components/animation";
+import { TypingDots, StreamingCursor, PulseIndicator, AnimatedCheck, ConfettiBurst } from "@/components/animation";
 
 interface AssistantMessageProps {
   message: ChatMessage;
@@ -146,7 +146,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
         {/* 等待提示 */}
         {!hasContent && isRunning && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-2 anim-fade-in">
-            <TypingDots label="正在思考中" />
+            <TypingDots label="正在思考中" shimmer />
           </div>
         )}
       </div>
@@ -374,9 +374,12 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-medium">质量评分</h4>
         {passed !== undefined && (
-          <Badge variant={passed ? "success" : "destructive"}>
-            {passed ? "通过" : "未通过"}
-          </Badge>
+          <div className="relative flex items-center">
+            {passed && <ConfettiBurst count={10} />}
+            <Badge variant={passed ? "success" : "destructive"}>
+              {passed ? "通过" : "未通过"}
+            </Badge>
+          </div>
         )}
       </div>
 
@@ -484,7 +487,7 @@ const [saving, setSaving] = useState(false);
       >
         {copied ? (
           <>
-            <Check className="h-3.5 w-3.5 text-emerald-600" />
+            <AnimatedCheck className="h-3.5 w-3.5 text-emerald-600" />
             <span className="text-emerald-600">已复制</span>
           </>
         ) : (
@@ -612,7 +615,7 @@ const [saving, setSaving] = useState(false);
             )}
             {saved && (
               <span className="text-xs text-emerald-600 flex items-center gap-1">
-                <Check className="h-3 w-3" /> 已保存
+                <AnimatedCheck className="h-3 w-3" /> 已保存
               </span>
             )}
           </div>
@@ -654,6 +657,9 @@ function WordCountProgress({ text }: { text: string }) {
   const isInRange = currentCount >= targetMin && currentCount <= targetMax;
   const isAboveTarget = currentCount > targetMax;
 
+  // 以每 100 字为粒度触发 pop-in 动画，避免每帧闪烁
+  const popInKey = Math.floor(currentCount / 100);
+
   return (
     <div className="mt-3 flex items-center gap-3 rounded-md bg-muted/30 dark:bg-muted/10 px-3 py-2 anim-fade-in">
       <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
@@ -666,10 +672,13 @@ function WordCountProgress({ text }: { text: string }) {
         />
       </div>
       <div className="flex items-center gap-1.5 text-xs tabular-nums shrink-0">
-        <span className={cn(
-          "font-medium",
-          isInRange ? "text-emerald-600" : isAboveTarget ? "text-amber-600" : "text-muted-foreground"
-        )}>
+        <span
+          key={popInKey}
+          className={cn(
+            "font-medium anim-pop-in",
+            isInRange ? "text-emerald-600" : isAboveTarget ? "text-amber-600" : "text-muted-foreground"
+          )}
+        >
           {currentCount}
         </span>
         <span className="text-muted-foreground/60">/ {targetMin}-{targetMax} 字</span>

@@ -15,6 +15,8 @@ export interface ToastItem {
   description?: string;
   duration: number; // 0 = 不自动消失
   action?: { label: string; onClick: () => void };
+  /** 退场动画标记 — true 时渲染退场动画，动画结束后移除 */
+  leaving?: boolean;
 }
 
 interface ToastStore {
@@ -34,10 +36,18 @@ export const useToastStore = create<ToastStore>((set) => ({
     const item: ToastItem = { id, ...toast, duration: toast.duration ?? 3000 };
     set((s) => ({ toasts: [...s.toasts, item] }));
 
-    // 自动消失
+    // 自动消失：先标记 leaving 播放退场动画，再移除
     if (item.duration > 0) {
       setTimeout(() => {
-        set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+        set((s) => ({
+          toasts: s.toasts.map((t) =>
+            t.id === id ? { ...t, leaving: true } : t
+          ),
+        }));
+        // 等退场动画播完再移除
+        setTimeout(() => {
+          set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+        }, 200); // anim-exit-drop duration=150ms + 50ms buffer
       }, item.duration);
     }
 
@@ -45,7 +55,16 @@ export const useToastStore = create<ToastStore>((set) => ({
   },
 
   dismiss: (id) => {
-    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+    // 先标记 leaving 播放退场动画
+    set((s) => ({
+      toasts: s.toasts.map((t) =>
+        t.id === id ? { ...t, leaving: true } : t
+      ),
+    }));
+    // 等退场动画播完再移除
+    setTimeout(() => {
+      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+    }, 200);
   },
 
   clear: () => set({ toasts: [] }),

@@ -35,7 +35,8 @@ export function ToastContainer() {
           <div
             key={t.id}
             className={cn(
-              "pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-background/95 backdrop-blur-sm px-4 py-3 shadow-lg min-w-[280px] max-w-[400px] anim-fade-in-right",
+              "pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-background/95 backdrop-blur-sm px-4 py-3 shadow-lg min-w-[280px] max-w-[400px]",
+              t.leaving ? "anim-exit-drop" : "anim-enter-rise",
               COLOR_MAP[t.type]
             )}
           >

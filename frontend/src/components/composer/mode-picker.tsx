@@ -30,8 +30,14 @@ export function ModePicker({ value, onChange }: ModePickerProps) {
         <button
           className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
         >
-          {selected && <selected.icon className="h-3.5 w-3.5" />}
-          <span>{selected?.label ?? "选择模式"}</span>
+          {selected && (
+            <span key={`mode-icon-${selected.value}`} className="flex items-center anim-fade-scale">
+              <selected.icon className="h-3.5 w-3.5" />
+            </span>
+          )}
+          <span key={`mode-label-${selected?.value ?? 'none'}`} className="anim-fade-scale">
+            {selected?.label ?? "选择模式"}
+          </span>
           <ChevronDown className="h-3 w-3 opacity-50" />
         </button>
       </PopoverTrigger>

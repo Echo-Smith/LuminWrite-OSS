@@ -252,6 +252,89 @@
   }
 }
 
+/* ── Toast / Dialog 入场（fade + blur + scale 上升） ── */
+@keyframes anim-enter-rise {
+  from {
+    opacity: 0;
+    filter: blur(var(--anim-blur-enter));
+    transform: translateY(-8px) scale(var(--anim-scale-enter));
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── Toast / Dialog 退场（fade + blur + scale 下降） ── */
+@keyframes anim-exit-drop {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--anim-blur-enter));
+    transform: translateY(-8px) scale(var(--anim-scale-enter));
+  }
+}
+
+/* ── Dialog 内容入场（scale + blur，无位移） ── */
+@keyframes anim-dialog-enter {
+  from {
+    opacity: 0;
+    filter: blur(var(--anim-blur-enter));
+    transform: translate(-50%, -50%) scale(var(--anim-scale-enter));
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* ── Dialog 内容退场（scale + blur 收缩） ── */
+@keyframes anim-dialog-exit {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--anim-blur-enter));
+    transform: translate(-50%, -50%) scale(var(--anim-scale-enter));
+  }
+}
+
+/* ── SVG check path 描画动画（复制成功反馈） ── */
+@keyframes anim-draw-check {
+  from { stroke-dashoffset: 24; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* ── Shimmer text（masked gradient sweep across text） ── */
+@keyframes anim-shimmer-text {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Confetti 粒子爆发 + 下落 ── */
+@keyframes anim-confetti {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--confetti-x, 0), var(--confetti-y, -40px)) rotate(var(--confetti-rot, 180deg)) scale(0.6);
+  }
+}
+
 /* ── 边框光泽（hover 高亮） ── */
 @keyframes anim-border-glow {
   0%, 100% {
@@ -341,6 +424,65 @@
 }
 .anim-shake {
   animation: anim-shake 0.4s var(--anim-ease-in-out);
+}
+
+/* ── SVG check 描画 ── */
+.anim-draw-check {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: anim-draw-check 0.3s var(--anim-ease-precise) forwards;
+}
+
+/* ── Shimmer text（渐变扫过文字） ── */
+.anim-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--foreground)) 50%,
+    hsl(var(--muted-foreground)) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: anim-shimmer-text 2s var(--anim-ease-linear) infinite;
+}
+
+/* ── Confetti 粒子 ── */
+.anim-confetti-piece {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  animation: anim-confetti 0.8s var(--anim-ease-out) forwards;
+}
+
+/* ── Toast / Dialog 入退场 ── */
+.anim-enter-rise {
+  animation: anim-enter-rise var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.anim-exit-drop {
+  animation: anim-exit-drop var(--anim-duration-fast) var(--anim-ease-in) both;
+}
+.anim-dialog-enter {
+  animation: anim-dialog-enter var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.anim-dialog-exit {
+  animation: anim-dialog-exit var(--anim-duration-fast) var(--anim-ease-in) both;
+}
+
+/* ── Radix Dialog 自定义动画类（通过 data-state 属性触发） ── */
+.dialog-overlay-enhanced[data-state="open"] {
+  animation: anim-fade-in var(--anim-duration-normal) var(--anim-ease-out) both;
+}
+.dialog-overlay-enhanced[data-state="closed"] {
+  animation: anim-fade-out var(--anim-duration-fast) var(--anim-ease-in) both;
+}
+.dialog-content-enhanced[data-state="open"] {
+  animation: anim-dialog-enter var(--anim-duration-normal) var(--anim-ease-precise) both;
+}
+.dialog-content-enhanced[data-state="closed"] {
+  animation: anim-dialog-exit var(--anim-duration-fast) var(--anim-ease-in) both;
 }
 
 /* ── 过渡基础类（替代 Tailwind transition，统一缓动） ── */
