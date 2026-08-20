@@ -677,12 +677,14 @@ articleTitle: d.article_title,
       case "agent.stream.reset": {
         // 后端检测到中间 tool-call 轮次产生了被乐观推送的 content，
         // 通知前端丢弃所有已流式输出的 text part 内容。
+        // 移除所有 text parts（包括 streaming:false 的中间版本），
+        // 避免多篇文章在前端累积显示。
         set({ streamingText: "" });
         get()._updateLastAssistantMessage((m) => {
           const parts = [...m.parts];
-          // 移除所有 streaming text parts
+          // 移除所有 text parts
           const filtered = parts.filter(
-            (part) => !(part.type === "text" && (part as TextPart).streaming)
+            (part) => part.type !== "text"
           );
           return { ...m, parts: filtered };
         });
@@ -806,21 +808,21 @@ case "agent.paused": {
         const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"] };
 
         get()._updateLastAssistantMessage((m) => {
-          // 如果后端返回了 article，用 article 覆盖所有 text part 的内容
-          // 这样可以确保最终显示的是纯净的文章正文，而不是 LLM 在
-          // agent loop 中输出的混合内容（正文 + 评审说明等）
-          const parts = m.parts.map((part) => {
-            if (part.type === "text") {
-              if (article) {
-                // 有 article 时，用 article 覆盖 text part 内容
-                return { ...part, streaming: false, text: article };
-              }
-              if (part.streaming) {
-                return { ...part, streaming: false };
+          // 如果后端返回了 article，先移除所有旧 text parts，
+          // 再添加一个干净的最终 text part，确保只显示一篇文章。
+          const nonTextParts = m.parts.filter((part) => part.type !== "text");
+          const finalParts: MessagePart[] = [];
+          if (article) {
+            finalParts.push({ type: "text", text: article, streaming: false });
+          } else {
+            // 没有 article（如 chat 模式），保留原有 text parts 但标记为完成
+            for (const part of m.parts) {
+              if (part.type === "text") {
+                finalParts.push({ ...part, streaming: false });
               }
             }
-            return part;
-          });
+          }
+          const parts = [...nonTextParts, ...finalParts];
           // 添加 review data part（仅写作模式有评分）
           if (review) {
             parts.push({ type: "data", dataType: "review" as const, data: result.review });

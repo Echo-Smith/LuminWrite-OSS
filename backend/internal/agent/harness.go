@@ -183,18 +183,11 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 				"trace_id", execCtx.TraceID,
 				"article_chars", len([]rune(savedArticle)),
 			)
-			// 先发送 StreamDone 将正文标记为已完成，
-			// 这样后续的 StreamReset 只会清空新的 streaming text parts，
-			// 不影响已标记为 streaming:false 的正文。
-			if h.emitter != nil {
-				h.emitter.StreamDone(savedArticle)
-			}
 		}
 		bodyBuf.Reset()
-		// StreamReset 只会清空前端 streaming:true 的 text parts。
-		// 上面已通过 StreamDone 将正文标记为 streaming:false，
-		// 所以这里调用 StreamReset 是安全的——它只清空本轮
-		// 乐观推送的非正文文本（如工具调用前的过渡文本）。
+		// StreamReset 清空前端所有 streaming text parts。
+		// 不发 StreamDone，避免中间版本的正文被标记为 streaming:false 留在消息中。
+		// 最终的 StreamDone 在 Run 收尾时发送一次，确保前端只有一篇最终文章。
 		if h.emitter != nil {
 			h.emitter.StreamReset()
 		}
