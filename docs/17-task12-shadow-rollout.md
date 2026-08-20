@@ -1,6 +1,6 @@
 # Task 12 Shadow Rollout Decision
 
-**Date:** 2026-08-20  
+**Date:** 2026-08-20
 **Status:** in progress — shadow only
 
 ## Decision
