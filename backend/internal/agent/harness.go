@@ -571,13 +571,11 @@ func (h *Harness) buildLLMOptions(intent Intent, session *WritingSession) []tool
 	switch intent {
 	case IntentWriting:
 		opts = append(opts,
-			tools.WithModel(tools.ModelV4Pro),
 			tools.WithThinking(true),
 			tools.WithReasoningEffort("high"),
 		)
 	case IntentPolish, IntentShorten, IntentExpand:
 		opts = append(opts,
-			tools.WithModel(tools.ModelV4Pro),
 			tools.WithThinking(true),
 			tools.WithReasoningEffort("high"),
 		)

@@ -992,7 +992,7 @@ func (s *OutlineStep) generateOutline(ctx context.Context, execCtx *engine.Execu
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
-	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
+	}, tools.WithInstructions(systemMsg), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
 	}
@@ -1134,7 +1134,6 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	var streamOpts []tools.ChatOption
 	if taskMode == "writing" {
 		streamOpts = []tools.ChatOption{
-			tools.WithModel(tools.ModelV4Pro),
 			tools.WithThinking(true),
 			tools.WithReasoningEffort("high"),
 		}
@@ -1469,7 +1468,7 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
-	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	}, tools.WithInstructions(systemMsg), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
 		// If review fails, pass by default (graceful degradation) but add a warning
 		slog.Warn("post review LLM call failed, skipping review (graceful degradation)",
@@ -2109,7 +2108,7 @@ issue type 约定：title_length（字数不合规）、title_generic（过于�
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
-	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	}, tools.WithInstructions(systemMsg), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
 		return nil, err
 	}
