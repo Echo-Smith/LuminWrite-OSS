@@ -35,7 +35,9 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Test backend
         working-directory: backend
-        run: go test ./...
+        # Several integration packages run migrations against this one service;
+        # package-level parallelism would race the shared schema.
+        run: go test -p 1 ./...
 
   frontend:
     runs-on: ubuntu-latest
