@@ -58,6 +58,7 @@ Adapter 不调用旧的 `generateArticle` 快捷路径。`modelManifest.model` �
 
 ## 来源模式
 
+- V2 当前运行时知识库是本地 PostgreSQL 实现，所有运行/检查/报告中统一标记为 `local-pg-kb`；它不是 V1 的乐享 provider，也不得生成 `lexiang` 标签。
 - `none`：不提供冻结 fixture，Agent 可按真实任务决定是否检索；
 - `live`：使用当前真实 Web/知识库工具；
 - `frozen`：只向 Harness 注入冻结 fixture，关闭实时 Web 和知识库工具；
@@ -125,4 +126,4 @@ GET /api/v2/admin/evaluation/wabench/runs/{runId}
 
 ## 发布边界
 
-当前仍是 Shadow 阶段：新门禁会生成并保存结论，但不会替换现有生产发布动作。切换写入口、管理页面和正式发布门禁属于后续 Task 10—12。
+当前仍是 Shadow 阶段：新门禁会生成并保存结论，但不会替换现有生产发布动作。Task 12 已获准开始 shadow，但不包含主分支合并、生产部署或生产发布门禁切换。V1 的 Lexiang-only 检查只属于 V1；V2 的对应专属证据是登录/JWT、多轮会话、真实 `local-pg-kb` 标签和异常降级/拒绝轨迹。
