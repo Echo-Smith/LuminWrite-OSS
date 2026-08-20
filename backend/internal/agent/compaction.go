@@ -181,7 +181,7 @@ func (h *Harness) compactHistory(ctx context.Context, msgs []memory.Conversation
 	resp, _, err := h.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.1), tools.WithThinking(false))
+	}, tools.WithTemperature(0.1), tools.WithThinking(false))
 	if err != nil {
 		return "", fmt.Errorf("compaction LLM call failed: %w", err)
 	}

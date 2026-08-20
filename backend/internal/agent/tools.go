@@ -807,7 +807,7 @@ func executeRewriteTitle(cfg ToolExecutorConfig, arguments string) (string, erro
 	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.7), tools.WithThinking(false))
+	}, tools.WithTemperature(0.7), tools.WithThinking(false))
 	if err != nil {
 		if cfg.Emitter != nil {
 			cfg.Emitter.StepComplete("rewrite_title", map[string]any{"error": err.Error()}, int64(time.Since(start).Milliseconds()))
@@ -882,7 +882,7 @@ func executeFactCheck(cfg ToolExecutorConfig, arguments string) (string, error) 
 	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.1), tools.WithThinking(false))
+	}, tools.WithTemperature(0.1), tools.WithThinking(false))
 	if err != nil {
 		if cfg.Emitter != nil {
 			cfg.Emitter.StepComplete("fact_check", map[string]any{"error": err.Error()}, int64(time.Since(start).Milliseconds()))
@@ -1442,7 +1442,7 @@ func generateOutlineWithLLM(ctx context.Context, llm *tools.LLMClient, topic str
 
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
-	}, tools.WithInstructions(systemMsg), tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
+	}, tools.WithInstructions(systemMsg), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
 	}
@@ -1524,7 +1524,7 @@ func compressSearchResults(ctx context.Context, llm *tools.LLMClient, query stri
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0.1), tools.WithThinking(false))
+	}, tools.WithTemperature(0.1), tools.WithThinking(false))
 
 	if err != nil {
 		slog.Warn("compressSearchResults: LLM compression failed, falling back",
@@ -1625,7 +1625,7 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
-	}, tools.WithModel(tools.ModelV4Pro), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	}, tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 
 	if err != nil {
 		return &engine.ReviewResult{
