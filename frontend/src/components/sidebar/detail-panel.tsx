@@ -5,7 +5,7 @@
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
 import { useState, useEffect, useCallback } from "react";
-import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, type LucideIcon } from "lucide-react";
+import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -51,7 +51,7 @@ const AGENT_ROLES: AgentRole[] = [
     icon: Search,
     color: "text-amber-600 dark:text-amber-400",
     bgColor: "bg-amber-50 dark:bg-amber-950/30",
-    steps: ["query_plan", "search", "relevance", "compress"],
+    steps: ["query_plan", "search", "search_web", "search_knowledge", "read_source", "relevance", "compress"],
   },
   {
     name: "结构规划",
@@ -96,12 +96,17 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   ) ?? []) as ToolCallPart[];
 
   // 从 search step 的 result 中提取素材
-  // 兼容 Pipeline 模式（toolName="search"）和 Harness 模式（toolName="search_web"）
+  // 兼容 Pipeline 模式（toolName="search"）和 Harness 模式（toolName="search_web"/"search_knowledge"）
   const searchStep = toolCallParts.find((p) => p.toolName === "search" || p.toolName === "search_web");
   const searchResults = searchStep?.result as { results?: Array<Record<string, unknown>> | number; items?: Array<Record<string, unknown>> } | undefined;
   // Harness 模式的 result 中 items 是搜索结果数组，results 是数量（数字）
   // Pipeline 模式的 result 中 results 是搜索结果数组
-  const results = Array.isArray(searchResults?.items) ? searchResults!.items! : (Array.isArray(searchResults?.results) ? searchResults!.results as Array<Record<string, unknown>> : []);
+  const webResults = Array.isArray(searchResults?.items) ? searchResults!.items! : (Array.isArray(searchResults?.results) ? searchResults!.results as Array<Record<string, unknown>> : []);
+
+  // 从 search_knowledge step 提取知识库检索结果
+  const kbSearchStep = toolCallParts.find((p) => p.toolName === "search_knowledge");
+  const kbSearchResults = kbSearchStep?.result as { results?: Array<Record<string, unknown>> | number; items?: Array<Record<string, unknown>> } | undefined;
+  const kbResults = Array.isArray(kbSearchResults?.items) ? kbSearchResults!.items! : (Array.isArray(kbSearchResults?.results) ? kbSearchResults!.results as Array<Record<string, unknown>> : []);
 
   // 从 memory_gate step 提取记忆检索结果
   // 兼容 Pipeline 模式（toolName="memory_gate"）和 Harness 模式（无对应步骤）
@@ -163,7 +168,7 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
             <AgentCollaborationFlow parts={toolCallParts} />
           </TabsContent>
           <TabsContent value="sources" className="p-3 m-0">
-            <SourcesList results={results} memories={memories} memoryHit={memoryHit} queries={queries} keywords={keywords} injectedMaterials={injectedMaterials} />
+            <SourcesList webResults={webResults} kbResults={kbResults} memories={memories} memoryHit={memoryHit} queries={queries} keywords={keywords} injectedMaterials={injectedMaterials} />
           </TabsContent>
           <TabsContent value="style" className="p-3 m-0">
             <StyleInfo slug={session?.style ?? "yinyue"} />
@@ -290,24 +295,26 @@ function AgentCollaborationFlow({ parts }: { parts: ToolCallPart[] }) {
 }
 
 /**
- * 检索素材列表 — 包含 KB 检索结果 + 记忆系统 + 查询计划
+ * 检索素材列表 — 按来源分类展示：选题素材 / 检索计划 / 记忆系统 / 网络搜索 / 知识库检索
  */
 function SourcesList({
-  results,
+  webResults,
+  kbResults,
   memories,
   memoryHit,
   queries,
   keywords,
   injectedMaterials = [],
 }: {
-  results: Array<Record<string, unknown>>;
+  webResults: Array<Record<string, unknown>>;
+  kbResults: Array<Record<string, unknown>>;
   memories: Array<Record<string, unknown>>;
   memoryHit: boolean;
   queries: string[];
   keywords: string[];
   injectedMaterials?: string[];
 }) {
-  const hasAnything = results.length > 0 || memories.length > 0 || queries.length > 0 || keywords.length > 0 || injectedMaterials.length > 0;
+  const hasAnything = webResults.length > 0 || kbResults.length > 0 || memories.length > 0 || queries.length > 0 || keywords.length > 0 || injectedMaterials.length > 0;
 
   if (!hasAnything) {
     return (
@@ -344,7 +351,7 @@ function SourcesList({
         </div>
       )}
 
-      {/* 查询计划 */}
+      {/* 检索计划 */}
       {(queries.length > 0 || keywords.length > 0) && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -403,19 +410,19 @@ function SourcesList({
         </div>
       )}
 
-      {/* KB 检索结果 */}
-      {results.length > 0 && (
+      {/* 网络搜索结果 */}
+      {webResults.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Globe className="h-3.5 w-3.5" />
-            知识库素材
-            <span className="font-mono-sm">{results.length} 条</span>
+            联网搜索
+            <span className="font-mono-sm">{webResults.length} 条</span>
           </div>
-          {results.map((r, i) => (
+          {webResults.map((r, i) => (
             <StaggerItem key={i} index={i} interval={40} animation="fade-up">
-              <div className="rounded-lg border p-2.5 space-y-1 hover:bg-accent/50 transition-ui">
+              <div className="rounded-lg border border-blue-200/50 dark:border-blue-900/30 bg-blue-50/20 dark:bg-blue-950/10 p-2.5 space-y-1 hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-ui">
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-xs shrink-0">
+                  <Badge variant="outline" className="text-xs shrink-0 text-blue-700 dark:text-blue-400">
                     {String(r.source ?? "web")}
                   </Badge>
                   {r.relevance != null && (
@@ -437,6 +444,40 @@ function SourcesList({
                   >
                     查看原文 →
                   </a>
+                )}
+              </div>
+            </StaggerItem>
+          ))}
+        </div>
+      )}
+
+      {/* 知识库检索结果 */}
+      {kbResults.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <BookOpen className="h-3.5 w-3.5" />
+            知识库检索
+            <span className="font-mono-sm">{kbResults.length} 条</span>
+          </div>
+          {kbResults.map((r, i) => (
+            <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+              <div className="rounded-lg border border-purple-200/50 dark:border-purple-900/30 bg-purple-50/20 dark:bg-purple-950/10 p-2.5 space-y-1 hover:bg-purple-50/40 dark:hover:bg-purple-950/20 transition-ui">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-xs shrink-0 text-purple-700 dark:text-purple-400">
+                    {String(r.source ?? "kb")}
+                  </Badge>
+                  {r.score != null && (
+                    <span className="text-[10px] text-muted-foreground tabular-nums">
+                      相关度 {(Number(r.score) * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
+                {r.snippet != null && String(r.snippet) && (
+                  <p className="text-xs text-muted-foreground line-clamp-3">{String(r.snippet)}</p>
+                )}
+                {r.doc_title != null && String(r.doc_title) && (
+                  <p className="text-[10px] text-muted-foreground/70">来源文档：{String(r.doc_title)}</p>
                 )}
               </div>
             </StaggerItem>

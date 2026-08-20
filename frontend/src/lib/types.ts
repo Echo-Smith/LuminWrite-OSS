@@ -7,6 +7,7 @@
 export type AgentStepName =
   // ── Harness 模式（架构 C）新工具名 ──
   | "search_web"
+  | "search_knowledge"
   | "read_source"
   | "write_article"
   | "review_article"
