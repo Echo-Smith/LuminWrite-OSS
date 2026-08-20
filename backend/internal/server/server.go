@@ -405,7 +405,7 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 	}
 
-	// Initialize ToolRegistry — unified registry for all tools
+	// Initialize ToolRegistry — registry for all tools
 	// (Steps + Built-in tools + MCP tools)
 	toolRegistry := engine.NewToolRegistry()
 
@@ -1440,7 +1440,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	baseEmitter := NewWSEmitter(s.hub, traceID)
 	emitter := NewLoggingEmitter(baseEmitter, s.sessionEvents, traceID, EventLogCoarse)
 
-	// Load style profile (needed by both pipeline and unified modes)
+	// Load style profile (needed by both pipeline and harness modes)
 	var styleProfile *profile.StyleProfile
 	if s.profiles != nil {
 		if p, ok := s.profiles.Get(execCtx.StyleSlug); ok {
@@ -1591,7 +1591,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 // is persisted to the database (read-only recovery for late reconnects).
 //
 // Parameters:
-//   - agentRunner: the pipeline or unified agent
+//   - agentRunner: the pipeline or harness agent
 //   - execCtx: the shared execution context
 //   - emitter: the event emitter (LoggingEmitter wrapping WSEmitter)
 //   - traceID: the trace identifier

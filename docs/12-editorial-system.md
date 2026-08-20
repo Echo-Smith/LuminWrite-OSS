@@ -175,7 +175,7 @@ type TaskContext struct {
 | Memory 系统 | 编辑部规范 | 栏目偏好、作者历史 |
 | Topic Center | 选题池 | 编辑部选题管理 |
 | Feedback + 录用结果 | Agent 信誉 | 效果反馈 |
-| UnifiedAgent | 主编调度 | ReAct 循环编排基础 |
+| Harness (LLM 持续会话) | 主编调度 | 单层持续会话编排（见架构 C 设计） |
 | Exit Mechanism (6 层退出) | Agent 退出保护 | 断路器 + 预算 + 超时 |
 
 ## 3. 任务状态机
@@ -387,7 +387,7 @@ frontend/
 三组对照实验：
 
 1. **现有固定 Pipeline**（AgentEngine）
-2. **单 Agent 动态编排**（UnifiedAgent）
+2. **Harness 单层持续会话**（LLM 持续会话 + 工具自主调用）
 3. **编辑部 Multi-Agent**（三 Agent 协作）
 
 关键指标：
@@ -538,7 +538,7 @@ TokenBudget = 300,000 (默认)
 ```
 ExperimentRunner
 ├── runPipelineMode()   — 固定 Pipeline (QueryPlan→Search→Write→Review)
-├── runUnifiedMode()    — UnifiedAgent (ReAct 单 Agent 动态编排)
+├── runHarnessMode()    — Harness (LLM 持续会话 + 工具自主调用)
 └── runEditorialMode()  — Editorial Multi-Agent (三 Agent 协作)
 ```
 

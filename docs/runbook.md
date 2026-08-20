@@ -526,7 +526,7 @@ AGENT_MODE=unified
 docker compose restart backend
 
 # 验证
-docker logs writing-agent-backend 2>&1 | grep "using unified agent" | tail -5
+docker logs writing-agent-backend 2>&1 | grep "using harness agent" | tail -5
 ```
 
 ### 6.2 添加/修改搜索源 API Key

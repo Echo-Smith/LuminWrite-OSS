@@ -39,7 +39,6 @@
 | 记忆系统 | ✅ 完成 | 2025-Q3 | 四层记忆 + 文件层 + 实体网络 |
 | 编辑部多 Agent | ✅ 完成 | 2025-Q4 | 研究→写作→审校三 Agent 编排 |
 | MCP 集成 | ✅ 完成 | 2026-Q1 | MCP 客户端 + 服务端 |
-| 统一 Agent (ReAct) | ✅ 完成 | 2026-Q1 | UnifiedAgent LLM 驱动编排 |
 | **安全加固 + 生产化** | 🔄 进行中 | 2026-08 | 红队评估、Prompt Injection 防御、运维手册 |
 | 自演进闭环 | 📋 规划中 | — | feedback → candidate → eval gate → rollout |
 | 多实例水平扩展 | 📋 规划中 | — | Docker Swarm / K8s |
@@ -53,8 +52,7 @@
 │  Frontend    │◄──────────────────────►│         Backend (Go)             │
 │  React+Vite  │     JWT Auth           │                                  │
 │  Nginx       │                        │  ┌────────────────────────────┐  │
-└──────────────┘                        │  │   Agent Engine / Unified    │  │
-                                        │  │   ReAct Loop               │  │
+│  │   Harness (LLM 持续会话)     │  │
                                         │  └──────────┬─────────────────┘  │
                                         │             │                    │
                                         │  ┌──────────▼─────────────────┐  │
@@ -103,13 +101,13 @@
 
 > 格式：`D-<编号>` | 日期 | 决策 | 背景 | 选项 | 选择 | 理由 | 重新评估触发条件
 
-### D-001 | 2025-Q1 | Agent 执行模式：双模式（Pipeline + Unified）
+### D-001 | 2025-Q1 | Agent 执行模式：双模式（Pipeline + Harness）
 
 - **背景**：需要兼顾确定性流程和 LLM 自主编排
-- **选项**：(a) 仅固定 Pipeline (b) 仅 LLM ReAct (c) 双模式可切换
+- **选项**：(a) 仅固定 Pipeline (b) 仅 Harness (c) 双模式可切换
 - **选择**：(c) 双模式
-- **理由**：Pipeline 保证关键步骤不遗漏；Unified 提供灵活编排；通过 `AGENT_MODE` 环境变量切换
-- **重新评估**：如果 Unified 模式在 95%+ 场景下优于 Pipeline，考虑废弃 Pipeline
+- **理由**：Pipeline 保证关键步骤不遗漏；Harness 提供灵活编排；通过 `AGENT_MODE` 环境变量切换
+- **重新评估**：已评估，Harness 已成为默认模式（详见 `docs/wiki/architecture-history.md`）
 
 ### D-002 | 2025-Q2 | 知识库方案：本地 PG + paradedb 替代外部 WeKnora
 
@@ -161,7 +159,7 @@
 | v2.1.0 | 2025-Q2 | 多源搜索 + 知识库集成 | Search, KB |
 | v2.2.0 | 2025-Q3 | 四层记忆系统 + 实体网络 | Memory |
 | v2.3.0 | 2025-Q4 | 编辑部多 Agent 编排 | Editorial |
-| v2.4.0 | 2026-Q1 | MCP 双向集成 + UnifiedAgent | Agent, MCP |
+| v2.4.0 | 2026-Q1 | MCP 双向集成（含已弃用的 UnifiedAgent） | Agent, MCP |
 | v2.5.0 | 2026-Q1 | GraphRAG + 灰度发布 + WebAuthn | KB, Profile, Auth |
 | v2.6.0 | 2026-08 | 红队评估 + Prompt Injection 防御 + 运维手册 | Security, Eval, Ops |
 
@@ -184,7 +182,7 @@
 | 证据 ID | 类型 | 描述 | 路径 |
 |---|---|---|---|
 | E-001 | 架构审计 | AgentOps 健康检查报告 | `agentops-health-check-2026-08-03.md` |
-| E-002 | 代码 | UnifiedAgent ReAct 循环 | `backend/internal/agent/unified_agent.go` |
+| E-002 | 文档 | 已弃用架构历史 | `docs/wiki/architecture-history.md` |
 | E-003 | 代码 | 编辑部编排器 | `backend/internal/editorial/orchestrator.go` |
 | E-004 | 代码 | 记忆服务 | `backend/internal/memory/service.go` |
 | E-005 | 代码 | MCP 注册表 | `backend/internal/mcp/registry.go` |

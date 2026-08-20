@@ -15,7 +15,7 @@ Corrections, insights, and knowledge gaps captured during development.
 
 ### Summary
 
-`UnifiedAgent` 放在 `engine` 包中导入 `tools` 包，而 `tools` 包已经导入 `engine` 包（`SearchClient.Search` 返回 `engine.SearchResult`），形成 `engine ⇄ tools` 循环依赖，编译报错 `import cycle not allowed`。
+已弃用的 UnifiedAgent 放在 `engine` 包中导入 `tools` 包，而 `tools` 包已经导入 `engine` 包（`SearchClient.Search` 返回 `engine.SearchResult`），形成 `engine ⇄ tools` 循环依赖，编译报错 `import cycle not allowed`。UnifiedAgent 源码已删除，但此经验教训仍有参考价值。
 
 ### Details
 
@@ -23,14 +23,6 @@ Go 不允许循环依赖。当 `engine` 包的类型（如 `SearchResult`）被 
 
 ```
 engine → tools → engine  ❌ cycle
-```
-
-```
-package engine  // unified_agent.go
-import "github.com/.../internal/tools"  // 需要 LLMClient
-
-package tools  // search.go
-import "github.com/.../internal/engine"  // 需要 SearchResult
 ```
 
 ### Implementation (2026-07-18)
@@ -43,10 +35,6 @@ import "github.com/.../internal/engine"  // 需要 SearchResult
       engine → tools             ✅ 无环
 ```
 
-- 删除 `internal/engine/unified_agent.go`
-- 新建 `internal/agent/unified_agent.go`（包名 `agent`，引用 `engine.*` 和 `tools.*`）
-- 修改 `internal/server/server.go`（import 从 `engine` 改为 `agent`）
-
 ### Suggested Action
 
 **预防措施**：
@@ -56,7 +44,7 @@ import "github.com/.../internal/engine"  // 需要 SearchResult
 
 ### Metadata
 - Source: test-failure
-- Related Files: internal/engine/unified_agent.go (deleted), internal/agent/unified_agent.go (new), internal/tools/search.go
+- Related Files: docs/wiki/architecture-history.md (UnifiedAgent 历史记录)
 - Tags: go, import-cycle, architecture, best_practice
 - Pattern-Key: go.break_import_cycle_with_intermediate_package
 

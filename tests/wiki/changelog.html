@@ -35,7 +35,7 @@
       <div class="date">2026-08-16</div>
       <div class="content">
         <ul>
-          <li><strong>Harness 架构</strong>：替换原 UnifiedAgent 嵌套 ReAct 为单层 LLM 持续会话编排，工具自主调用，会话状态跨轮持久化</li>
+          <li><strong>Harness 架构</strong>：替代原 ReAct 编排为单层 LLM 持续会话编排，工具自主调用，会话状态跨轮持久化</li>
           <li><strong>A/B 测试框架</strong>：编辑实验编排器 + 结果存储，支持对照组/实验组自动化评测与指标对比</li>
           <li><strong>Passkey 认证</strong>：WebAuthn 无密码登录与设备管理，个人中心直接绑定/删除 Passkey</li>
           <li><strong>Session Event Log</strong>：追加式事件日志，支持会话回放与断线重连</li>
@@ -143,7 +143,7 @@
       <tr><td>记忆系统</td><td><span class="tag tag-green">✅ 完成</span></td><td>四层记忆 + 文件层 + 实体网络</td></tr>
       <tr><td>编辑部多 Agent</td><td><span class="tag tag-green">✅ 完成</span></td><td>研究→写作→审校三 Agent 编排</td></tr>
       <tr><td>MCP 集成</td><td><span class="tag tag-green">✅ 完成</span></td><td>MCP 客户端 + 服务端</td></tr>
-      <tr><td>统一 Agent (ReAct)</td><td><span class="tag tag-green">✅ 完成</span></td><td>UnifiedAgent LLM 驱动编排</td></tr>
+      <tr><td>统一 Agent (ReAct)</td><td><span class="tag tag-red">已弃用</span></td><td>UnifiedAgent LLM 驱动编排，已被 Harness 替代，详见 docs/wiki/architecture-history.md</td></tr>
       <tr><td>安全加固 + 生产化</td><td><span class="tag tag-amber">🔄 进行中</span></td><td>红队评估、Prompt Injection 防御、运维手册</td></tr>
       <tr><td>自演进闭环</td><td><span class="tag tag-gray">📋 规划中</span></td><td>feedback → candidate → eval gate → rollout</td></tr>
       <tr><td>多实例水平扩展</td><td><span class="tag tag-gray">📋 规划中</span></td><td>Docker Swarm / K8s</td></tr>

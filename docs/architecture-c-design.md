@@ -12,13 +12,10 @@
 ### 与当前架构的对比
 
 ```
-当前（架构 A）:
-  用户 → UnifiedAgent(ReAct 外壳) → determineNextStep(硬编码)
-    → Step1(intent, 内部调 LLM)
-    → Step2(query_plan, 内部调 LLM)
-    → ...
-    → StepN(write, 内部 agent loop)
+已弃用（架构 B — UnifiedAgent）:
+  用户 → ReAct 循环 → LLM 选择工具 → 执行 → 回传
   13 次 LLM 调用，首字延迟 30-60s
+  详见 docs/wiki/architecture-history.md
 
 架构 C:
   用户 → Harness(规则路由)
