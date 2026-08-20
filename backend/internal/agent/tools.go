@@ -429,8 +429,8 @@ func filterTools(defs []tools.ToolDef, keep func(string) bool) []tools.ToolDef {
 
 // ToolExecutorConfig 配置工具执行器。
 type ToolExecutorConfig struct {
-	Search     *tools.SearchClient      // 网络搜索（Tavily/Bing/腾讯等）
-	KBSearcher tools.KnowledgeSearcher  // 知识库搜索（本地 BM25+Dense+GraphRAG）
+	Search     *tools.SearchClient     // 网络搜索（Tavily/Bing/腾讯等）
+	KBSearcher tools.KnowledgeSearcher // 知识库搜索（本地 BM25+Dense+GraphRAG）
 	Session    *WritingSession
 	ExecCtx    *engine.ExecutionContext
 	Emitter    engine.EventEmitter
@@ -936,8 +936,8 @@ func executeFactCheck(cfg ToolExecutorConfig, arguments string) (string, error) 
 
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepComplete("fact_check", map[string]any{
-			"claims":    len(claims.Claims),
-			"verified":  cfg.Search != nil && cfg.Search.HasSources(),
+			"claims":   len(claims.Claims),
+			"verified": cfg.Search != nil && cfg.Search.HasSources(),
 		}, int64(time.Since(start).Milliseconds()))
 	}
 	return sb.String(), nil
@@ -1313,7 +1313,7 @@ func extractKeywords(query string) []string {
 	words := strings.FieldsFunc(query, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '，' || r == '.' || r == '。' ||
 			r == '!' || r == '！' || r == '?' || r == '？' || r == ':' || r == '：' || r == ';' || r == '；' ||
-			r == '(' || r == ')' || r == '（' || r == '）' || r == '"' || r == '"' || r == '"' || r == '"' ||
+			r == '(' || r == ')' || r == '（' || r == '）' || r == '"' || r == '\'' || r == '“' || r == '”' ||
 			r == '[' || r == ']' || r == '【' || r == '】' || r == '-' || r == '_' || r == '/' || r == '|'
 	})
 
@@ -1674,14 +1674,14 @@ func defaultMaxCalls(intent Intent) map[string]int {
 	case IntentWriting:
 		// 写作意图：搜索 3 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 5 次
 		return map[string]int{
-			"search_web":        3,
-			"search_knowledge":  3,
-			"review_article":    1,
+			"search_web":       3,
+			"search_knowledge": 3,
+			"review_article":   1,
 			"generate_outline": 1,
-			"word_count_check":  1,
-			"rewrite_title":     1,
-			"fact_check":        1,
-			"retrieve_context":  5,
+			"word_count_check": 1,
+			"rewrite_title":    1,
+			"fact_check":       1,
+			"retrieve_context": 5,
 		}
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
 		// 修改意图：搜索 2 次、上下文检索 3 次

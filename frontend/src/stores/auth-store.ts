@@ -8,6 +8,8 @@
  * - 用户信息管理
  */
 import { create } from "zustand";
+import { useSettingsStore } from "@/stores/settings-store";
+import { useTopicCacheStore } from "@/stores/topic-cache-store";
 
 // ─── 类型定义 ──────────────────────────────────────────────
 
@@ -210,7 +212,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       scheduleAutoRefresh(stored.expiresAt, () => get().refreshToken());
 
       // 从云端加载用户偏好设置
-      import("@/stores/settings-store").then((m) => m.useSettingsStore.getState().loadFromServer());
+      void useSettingsStore.getState().loadFromServer();
       return;
     }
 
@@ -228,7 +230,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       scheduleAutoRefresh(expiresAt, () => get().refreshToken());
 
       // 游客也加载偏好（游客有自己的 user_id）
-      import("@/stores/settings-store").then((m) => m.useSettingsStore.getState().loadFromServer());
+      void useSettingsStore.getState().loadFromServer();
     } else {
       // Fallback: mark as initialized even if guest creation fails
       set({ initialized: true });
@@ -247,16 +249,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     scheduleAutoRefresh(expiresAt, () => get().refreshToken());
 
     // 从云端加载用户偏好设置
-    import("@/stores/settings-store").then((m) => m.useSettingsStore.getState().loadFromServer());
+    void useSettingsStore.getState().loadFromServer();
   },
 
   logout: () => {
     clearStorage();
     set({ token: null, user: null, expiresAt: null });
     // 清理选题缓存，避免下一个用户看到上一个用户的数据
-    import("@/stores/topic-cache-store").then((m) => m.useTopicCacheStore.getState().clearCache());
+    useTopicCacheStore.getState().clearCache();
     // 重置偏好设置状态
-    import("@/stores/settings-store").then((m) => m.useSettingsStore.setState({ agentMode: "harness", loaded: false }));
+    useSettingsStore.setState({ agentMode: "harness", loaded: false });
   },
 
   refreshToken: async () => {

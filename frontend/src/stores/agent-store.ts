@@ -17,7 +17,9 @@ import type {
   WritingArtifact,
 } from "@/lib/types";
 import { useAuthStore } from "@/stores/auth-store";
-import type { MemoryEntry } from "@/stores/memory-store";
+import { useAuthModal } from "@/stores/auth-modal-store";
+import { useEditorialStore } from "@/stores/editorial-store";
+import { useMemoryStore, type MemoryEntry } from "@/stores/memory-store";
 
 // ─── 消息 Part 模型 ──────────────────────────────────────
 
@@ -847,13 +849,10 @@ case "agent.paused": {
 
         // Guest limit reached — auto-open register modal
         if (errorCode === "guest_limit_reached") {
-          // Use dynamic import to avoid circular dependency
-          import("./auth-modal-store").then(({ useAuthModal }) => {
-            const token = useAuthStore.getState().token;
-            useAuthModal.getState().openAuth({
-              guestToken: token ?? undefined,
-              defaultTab: "register",
-            });
+          const token = useAuthStore.getState().token;
+          useAuthModal.getState().openAuth({
+            guestToken: token ?? undefined,
+            defaultTab: "register",
           });
         }
 
@@ -1015,12 +1014,10 @@ case "agent.paused": {
       case "memory.used": {
         // Store the memory context for this writing session
         const memCtx = p as unknown as { injected: unknown[]; review_guard: unknown[]; dismissed: string[] };
-        import("./memory-store").then(({ useMemoryStore }) => {
-          useMemoryStore.getState().setContext({
-            injected: (memCtx.injected as MemoryEntry[]) ?? [],
-            review_guard: (memCtx.review_guard as MemoryEntry[]) ?? [],
-            dismissed: memCtx.dismissed ?? [],
-          });
+        useMemoryStore.getState().setContext({
+          injected: (memCtx.injected as MemoryEntry[]) ?? [],
+          review_guard: (memCtx.review_guard as MemoryEntry[]) ?? [],
+          dismissed: memCtx.dismissed ?? [],
         });
         break;
       }
@@ -1028,9 +1025,7 @@ case "agent.paused": {
       case "editorial.event": {
         // Forward editorial events to the editorial store for auto-refresh
         const evt = p as unknown as { type: string; task_id: string; payload: Record<string, unknown>; timestamp: string };
-        import("./editorial-store").then(({ useEditorialStore }) => {
-          useEditorialStore.getState().pushEvent(evt);
-        });
+        useEditorialStore.getState().pushEvent(evt);
         break;
       }
     }
