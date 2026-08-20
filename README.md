@@ -12,7 +12,7 @@
 
 **笔润智谈**（LuminBuddy）是一款面向中文内容生产场景的 AI 写作助手。它不追求"一键生成"的魔法，而是将写作过程拆解为可观察、可干预、可迭代的工程流程——让创作者在关键决策点保持控制权，同时让 AI 在素材搜集、结构规划、风格适配和质量检查等环节提供有效辅助。
 
-**当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。
+**当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。对照 [AgentOps Awesome List](https://github.com/redmaplewww/agentops-awesome-list) T3 Production Project 基线，35+ 架构组件中 32 个达到完整实现，详见[架构评估报告](docs/architecture-assessment.md)。
 
 ---
 
@@ -138,12 +138,35 @@ LLM 在持续会话中自主调用的工具：
 - **审计日志**：操作追踪、安全审计
 - **Token 监控**：用量统计、成本分析
 
+### 编辑部多 Agent 协作
+
+编辑部内部供稿流程的完整三 Agent 编排系统：
+
+```
+人类编辑创建任务 → 研究Agent → 写作Agent → 审校Agent
+  → 质量路由：通过→待发布 / 一般问题→退回 / 严重问题→升级人工
+```
+
+- **三层模型**：Event（客观事实）+ Decision（人类/系统选择）+ Transition（状态转换）
+- **质量路由**：信源数、信息缺口、验证声明自动评分，达标自动推进
+- **自动重试**：Agent 重试上限 2 次，超限升级人工
+- **Agent 信誉**：记录成功率、Token 成本、质量评分
+- **对照实验**：Pipeline / Harness / Editorial 三组盲评（六维度 LLM 评分）
+
 ### 认证与安全
 
 - **Passkey/WebAuthn**：无密码登录，设备级安全
 - **游客模式**：无需注册即可体验，支持后续升级
-- **Prompt Injection 防御**：输入清洗 + System Prompt 防御指令
-- **敏感词检查**：内置敏感内容过滤
+- **Prompt Injection 防御**：输入清洗（SanitizeExternalContent）+ System Prompt 7 条防御指令
+- **红队安全评估**：20 个对抗测试用例覆盖 6 类攻击（注入/信息提取/内容策略/工具误用），LLM 安全审计评分
+- **敏感词检查**：内置敏感内容过滤 + PII 检查注入记忆系统
+
+### MCP 双向集成
+
+- **MCP Client**：支持 stdio 和 SSE 传输，连接外部 MCP 服务器
+- **MCP Server**：进程内 MCP Server，通过 JSON-RPC 2.0 暴露本地工具
+- **工具注册表**：统一管理内置工具、MCP 工具和 Pipeline 步骤，命名 `mcp__server__tool`
+- **管理后台**：可视化管理 MCP 服务器连接状态和工具发现
 
 ---
 
@@ -265,6 +288,7 @@ cd frontend && npm ci && npm run build
 | [管理后台](docs/08-admin-dashboard.md) | 配置、评测与可观测入口 |
 | [记忆系统](docs/11-memory-system.md) | 硬偏好、行为模式与反馈信号 |
 | [编辑部系统](docs/12-editorial-system.md) | 编辑任务管理与工作流 |
+| [架构评估报告](docs/architecture-assessment.md) | AgentOps T3 基线对照、组件清单与缺口分析 |
 | [WritingAgentBench 数据层](docs/13-wabench-data-layer.md) | WABench v1 表、Legacy importer、分区、隐私和内置/自定义风格引用 |
 | [Luminbuddy Eval Center](docs/16-wabench-eval-center.md) | 七个评测工作区、中文 Excel、评审溯源、仲裁、隐私与发布边界 |
 | [WritingAgentBench V2 执行](docs/14-wabench-v2-evaluation.md) | 真实 Harness Adapter、五项 Rubric、失败优先、独立红队和 Shadow 门禁 |
@@ -273,6 +297,13 @@ cd frontend && npm ci && npm run build
 ---
 
 ## 更新日志
+
+### v0.5.0 (2026-08-21)
+
+- **架构评估**：对照 AgentOps Awesome List T3 Production Project 基线完成全面自检，35+ 组件中 32 个达标，详见[评估报告](docs/architecture-assessment.md)
+- **编辑部多 Agent**：文档补充三 Agent 编排系统（研究→写作→审校 + 质量路由 + 信誉系统 + 对照实验）
+- **安全体系**：文档补充红队 20 用例评估、Prompt Injection 防御细节、MCP 双向集成
+- **文档统一**：UnifiedAgent → Harness 命名统一 + 架构历史文档化
 
 ### v0.4.0 (2026-08-18)
 

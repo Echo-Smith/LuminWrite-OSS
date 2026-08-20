@@ -56,3 +56,6 @@ scripts/check_go_imports.py
 # ─── A/B 测试结果（临时产物） ──────────────────────────
 ab-test-results-*.json
 ab-test-report.html
+
+# ─── 本地评估文档（不提交） ───────────────────────────
+docs/architecture-assessment.md
