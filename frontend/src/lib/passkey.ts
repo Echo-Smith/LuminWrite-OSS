@@ -5,6 +5,8 @@
  * 以及与后端 /api/v2/auth/passkey/* 端点的交互。
  */
 
+import { useAuthStore } from "@/stores/auth-store";
+
 // ─── Base64 URL 工具 ──────────────────────────────────────
 
 function bufferToBase64URL(buf: ArrayBuffer | Uint8Array): string {
@@ -73,9 +75,14 @@ interface AuthenticationChallenge {
 // ─── API 调用 ─────────────────────────────────────────────
 
 async function apiCall<T>(url: string, body?: unknown): Promise<T> {
+  // 从 authStore 获取 token（passkey 注册需要认证才能正确绑定用户）
+  const token = useAuthStore.getState().token;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json();
@@ -272,11 +279,18 @@ export interface PasskeyInfo {
 }
 
 export async function listPasskeys(): Promise<PasskeyInfo[]> {
-  const res = await fetch("/api/v2/auth/passkey/list");
+  const token = useAuthStore.getState().token;
+  const res = await fetch("/api/v2/auth/passkey/list", {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
   const json = await res.json();
   return json.data?.passkeys || [];
 }
 
 export async function deletePasskey(id: string): Promise<void> {
-  await fetch(`/api/v2/auth/passkey/${id}`, { method: "DELETE" });
+  const token = useAuthStore.getState().token;
+  await fetch(`/api/v2/auth/passkey/${id}`, {
+    method: "DELETE",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
 }

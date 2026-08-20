@@ -609,11 +609,13 @@ function StyleSection() {
                       <p className="mt-1 text-xs text-muted-foreground line-clamp-1">
                         {style.description || "暂无描述"}
                       </p>
-                      {style.config && (
+                      {style.config?.word_range && (
                         <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
-                          <span>{style.config.word_range.min}-{style.config.word_range.max}字</span>
-                          <span>结构: {style.config.structure.type}</span>
-                          {style.config.tags.length > 0 && (
+                          <span>{style.config.word_range.min ?? "?"}-{style.config.word_range.max ?? "?"}字</span>
+                          {style.config.structure?.type && (
+                            <span>结构: {style.config.structure.type}</span>
+                          )}
+                          {style.config.tags && style.config.tags.length > 0 && (
                             <span>{style.config.tags.join("、")}</span>
                           )}
                         </div>
@@ -1387,6 +1389,7 @@ function MemorySection() {
 const AGENT_MODE_OPTIONS: { value: AgentMode; label: string; description: string }[] = [
   { value: "harness", label: "智能会话模式", description: "LLM 持续会话 + Harness 路由，支持多轮修改、对话、搜索，适合实际写作场景" },
   { value: "pipeline", label: "流水线模式", description: "固定步骤流水线，稳定可预测，适合标准化写作" },
+  { value: "editorial", label: "编辑部模式 (Beta)", description: "模拟编辑部协作流程：选题→研究→写作→审校，多 Agent 角色分工，适合高质量长文创作" },
 ];
 
 function SettingsSection() {
@@ -1516,6 +1519,7 @@ function SettingsSection() {
           <strong className="text-foreground">提示：</strong>
           智能会话模式（Harness）让 AI 在持续会话中自主搜索、写作、评审和修改，支持多轮对话和定向修改；
           流水线模式（Pipeline）使用固定步骤，更稳定但灵活性较低。
+          编辑部模式（Editorial）模拟编辑部协作流程，多 Agent 角色分工，适合高质量长文。
           如果对生成质量不满意，可以尝试切换模式体验差异。
         </p>
       </div>
@@ -1562,7 +1566,10 @@ function AccountSection() {
 
   const fetchPasskeys = async () => {
     try {
-      const res = await fetch("/api/v2/auth/passkey/list");
+      const token = useAuthStore.getState().token;
+      const res = await fetch("/api/v2/auth/passkey/list", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const json = await res.json();
       if (json.success && json.data?.passkeys) {
         setPasskeys(json.data.passkeys);
@@ -1610,7 +1617,11 @@ function AccountSection() {
 
   const handleDeletePasskey = async (id: string) => {
     try {
-      await fetch(`/api/v2/auth/passkey/${id}`, { method: "DELETE" });
+      const token = useAuthStore.getState().token;
+      await fetch(`/api/v2/auth/passkey/${id}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       setPasskeys(passkeys.filter((p) => p.id !== id));
     } catch {
       // ignore

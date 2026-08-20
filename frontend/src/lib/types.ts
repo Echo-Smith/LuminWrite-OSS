@@ -92,7 +92,7 @@ export interface AgentStartPayload {
   style?: string;
   mode?: WriteMode;
   model?: string;
-  agent_mode?: "harness" | "pipeline";
+  agent_mode?: "harness" | "pipeline" | "editorial";
   session_id?: string;
   user_materials?: string[];
   word_limit?: number;

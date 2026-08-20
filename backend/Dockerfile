@@ -23,9 +23,10 @@ RUN go mod download
 COPY --link . .
 
 # Build static binary (CGO_ENABLED=0 → no libc dependency → scratch/alpine compatible)
+# GOAMD64=v4: 针对线上 x86 v4 微架构 (AVX2/AVX512/FMA) 优化指令生成
 ARG TARGETOS=linux
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=v4 \
     go build -ldflags='-s -w -extldflags "-static"' \
     -trimpath \
     -o /bin/server ./cmd/server/

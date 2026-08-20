@@ -1448,12 +1448,12 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 	}
 
-	// Create and run engine
 	// Mode selection: payload agent_mode > server config AGENT_MODE
 	// "harness" uses Harness-LLM single-layer continuous session (架构 C)
 	// "pipeline" uses fixed steps
+	// "editorial" uses editorial orchestrator (选题→研究→写作→审校)
 	agentMode := s.cfg.Agent.Mode
-	if p.AgentMode == "harness" || p.AgentMode == "pipeline" {
+	if p.AgentMode == "harness" || p.AgentMode == "pipeline" || p.AgentMode == "editorial" {
 		agentMode = p.AgentMode
 	}
 
@@ -1464,6 +1464,76 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		Run(context.Context, *engine.ExecutionContext) error
 	}
 
+	// ── Editorial mode: 启动编辑部编排器 (选题→研究→写作→审校) ──
+	if agentMode == "editorial" && s.editorialSvc != nil {
+		// 1. 创建编辑部任务
+		edTask, err := s.editorialSvc.CreateTask(context.Background(), editorial.CreateTaskInput{
+			Title:       p.Message,
+			Description: "编辑部模式写作",
+			StyleSlug:   execCtx.StyleSlug,
+			TokenBudget: 300000,
+			Priority:    3,
+		}, userID)
+		if err != nil {
+			slog.Error("editorial: failed to create task", "error", err, "trace_id", traceID)
+			client.Send(&websocket.ServerMessage{
+				Type:    "error",
+				Payload: map[string]string{"message": "failed to create editorial task"},
+			})
+			return
+		}
+
+		// 2. 创建选题卡 Artifact 并自动批准
+		topicCardContent, _ := json.Marshal(map[string]interface{}{
+			"title":       p.Message,
+			"description": "编辑部模式写作",
+			"style_slug":  execCtx.StyleSlug,
+		})
+		topicCard, err := s.editorialSvc.SubmitArtifact(context.Background(), edTask.ID, editorial.SubmitArtifactInput{
+			Type:       editorial.ArtifactTopicCard,
+			Content:    string(topicCardContent),
+			ProducedBy: "human",
+		})
+		if err != nil {
+			slog.Error("editorial: failed to create topic card", "error", err, "task_id", edTask.ID)
+		} else {
+			s.editorialSvc.ReviewArtifact(context.Background(), topicCard.ID, editorial.ReviewArtifactInput{
+				Status:     editorial.ArtifactStatusApproved,
+				ReviewerID: "system",
+				ReviewNote: "编辑部模式自动批准",
+			})
+		}
+
+		// 3. 推进状态链：draft → pending_approval → research
+		// 这将触发研究 Agent，然后自动流经 writing → review → pending_publish
+		if err := s.editorialSvc.AdvanceTask(context.Background(), edTask.ID, editorial.AdvanceTaskInput{
+			TargetStatus: editorial.StatusPendingApproval,
+			DecidedBy:    userID,
+			Rationale:   "编辑部模式自动提交审批",
+		}); err != nil {
+			slog.Error("editorial: failed to advance to pending_approval", "error", err, "task_id", edTask.ID)
+		}
+		if err := s.editorialSvc.AdvanceTask(context.Background(), edTask.ID, editorial.AdvanceTaskInput{
+			TargetStatus: editorial.StatusResearch,
+			DecidedBy:    userID,
+			Rationale:   "编辑部模式自动批准立项",
+		}); err != nil {
+			slog.Error("editorial: failed to advance to research", "error", err, "task_id", edTask.ID)
+		}
+
+		// 关联 trace 与 editorial task
+		if s.traces != nil {
+			s.traces.LinkEditorialTask(context.Background(), traceID, edTask.ID)
+		}
+
+		slog.Info("editorial mode started", "trace_id", traceID, "task_id", edTask.ID)
+
+		// Editorial orchestrator 通过 editorialWSEmitter 自动把事件转发到 WebSocket
+		// 前端通过 editorial.event 消息接收进度
+		return
+	}
+
+	// ── Harness/Pipeline mode ──
 	if agentMode == "harness" {
 		// 架构 C: Harness-LLM 单层持续会话
 		writingSession := agent.NewWritingSession(execCtx.ConversationID, userID, execCtx.StyleSlug)
@@ -1791,6 +1861,13 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 			resumeMode := execCtx.AgentMode
 			if resumeMode == "" {
 				resumeMode = s.cfg.Agent.Mode
+			}
+
+			// Editorial mode doesn't support resume — it's driven by the
+			// orchestrator state machine, not a long-lived Run() goroutine.
+			if resumeMode == "editorial" {
+				slog.Info("editorial mode: no resume needed, orchestrator drives the flow", "trace_id", p.TraceID)
+				return
 			}
 
 			if resumeMode == "harness" {

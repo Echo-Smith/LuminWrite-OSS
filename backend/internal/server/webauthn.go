@@ -1193,6 +1193,14 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 			RETURNING NULLIF(user_id, '')
 		`, clientData.Challenge).Scan(&challengeUserID)
 		if err != nil {
+			// Log the challenge lookup failure for debugging
+			challengePreview := clientData.Challenge
+			if len(challengePreview) > 16 {
+				challengePreview = challengePreview[:16]
+			}
+			slog.Warn("passkey login: challenge lookup failed in DB",
+				"challenge_prefix", challengePreview,
+				"error", err)
 			// Try in-memory fallback (for sessions started before DB migration)
 			sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
 			if !ok {

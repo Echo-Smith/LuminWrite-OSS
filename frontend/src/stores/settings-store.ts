@@ -5,12 +5,12 @@
  * 写作功能本身依赖在线 WebSocket，因此设置跟随用户账号而非本地设备。
  *
  * 目前管理：
- * - agentMode: "harness" | "pipeline" — 编排模式选择
+ * - agentMode: "harness" | "pipeline" | "editorial" — 编排模式选择
  */
 import { create } from "zustand";
 import { useAuthStore } from "@/stores/auth-store";
 
-export type AgentMode = "harness" | "pipeline";
+export type AgentMode = "harness" | "pipeline" | "editorial";
 
 interface SettingsState {
   agentMode: AgentMode;
@@ -40,7 +40,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const json = await res.json();
       if (json.success && json.data) {
         const mode = json.data.agent_mode as AgentMode | undefined;
-        if (mode === "harness" || mode === "pipeline") {
+        if (mode === "harness" || mode === "pipeline" || mode === "editorial") {
           set({ agentMode: mode });
         }
       }

@@ -17,7 +17,7 @@ import (
 // Each key maps to a JSON-encoded value string.
 //
 // Currently used keys:
-//   - agent_mode: "unified" | "pipeline"
+//   - agent_mode: "harness" | "pipeline" | "editorial"
 
 // handleGetPreferences returns all preferences for the authenticated user.
 func (s *Server) handleGetPreferences(w http.ResponseWriter, r *http.Request) {
