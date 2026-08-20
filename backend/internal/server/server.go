@@ -76,9 +76,14 @@ type Server struct {
 	// Knowledge Manager (operates directly on local PG)
 	kbMgr *services.KbManager
 
+	// Self-Evolution service
+	evolutionSvc *services.EvolutionService
+
 	// Route metadata registry for /api/v2/admin/routes discovery
 	routeReg *routeRegistry
 
+	// Raw database handle (for queries without a dedicated repo)
+	db *database.DB
 }
 
 // New creates a new Server.
@@ -456,11 +461,21 @@ func New(cfg *config.Config) (*Server, error) {
 	// ── User custom styles & AI builder ──
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
 		s.userStyleStore = database.NewUserStyleStore(db)
+		s.db = db
 	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
 		// Wire LLM metrics (Prometheus instrumentation)
 		llm.SetMetricsRecorder(s.metrics)
+	}
+
+	// ── Self-Evolution service ──
+	if dbAvail && evalRepo != nil {
+		s.evolutionSvc = services.NewEvolutionService(evalRepo, s.profiles)
+		if s.db != nil {
+			s.evolutionSvc.SetDB(s.db)
+		}
+		slog.Info("self-evolution service initialized")
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -850,6 +865,15 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 
             // Audit Logs
             r.Get("/audit-logs", s.handleAdminListAuditLogs)
+
+            // Security Audit (Prompt Injection Interception Stats)
+            r.Get("/security/audit", s.handleAdminSecurityAudit)
+
+            // Self-Evolution Candidate Management
+            r.Get("/evolution/candidates", s.handleAdminListEvolutionCandidates)
+            r.Post("/evolution/candidates/{id}/approve", s.handleAdminApproveEvolutionCandidate)
+            r.Post("/evolution/candidates/{id}/reject", s.handleAdminRejectEvolutionCandidate)
+            r.Post("/evolution/candidates/{id}/canary", s.handleAdminEnableCanaryRollout)
 
             // Batch Operations
             r.Post("/models/batch", s.handleAdminBatchModels)

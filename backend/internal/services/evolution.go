@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,6 +15,7 @@ import (
 type EvolutionService struct {
 	evalRepo *database.EvaluationRepo
 	profiles *profile.Loader
+	db       *database.DB
 }
 
 func NewEvolutionService(evalRepo *database.EvaluationRepo, profiles *profile.Loader) *EvolutionService {
@@ -21,6 +23,11 @@ func NewEvolutionService(evalRepo *database.EvaluationRepo, profiles *profile.Lo
 		evalRepo: evalRepo,
 		profiles: profiles,
 	}
+}
+
+// SetDB sets the database handle for candidate persistence.
+func (s *EvolutionService) SetDB(db *database.DB) {
+	s.db = db
 }
 
 type ProfileCandidate struct {
@@ -62,7 +69,24 @@ func (s *EvolutionService) CreateCandidateFromFeedback(ctx context.Context, slug
 		Status:        "draft",
 		CreatedAt:     time.Now(),
 	}
-	slog.Info("profile candidate created", "slug", slug, "parent_version", candidate.ParentVersion)
+
+	// Persist to database if available
+	if s.db != nil {
+		changesJSON, _ := json.Marshal(changes)
+		var id string
+		err := s.db.QueryRowContext(ctx, `
+			INSERT INTO style_profile_candidates (style_slug, parent_version, changes, status)
+			VALUES ($1, $2, $3, $4)
+			RETURNING id::text
+		`, slug, candidate.ParentVersion, changesJSON, "draft").Scan(&id)
+		if err != nil {
+			slog.Warn("failed to persist candidate to DB", "error", err)
+		} else {
+			candidate.ID = id
+		}
+	}
+
+	slog.Info("profile candidate created", "slug", slug, "parent_version", candidate.ParentVersion, "id", candidate.ID)
 	return candidate, nil
 }
 

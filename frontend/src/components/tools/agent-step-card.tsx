@@ -215,6 +215,9 @@ function StepResult({ part }: { part: ToolCallPart }) {
     case "post_review":
       return <ReviewResult result={result} />;
 
+    case "fact_check":
+      return <FactCheckResult result={result} />;
+
     default:
       return (
         <pre className="text-xs text-muted-foreground whitespace-pre-wrap overflow-x-auto">
@@ -289,6 +292,64 @@ function ReviewResult({ result }: { result: Record<string, unknown> }) {
               ⚠ {String(issue.message ?? "")}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 事实核查结果 ─────────────────────────────────────────
+
+function FactCheckResult({ result }: { result: Record<string, unknown> }) {
+  const claim = String(result.claim ?? "");
+  const status = String(result.status ?? "unknown");
+  const source = String(result.source ?? "");
+  const content = String(result.content ?? "");
+  const error = String(result.error ?? "");
+
+  const isOk = status === "ok";
+  const isSkipped = status === "skipped";
+  const isError = status === "error";
+
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="flex items-center gap-2">
+        <ShieldCheck className={`h-4 w-4 ${isOk ? "text-emerald-500" : isError ? "text-red-500" : "text-muted-foreground"}`} />
+        <span className="font-medium">事实核查</span>
+        <Badge
+          variant="outline"
+          className={
+            isOk
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : isError
+                ? "bg-red-50 text-red-700 border-red-200"
+                : "bg-gray-50 text-gray-700 border-gray-200"
+          }
+        >
+          {isOk ? "已查证" : isSkipped ? "跳过" : isError ? "失败" : status}
+        </Badge>
+        {source && (
+          <span className="text-xs text-muted-foreground">来源：{source}</span>
+        )}
+      </div>
+
+      {claim && (
+        <div className="flex gap-2">
+          <span className="text-muted-foreground shrink-0">声明：</span>
+          <span className="text-xs">{claim}</span>
+        </div>
+      )}
+
+      {content && (
+        <div className="mt-2 p-2 bg-muted/30 rounded text-xs leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+          {content}
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-1.5 text-xs text-red-600">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          <span>{error}</span>
         </div>
       )}
     </div>

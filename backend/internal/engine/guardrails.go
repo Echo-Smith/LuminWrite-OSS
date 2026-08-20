@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ─── Prompt Injection Guardrails ─────────────────────────
@@ -67,6 +70,65 @@ var injectionPatterns = []*regexp.Regexp{
 // injectionReplacement is the text used to replace detected injection patterns.
 const injectionReplacement = "[已过滤潜在注入内容]"
 
+// ─── Injection Audit Counters ────────────────────────────
+//
+// Global atomic counters tracking prompt injection interception statistics.
+// These are exposed via the Admin API for security audit visualization.
+
+type InjectionStats struct {
+	ExternalContentInterceptions atomic.Int64 // total patterns caught in external content (search results, MCP output)
+	UserInputInterceptions       atomic.Int64 // total patterns caught in user input
+	UniqueSources                atomic.Int64  // approx unique sources flagged (incremented per sanitize call where injectionCount > 0)
+}
+
+var globalInjectionStats = &InjectionStats{}
+
+// recentInterception is a single interception record for audit display.
+type recentInterception struct {
+	Source      string    `json:"source"`
+	PatternCount int       `json:"pattern_count"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+const maxRecentInterceptions = 50
+
+var recentInterceptionsMu sync.Mutex
+var recentInterceptionsList = make([]recentInterception, 0, maxRecentInterceptions)
+
+// recordInterception appends a recent interception record (bounded LRU).
+func recordInterception(source string, count int) {
+	recentInterceptionsMu.Lock()
+	defer recentInterceptionsMu.Unlock()
+
+	entry := recentInterception{
+		Source:       source,
+		PatternCount: count,
+		Timestamp:    time.Now(),
+	}
+
+	if len(recentInterceptionsList) >= maxRecentInterceptions {
+		// Shift: drop oldest
+		recentInterceptionsList = recentInterceptionsList[1:]
+	}
+	recentInterceptionsList = append(recentInterceptionsList, entry)
+}
+
+// GetInjectionStats returns the current injection interception statistics.
+// Called by the admin security audit API handler.
+func GetInjectionStats() (externalCount, userCount, uniqueSources int64, recent []recentInterception) {
+	recentInterceptionsMu.Lock()
+	defer recentInterceptionsMu.Unlock()
+
+	// Make a copy to avoid race
+	recentCopy := make([]recentInterception, len(recentInterceptionsList))
+	copy(recentCopy, recentInterceptionsList)
+
+	return globalInjectionStats.ExternalContentInterceptions.Load(),
+		globalInjectionStats.UserInputInterceptions.Load(),
+		globalInjectionStats.UniqueSources.Load(),
+		recentCopy
+}
+
 // SanitizeExternalContent scans text from external sources (search results,
 // fetched URLs, MCP tool outputs) for prompt injection patterns and replaces
 // them with a safe placeholder.
@@ -96,6 +158,9 @@ func SanitizeExternalContent(content string, source string) string {
 	}
 
 	if injectionCount > 0 {
+		globalInjectionStats.ExternalContentInterceptions.Add(int64(injectionCount))
+		globalInjectionStats.UniqueSources.Add(1)
+		recordInterception(source, injectionCount)
 		slog.Warn("prompt injection patterns detected and sanitized",
 			"source", source,
 			"pattern_count", injectionCount,
@@ -192,6 +257,8 @@ func SanitizeUserInput(input string) string {
 
 	// Log if injection indicators are present (for monitoring)
 	if HasInjectionIndicators(input) && sanitized != input {
+		globalInjectionStats.UserInputInterceptions.Add(1)
+		recordInterception("user_input", 1)
 		slog.Warn("user input contained injection indicators, sanitized",
 			"original_length", len(input),
 			"sanitized_length", len(sanitized),

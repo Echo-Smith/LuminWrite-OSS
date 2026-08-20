@@ -21,6 +21,8 @@ import { CronJobsPage } from "./admin/cron-jobs";
 import { PendingStylesPage } from "./admin/pending-styles";
 import { KnowledgeBasePage } from "./admin/knowledge-base";
 import { AuditLogsPage } from "./admin/audit-logs";
+import { SecurityAuditPage } from "./admin/security-audit";
+import { EvolutionPage } from "./admin/evolution";
 
 // localStorage key for sidebar collapsed state
 const SIDEBAR_COLLAPSED_KEY = "luminbuddy_admin_sidebar_collapsed";
@@ -68,6 +70,8 @@ export function AdminDashboard() {
       {activePage === "sensitive" && <SensitiveWordsPage />}
       {activePage === "kb" && <KnowledgeBasePage />}
       {activePage === "audit" && <AuditLogsPage />}
+      {activePage === "security" && <SecurityAuditPage />}
+      {activePage === "evolution" && <EvolutionPage />}
     </AdminLayout>
   );
 }

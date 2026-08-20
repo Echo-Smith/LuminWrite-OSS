@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
@@ -156,13 +158,28 @@ func ParseMCPToolName(name string) (server, tool string, ok bool) {
 
 // ─── MCPAgentTool: MCP Tool → AgentTool Adapter ──────────
 
+// mcpSandboxConfig holds the security constraints for MCP tool execution.
+const (
+	// mcpToolTimeout is the maximum duration for a single MCP tool call.
+	mcpToolTimeout = 30 * time.Second
+	// mcpToolMaxOutput is the maximum output length (characters) from an MCP tool.
+	mcpToolMaxOutput = 2000
+	// mcpToolMaxCallsPerSession is the maximum number of calls to a single MCP tool per session.
+	mcpToolMaxCallsPerSession = 10
+)
+
 // MCPAgentTool wraps an MCP tool as an engine.AgentTool.
+// It enforces security sandbox constraints: timeout, output truncation,
+// and per-session call limits to prevent runaway MCP tool usage.
 type MCPAgentTool struct {
 	name        string
 	description string
 	schema      map[string]any
 	client      *MCPClient
 	toolName    string
+
+	// callCount tracks total invocations (atomic for thread-safety).
+	callCount atomic.Int64
 }
 
 func (t *MCPAgentTool) Name() string        { return t.name }
@@ -170,27 +187,59 @@ func (t *MCPAgentTool) Description() string  { return t.description }
 func (t *MCPAgentTool) Schema() map[string]any { return t.schema }
 
 func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) (*engine.ToolResult, error) {
+	// ── Sandbox: per-session call limit ──
+	current := t.callCount.Add(1)
+	if current > mcpToolMaxCallsPerSession {
+		slog.Warn("MCP tool call limit exceeded, blocking execution",
+			"server", t.client.Name(),
+			"tool", t.toolName,
+			"call_count", current,
+			"max_calls", mcpToolMaxCallsPerSession,
+			"trace_id", execCtx.TraceID,
+		)
+		return nil, fmt.Errorf("MCP tool %s 已达到单次会话调用上限 (%d 次)，请减少调用频率或使用内置工具替代", t.name, mcpToolMaxCallsPerSession)
+	}
+
 	slog.Info("MCP tool executing",
 		"server", t.client.Name(),
 		"tool", t.toolName,
 		"args", args,
 		"trace_id", execCtx.TraceID,
+		"call_count", current,
 	)
 
-	result, err := t.client.CallTool(ctx, t.toolName, args)
+	// ── Sandbox: enforce timeout ──
+	toolCtx, cancel := context.WithTimeout(ctx, mcpToolTimeout)
+	defer cancel()
+
+	result, err := t.client.CallTool(toolCtx, t.toolName, args)
 	if err != nil {
+		// Check if it was a timeout
+		if toolCtx.Err() == context.DeadlineExceeded {
+			slog.Warn("MCP tool timed out",
+				"server", t.client.Name(),
+				"tool", t.toolName,
+				"timeout", mcpToolTimeout,
+				"trace_id", execCtx.TraceID,
+			)
+			return nil, fmt.Errorf("MCP tool %s 执行超时 (%v)，请稍后重试或检查外部服务状态", t.name, mcpToolTimeout)
+		}
 		return nil, fmt.Errorf("MCP tool %s failed: %w", t.name, err)
 	}
 
-	// Truncate long results
-	if len(result) > 2000 {
-		result = result[:2000] + "...(截断)"
+	// ── Sandbox: output truncation with audit log ──
+	truncated := false
+	if len(result) > mcpToolMaxOutput {
+		result = result[:mcpToolMaxOutput] + "...(截断)"
+		truncated = true
 	}
 
 	slog.Info("MCP tool completed",
 		"server", t.client.Name(),
 		"tool", t.toolName,
 		"result_length", len(result),
+		"truncated", truncated,
+		"call_count", current,
 		"trace_id", execCtx.TraceID,
 	)
 
@@ -198,4 +247,10 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 		Summary: result,
 		Done:    false,
 	}, nil
+}
+
+// ResetCallCount resets the per-session call counter.
+// This should be called when a new writing session starts.
+func (t *MCPAgentTool) ResetCallCount() {
+	t.callCount.Store(0)
 }

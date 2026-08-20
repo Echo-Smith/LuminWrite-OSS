@@ -28,7 +28,9 @@ export type AdminPageKey =
   | "usage"
   | "sensitive"
   | "kb"
-  | "audit";
+  | "audit"
+  | "security"
+  | "evolution";
 
 interface NavItem {
   key: AdminPageKey;
@@ -50,6 +52,8 @@ import {
   Shield,
   BookOpen,
   ScrollText,
+  ShieldAlert,
+  GitBranch,
 } from "lucide-react";
 
 export const NAV_ITEMS: NavItem[] = [
@@ -66,6 +70,8 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "sensitive", label: "敏感词库", icon: Shield },
   { key: "kb", label: "知识库", icon: BookOpen },
   { key: "audit", label: "审计日志", icon: ScrollText },
+  { key: "security", label: "安全审计", icon: ShieldAlert },
+  { key: "evolution", label: "自演进", icon: GitBranch },
 ];
 
 /** 根据 page key 获取 label（供面包屑使用） */
