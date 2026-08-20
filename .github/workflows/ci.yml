@@ -13,7 +13,9 @@ jobs:
 
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        # Migration 045 creates ParadeDB's pg_search extension, so CI must use
+        # the same PostgreSQL image as docker-compose and 1Panel deployments.
+        image: paradedb/paradedb:v0.22.2-pg17
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: writing_agent_v2
