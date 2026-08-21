@@ -98,7 +98,7 @@ func (m *mockEmitter) Cancelled() {
 	m.cancelled = true
 }
 
-func (m *mockEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string) {}
+func (m *mockEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string, historyVersion uint64, triggerReason string) {}
 
 // ─── Test Step Implementations ──────────────────────────
 

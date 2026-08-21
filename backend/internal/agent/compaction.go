@@ -71,18 +71,37 @@ func estimateMemoryTokens(msgs []memory.ConversationMessage) int {
 // maybeCompact 检查是否需要压缩对话历史，如果需要则执行压缩。
 // 返回压缩后的消息列表和压缩信息（如果发生了压缩）。
 //
-// 压缩流程：
-//  1. 检查 session.Messages 长度是否超过阈值
-//  2. 将旧消息（保留最近 N 条）发送给 LLM 生成摘要
-//  3. 用摘要消息替换旧消息
-//  4. 通过 emitter 推送 compaction 事件到前端
+// v3.0 增强（借鉴 Codex AutoCompactFallback）：
+//  1. 检查 session.Messages 长度是否超过阈值（原有逻辑）
+//  2. 检查 Token 预算是否不足（新增：AutoCompactFallback）
+//  3. 将旧消息（保留最近 N 条）发送给 LLM 生成摘要
+//  4. 用摘要消息替换旧消息
+//  5. 重置 WorldState 基线（新增：压缩后全量推送下一轮）
+//  6. 通过 emitter 推送 compaction 事件到前端
 func (h *Harness) maybeCompact(
 	ctx context.Context,
 	execCtx *engine.ExecutionContext,
 	session *WritingSession,
 	intent Intent,
 ) (compacted bool, savedTokens int) {
-	if len(session.Messages) < compactionThreshold {
+	// ── 检查 1：消息数阈值（原有逻辑）──
+	needCompact := len(session.Messages) >= compactionThreshold
+	triggerReason := "threshold"
+
+	// ── 检查 2：Token 预算不足（新增 AutoCompactFallback）──
+	if !needCompact && h.autoCompact != nil && h.tokenBudget != nil {
+		if h.autoCompact.ShouldCompact(h.tokenBudget) {
+			needCompact = len(session.Messages) > compactionKeepRecent // 至少有可压缩的消息
+			triggerReason = "token_budget"
+			slog.Info("harness: auto-compact triggered by token budget",
+				"trace_id", execCtx.TraceID,
+				"remaining_tokens", h.tokenBudget.Remaining(),
+				"messages", len(session.Messages),
+			)
+		}
+	}
+
+	if !needCompact {
 		return false, 0
 	}
 
@@ -121,13 +140,24 @@ func (h *Harness) maybeCompact(
 	compactedMsgs = append(compactedMsgs, session.Messages[len(session.Messages)-compactionKeepRecent:]...)
 	session.Messages = compactedMsgs
 
+	// ── 重置 WorldState 基线（v3.0 新增）──
+	// 压缩后，下一轮 system prompt 需要全量推送（因为上下文已变化）
+	if h.worldState != nil {
+		h.worldState.ResetBaselines()
+		h.historyVersion++
+		slog.Debug("harness: world state baselines reset after compaction",
+			"trace_id", execCtx.TraceID,
+			"history_version", h.historyVersion,
+		)
+	}
+
 	// 推送 compaction 事件到前端
 	if h.emitter != nil {
 		preview := summary
 		if len([]rune(preview)) > 100 {
 			preview = string([]rune(preview)[:100]) + "…"
 		}
-		h.emitter.Compaction(len(oldMsgs), savedTokens, preview)
+		h.emitter.Compaction(len(oldMsgs), savedTokens, preview, h.historyVersion, triggerReason)
 	}
 
 	slog.Info("harness: conversation history compacted",
@@ -135,6 +165,7 @@ func (h *Harness) maybeCompact(
 		"original_messages", len(oldMsgs),
 		"saved_tokens", savedTokens,
 		"summary_chars", len([]rune(summary)),
+		"history_version", h.historyVersion,
 	)
 
 	return true, savedTokens

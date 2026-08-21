@@ -11,22 +11,25 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
 // EvaluationService manages evaluation sets, runs, and LLM-as-Judge scoring.
 type EvaluationService struct {
-	repo     *database.EvaluationRepo
-	llm      *tools.LLMClient
-	profiles *profile.Loader
+	repo      *database.EvaluationRepo
+	llm       *tools.LLMClient
+	profiles  *profile.Loader
+	worldState *worldstate.WorldState // v3.0: 评测 prompt 的 section 基线管理
 }
 
 // NewEvaluationService creates a new EvaluationService.
 func NewEvaluationService(repo *database.EvaluationRepo, llm *tools.LLMClient, profiles *profile.Loader) *EvaluationService {
 	return &EvaluationService{
-		repo:     repo,
-		llm:      llm,
-		profiles: profiles,
+		repo:       repo,
+		llm:        llm,
+		profiles:   profiles,
+		worldState: worldstate.NewWorldState(),
 	}
 }
 

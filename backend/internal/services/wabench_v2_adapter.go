@@ -411,7 +411,7 @@ func (e *wabenchCaptureEmitter) Error(code, message string, step engine.StepName
 
 func (e *wabenchCaptureEmitter) Completed(string, string, interface{}, interface{}) {}
 func (e *wabenchCaptureEmitter) Cancelled()                                         {}
-func (e *wabenchCaptureEmitter) Compaction(int, int, string)                        {}
+func (e *wabenchCaptureEmitter) Compaction(int, int, string, uint64, string)                        {}
 
 func (e *wabenchCaptureEmitter) snapshot() ([]WABenchToolEvent, []string) {
 	e.mu.Lock()

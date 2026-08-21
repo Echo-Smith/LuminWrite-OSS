@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
@@ -41,16 +42,18 @@ type StyleBuilderResponse struct {
 
 // StyleBuilderService manages AI-assisted style creation sessions.
 type StyleBuilderService struct {
-	llm      *tools.LLMClient
-	sessions map[string]*StyleBuilderSession
-	mu       sync.Mutex
+	llm        *tools.LLMClient
+	sessions   map[string]*StyleBuilderSession
+	mu         sync.Mutex
+	worldState *worldstate.WorldState // v3.0: StyleBuilder prompt 的 section 基线管理
 }
 
 // NewStyleBuilderService creates a new StyleBuilderService.
 func NewStyleBuilderService(llm *tools.LLMClient) *StyleBuilderService {
 	return &StyleBuilderService{
-		llm:      llm,
-		sessions: make(map[string]*StyleBuilderSession),
+		llm:        llm,
+		sessions:   make(map[string]*StyleBuilderSession),
+		worldState: worldstate.NewWorldState(),
 	}
 }
 

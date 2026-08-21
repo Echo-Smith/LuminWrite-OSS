@@ -39,13 +39,28 @@ const (
 //     are truncated or dropped first
 //   - Critical sections (task, output_format) are never dropped
 //
+// v3.0 增强（借鉴 Codex TokenBudgetContext）：
+//   - 支持动态预算：WithDynamicBudget(remaining) 根据全局剩余 Token 计算配额
+//   - 保留预留量给 system prompt + history + response
+//   - 当预算紧张时，自动收紧 section 配额
+//
 // This mirrors dsh's prompt assembly pattern where different plugins
 // register prompt fragments, and Pi Agent's structured context assembly
 // where messages are composed from typed parts rather than raw string concatenation.
 type PromptBuilder struct {
-	sections []promptSection
-	budget   int // 0 = unlimited
+	sections       []promptSection
+	budget         int  // 0 = unlimited
+	dynamicBudget  bool // true if budget was set dynamically
 }
+
+// 预留 Token 常量：system prompt + conversation history + LLM response
+// 这些部分不属于 user prompt，需要从总预算中扣除。
+const (
+	reserveSystemPrompt = 2000 // system prompt 估算
+	reserveHistory     = 2048  // 对话历史估算
+	reserveResponse    = 8192  // LLM 响应估算（thinking + output）
+	minUserPromptBudget = 2000 // user prompt 最低预算，低于此值时强制收紧
+)
 
 type promptSection struct {
 	name     string
@@ -59,11 +74,55 @@ func NewPromptBuilder() *PromptBuilder {
 	return &PromptBuilder{}
 }
 
-// WithBudget sets the token budget for the assembled prompt.
+// WithBudget sets a static token budget for the assembled prompt.
 // When the total exceeds this budget, low-priority sections
 // are truncated or dropped to fit.
 func (pb *PromptBuilder) WithBudget(maxTokens int) *PromptBuilder {
 	pb.budget = maxTokens
+	pb.dynamicBudget = false
+	return pb
+}
+
+// WithDynamicBudget calculates and sets the token budget dynamically
+// based on the global remaining token budget.
+//
+// remainingGlobal is the total remaining tokens from the execution context
+// (MaxTokens - TotalTokens). If 0 (unlimited), falls back to a default budget.
+//
+// The calculation:
+//   userPromptBudget = remainingGlobal - reserveSystemPrompt - reserveHistory - reserveResponse
+//   but not less than minUserPromptBudget.
+//
+// This ensures that when the context window is nearly full, the user prompt
+// automatically shrinks to leave room for the LLM response.
+func (pb *PromptBuilder) WithDynamicBudget(remainingGlobal int) *PromptBuilder {
+	if remainingGlobal <= 0 {
+		// Unlimited context — use default budget
+		pb.budget = 12000
+		pb.dynamicBudget = false
+		return pb
+	}
+
+	// Calculate available budget for user prompt
+	reserved := reserveSystemPrompt + reserveHistory + reserveResponse
+	budget := remainingGlobal - reserved
+
+	if budget < minUserPromptBudget {
+		budget = minUserPromptBudget
+		slog.Warn("prompt budget: dynamic budget very low, clamped to minimum",
+			"remaining_global", remainingGlobal,
+			"reserved", reserved,
+			"budget", budget,
+		)
+	}
+
+	pb.budget = budget
+	pb.dynamicBudget = true
+	slog.Info("prompt budget: dynamic budget calculated",
+		"remaining_global", remainingGlobal,
+		"reserved", reserved,
+		"user_prompt_budget", budget,
+	)
 	return pb
 }
 
@@ -308,7 +367,8 @@ func (pb *PromptBuilder) renderWithBudget() string {
 	for _, s := range byPriority[priorityMedium] {
 		if remaining <= 0 {
 			slog.Debug("prompt budget: dropped medium-priority section",
-				"section", s.name, "tokens", s.tokens)
+				"section", s.name, "tokens", s.tokens,
+				"dynamic", pb.dynamicBudget)
 			continue
 		}
 		if s.tokens <= remaining {
@@ -332,7 +392,8 @@ func (pb *PromptBuilder) renderWithBudget() string {
 	for _, s := range byPriority[priorityLow] {
 		if remaining <= 0 {
 			slog.Debug("prompt budget: dropped low-priority section",
-				"section", s.name, "tokens", s.tokens)
+				"section", s.name, "tokens", s.tokens,
+				"dynamic", pb.dynamicBudget)
 			continue
 		}
 		if s.tokens <= remaining {
@@ -355,6 +416,7 @@ func (pb *PromptBuilder) renderWithBudget() string {
 		"budget", pb.budget,
 		"used", usedTokens,
 		"sections", len(pb.sections),
+		"dynamic", pb.dynamicBudget,
 	)
 	return result.String()
 }

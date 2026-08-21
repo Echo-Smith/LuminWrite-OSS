@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
+	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
@@ -37,6 +37,15 @@ type Harness struct {
 	sessionStore  SessionStore
 	emitter       engine.EventEmitter
 	maxIterations int
+
+	// WorldState 管理（借鉴 Codex ContextManager + WorldState）
+	// 跨轮保留 section 基线，实现增量 diff 推送
+	worldState     *worldstate.WorldState
+	historyVersion uint64 // 对话历史版本号，compaction/rollback 时递增
+
+	// Token 预算追踪（借鉴 Codex TokenBudgetContext）
+	tokenBudget   *worldstate.TokenBudget
+	autoCompact   *worldstate.AutoCompactFallback
 }
 
 // NewHarness creates a Harness orchestrator.
@@ -49,6 +58,9 @@ func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, kb tools.Knowl
 		sessionStore:  store,
 		emitter:       emitter,
 		maxIterations: 12,
+		worldState:    worldstate.NewWorldState(),
+		tokenBudget:   &worldstate.TokenBudget{ContextWindowID: ""},
+		autoCompact:   worldstate.NewAutoCompactFallback(),
 	}
 }
 
@@ -443,50 +455,68 @@ func (h *Harness) retrieveMemory(ctx context.Context, execCtx *engine.ExecutionC
 
 // buildSystemPrompt 构建 system prompt。
 //
-// 设计演进（P2 按需上下文）：
-//   旧模式：全量注入（Profile + 文章全文 + 记忆 + 素材全部塞进 system prompt）
-//   新模式：精简常驻 + 按需查询（只放基础身份和任务指令，LLM 通过 retrieve_context 工具
-//          主动获取所需信息：文章段落、风格配置、用户记忆、搜索素材等）
+// v3.0 架构（借鉴 Codex WorldState diff 模式）：
+//   - system prompt 由多个 WorldStateSection 组成
+//   - 每轮只推送变化的 section（增量 diff），不变的不重发
+//   - 跨轮保留 section 基线，配合 history_version 追踪
 //
-// 好处：
-//   1. Token 大幅减少（system prompt 从 3000+ tokens 降到 500-800 tokens）
-//   2. 信息更精准（LLM 只获取它需要的信息，不被无关内容干扰）
-//   3. 上下文窗口更充裕（留出空间给对话历史和思考过程）
+// 保留的设计：
+//   - P2 按需上下文：LLM 通过 retrieve_context 工具主动获取信息
+//   - 文章全文放 system prompt（配合 prompt caching）
+//   - chat 意图精简注入
 //
-// 保留在 system prompt 中的内容（常驻层）：
-//   - 基础身份（你是谁）
-//   - 当前日期
-//   - 用户素材（用户主动上传的，优先级高）
-//   - 已确认提纲（Guided 模式，用户已确认的最终版本）
-//   - 任务指令（当前要做什么）
-//   - 注入防御
-//
-// 移至按需查询的内容（动态层）：
-//   - 风格配置详情（结构/修辞/标题指南/事实红线/价值导向）
-//   - 用户记忆偏好
-//   - 当前文章全文（改为通过 retrieve_context(source="article") 获取段落）
-//   - 搜索素材详情（改为通过 retrieve_context(source="search") 获取）
+// 新增的设计：
+//   - WorldState diff：只推送变化的 section，减少 Token 消耗
+//   - AutoCompactFallback：Token 预算不足时自动触发压缩
 func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGuided bool) string {
-	var sb strings.Builder
+	intentStr := string(intent)
 
-	// ── 基础身份 ──
-	if h.profile != nil && h.profile.SystemPrompt != "" {
-		sb.WriteString(h.profile.SystemPrompt)
-		sb.WriteString("\n")
-	} else {
-		sb.WriteString("你是笔润智谈，一个专业的中文写作助手。\n")
+	// 构建 WorldState（每轮重建 section，但基线跨轮保留在 h.worldState 中）
+	_ = worldstate.BuildWorldStateForHarness(
+		h.profile,
+		intentStr,
+		isGuided,
+		session.CurrentArticle,
+		session.UserMaterials,
+		len(session.SearchResults),
+	)
+
+	// 复用 Harness 持有的基线（跨轮保留）
+	// 将 section 注册到 h.worldState 中（替换内容但保留基线）
+	h.worldState.Register(worldstate.NewProfileSection(h.profile, intentStr, isGuided))
+	h.worldState.Register(worldstate.NewArticleSection(session.CurrentArticle))
+	h.worldState.Register(worldstate.NewDateSection())
+	h.worldState.Register(worldstate.NewMaterialsSection(session.UserMaterials, len(session.SearchResults)))
+	h.worldState.Register(worldstate.NewRulesSection(h.profile, intentStr))
+	h.worldState.Register(worldstate.NewTaskInstructionsSection(intentStr, isGuided))
+	h.worldState.Register(worldstate.NewSecuritySection())
+
+	// 增量推送：只返回变化的 section
+	fragments := h.worldState.UpdateWorldState()
+
+	var sb strings.Builder
+	for _, frag := range fragments {
+		sb.WriteString(frag.Body)
 	}
 
-	// ── 当前日期 ──
-	sb.WriteString(fmt.Sprintf("\n当前日期：%s。", time.Now().Format("2006年1月2日")))
+	// ── P2 按需上下文：retrieve_context 指引 ──
+	// 这部分每轮都需要（因为 LLM 需要被提醒可用工具）
+	// 但因为内容固定，在 WorldState 中由 SecuritySection 处理去重
+	sb.WriteString("\n--- 上下文查询指引 ---\n")
+	sb.WriteString("当你需要以下信息时，请调用 retrieve_context 工具按需获取，而非猜测：\n")
+	sb.WriteString("- 当前文章的特定段落 → retrieve_context(source=\"article\", query=\"段落描述\")\n")
+	sb.WriteString("- 用户的写作偏好/历史记忆 → retrieve_context(source=\"memory\", query=\"偏好描述\")\n")
+	sb.WriteString("- 已收集的搜索素材 → retrieve_context(source=\"search\", query=\"素材关键词\")\n")
+	sb.WriteString("- 当前风格配置详情 → retrieve_context(source=\"profile\", query=\"配置项\")\n")
+	sb.WriteString("- 对话历史中的关键信息 → retrieve_context(source=\"history\", query=\"信息描述\")\n")
 
-	// ── 用户素材（优先级高，常驻）──
-	if len(session.UserMaterials) > 0 {
-		sb.WriteString("\n用户上传素材：\n")
-		for i, mat := range session.UserMaterials {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, mat))
-		}
-		sb.WriteString("（用户素材优先级高于 AI 检索结果）\n")
+	if session.HasArticle() {
+		sb.WriteString(fmt.Sprintf("\n当前已有文章（%d 字）。如需查看内容，请调用 retrieve_context(source=\"article\", query=\"文章相关描述\")。\n",
+			len([]rune(session.CurrentArticle))))
+	}
+	if len(session.SearchResults) > 0 {
+		sb.WriteString(fmt.Sprintf("\n已有 %d 条搜索素材。如需查看，请调用 retrieve_context(source=\"search\", query=\"素材关键词\")。\n",
+			len(session.SearchResults)))
 	}
 
 	// ── 已确认提纲（Guided 模式，常驻）──
@@ -508,63 +538,20 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 		sb.WriteString("\n")
 	}
 
-	// ── 上下文查询指引 ──
-	// 告知 LLM 可以通过 retrieve_context 工具按需获取信息
-	sb.WriteString("\n--- 上下文查询指引 ---\n")
-	sb.WriteString("当你需要以下信息时，请调用 retrieve_context 工具按需获取，而非猜测：\n")
-	sb.WriteString("- 当前文章的特定段落 → retrieve_context(source=\"article\", query=\"段落描述\")\n")
-	sb.WriteString("- 用户的写作偏好/历史记忆 → retrieve_context(source=\"memory\", query=\"偏好描述\")\n")
-	sb.WriteString("- 已收集的搜索素材 → retrieve_context(source=\"search\", query=\"素材关键词\")\n")
-	sb.WriteString("- 当前风格配置详情 → retrieve_context(source=\"profile\", query=\"配置项\")\n")
-	sb.WriteString("- 对话历史中的关键信息 → retrieve_context(source=\"history\", query=\"信息描述\")\n")
-
-	if session.HasArticle() {
-		sb.WriteString(fmt.Sprintf("\n当前已有文章（%d 字）。如需查看内容，请调用 retrieve_context(source=\"article\", query=\"文章相关描述\")。\n",
-			len([]rune(session.CurrentArticle))))
-	}
-	if len(session.SearchResults) > 0 {
-		sb.WriteString(fmt.Sprintf("\n已有 %d 条搜索素材。如需查看，请调用 retrieve_context(source=\"search\", query=\"素材关键词\")。\n",
-			len(session.SearchResults)))
-	}
-
-	// ── 意图相关指令 ──
-	switch intent {
-	case IntentWriting:
-		if isGuided && session.Outline == nil {
-			sb.WriteString("\n\n你现在要帮用户写一篇新文章（引导模式）。请按以下步骤操作：")
-			sb.WriteString("\n1. 如果已有素材不足，用 search_web 搜索网络信息，用 search_knowledge 检索知识库范文")
-			sb.WriteString("\n   - search_web：时事热点、公开数据、新闻资讯、网络观点")
-			sb.WriteString("\n   - search_knowledge：写作风格规范、历史范文、栏目调性、内部观点")
-			sb.WriteString("\n   - 两者可同时调用（并行），结果统一通过 read_source 读取详情")
-			sb.WriteString("\n2. 调用 generate_outline 生成提纲，等待用户确认")
-			sb.WriteString("\n3. 用户确认提纲后，调用 write_article 开始写作，然后在下一轮回复中直接输出文章（Markdown格式，##开头作为标题）")
-			sb.WriteString("\n4. 文章写完后调用 review_article 评审质量")
-			sb.WriteString("\n5. 如果评审发现问题，调用 revise_section 修正")
-		} else {
-			sb.WriteString("\n\n你现在要帮用户写一篇新文章。请按以下步骤操作：")
-			sb.WriteString("\n1. 如果已有素材不足，用 search_web 搜索网络信息，用 search_knowledge 检索知识库范文")
-			sb.WriteString("\n   - search_web：时事热点、公开数据、新闻资讯、网络观点")
-			sb.WriteString("\n   - search_knowledge：写作风格规范、历史范文、栏目调性、内部观点")
-			sb.WriteString("\n   - 两者可同时调用（并行），结果统一通过 read_source 读取详情")
-			sb.WriteString("\n2. 用 read_source 读取重要素材的详细内容")
-			sb.WriteString("\n3. 调用 write_article 开始写作，然后在下一轮回复中直接输出文章（Markdown格式，##开头作为标题）")
-			sb.WriteString("\n4. 文章写完后调用 review_article 评审质量")
-			sb.WriteString("\n5. 如果评审发现问题，调用 revise_section 修正")
+	// ── AutoCompactFallback 检查 ──
+	// 如果 Token 预算不足，注入压缩降级提示
+	if h.autoCompact != nil && h.tokenBudget != nil {
+		if h.autoCompact.ShouldCompact(h.tokenBudget) {
+			sb.WriteString(h.autoCompact.CompactPrompt(0))
 		}
-	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
-		sb.WriteString("\n\n用户要修改已有文章。请调用 revise_section 定向修改，不要重写全文。")
-		sb.WriteString("\n调用后直接输出修改后的完整文章。")
-		sb.WriteString("\n如需查看文章特定段落，调用 retrieve_context(source=\"article\", query=\"段落描述\")。")
-	case IntentChat:
-		sb.WriteString("\n\n用户在和你对话。直接回复即可。")
-		sb.WriteString("\n如果需要查资料可以调用 search_web（网络信息）或 search_knowledge（内部知识库），但简单问题直接回答。")
 	}
 
-	sb.WriteString(engine.PromptInjectionDefenseDirective)
 	promptStr := sb.String()
-	slog.Debug("harness: system prompt built",
+	slog.Debug("harness: system prompt built (WorldState diff)",
 		"intent", intent,
 		"prompt_chars", len([]rune(promptStr)),
+		"history_version", h.worldState.Version(),
+		"fragments_pushed", len(fragments),
 	)
 	return promptStr
 }

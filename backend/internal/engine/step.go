@@ -91,10 +91,13 @@ type EventEmitter interface {
 	// Cancelled emits a cancelled event.
 	Cancelled()
 
-	// Compaction emits an agent.compaction event, notifying the client that
-	// conversation history has been compressed to fit the context window.
-	// originalMessages is the number of historical messages that were compacted,
-	// savedTokens is the estimated token reduction, and summaryPreview is a
-	// short snippet of the compressed summary for display.
-	Compaction(originalMessages, savedTokens int, summaryPreview string)
+// Compaction emits an agent.compaction event, notifying the client that
+// conversation history has been compressed to fit the context window.
+// originalMessages is the number of historical messages that were compacted,
+// savedTokens is the estimated token reduction, and summaryPreview is a
+// short snippet of the compressed summary for display.
+//
+// v3.0: historyVersion tracks the context version after compaction,
+// triggerReason indicates why compaction occurred ("threshold" | "token_budget").
+Compaction(originalMessages, savedTokens int, summaryPreview string, historyVersion uint64, triggerReason string)
 }

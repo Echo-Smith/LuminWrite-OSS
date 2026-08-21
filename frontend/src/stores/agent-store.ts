@@ -64,6 +64,8 @@ export interface CompactionPart {
   compactedMessages: number;
   savedTokens: number;
   summaryPreview?: string;
+  historyVersion?: number;  // v3.0: 压缩后的历史版本号
+  triggerReason?: string;   // v3.0: "threshold" | "token_budget"
 }
 
 export type MessagePart = ToolCallPart | TextPart | DataPart | ReasoningPart | CompactionPart;
@@ -912,6 +914,8 @@ case "agent.paused": {
         const compactedMessages = (p.compacted_messages as number) ?? 1;
         const savedTokens = p.saved_tokens as number;
         const summaryPreview = p.summary_preview as string | undefined;
+        const historyVersion = p.history_version as number | undefined;
+        const triggerReason = p.trigger_reason as string | undefined;
         get()._updateLastAssistantMessage((m) => ({
           ...m,
           parts: [
@@ -922,6 +926,8 @@ case "agent.paused": {
               compactedMessages,
               savedTokens,
               summaryPreview,
+              historyVersion,
+              triggerReason,
             },
           ],
         }));

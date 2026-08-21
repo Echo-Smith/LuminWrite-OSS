@@ -254,12 +254,14 @@ func (e *LoggingEmitter) Cancelled() {
 	go e.Flush()
 }
 
-func (e *LoggingEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string) {
-	e.inner.Compaction(originalMessages, savedTokens, summaryPreview)
+func (e *LoggingEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string, historyVersion uint64, triggerReason string) {
+	e.inner.Compaction(originalMessages, savedTokens, summaryPreview, historyVersion, triggerReason)
 	e.enqueue(EventCompaction, "", map[string]interface{}{
 		"original_messages": originalMessages,
-		"saved_tokens":     savedTokens,
-		"summary_preview":  summaryPreview,
+		"saved_tokens":      savedTokens,
+		"summary_preview":   summaryPreview,
+		"history_version":   historyVersion,
+		"trigger_reason":    triggerReason,
 	})
 }
 

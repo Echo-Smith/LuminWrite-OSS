@@ -190,12 +190,17 @@ type ResumedPayload struct {
 // Sent when the Harness compresses older conversation messages into a summary
 // to stay within the LLM's context window. The client uses this to display a
 // "history compressed" indicator in the chat UI.
+//
+// v3.0 扩展：增加 history_version 和 trigger_reason 字段。
+// trigger_reason: "threshold" (消息数阈值) | "token_budget" (Token 预算不足，AutoCompactFallback)
 type CompactionPayload struct {
-	TraceID         string `json:"trace_id"`
-	OriginalMessages int   `json:"original_messages"`
-	CompactedMessages int  `json:"compacted_messages"`
-	SavedTokens       int   `json:"saved_tokens"`
+	TraceID           string `json:"trace_id"`
+	OriginalMessages  int    `json:"original_messages"`
+	CompactedMessages int    `json:"compacted_messages"`
+	SavedTokens       int    `json:"saved_tokens"`
 	SummaryPreview    string `json:"summary_preview,omitempty"`
+	HistoryVersion    uint64 `json:"history_version,omitempty"`    // v3.0: 压缩后的历史版本号
+	TriggerReason     string `json:"trigger_reason,omitempty"`     // v3.0: "threshold" | "token_budget"
 }
 
 // SessionResumePayload is sent by the client to resume a session after reconnect.

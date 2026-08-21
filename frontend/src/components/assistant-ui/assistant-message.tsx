@@ -593,11 +593,18 @@ function WordCountProgress({ text }: { text: string }) {
 
 /**
  * CompactionBanner — 对话历史压缩状态条
- * 当 Harness 对对话历史执行 compaction 时显示，
+ * 当 Harness 对话历史执行 compaction 时显示，
  * 告知用户历史已被压缩为摘要，节省了多少 token。
+ *
+ * v3.0 增强：显示触发原因（消息数阈值 / Token 预算不足）
+ * 和历史版本号，让用户了解压缩的上下文。
  */
 function CompactionBanner({ part }: { part: CompactionPart }) {
   const [expanded, setExpanded] = useState(false);
+
+  const triggerLabel = part.triggerReason === "token_budget"
+    ? "Token 预算不足，自动压缩"
+    : "对话过长，自动压缩";
 
   return (
     <div className="rounded-lg border border-blue-200/60 dark:border-blue-800/40 bg-blue-50/50 dark:bg-blue-950/20 px-3 py-2 anim-fade-in">
@@ -612,6 +619,11 @@ function CompactionBanner({ part }: { part: CompactionPart }) {
         <Badge variant="outline" className="text-xs gap-0.5 text-emerald-600 border-emerald-300/50 dark:text-emerald-400 dark:border-emerald-700/40">
           省 ~{part.savedTokens} tokens
         </Badge>
+        {part.triggerReason && (
+          <Badge variant="outline" className="text-xs gap-0.5 text-amber-600 border-amber-300/50 dark:text-amber-400 dark:border-amber-700/40">
+            {triggerLabel}
+          </Badge>
+        )}
         {part.summaryPreview && (
           <button
             onClick={() => setExpanded(!expanded)}

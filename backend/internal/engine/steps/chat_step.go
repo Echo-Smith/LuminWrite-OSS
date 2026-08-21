@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -17,11 +18,12 @@ import (
 // without the full writing pipeline (no search, no article formatting,
 // no post-review, no auto-fix).
 type ChatStep struct {
-	llm *tools.LLMClient
+	llm         *tools.LLMClient
+	worldState  *worldstate.WorldState // v3.0: 跨轮 section 基线管理
 }
 
 func NewChatStep(llm *tools.LLMClient) *ChatStep {
-	return &ChatStep{llm: llm}
+	return &ChatStep{llm: llm, worldState: worldstate.NewWorldState()}
 }
 
 func (s *ChatStep) Name() engine.StepName { return engine.StepChat }
@@ -43,8 +45,17 @@ func (s *ChatStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext
 		return fmt.Errorf("LLM client not available")
 	}
 
-	// Build a conversational system prompt with injection defense
-	systemPrompt := "你是一个智能写作助手「笔润智谈」。你可以帮助用户写文章、润色文字、提取观点等。请用自然、友好的语气回答用户的问题。如果用户的意图是写作相关的，可以引导用户使用更具体的指令（如「写一篇关于…」）。" + engine.PromptInjectionDefenseDirective
+	// v3.0: 使用 WorldState diff 构建 system prompt（跨轮增量推送）
+	s.worldState.Register(worldstate.NewProfileSection(nil, "chat", false))
+	s.worldState.Register(worldstate.NewDateSection())
+	s.worldState.Register(worldstate.NewTaskInstructionsSection("chat", false))
+	s.worldState.Register(worldstate.NewSecuritySection())
+	fragments := s.worldState.UpdateWorldState()
+	var sysSB strings.Builder
+	for _, frag := range fragments {
+		sysSB.WriteString(frag.Body)
+	}
+	systemPrompt := sysSB.String()
 
 	// Build user message
 	var promptBuilder strings.Builder

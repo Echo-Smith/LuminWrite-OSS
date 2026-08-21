@@ -1085,11 +1085,14 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	systemPrompt += engine.PromptInjectionDefenseDirective
 
 	// ── Build user prompt via PromptBuilder (section-based assembly) ──
-	// Token budget: 12000 tokens for the user prompt section.
-	// This leaves room for system prompt (~2000) + conversation history (~2048)
-	// + response (~8192) within the 32K context window.
-	// If sections exceed budget, low-priority sections (memory, search) are auto-truncated.
-	const userPromptTokenBudget = 12000
+	// v3.0: 动态 Token 预算（借鉴 Codex TokenBudgetContext）
+	// 根据全局剩余 Token（MaxTokens - TotalTokens）动态计算 user prompt 配额，
+	// 保留预留量给 system prompt + conversation history + LLM response。
+	// 如果 MaxTokens 为 0（无限制），则回退到默认 12000 预算。
+	remainingGlobal := 0
+	if execCtx.MaxTokens > 0 {
+		remainingGlobal = execCtx.MaxTokens - execCtx.TotalTokens
+	}
 	hasOutlineTitle := execCtx.Outline != nil && execCtx.Outline.Title != ""
 	outlineTitle := ""
 	if hasOutlineTitle {
@@ -1097,7 +1100,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	}
 
 	pb := NewPromptBuilder().
-		WithBudget(userPromptTokenBudget).
+		WithDynamicBudget(remainingGlobal).
 		AddTaskPrompt(taskMode, execCtx).
 		AddSearchResults(taskMode, execCtx).
 		AddOutline(taskMode, execCtx).

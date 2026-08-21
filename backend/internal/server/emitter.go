@@ -178,7 +178,7 @@ func (e *WSEmitter) Cancelled() {
 	})
 }
 
-func (e *WSEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string) {
+func (e *WSEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string, historyVersion uint64, triggerReason string) {
 	e.hub.SendToTraceDirect(e.traceID, &websocket.ServerMessage{
 		Type: websocket.MsgAgentCompaction,
 		Payload: websocket.CompactionPayload{
@@ -187,6 +187,8 @@ func (e *WSEmitter) Compaction(originalMessages, savedTokens int, summaryPreview
 			CompactedMessages: 1, // always compacted into a single summary message
 			SavedTokens:       savedTokens,
 			SummaryPreview:    summaryPreview,
+			HistoryVersion:    historyVersion,
+			TriggerReason:     triggerReason,
 		},
 	})
 }
