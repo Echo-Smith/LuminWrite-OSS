@@ -11,6 +11,7 @@ services:
   # paradedb includes: pgvector, pg_bm25 (BM25 full-text search), and more.
   postgres:
     image: paradedb/paradedb:v0.22.2-pg17
+    platform: linux/amd64
     container_name: luminbuddy-v2-pg
     environment:
       POSTGRES_USER: postgres

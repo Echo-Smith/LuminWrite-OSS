@@ -277,35 +277,41 @@ if [ "$EXPORT_IMAGES" = true ]; then
         docker compose build docreader
     fi
 
-    # 确保 PostgreSQL (paradedb) 镜像存在且为 amd64 架构
+    # 确保 PostgreSQL (paradedb) 镜像有 amd64 单架构版本可供导出
     # macOS Apple Silicon 默认拉取 arm64 版本，x86 服务器无法使用
+    # docker save 无法导出 OCI manifest list（多架构索引），必须用具体架构的单架构镜像
     info "检查 PostgreSQL (paradedb) 镜像..."
     PG_IMAGE="paradedb/paradedb:v0.22.2-pg17"
     PG_AMD64_TAG="paradedb/paradedb:v0.22.2-pg17-amd64"
+    # amd64 架构的镜像 digest（从 manifest list 中获取）
+    PG_AMD64_DIGEST="sha256:cb2af8cbafea8c41cde450b7be845abfd74c014cb13e35e06677aad8aed0eba0"
 
-    # 检查是否已有 amd64 标签的镜像
-    if ! docker image inspect "$PG_AMD64_TAG" >/dev/null 2>&1; then
-        # 检查当前 PG 镜像架构
-        PG_ARCH=$(docker inspect "$PG_IMAGE" --format '{{.Architecture}}' 2>/dev/null || echo "missing")
-        if [ "$PG_ARCH" = "amd64" ]; then
-            # 本地已经是 amd64，直接 tag
-            docker tag "$PG_IMAGE" "$PG_AMD64_TAG"
-        else
-            warn "PostgreSQL 镜像为 $PG_ARCH 架构，需要 amd64 版本"
-            warn "正在拉取 amd64 版本（可能需要几分钟）..."
-            # 先尝试用不同 digest 拉取 amd64 版本
-            # 在 Apple Silicon 上，如果本地已有 arm64 版本，docker pull --platform 不会覆盖
-            # 解决方案：先删除本地镜像（-f 强制，即使有容器引用也删除引用）
-            docker rmi -f "$PG_IMAGE" 2>/dev/null || true
-            docker pull --platform linux/amd64 "$PG_IMAGE"
-            docker tag "$PG_IMAGE" "$PG_AMD64_TAG"
-            # 重新拉取 arm64 版本供本地开发使用
-            docker pull "$PG_IMAGE" 2>/dev/null || true
+    # 检查是否已有 amd64 单架构镜像（通过 digest 拉取的，不是 manifest list）
+    NEED_PULL=true
+    if docker image inspect "$PG_AMD64_TAG" >/dev/null 2>&1; then
+        PG_ARCH=$(docker inspect "$PG_AMD64_TAG" --format '{{.Architecture}}' 2>/dev/null || echo "")
+        PG_MEDIA=$(docker inspect "$PG_AMD64_TAG" --format '{{.Descriptor.MediaType}}' 2>/dev/null || echo "")
+        if [ "$PG_ARCH" = "amd64" ] && [ "$PG_MEDIA" != "application/vnd.oci.image.index.v1+json" ]; then
+            info "PostgreSQL amd64 镜像已存在，跳过拉取"
+            NEED_PULL=false
         fi
     fi
 
+    if [ "$NEED_PULL" = true ]; then
+        # 删除可能存在的旧镜像
+        docker rmi -f "$PG_AMD64_TAG" 2>/dev/null || true
+        # 用 digest 直接拉取 amd64 单架构镜像（绕过 manifest list）
+        warn "正在拉取 PostgreSQL amd64 单架构镜像（可能需要几分钟）..."
+        docker pull "paradedb/paradedb@$PG_AMD64_DIGEST"
+        # tag 成专用标签
+        docker tag "paradedb/paradedb@$PG_AMD64_DIGEST" "$PG_AMD64_TAG"
+        # 确保本地也有 arm64 版本供本地开发使用
+        docker pull "$PG_IMAGE" 2>/dev/null || true
+    fi
+
     info "导出镜像（frontend + backend + docreader + postgres）..."
-    # 导出四个镜像到单个 tar（frontend + backend + docreader + postgres）
+    # 导出四个镜像到单个 tar
+    # 服务器端 docker load 后需要 docker tag ...-amd64 ... 来恢复原始 tag
     docker save luminbuddy-v2-frontend:latest luminbuddy-v2-backend:latest luminbuddy-v2-docreader:latest "$PG_AMD64_TAG" \
         | gzip > "$IMAGES_PATH"
 
