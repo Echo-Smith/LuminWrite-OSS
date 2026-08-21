@@ -76,11 +76,11 @@ func (m *CanaryHealthMonitor) checkAllCanaries() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer queryCancel()
 
 	// Get all active canary rollouts with their candidate info
-	rows, err := m.server.db.QueryContext(ctx, `
+	rows, err := m.server.db.QueryContext(queryCtx, `
 		SELECT cr.candidate_id::text, cr.style_slug, cr.version, cr.percentage, cr.started_at
 		FROM canary_rollouts cr
 		WHERE cr.enabled = TRUE
@@ -113,17 +113,20 @@ func (m *CanaryHealthMonitor) checkAllCanaries() {
 	}
 
 	for _, r := range rollouts {
-		m.checkCanaryHealth(ctx, r.CandidateID, r.StyleSlug, r.Version, r.StartedAt)
+		// Use a per-canary context so one slow check doesn't time out the others
+		canaryCtx, canaryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		m.checkCanaryHealth(canaryCtx, r.CandidateID, r.StyleSlug, r.Version, r.StartedAt)
+		canaryCancel()
 	}
 }
 
 // checkCanaryHealth evaluates the health of a single canary rollout.
 func (m *CanaryHealthMonitor) checkCanaryHealth(ctx context.Context, candidateID, styleSlug string, version int, startedAt time.Time) {
-	// Get current routing metrics
-	metrics := routing.RolloutMetrics
-	totalRequests := metrics.Requests.Load()
-	newVersionHits := metrics.NewVersion.Load()
-	errorCount := metrics.Errors.Load()
+	// Get current routing metrics — read directly from the global atomic counters
+	// (do NOT copy the struct, as atomic.Int64 contains noCopy)
+	totalRequests := routing.RolloutMetrics.Requests.Load()
+	newVersionHits := routing.RolloutMetrics.NewVersion.Load()
+	errorCount := routing.RolloutMetrics.Errors.Load()
 
 	// Calculate error rate
 	var errorRate float64
@@ -148,9 +151,10 @@ func (m *CanaryHealthMonitor) checkCanaryHealth(ctx context.Context, candidateID
 		}
 	}
 
-	// Record health snapshot
+	// Record health snapshot (pass the configured threshold for triggered check)
+	triggeredThreshold := config.ErrorRateThreshold
 	m.recordHealthSnapshot(ctx, candidateID, styleSlug, int(totalRequests), int(newVersionHits),
-		int(totalRequests-newVersionHits), int(errorCount), errorRate, uptimePct)
+		int(totalRequests-newVersionHits), int(errorCount), errorRate, uptimePct, triggeredThreshold)
 
 	// Check if we have enough samples and rollback is needed
 	if totalRequests < int64(config.MinSampleSize) {
@@ -234,9 +238,14 @@ func (m *CanaryHealthMonitor) autoRollback(ctx context.Context, candidateID, sty
 	if m.server.profiles != nil {
 		// Get candidate's parent version for fallback
 		var parentVersion int
-		m.server.db.QueryRowContext(ctx, `
+		err := m.server.db.QueryRowContext(ctx, `
 			SELECT parent_version FROM style_profile_candidates WHERE id = $1::uuid
 		`, candidateID).Scan(&parentVersion)
+		if err != nil {
+			slog.Warn("canary monitor: failed to get parent version for rollback, using version 0",
+				"candidate_id", candidateID, "error", err)
+			parentVersion = 0
+		}
 
 		config := routing.RolloutConfig{
 			Type:            "full",
@@ -293,15 +302,15 @@ func (m *CanaryHealthMonitor) autoPromote(ctx context.Context, candidateID, styl
 
 // recordHealthSnapshot saves a point-in-time health snapshot to the database.
 func (m *CanaryHealthMonitor) recordHealthSnapshot(ctx context.Context, candidateID, styleSlug string,
-	total, newVersion, oldVersion, errors int, errorRate, uptime float64) {
+	total, newVersion, oldVersion, errors int, errorRate, uptime float64, errorThreshold float64) {
 	if m.server.db == nil {
 		return
 	}
 
-	triggered := errorRate > 10.0 // default threshold
+	triggered := errorRate > errorThreshold
 	var reason string
 	if triggered {
-		reason = fmt.Sprintf("error rate %.2f%% exceeds 10%%", errorRate)
+		reason = fmt.Sprintf("error rate %.2f%% exceeds threshold %.2f%%", errorRate, errorThreshold)
 	}
 
 	_, err := m.server.db.ExecContext(ctx, `

@@ -81,6 +81,9 @@ type Server struct {
 	// Self-Evolution service
 	evolutionSvc *services.EvolutionService
 
+	// Canary health monitor for auto-rollback
+	canaryMonitor *CanaryHealthMonitor
+
 	// Route metadata registry for /api/v2/admin/routes discovery
 	routeReg *routeRegistry
 
@@ -483,11 +486,11 @@ func New(cfg *config.Config) (*Server, error) {
 		if s.db != nil {
 			s.evolutionSvc.SetDB(s.db)
 		}
-		slog.Info("self-evolution service initialized")
+	slog.Info("self-evolution service initialized")
 
-		// ── Canary Health Monitor (auto-rollback) ──
-		canaryMonitor := NewCanaryHealthMonitor(s, 30*time.Second)
-		canaryMonitor.Start()
+	// ── Canary Health Monitor (auto-rollback) ──
+	s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
+	s.canaryMonitor.Start()
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -1020,11 +1023,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		<-ctx.Done()
-		slog.Info("shutting down server...")
-		if s.mcpServer != nil {
-			s.mcpServer.Close()
-		}
+	<-ctx.Done()
+	slog.Info("shutting down server...")
+	if s.mcpServer != nil {
+		s.mcpServer.Close()
+	}
+	if s.canaryMonitor != nil {
+		s.canaryMonitor.Stop()
+	}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.WriteTimeout)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)

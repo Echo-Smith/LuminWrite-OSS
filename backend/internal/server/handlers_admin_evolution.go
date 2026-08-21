@@ -572,9 +572,8 @@ func (s *Server) handleAdminGetCanaryMetrics(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Get routing metrics (global atomic counters)
-	metrics := routing.RolloutMetrics
-
+	// Get routing metrics — read directly from the global atomic counters
+	// (do NOT copy the struct, as atomic.Int64 contains noCopy)
 	// Get the rollout config for this style
 	var config routing.RolloutConfig
 	if s.profiles != nil {
@@ -588,12 +587,12 @@ func (s *Server) handleAdminGetCanaryMetrics(w http.ResponseWriter, r *http.Requ
 		"new_version":    candidate.ParentVersion + 1,
 		"old_version":    candidate.ParentVersion,
 		"metrics": map[string]int64{
-			"total":       metrics.Requests.Load(),
-			"new_version": metrics.NewVersion.Load(),
-			"old_version": metrics.OldVersion.Load(),
-			"whitelist":   metrics.Whitelist.Load(),
-			"percentage":  metrics.Percentage.Load(),
-			"errors":      metrics.Errors.Load(),
+			"total":       routing.RolloutMetrics.Requests.Load(),
+			"new_version": routing.RolloutMetrics.NewVersion.Load(),
+			"old_version": routing.RolloutMetrics.OldVersion.Load(),
+			"whitelist":   routing.RolloutMetrics.Whitelist.Load(),
+			"percentage":  routing.RolloutMetrics.Percentage.Load(),
+			"errors":      routing.RolloutMetrics.Errors.Load(),
 		},
 	})
 }
