@@ -277,9 +277,36 @@ if [ "$EXPORT_IMAGES" = true ]; then
         docker compose build docreader
     fi
 
-    info "导出镜像（frontend + backend + docreader）..."
-    # 导出三个镜像到单个 tar
-    docker save luminbuddy-v2-frontend:latest luminbuddy-v2-backend:latest luminbuddy-v2-docreader:latest \
+    # 确保 PostgreSQL (paradedb) 镜像存在且为 amd64 架构
+    # macOS Apple Silicon 默认拉取 arm64 版本，x86 服务器无法使用
+    info "检查 PostgreSQL (paradedb) 镜像..."
+    PG_IMAGE="paradedb/paradedb:v0.22.2-pg17"
+    PG_AMD64_TAG="paradedb/paradedb:v0.22.2-pg17-amd64"
+
+    # 检查是否已有 amd64 标签的镜像
+    if ! docker image inspect "$PG_AMD64_TAG" >/dev/null 2>&1; then
+        # 检查当前 PG 镜像架构
+        PG_ARCH=$(docker inspect "$PG_IMAGE" --format '{{.Architecture}}' 2>/dev/null || echo "missing")
+        if [ "$PG_ARCH" = "amd64" ]; then
+            # 本地已经是 amd64，直接 tag
+            docker tag "$PG_IMAGE" "$PG_AMD64_TAG"
+        else
+            warn "PostgreSQL 镜像为 $PG_ARCH 架构，需要 amd64 版本"
+            warn "正在拉取 amd64 版本（可能需要几分钟）..."
+            # 先尝试用不同 digest 拉取 amd64 版本
+            # 在 Apple Silicon 上，如果本地已有 arm64 版本，docker pull --platform 不会覆盖
+            # 解决方案：先删除本地镜像（-f 强制，即使有容器引用也删除引用）
+            docker rmi -f "$PG_IMAGE" 2>/dev/null || true
+            docker pull --platform linux/amd64 "$PG_IMAGE"
+            docker tag "$PG_IMAGE" "$PG_AMD64_TAG"
+            # 重新拉取 arm64 版本供本地开发使用
+            docker pull "$PG_IMAGE" 2>/dev/null || true
+        fi
+    fi
+
+    info "导出镜像（frontend + backend + docreader + postgres）..."
+    # 导出四个镜像到单个 tar（frontend + backend + docreader + postgres）
+    docker save luminbuddy-v2-frontend:latest luminbuddy-v2-backend:latest luminbuddy-v2-docreader:latest "$PG_AMD64_TAG" \
         | gzip > "$IMAGES_PATH"
 
     if [ "$(uname)" = "Darwin" ]; then
@@ -326,8 +353,9 @@ if [ "$EXPORT_IMAGES" = true ]; then
     echo -e "  2. SSH 到服务器，进入项目目录（如 /opt/luminbuddy-v2）"
     echo -e "  3. 解压源码: tar -xzf $(basename "$ARCHIVE_PATH")"
     echo -e "  4. 加载镜像: docker load -i $(basename "$IMAGES_PATH")"
-    echo -e "  5. 配置环境: cp .env.docker.example .env.docker && vi .env.docker"
-    echo -e "  6. 启动:     docker compose up -d  # 无需 --build！"
+    echo -e "  5. 重命名 PostgreSQL 镜像: docker tag paradedb/paradedb:v0.22.2-pg17-amd64 paradedb/paradedb:v0.22.2-pg17"
+    echo -e "  6. 配置环境: cp .env.docker.example .env.docker && vi .env.docker"
+    echo -e "  7. 启动:     docker compose up -d  # 无需 --build！"
 else
     echo -e "  ${YELLOW}【仅源码包 — 服务器需要 build】${NC}"
     echo -e "  1. 上传 $(basename "$ARCHIVE_PATH") 到服务器"

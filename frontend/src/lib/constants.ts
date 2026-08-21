@@ -14,6 +14,8 @@ export const STEP_LABELS: Record<AgentStepName, string> = {
   word_count_check: "字数检查",
   rewrite_title: "标题优化",
   fact_check: "事实核查",
+  retrieve_context: "上下文检索",
+  generate_outline: "提纲生成",
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "意图识别",
   query_plan: "检索规划",
@@ -40,6 +42,8 @@ export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   word_count_check: "检查文章字数是否符合风格要求",
   rewrite_title: "生成备选标题供选择",
   fact_check: "提取并验证文章中的关键事实",
+  retrieve_context: "按需检索会话上下文（文章段落/记忆/素材/风格配置）",
+  generate_outline: "生成文章提纲供用户确认",
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "分析用户意图，确定写作任务类型",
   query_plan: "规划检索策略，生成搜索关键词",
@@ -66,6 +70,8 @@ export const STEP_ICONS: Record<AgentStepName, string> = {
   word_count_check: "Hash",
   rewrite_title: "Type",
   fact_check: "SearchCheck",
+  retrieve_context: "Database",
+  generate_outline: "ListTree",
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "Brain",
   query_plan: "Search",

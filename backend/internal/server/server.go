@@ -1779,8 +1779,9 @@ func (s *Server) runAgent(
 			s.traces.CompleteTrace(ctx, execCtx)
 		}
 
-		// Broadcast article:completed via SSE to all connected clients
-		if s.sseHub != nil {
+		// Broadcast article:completed via SSE — only when an actual article was produced
+		// (skip chat/shorten/expand intents that don't generate a full article)
+		if s.sseHub != nil && execCtx.Article != "" {
 			topic := ""
 			if execCtx.WritingTask != nil {
 				topic = execCtx.WritingTask.Topic

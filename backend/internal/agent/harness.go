@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -154,9 +155,9 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			h.emitter.StreamDelta(delta)
 		}
 		// 在流式输出中提取标题
-		if !titleResolved && intent == IntentWriting {
+		if !titleResolved && (intent == IntentWriting || intent == IntentPolish || intent == IntentShorten || intent == IntentExpand) {
 			buf := bodyBuf.String()
-			if title := extractTitleFromMarkdown(buf); title != "" {
+			if title := steps.ExtractTitleFromMarkdown(buf); title != "" {
 				articleTitle = title
 				titleResolved = true
 				execCtx.ArticleTitle = title
@@ -278,6 +279,17 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			execCtx.ArticleTitle = articleTitle
 		} else if session.ArticleTitle != "" {
 			execCtx.ArticleTitle = session.ArticleTitle
+		} else {
+			// Fallback: 流式过程中未提取到标题，且 session 中也没有历史标题，
+			// 在最终正文上再尝试一次（支持 LLM 用 # 或短行作为标题的情况）
+			if title := steps.ExtractTitleFromMarkdown(articleBody); title != "" {
+				articleTitle = title
+				session.ArticleTitle = title
+				execCtx.ArticleTitle = title
+				if h.emitter != nil {
+					h.emitter.ArticleTitle(title)
+				}
+			}
 		}
 	} else {
 		// 对话意图：articleBody 就是对话回复
@@ -584,14 +596,8 @@ func (h *Harness) buildLLMOptions(intent Intent, session *WritingSession) []tool
 	return opts
 }
 
-// extractTitleFromMarkdown 从 Markdown 文本中提取标题。
-func extractTitleFromMarkdown(text string) string {
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "## ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "## "))
-		}
-	}
-	return ""
-}
+// extractTitleFromMarkdown 已统一为 steps.ExtractTitleFromMarkdown，
+// 支持 ## 、# 标题，以及短行回退。
+//
+// 收尾 fallback：如果流式过程中未能提取到标题，
+// 在最终正文上再尝试一次（在 Run 方法收尾时调用）。

@@ -14,19 +14,26 @@ import {
   Database,
   Sparkles,
   MessageCircle,
+  BookOpen,
+  FileText,
+  Hash,
+  Type,
+  SearchCheck,
+  Split,
   Check,
   X,
   Loader2,
   ChevronRight,
   AlertTriangle,
+  type LucideIcon,
 } from "lucide-react";
 import type { ToolCallPart } from "@/stores/agent-store";
-import { STEP_LABELS, STEP_DESCRIPTIONS } from "@/lib/constants";
+import { STEP_LABELS, STEP_DESCRIPTIONS, STEP_ICONS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PulseIndicator } from "@/components/animation";
 
-const ICON_MAP: Record<string, typeof Brain> = {
+const ICON_MAP: Record<string, LucideIcon> = {
   Brain,
   Search: SearchIcon,
   Globe,
@@ -38,21 +45,15 @@ const ICON_MAP: Record<string, typeof Brain> = {
   Database,
   Sparkles,
   MessageCircle,
+  BookOpen,
+  FileText,
+  Hash,
+  Type,
+  SearchCheck,
+  Split,
 };
 
-const STEP_ICON_KEY: Record<string, string> = {
-  intent: "Brain",
-  query_plan: "Search",
-  search: "Globe",
-  relevance: "Filter",
-  outline: "ListTree",
-  write: "PenLine",
-  post_review: "ShieldCheck",
-  auto_fix: "Wrench",
-  memory_gate: "Database",
-  memory_extract: "Sparkles",
-  chat: "MessageCircle",
-};
+const STEP_ICON_KEY: Record<string, string> = STEP_ICONS;
 
 interface AgentStepCardProps {
   part: ToolCallPart;

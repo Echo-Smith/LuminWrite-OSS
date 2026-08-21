@@ -48,10 +48,10 @@ func tryParseTitle(jsonStr string) (string, bool) {
 	return strings.TrimSpace(data.Title), true
 }
 
-// extractTitleFromMarkdown extracts a title from Markdown text.
+// ExtractTitleFromMarkdown extracts a title from Markdown text.
 // It looks for the first line starting with "## " or "# ".
 // Falls back to the first short non-empty line without sentence-ending punctuation.
-func extractTitleFromMarkdown(text string) string {
+func ExtractTitleFromMarkdown(text string) string {
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {

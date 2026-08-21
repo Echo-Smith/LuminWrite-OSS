@@ -15,6 +15,8 @@ export type AgentStepName =
   | "word_count_check"
   | "rewrite_title"
   | "fact_check"
+  | "retrieve_context"
+  | "generate_outline"
   // ── 旧 pipeline/unified 工具名（兼容历史会话回放）──
   | "intent"
   | "query_plan"

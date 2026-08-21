@@ -59,11 +59,14 @@ export function useSSENotifications() {
         }, delay);
       };
 
-      // ── 文章完成通知 ──
+      // ── 文章完成通知 — 仅当后端确认生成了文章时才弹通知 ──
       es.addEventListener("article:completed", (e) => {
         try {
           const data = JSON.parse((e as MessageEvent).data);
-          const title = data.article_title || data.topic || "写作完成";
+          // 防御性检查：只有 article_title 或 topic 非空时才显示
+          // 避免 chat 等非写作意图也触发通知
+          const title = data.article_title || data.topic;
+          if (!title) return;
           toast.success("✍️ 写作完成", title, 6000);
         } catch { /* ignore */ }
       });

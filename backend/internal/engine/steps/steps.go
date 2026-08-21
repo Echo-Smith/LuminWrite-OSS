@@ -1209,7 +1209,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 					title = t
 				} else {
 					// JSON parse failed — try regex fallback on the prefix
-					title = extractTitleFromMarkdown(jsonPart)
+					title = ExtractTitleFromMarkdown(jsonPart)
 				}
 				if title != "" {
 					execCtx.ArticleTitle = title
@@ -1232,7 +1232,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			if titleCharCount > titleCollectCharLimit {
 				// LLM didn't follow the format — switch to fallback mode
 				// Try to extract title from what we've collected
-				title := extractTitleFromMarkdown(buf)
+				title := ExtractTitleFromMarkdown(buf)
 				if title != "" {
 					execCtx.ArticleTitle = title
 					emitter.ArticleTitle(title)
@@ -1297,7 +1297,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 
 	// Post-stream: if title still not resolved (e.g. very short output), try final fallback
 	if !titleResolved && useJSONTitle {
-		title := extractTitleFromMarkdown(fullText)
+		title := ExtractTitleFromMarkdown(fullText)
 		if title != "" {
 			execCtx.ArticleTitle = title
 			emitter.ArticleTitle(title)
@@ -1620,7 +1620,7 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 	// Resolve article title: prefer structured ArticleTitle, fall back to Markdown extraction
 	articleTitle := execCtx.ArticleTitle
 	if articleTitle == "" {
-		articleTitle = extractTitleFromMarkdown(execCtx.Article)
+		articleTitle = ExtractTitleFromMarkdown(execCtx.Article)
 	}
 
 	// 1. Check title forbidden_patterns (regex)

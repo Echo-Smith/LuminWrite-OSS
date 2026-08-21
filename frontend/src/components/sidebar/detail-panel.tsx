@@ -16,6 +16,7 @@ import { toast } from "@/stores/toast-store";
 import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 import { AgentStepCard } from "@/components/tools/agent-step-card";
+import { CompactStepTimeline } from "@/components/tools/compact-step-timeline";
 
 interface DetailPanelProps {
   onClose?: () => void;
@@ -44,7 +45,7 @@ const AGENT_ROLES: AgentRole[] = [
     icon: Database,
     color: "text-cyan-600 dark:text-cyan-400",
     bgColor: "bg-cyan-50 dark:bg-cyan-950/30",
-    steps: ["memory_gate"],
+    steps: ["memory_gate", "retrieve_context"],
   },
   {
     name: "素材研究",
@@ -58,21 +59,21 @@ const AGENT_ROLES: AgentRole[] = [
     icon: Bot,
     color: "text-purple-600 dark:text-purple-400",
     bgColor: "bg-purple-50 dark:bg-purple-950/30",
-    steps: ["outline"],
+    steps: ["outline", "generate_outline"],
   },
   {
     name: "写作生成",
     icon: PenLine,
     color: "text-indigo-600 dark:text-indigo-400",
     bgColor: "bg-indigo-50 dark:bg-indigo-950/30",
-    steps: ["write", "chat"],
+    steps: ["write", "write_article", "chat"],
   },
   {
     name: "质量保障",
     icon: ShieldCheck,
     color: "text-green-600 dark:text-green-400",
     bgColor: "bg-green-50 dark:bg-green-950/30",
-    steps: ["post_review", "auto_fix"],
+    steps: ["post_review", "auto_fix", "review_article", "revise_section", "word_count_check", "rewrite_title", "fact_check"],
   },
   {
     name: "学习沉淀",
@@ -165,6 +166,12 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
 
         <ScrollArea className="flex-1">
           <TabsContent value="trace" className="p-3 m-0">
+            {/* 紧凑步骤时间线 — 与对话框同步 */}
+            {toolCallParts.length > 0 && (
+              <div className="mb-3">
+                <CompactStepTimeline parts={toolCallParts} isRunning={lastAssistant?.status === "running"} />
+              </div>
+            )}
             <AgentCollaborationFlow parts={toolCallParts} />
           </TabsContent>
           <TabsContent value="sources" className="p-3 m-0">
