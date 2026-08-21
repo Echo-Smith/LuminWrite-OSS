@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -19,6 +20,9 @@ import (
 //   - List candidates (profile iterations from feedback)
 //   - Approve/reject candidates (eval gate decisions)
 //   - Enable canary rollout for approved candidates
+//   - Rollback canary rollout
+//   - Promote canary to full rollout
+//   - Get canary metrics (routing counters)
 //
 // The candidate data is persisted in the style_profile_candidates
 // and canary_rollouts tables (migration 055).
@@ -45,13 +49,31 @@ func (s *Server) handleAdminListEvolutionCandidates(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Enrich each candidate with its canary rollout info if any
+	type candidateWithRollout struct {
+		evolutionCandidate
+		Rollout *canaryRolloutInfo `json:"rollout,omitempty"`
+	}
+
+	result := make([]candidateWithRollout, 0, len(candidates))
+	for _, c := range candidates {
+		item := candidateWithRollout{evolutionCandidate: c}
+		if c.Status == "rollout" || c.Status == "canary" {
+			if rollout, _ := s.getActiveCanaryRollout(r.Context(), c.ID); rollout != nil {
+				item.Rollout = rollout
+			}
+		}
+		result = append(result, item)
+	}
+
 	response.OK(w, map[string]any{
-		"candidates": candidates,
-		"total":      len(candidates),
+		"candidates": result,
+		"total":      len(result),
 	})
 }
 
-// handleAdminApproveEvolutionCandidate approves a candidate, triggering the eval gate.
+// handleAdminApproveEvolutionCandidate approves a candidate and asynchronously triggers the eval gate.
+// The candidate status transitions: draft → eval_running → approved/rejected (by gate result).
 //
 // POST /api/v2/admin/evolution/candidates/{id}/approve
 func (s *Server) handleAdminApproveEvolutionCandidate(w http.ResponseWriter, r *http.Request) {
@@ -66,19 +88,67 @@ func (s *Server) handleAdminApproveEvolutionCandidate(w http.ResponseWriter, r *
 		return
 	}
 
-	// Update candidate status to "approved" in DB
-	if err := s.updateEvolutionCandidateStatus(r.Context(), candidateID, "approved"); err != nil {
-		slog.Warn("failed to approve candidate", "id", candidateID, "error", err)
-		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to approve candidate")
+	// Get candidate from DB
+	candidate, err := s.getEvolutionCandidate(r.Context(), candidateID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "candidate not found")
 		return
 	}
 
-	slog.Info("evolution candidate approved", "candidate_id", candidateID)
+	if candidate.Status != "draft" && candidate.Status != "rejected" {
+		response.Err(w, http.StatusBadRequest, "invalid_status",
+			fmt.Sprintf("candidate must be in draft or rejected status (current: %s)", candidate.Status))
+		return
+	}
+
+	// Update status to "eval_running"
+	if err := s.updateEvolutionCandidateStatus(r.Context(), candidateID, "eval_running"); err != nil {
+		slog.Warn("failed to update candidate to eval_running", "id", candidateID, "error", err)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to update candidate status")
+		return
+	}
+
+	// Build a ProfileCandidate for the eval gate
+	pc := &services.ProfileCandidate{
+		ID:            candidateID,
+		StyleSlug:     candidate.StyleSlug,
+		ParentVersion: candidate.ParentVersion,
+		Changes:       candidate.Changes,
+		Status:        "eval_running",
+		CreatedAt:     candidate.CreatedAt,
+	}
+
+	// Asynchronously run eval gate
+	go s.runEvalGateAsync(pc)
+
+	slog.Info("evolution candidate approved, eval gate started", "candidate_id", candidateID)
 
 	response.OK(w, map[string]any{
 		"id":     candidateID,
-		"status": "approved",
+		"status": "eval_running",
+		"message": "eval gate started asynchronously; check status after completion",
 	})
+}
+
+// runEvalGateAsync runs the eval gate asynchronously and updates the candidate status.
+func (s *Server) runEvalGateAsync(candidate *services.ProfileCandidate) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	passing, err := s.evolutionSvc.RunEvalGate(ctx, candidate, s.evalSvc)
+	if err != nil {
+		slog.Error("eval gate failed for candidate", "id", candidate.ID, "error", err)
+		_ = s.updateEvolutionCandidateStatus(ctx, candidate.ID, "rejected")
+		return
+	}
+
+	if passing {
+		_ = s.updateEvolutionCandidateStatus(ctx, candidate.ID, "approved")
+		slog.Info("eval gate passed, candidate approved", "id", candidate.ID)
+	} else {
+		_ = s.updateEvolutionCandidateStatus(ctx, candidate.ID, "rejected")
+		slog.Info("eval gate failed, candidate rejected", "id", candidate.ID)
+	}
 }
 
 // handleAdminRejectEvolutionCandidate rejects a candidate.
@@ -117,6 +187,7 @@ func (s *Server) handleAdminRejectEvolutionCandidate(w http.ResponseWriter, r *h
 }
 
 // handleAdminEnableCanaryRollout enables canary rollout for an approved candidate.
+// Also updates the profile Loader's RolloutConfig so the routing engine picks it up.
 //
 // POST /api/v2/admin/evolution/candidates/{id}/canary
 func (s *Server) handleAdminEnableCanaryRollout(w http.ResponseWriter, r *http.Request) {
@@ -148,11 +219,12 @@ func (s *Server) handleAdminEnableCanaryRollout(w http.ResponseWriter, r *http.R
 	}
 
 	if candidate.Status != "approved" {
-		response.Err(w, http.StatusBadRequest, "invalid_status", "candidate must be approved before canary rollout")
+		response.Err(w, http.StatusBadRequest, "invalid_status",
+			fmt.Sprintf("candidate must be approved before canary rollout (current: %s)", candidate.Status))
 		return
 	}
 
-	// Enable canary rollout
+	// Enable canary rollout via EvolutionService
 	rollout, err := s.evolutionSvc.EnableCanaryRollout(r.Context(), candidate.StyleSlug, candidate.ParentVersion+1, body.Percentage)
 	if err != nil {
 		response.Err(w, http.StatusInternalServerError, "canary_failed", fmt.Sprintf("failed to enable canary: %v", err))
@@ -161,6 +233,12 @@ func (s *Server) handleAdminEnableCanaryRollout(w http.ResponseWriter, r *http.R
 
 	// Persist rollout to DB
 	if s.db != nil {
+		// End any existing active rollout for this style
+		_, _ = s.db.ExecContext(r.Context(), `
+			UPDATE canary_rollouts SET enabled = FALSE, ended_at = NOW()
+			WHERE style_slug = $1 AND enabled = TRUE
+		`, candidate.StyleSlug)
+
 		_, err = s.db.ExecContext(r.Context(), `
 			INSERT INTO canary_rollouts (style_slug, version, candidate_id, percentage, enabled, started_at)
 			VALUES ($1, $2, $3, $4, TRUE, NOW())
@@ -170,11 +248,205 @@ func (s *Server) handleAdminEnableCanaryRollout(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	slog.Info("canary rollout enabled", "candidate_id", candidateID, "percentage", body.Percentage)
+	// Update the profile Loader's RolloutConfig so routing engine uses it
+	if s.profiles != nil {
+		config := routing.RolloutConfig{
+			Type:           "percentage",
+			RolloutPercent: int(body.Percentage),
+			FallbackVersion: candidate.ParentVersion,
+		}
+		if err := s.profiles.UpdateRolloutConfig(candidate.StyleSlug, config); err != nil {
+			slog.Warn("failed to update rollout config on profile loader", "slug", candidate.StyleSlug, "error", err)
+		}
+	}
+
+	// Update candidate status to "rollout"
+	_ = s.updateEvolutionCandidateStatus(r.Context(), candidateID, "rollout")
+
+	slog.Info("canary rollout enabled", "candidate_id", candidateID, "percentage", body.Percentage, "slug", candidate.StyleSlug)
 
 	response.OK(w, map[string]any{
 		"candidate_id": candidateID,
-		"rollout":       rollout,
+		"rollout":      rollout,
+		"percentage":   body.Percentage,
+		"status":       "rollout",
+	})
+}
+
+// handleAdminRollbackCanary rolls back a canary rollout, disabling it and reverting to fallback.
+//
+// POST /api/v2/admin/evolution/candidates/{id}/rollback
+func (s *Server) handleAdminRollbackCanary(w http.ResponseWriter, r *http.Request) {
+	if s.evolutionSvc == nil {
+		response.Err(w, http.StatusServiceUnavailable, "service_unavailable", "evolution service not available")
+		return
+	}
+
+	candidateID := chi.URLParam(r, "id")
+	if candidateID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "candidate ID is required")
+		return
+	}
+
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Reason == "" {
+		body.Reason = "manual rollback by admin"
+	}
+
+	// Get candidate from DB
+	candidate, err := s.getEvolutionCandidate(r.Context(), candidateID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "candidate not found")
+		return
+	}
+
+	if candidate.Status != "rollout" {
+		response.Err(w, http.StatusBadRequest, "invalid_status", "candidate is not in rollout phase")
+		return
+	}
+
+	// Disable canary rollout in DB
+	if s.db != nil {
+		_, err = s.db.ExecContext(r.Context(), `
+			UPDATE canary_rollouts
+			SET enabled = FALSE, ended_at = NOW(), rollback_reason = $2
+			WHERE candidate_id = $1::uuid AND enabled = TRUE
+		`, candidateID, body.Reason)
+		if err != nil {
+			slog.Warn("failed to rollback canary in DB", "error", err)
+		}
+	}
+
+	// Revert the profile Loader's RolloutConfig to full (old version)
+	if s.profiles != nil {
+		config := routing.RolloutConfig{
+			Type:            "full",
+			RolloutPercent:  100,
+			FallbackVersion: candidate.ParentVersion,
+		}
+		if err := s.profiles.UpdateRolloutConfig(candidate.StyleSlug, config); err != nil {
+			slog.Warn("failed to revert rollout config", "slug", candidate.StyleSlug, "error", err)
+		}
+	}
+
+	// Update candidate status to "rejected"
+	_ = s.updateEvolutionCandidateStatus(r.Context(), candidateID, "rejected")
+
+	slog.Info("canary rollout rolled back", "candidate_id", candidateID, "reason", body.Reason, "slug", candidate.StyleSlug)
+
+	response.OK(w, map[string]any{
+		"candidate_id": candidateID,
+		"status":       "rejected",
+		"reason":       body.Reason,
+		"message":      "canary rollout rolled back, reverted to previous version",
+	})
+}
+
+// handleAdminPromoteToFull promotes a canary rollout to full rollout (100%).
+//
+// POST /api/v2/admin/evolution/candidates/{id}/promote
+func (s *Server) handleAdminPromoteToFull(w http.ResponseWriter, r *http.Request) {
+	if s.evolutionSvc == nil {
+		response.Err(w, http.StatusServiceUnavailable, "service_unavailable", "evolution service not available")
+		return
+	}
+
+	candidateID := chi.URLParam(r, "id")
+	if candidateID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "candidate ID is required")
+		return
+	}
+
+	// Get candidate from DB
+	candidate, err := s.getEvolutionCandidate(r.Context(), candidateID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "candidate not found")
+		return
+	}
+
+	if candidate.Status != "rollout" {
+		response.Err(w, http.StatusBadRequest, "invalid_status", "candidate must be in rollout phase to promote")
+		return
+	}
+
+	// Mark canary rollout as ended in DB
+	if s.db != nil {
+		_, err = s.db.ExecContext(r.Context(), `
+			UPDATE canary_rollouts
+			SET enabled = FALSE, ended_at = NOW()
+			WHERE candidate_id = $1::uuid AND enabled = TRUE
+		`, candidateID)
+		if err != nil {
+			slog.Warn("failed to end canary rollout in DB", "error", err)
+		}
+	}
+
+	// Set the profile Loader's RolloutConfig to full (new version)
+	if s.profiles != nil {
+		config := routing.RolloutConfig{
+			Type:            "full",
+			RolloutPercent:  100,
+			FallbackVersion: candidate.ParentVersion + 1,
+		}
+		if err := s.profiles.UpdateRolloutConfig(candidate.StyleSlug, config); err != nil {
+			slog.Warn("failed to promote rollout config to full", "slug", candidate.StyleSlug, "error", err)
+		}
+	}
+
+	// Update candidate status to "active" (fully promoted)
+	_ = s.updateEvolutionCandidateStatus(r.Context(), candidateID, "active")
+
+	slog.Info("canary promoted to full rollout", "candidate_id", candidateID, "slug", candidate.StyleSlug, "version", candidate.ParentVersion+1)
+
+	response.OK(w, map[string]any{
+		"candidate_id": candidateID,
+		"status":       "active",
+		"version":      candidate.ParentVersion + 1,
+		"message":      "promoted to full rollout (100%)",
+	})
+}
+
+// handleAdminGetCanaryMetrics returns the routing metrics for the canary rollout.
+//
+// GET /api/v2/admin/evolution/candidates/{id}/metrics
+func (s *Server) handleAdminGetCanaryMetrics(w http.ResponseWriter, r *http.Request) {
+	candidateID := chi.URLParam(r, "id")
+	if candidateID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "candidate ID is required")
+		return
+	}
+
+	// Get routing metrics
+	metrics := routing.RolloutMetrics
+
+	// Get candidate for slug
+	candidate, err := s.getEvolutionCandidate(r.Context(), candidateID)
+	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "candidate not found")
+		return
+	}
+
+	// Get the rollout config for this style
+	var config routing.RolloutConfig
+	if s.profiles != nil {
+		config = s.profiles.GetRolloutConfig(candidate.StyleSlug)
+	}
+
+	response.OK(w, map[string]any{
+		"candidate_id":   candidateID,
+		"style_slug":     candidate.StyleSlug,
+		"rollout_config": config,
+		"metrics": map[string]int64{
+			"total":       metrics.Requests.Load(),
+			"new_version": metrics.NewVersion.Load(),
+			"old_version": metrics.OldVersion.Load(),
+			"whitelist":   metrics.Whitelist.Load(),
+			"percentage":  metrics.Percentage.Load(),
+			"errors":      metrics.Errors.Load(),
+		},
 	})
 }
 
@@ -189,6 +461,18 @@ type evolutionCandidate struct {
 	EvalBaselineID  string                 `json:"eval_baseline_id,omitempty"`
 	EvalCandidateID string                 `json:"eval_candidate_id,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
+}
+
+type canaryRolloutInfo struct {
+	ID           string     `json:"id"`
+	StyleSlug    string     `json:"style_slug"`
+	Version      int        `json:"version"`
+	CandidateID  string     `json:"candidate_id"`
+	Percentage   float64    `json:"percentage"`
+	Enabled      bool       `json:"enabled"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+	RollbackReason string   `json:"rollback_reason,omitempty"`
 }
 
 func (s *Server) listEvolutionCandidatesFromDB(ctx context.Context) ([]evolutionCandidate, error) {
@@ -257,6 +541,27 @@ func (s *Server) updateEvolutionCandidateStatus(ctx context.Context, id, status 
 		UPDATE style_profile_candidates SET status = $1 WHERE id = $2::uuid
 	`, status, id)
 	return err
+}
+
+func (s *Server) getActiveCanaryRollout(ctx context.Context, candidateID string) (*canaryRolloutInfo, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	var r canaryRolloutInfo
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id::text, style_slug, version, candidate_id::text,
+		       percentage, enabled, started_at, ended_at, COALESCE(rollback_reason, '')
+		FROM canary_rollouts
+		WHERE candidate_id = $1::uuid AND enabled = TRUE
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, candidateID).Scan(&r.ID, &r.StyleSlug, &r.Version, &r.CandidateID,
+		&r.Percentage, &r.Enabled, &r.StartedAt, &r.EndedAt, &r.RollbackReason)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // storeCandidateToDB persists a ProfileCandidate to the database.

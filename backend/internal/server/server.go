@@ -894,6 +894,9 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Post("/evolution/candidates/{id}/approve", s.handleAdminApproveEvolutionCandidate)
             r.Post("/evolution/candidates/{id}/reject", s.handleAdminRejectEvolutionCandidate)
             r.Post("/evolution/candidates/{id}/canary", s.handleAdminEnableCanaryRollout)
+            r.Post("/evolution/candidates/{id}/rollback", s.handleAdminRollbackCanary)
+            r.Post("/evolution/candidates/{id}/promote", s.handleAdminPromoteToFull)
+            r.Get("/evolution/candidates/{id}/metrics", s.handleAdminGetCanaryMetrics)
 
             // Batch Operations
             r.Post("/models/batch", s.handleAdminBatchModels)
