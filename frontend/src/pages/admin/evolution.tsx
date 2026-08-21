@@ -72,14 +72,14 @@ export function EvolutionPage() {
   };
 
   const handleReject = async (id: string) => {
-    const { success } = await adminMutate(`/api/v2/admin/evolution/candidates/${id}/reject`, { reason: "admin rejected" });
+    const { success } = await adminMutate(`/api/v2/admin/evolution/candidates/${id}/reject`, { method: "POST", body: JSON.stringify({ reason: "admin rejected" }) });
     if (success) { await loadCandidates(); }
   };
 
   const handleCanary = async () => {
     if (!canaryTarget) return;
     const pct = parseFloat(canaryPct) || 10;
-    const { success } = await adminMutate(`/api/v2/admin/evolution/candidates/${canaryTarget}/canary`, { percentage: pct });
+    const { success } = await adminMutate(`/api/v2/admin/evolution/candidates/${canaryTarget}/canary`, { method: "POST", body: JSON.stringify({ percentage: pct }) });
     if (success) { setCanaryTarget(null); await loadCandidates(); }
   };
 
