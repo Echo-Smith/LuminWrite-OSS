@@ -484,6 +484,10 @@ func New(cfg *config.Config) (*Server, error) {
 			s.evolutionSvc.SetDB(s.db)
 		}
 		slog.Info("self-evolution service initialized")
+
+		// ── Canary Health Monitor (auto-rollback) ──
+		canaryMonitor := NewCanaryHealthMonitor(s, 30*time.Second)
+		canaryMonitor.Start()
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -921,6 +925,13 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Post("/evolution/candidates/{id}/rollback", s.handleAdminRollbackCanary)
             r.Post("/evolution/candidates/{id}/promote", s.handleAdminPromoteToFull)
             r.Get("/evolution/candidates/{id}/metrics", s.handleAdminGetCanaryMetrics)
+
+            // Self-Evolution Gate Configuration & Monitoring
+            r.Get("/evolution/gate-configs", s.handleAdminListGateConfigs)
+            r.Get("/evolution/gate-config/{slug}", s.handleAdminGetGateConfig)
+            r.Put("/evolution/gate-config/{slug}", s.handleAdminUpdateGateConfig)
+            r.Get("/evolution/candidates/{id}/events", s.handleAdminGetGateEvents)
+            r.Get("/evolution/candidates/{id}/health", s.handleAdminGetHealthSnapshots)
 
             // Batch Operations
             r.Post("/models/batch", s.handleAdminBatchModels)

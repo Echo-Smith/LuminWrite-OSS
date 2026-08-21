@@ -108,6 +108,17 @@ func (s *Server) handleAdminApproveEvolutionCandidate(w http.ResponseWriter, r *
 		return
 	}
 
+	// Record gate event: approve triggered
+	s.recordGateEventStatic(r.Context(), candidateID, "approve_triggered", r,
+		"Admin approved candidate, eval gate started", map[string]any{
+			"style_slug": candidate.StyleSlug,
+		})
+
+	// Record audit log
+	s.writeAuditLog(r, "evolution_approve", "evolution_candidate", candidateID,
+		fmt.Sprintf("Approved candidate for style %s v%d", candidate.StyleSlug, candidate.ParentVersion+1),
+		map[string]any{"candidate_id": candidateID, "style_slug": candidate.StyleSlug})
+
 	// Build a ProfileCandidate for the eval gate
 	pc := &services.ProfileCandidate{
 		ID:            candidateID,
@@ -124,13 +135,14 @@ func (s *Server) handleAdminApproveEvolutionCandidate(w http.ResponseWriter, r *
 	slog.Info("evolution candidate approved, eval gate started", "candidate_id", candidateID)
 
 	response.OK(w, map[string]any{
-		"id":     candidateID,
-		"status": "eval_running",
+		"id":      candidateID,
+		"status":  "eval_running",
 		"message": "eval gate started asynchronously; check status after completion",
 	})
 }
 
 // runEvalGateAsync runs the eval gate asynchronously and updates the candidate status.
+// It persists the eval result (score, run ID, pass/fail) to the candidate record.
 func (s *Server) runEvalGateAsync(candidate *services.ProfileCandidate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -139,15 +151,86 @@ func (s *Server) runEvalGateAsync(candidate *services.ProfileCandidate) {
 	if err != nil {
 		slog.Error("eval gate failed for candidate", "id", candidate.ID, "error", err)
 		_ = s.updateEvolutionCandidateStatus(ctx, candidate.ID, "rejected")
+
+		// Persist eval failure result
+		if s.db != nil {
+			_, _ = s.db.ExecContext(ctx, `
+				UPDATE style_profile_candidates
+				SET eval_passed = FALSE, eval_completed_at = NOW(),
+				    eval_summary = $2, rejected_reason = $3
+				WHERE id = $1::uuid
+			`, candidate.ID, `{"error": "eval gate execution failed"}`, err.Error())
+		}
+
+		// Record gate event
+		s.recordGateEventStatic(ctx, candidate.ID, "eval_failed", nil,
+			fmt.Sprintf("Eval gate failed: %v", err), map[string]any{"error": err.Error()})
 		return
 	}
 
+	// Get the eval run result for persistence
+	var evalRunID string
+	var evalScore float64
+	sets, _, _ := s.evalRepo.ListSets(ctx, candidate.StyleSlug, 1, 1)
+	if len(sets) > 0 {
+		runs, _, _ := s.evalRepo.ListRuns(ctx, sets[0].ID, 1, 1)
+		if len(runs) > 0 {
+			evalRunID = runs[0].ID
+			evalScore = runs[0].OverallScore
+		}
+	}
+
+	// Build eval summary
+	evalSummary, _ := json.Marshal(map[string]any{
+		"score":      evalScore,
+		"threshold":   3.0,
+		"run_id":      evalRunID,
+		"passing":     passing,
+		"completed_at": time.Now().Format(time.RFC3339),
+	})
+
 	if passing {
 		_ = s.updateEvolutionCandidateStatus(ctx, candidate.ID, "approved")
-		slog.Info("eval gate passed, candidate approved", "id", candidate.ID)
+
+		// Persist eval success result
+		if s.db != nil {
+			actorID := "system"
+			_, _ = s.db.ExecContext(ctx, `
+				UPDATE style_profile_candidates
+				SET eval_run_id = $2::uuid, eval_score = $3, eval_passed = TRUE,
+				    eval_completed_at = NOW(), eval_summary = $4,
+				    approved_by = $5, approved_at = NOW()
+				WHERE id = $1::uuid
+			`, candidate.ID, nullableUUID(evalRunID), evalScore, evalSummary, actorID)
+		}
+
+		slog.Info("eval gate passed, candidate approved", "id", candidate.ID, "score", evalScore)
+
+		// Record gate event
+		s.recordGateEventStatic(ctx, candidate.ID, "eval_passed", nil,
+			fmt.Sprintf("Eval gate passed with score %.2f", evalScore),
+			map[string]any{"score": evalScore, "run_id": evalRunID})
 	} else {
 		_ = s.updateEvolutionCandidateStatus(ctx, candidate.ID, "rejected")
-		slog.Info("eval gate failed, candidate rejected", "id", candidate.ID)
+
+		// Persist eval failure result
+		if s.db != nil {
+			_, _ = s.db.ExecContext(ctx, `
+				UPDATE style_profile_candidates
+				SET eval_run_id = $2::uuid, eval_score = $3, eval_passed = FALSE,
+				    eval_completed_at = NOW(), eval_summary = $4,
+				    rejected_reason = $5
+				WHERE id = $1::uuid
+			`, candidate.ID, nullableUUID(evalRunID), evalScore, evalSummary,
+				"eval gate did not pass: score below threshold or regression detected")
+		}
+
+		slog.Info("eval gate failed, candidate rejected", "id", candidate.ID, "score", evalScore)
+
+		// Record gate event
+		s.recordGateEventStatic(ctx, candidate.ID, "eval_rejected", nil,
+			fmt.Sprintf("Eval gate rejected with score %.2f", evalScore),
+			map[string]any{"score": evalScore, "run_id": evalRunID})
 	}
 }
 
@@ -170,12 +253,32 @@ func (s *Server) handleAdminRejectEvolutionCandidate(w http.ResponseWriter, r *h
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Reason == "" {
+		body.Reason = "rejected by admin"
+	}
 
 	if err := s.updateEvolutionCandidateStatus(r.Context(), candidateID, "rejected"); err != nil {
 		slog.Warn("failed to reject candidate", "id", candidateID, "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to reject candidate")
 		return
 	}
+
+	// Persist rejected reason
+	if s.db != nil {
+		_, _ = s.db.ExecContext(r.Context(), `
+			UPDATE style_profile_candidates SET rejected_reason = $2
+			WHERE id = $1::uuid
+		`, candidateID, body.Reason)
+	}
+
+	// Record gate event
+	s.recordGateEventStatic(r.Context(), candidateID, "manual_reject", r,
+		fmt.Sprintf("Admin rejected candidate: %s", body.Reason), map[string]any{"reason": body.Reason})
+
+	// Record audit log
+	s.writeAuditLog(r, "evolution_reject", "evolution_candidate", candidateID,
+		fmt.Sprintf("Rejected candidate: %s", body.Reason),
+		map[string]any{"candidate_id": candidateID, "reason": body.Reason})
 
 	slog.Info("evolution candidate rejected", "candidate_id", candidateID, "reason", body.Reason)
 
@@ -263,6 +366,16 @@ func (s *Server) handleAdminEnableCanaryRollout(w http.ResponseWriter, r *http.R
 	// Update candidate status to "rollout"
 	_ = s.updateEvolutionCandidateStatus(r.Context(), candidateID, "rollout")
 
+	// Record gate event
+	s.recordGateEventStatic(r.Context(), candidateID, "canary_enabled", r,
+		fmt.Sprintf("Canary rollout enabled at %.0f%%", body.Percentage),
+		map[string]any{"percentage": body.Percentage, "slug": candidate.StyleSlug})
+
+	// Record audit log
+	s.writeAuditLog(r, "evolution_canary", "evolution_candidate", candidateID,
+		fmt.Sprintf("Canary rollout enabled at %.0f%% for style %s", body.Percentage, candidate.StyleSlug),
+		map[string]any{"candidate_id": candidateID, "percentage": body.Percentage, "style_slug": candidate.StyleSlug})
+
 	slog.Info("canary rollout enabled", "candidate_id", candidateID, "percentage", body.Percentage, "slug", candidate.StyleSlug)
 
 	response.OK(w, map[string]any{
@@ -335,6 +448,24 @@ func (s *Server) handleAdminRollbackCanary(w http.ResponseWriter, r *http.Reques
 	// Update candidate status to "rejected"
 	_ = s.updateEvolutionCandidateStatus(r.Context(), candidateID, "rejected")
 
+	// Persist rejected reason
+	if s.db != nil {
+		_, _ = s.db.ExecContext(r.Context(), `
+			UPDATE style_profile_candidates SET rejected_reason = $2
+			WHERE id = $1::uuid
+		`, candidateID, body.Reason)
+	}
+
+	// Record gate event
+	s.recordGateEventStatic(r.Context(), candidateID, "manual_rollback", r,
+		fmt.Sprintf("Manual rollback: %s", body.Reason),
+		map[string]any{"reason": body.Reason, "slug": candidate.StyleSlug})
+
+	// Record audit log
+	s.writeAuditLog(r, "evolution_rollback", "evolution_candidate", candidateID,
+		fmt.Sprintf("Canary rolled back for style %s: %s", candidate.StyleSlug, body.Reason),
+		map[string]any{"candidate_id": candidateID, "reason": body.Reason, "style_slug": candidate.StyleSlug})
+
 	slog.Info("canary rollout rolled back", "candidate_id", candidateID, "reason", body.Reason, "slug", candidate.StyleSlug)
 
 	response.OK(w, map[string]any{
@@ -398,6 +529,16 @@ func (s *Server) handleAdminPromoteToFull(w http.ResponseWriter, r *http.Request
 
 	// Update candidate status to "active" (fully promoted)
 	_ = s.updateEvolutionCandidateStatus(r.Context(), candidateID, "active")
+
+	// Record gate event
+	s.recordGateEventStatic(r.Context(), candidateID, "promoted", r,
+		fmt.Sprintf("Promoted to full rollout (v%d)", candidate.ParentVersion+1),
+		map[string]any{"version": candidate.ParentVersion + 1, "slug": candidate.StyleSlug})
+
+	// Record audit log
+	s.writeAuditLog(r, "evolution_promote", "evolution_candidate", candidateID,
+		fmt.Sprintf("Promoted to full rollout for style %s v%d", candidate.StyleSlug, candidate.ParentVersion+1),
+		map[string]any{"candidate_id": candidateID, "version": candidate.ParentVersion + 1, "style_slug": candidate.StyleSlug})
 
 	slog.Info("canary promoted to full rollout", "candidate_id", candidateID, "slug", candidate.StyleSlug, "version", candidate.ParentVersion+1)
 
@@ -468,6 +609,13 @@ type evolutionCandidate struct {
 	EvalBaselineID  string                 `json:"eval_baseline_id,omitempty"`
 	EvalCandidateID string                 `json:"eval_candidate_id,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
+	EvalRunID       string                 `json:"eval_run_id,omitempty"`
+	EvalScore       *float64               `json:"eval_score,omitempty"`
+	EvalPassed      *bool                  `json:"eval_passed,omitempty"`
+	EvalCompletedAt *time.Time             `json:"eval_completed_at,omitempty"`
+	RejectedReason  string                 `json:"rejected_reason,omitempty"`
+	ApprovedBy      string                 `json:"approved_by,omitempty"`
+	ApprovedAt      *time.Time             `json:"approved_at,omitempty"`
 }
 
 type canaryRolloutInfo struct {
@@ -490,7 +638,10 @@ func (s *Server) listEvolutionCandidatesFromDB(ctx context.Context) ([]evolution
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, style_slug, parent_version, changes,
 		       status, COALESCE(eval_baseline_id::text, ''), COALESCE(eval_candidate_id::text, ''),
-		       created_at
+		       created_at,
+		       COALESCE(eval_run_id::text, ''),
+		       eval_score, eval_passed, eval_completed_at,
+		       COALESCE(rejected_reason, ''), COALESCE(approved_by, ''), approved_at
 		FROM style_profile_candidates
 		ORDER BY created_at DESC
 		LIMIT 50
@@ -505,7 +656,9 @@ func (s *Server) listEvolutionCandidatesFromDB(ctx context.Context) ([]evolution
 		var c evolutionCandidate
 		var changesJSON []byte
 		if err := rows.Scan(&c.ID, &c.StyleSlug, &c.ParentVersion, &changesJSON,
-			&c.Status, &c.EvalBaselineID, &c.EvalCandidateID, &c.CreatedAt); err != nil {
+			&c.Status, &c.EvalBaselineID, &c.EvalCandidateID, &c.CreatedAt,
+			&c.EvalRunID, &c.EvalScore, &c.EvalPassed, &c.EvalCompletedAt,
+			&c.RejectedReason, &c.ApprovedBy, &c.ApprovedAt); err != nil {
 			continue
 		}
 		if len(changesJSON) > 0 {
@@ -526,11 +679,16 @@ func (s *Server) getEvolutionCandidate(ctx context.Context, id string) (*evoluti
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id::text, style_slug, parent_version, changes,
 		       status, COALESCE(eval_baseline_id::text, ''), COALESCE(eval_candidate_id::text, ''),
-		       created_at
+		       created_at,
+		       COALESCE(eval_run_id::text, ''),
+		       eval_score, eval_passed, eval_completed_at,
+		       COALESCE(rejected_reason, ''), COALESCE(approved_by, ''), approved_at
 		FROM style_profile_candidates
 		WHERE id = $1::uuid
 	`, id).Scan(&c.ID, &c.StyleSlug, &c.ParentVersion, &changesJSON,
-		&c.Status, &c.EvalBaselineID, &c.EvalCandidateID, &c.CreatedAt)
+		&c.Status, &c.EvalBaselineID, &c.EvalCandidateID, &c.CreatedAt,
+		&c.EvalRunID, &c.EvalScore, &c.EvalPassed, &c.EvalCompletedAt,
+		&c.RejectedReason, &c.ApprovedBy, &c.ApprovedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -587,4 +745,40 @@ func (s *Server) storeCandidateToDB(ctx context.Context, candidate *services.Pro
 		VALUES ($1, $2, $3, $4)
 	`, candidate.StyleSlug, candidate.ParentVersion, changesJSON, candidate.Status)
 	return err
+}
+
+// recordGateEventStatic is a static method version of recordGateEvent that can be called
+// from contexts without an HTTP request (e.g. async goroutines).
+func (s *Server) recordGateEventStatic(ctx context.Context, candidateID, eventType string, r *http.Request,
+	detail string, metadata map[string]any) {
+	if s.db == nil {
+		return
+	}
+
+	actorID := "system"
+	actorType := "system"
+	if r != nil {
+		if user := userFromContext(r.Context()); user != nil {
+			actorID = user.Sub
+			actorType = "admin"
+		}
+	}
+
+	metaJSON, _ := json.Marshal(metadata)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO evolution_gate_events (candidate_id, event_type, actor_id, actor_type, detail, metadata)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+	`, candidateID, eventType, actorID, actorType, detail, metaJSON)
+	if err != nil {
+		slog.Warn("failed to record gate event", "error", err)
+	}
+}
+
+// nullableUUID returns a string suitable for UUID column insertion.
+// Empty string is converted to nil to avoid invalid UUID errors.
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
