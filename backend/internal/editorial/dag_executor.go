@@ -165,16 +165,19 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 
 			node := nodeMap[nodeID]
 
-			// 检查是否有依赖失败
-			if e.hasFailedDependency(node, e.results) {
-				e.mu.Lock()
+			// 检查是否有依赖失败（加锁防止与 worker goroutine 的写入竞态）
+			e.mu.Lock()
+			failed := e.hasFailedDependency(node, e.results)
+			if failed {
 				e.results[nodeID] = &NodeResult{
 					NodeID: nodeID,
 					Status: NodeStatusSkipped,
 					Error:  "upstream dependency failed",
 				}
-				e.mu.Unlock()
+			}
+			e.mu.Unlock()
 
+			if failed {
 				completedCount.Add(1)
 				if int(completedCount.Load()) == int(totalNodes) {
 					e.finalize(ctx, task, spec, false)
@@ -190,33 +193,35 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 				defer wg.Done()
 				defer func() { <-sem }() // 释放信号量
 
-				err := e.executeNode(ctx, n, nodeMap, task)
+			err := e.executeNode(ctx, n, nodeMap, task)
 
+			e.mu.Lock()
+			result := &NodeResult{
+				NodeID:     n.ID,
+				StartedAt:  ptrTime(time.Now()),
+			}
+			if err != nil {
+				result.Status = NodeStatusFailed
+				result.Error = err.Error()
+				hasFailed.Store(true)
+			} else {
+				result.Status = NodeStatusCompleted
+			}
+			result.FinishedAt = ptrTime(time.Now())
+			e.results[n.ID] = result
+			e.mu.Unlock()
+
+			if err == nil {
+				// 更新下游节点的依赖计数（需要加锁防止并发 map 写入）
 				e.mu.Lock()
-				result := &NodeResult{
-					NodeID:     n.ID,
-					StartedAt:  ptrTime(time.Now()),
-				}
-				if err != nil {
-					result.Status = NodeStatusFailed
-					result.Error = err.Error()
-					hasFailed.Store(true)
-				} else {
-					result.Status = NodeStatusCompleted
-				}
-				result.FinishedAt = ptrTime(time.Now())
-				e.results[n.ID] = result
-				e.mu.Unlock()
-
-				if err == nil {
-					// 更新下游节点的依赖计数
-					for _, ds := range downstream[n.ID] {
-						remainingDeps[ds]--
-						if remainingDeps[ds] == 0 {
-							readyQueue <- ds
-						}
+				for _, ds := range downstream[n.ID] {
+					remainingDeps[ds]--
+					if remainingDeps[ds] == 0 {
+						readyQueue <- ds
 					}
 				}
+				e.mu.Unlock()
+			}
 
 				completedCount.Add(1)
 				if int(completedCount.Load()) == int(totalNodes) {
@@ -392,6 +397,13 @@ func (e *DAGExecutor) finalize(ctx context.Context, task *Task, spec *WorkflowSp
 	if e.registry != nil {
 		e.registry.CleanupGeneratedAgents(task.ID)
 	}
+
+	// 清理 plan 缓存，防止内存泄漏
+	e.mu.Lock()
+	delete(e.planCache, task.ID)
+	// 清理 results，为下一次执行准备干净状态
+	e.results = make(map[string]*NodeResult)
+	e.mu.Unlock()
 }
 
 // GetStatus 获取工作流状态
