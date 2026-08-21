@@ -53,7 +53,13 @@ export type WSClientMessageType =
   | "agent.confirm"
   | "agent.edit"
   | "feedback.submit"
-  | "session.resume";
+  | "session.resume"
+  // Beta: DAG 工作流消息
+  | "workflow.start"
+  | "workflow.edit"
+  | "workflow.pause"
+  | "workflow.resume"
+  | "workflow.cancel";
 
 export type WSServerMessageType =
   | "agent.created"
@@ -74,7 +80,18 @@ export type WSServerMessageType =
   | "memory.used"
   | "memory.dismiss"
   | "agent.compaction"
-  | "editorial.event";
+  | "editorial.event"
+  // Beta: DAG 工作流消息
+  | "workflow.created"
+  | "workflow.started"
+  | "workflow.completed"
+  | "workflow.failed"
+  | "workflow.paused"
+  | "workflow.resumed"
+  | "node.started"
+  | "node.stream.delta"
+  | "node.completed"
+  | "node.failed";
 
 export interface WSClientMessage {
   type: WSClientMessageType;

@@ -66,6 +66,8 @@ type Server struct {
 	toolRegistry  *engine.ToolRegistry
 	editorialSvc  *editorial.Service
 	editorialHdlr *editorial.Handlers
+	planner       *editorial.Planner
+	dagExecutor   *editorial.DAGExecutor
 	redTeamRepo    *database.RedTeamRepo
 	evidenceRepo   *database.EvidenceRepo
 	sessionEvents  *database.SessionEventRepo
@@ -556,6 +558,24 @@ func New(cfg *config.Config) (*Server, error) {
 		s.editorialSvc = edSvc
 		s.editorialHdlr = editorial.NewHandlers(edSvc)
 		slog.Info("editorial system initialized")
+
+		// Beta: 编辑部模式 DAG 工作流初始化
+		if llm != nil {
+			s.planner = editorial.NewPlanner(defaultLLM)
+			s.dagExecutor = editorial.NewDAGExecutor(
+				editorial.NewDynamicAgentRegistry(), edStore, edEmitter,
+			)
+			// 注册预设 Agent 执行器到 DAGExecutor（以 BaseRole 作为 key）
+			researchExec := editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore)
+			s.dagExecutor.RegisterExecutor("researcher", researchExec)
+			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
+				writingExec := editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore)
+				reviewExec := editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore)
+				s.dagExecutor.RegisterExecutor("writer", writingExec)
+				s.dagExecutor.RegisterExecutor("reviewer", reviewExec)
+			}
+			slog.Info("DAG workflow system initialized (planner + executor)")
+		}
 	} else {
 		slog.Warn("editorial system disabled — database not available")
 	}
@@ -1287,6 +1307,19 @@ func (s *Server) handleClientMessage(client *websocket.Client, userID, userRole 
 		s.handleAgentEdit(client, msg.Payload)
 	case websocket.MsgSessionResume:
 		s.handleSessionResume(client, msg.Payload)
+
+	// Beta: 编辑部模式 DAG 工作流消息
+	case websocket.MsgWorkflowStart:
+		s.handleWorkflowStart(client, msg.Payload, userID, userRole)
+	case websocket.MsgWorkflowEdit:
+		s.handleWorkflowEdit(client, msg.Payload, userID, userRole)
+	case websocket.MsgWorkflowPause:
+		s.handleWorkflowControl(client, msg.Payload, "pause")
+	case websocket.MsgWorkflowResume:
+		s.handleWorkflowControl(client, msg.Payload, "resume")
+	case websocket.MsgWorkflowCancel:
+		s.handleWorkflowControl(client, msg.Payload, "cancel")
+
 	default:
 		slog.Warn("unknown message type", "type", msg.Type)
 	}

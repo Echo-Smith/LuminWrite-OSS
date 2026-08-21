@@ -2,106 +2,53 @@
  * WorkflowPage — 编辑部模式 DAG 工作流页面
  *
  * 整合输入面板、节点图画布和节点执行状态面板。
- * 通过 WebSocket 与后端交互。
+ * 通过 agent-store 的 WebSocket 连接与后端交互。
+ * agent-store 的 handleServerMessage 会自动转发 workflow 和 node 消息到 workflow-store。
  */
 import { useCallback, useEffect } from "react";
 import { WorkflowCanvas } from "./canvas";
 import { WorkflowInput } from "./workflow-input";
-import { useWorkflowStore, type AgentConfig, type WorkflowSpec } from "@/stores/workflow-store";
+import { useWorkflowStore } from "@/stores/workflow-store";
+import { useAgentStore } from "@/stores/agent-store";
 
-// ─── WebSocket 适配器 ─────────────────────────────────────
-// 复用 agent-store 的 WebSocket 连接，监听 workflow.*/node.* 消息
-// 这里用一个简化接口，实际通过 props 或全局 WS 连接传入
+export function WorkflowPage() {
+  const plan = useWorkflowStore((s) => s.plan);
+  const runStatus = useWorkflowStore((s) => s.runStatus);
+  const taskId = useWorkflowStore((s) => s.taskId);
+  const setUserInput = useWorkflowStore((s) => s.setUserInput);
+  const setRunStatus = useWorkflowStore((s) => s.setRunStatus);
+  const reset = useWorkflowStore((s) => s.reset);
 
-interface WorkflowPageProps {
-  wsSend?: (msg: { type: string; payload: Record<string, unknown> }) => void;
-  lastMessage?: { type: string; payload: Record<string, unknown> } | null;
-}
+  // 确保 WebSocket 连接已建立
+  const connectWS = useAgentStore((s) => s.connectWS);
+  const sendWS = useAgentStore((s) => s.sendWS);
+  const wsConnected = useAgentStore((s) => s.wsConnected);
 
-export function WorkflowPage({ wsSend, lastMessage }: WorkflowPageProps) {
-  const {
-    plan,
-    runStatus,
-    setRunStatus,
-    setUserInput,
-    setPlan,
-    setNodeStarted,
-    appendNodeStream,
-    setNodeCompleted,
-    setNodeFailed,
-    taskId,
-  } = useWorkflowStore();
-
-  // 处理 WebSocket 消息
   useEffect(() => {
-    if (!lastMessage) return;
+    // 页面加载时连接 WebSocket
+    connectWS();
+    // 页面卸载时重置工作流状态
+    return () => {
+      reset();
+    };
+  }, [connectWS, reset]);
 
-    const msg = lastMessage;
-    const payload = msg.payload || {};
-
-    switch (msg.type) {
-      case "workflow.created":
-        setPlan({
-          agents: (payload.agents as AgentConfig[]) || [],
-          workflow: (payload.workflow as WorkflowSpec) || {} as WorkflowSpec,
-          rationale: (payload.rationale as string) || "",
-        });
-        break;
-
-      case "workflow.started":
-        setRunStatus("running");
-        break;
-
-      case "node.started":
-        setNodeStarted(payload.node_id as string, payload.agent_name as string);
-        break;
-
-      case "node.stream.delta":
-        appendNodeStream(payload.node_id as string, payload.delta as string);
-        break;
-
-      case "node.completed":
-        setNodeCompleted(
-          payload.node_id as string,
-          payload.artifact_id as string,
-          payload.artifact_type as string,
-          payload.tokens_used as number,
-          payload.duration_ms as number
-        );
-        break;
-
-      case "node.failed":
-        setNodeFailed(
-          payload.node_id as string,
-          payload.error as string,
-          payload.duration_ms as number
-        );
-        break;
-
-      case "workflow.completed":
-        setRunStatus("completed");
-        break;
-
-      case "workflow.failed":
-        setRunStatus("failed");
-        break;
-    }
-  }, [lastMessage, setPlan, setRunStatus, setNodeStarted, appendNodeStream, setNodeCompleted, setNodeFailed]);
-
-  // 触发 Planner
+  // 触发 Planner — 发送 workflow.start 消息（带 user_input）
   const handlePlan = useCallback(
     (input: string) => {
       setUserInput(input);
       setRunStatus("planning");
-      wsSend?.({ type: "workflow.start", payload: { user_input: input } });
+      sendWS("workflow.start", { user_input: input });
     },
-    [setUserInput, setRunStatus, wsSend]
+    [setUserInput, setRunStatus, sendWS]
   );
 
-  // 启动 DAG 执行
+  // 启动 DAG 执行 — 发送 workflow.start 消息（带 task_id）
   const handleRun = useCallback(() => {
-    wsSend?.({ type: "workflow.start", payload: { task_id: taskId } });
-  }, [wsSend, taskId]);
+    if (taskId) {
+      sendWS("workflow.start", { task_id: taskId });
+    }
+  }, [sendWS, taskId]);
 
   return (
     <div className="flex h-full flex-col">
@@ -119,7 +66,9 @@ export function WorkflowPage({ wsSend, lastMessage }: WorkflowPageProps) {
               <p className="text-sm">
                 {runStatus === "planning"
                   ? "正在分析写作意图，生成 Agent 集群..."
-                  : '输入写作意图后点击"规划"开始'}
+                  : !wsConnected
+                    ? "正在连接服务器..."
+                    : '输入写作意图后点击"规划"开始'}
               </p>
             </div>
           </div>

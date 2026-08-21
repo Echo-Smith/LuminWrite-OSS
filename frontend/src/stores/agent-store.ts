@@ -20,6 +20,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { useEditorialStore } from "@/stores/editorial-store";
 import { useMemoryStore, type MemoryEntry } from "@/stores/memory-store";
+import { useWorkflowStore, type AgentConfig as WFAgentConfig, type WorkflowSpec as WFWorkflowSpec } from "@/stores/workflow-store";
 import { resolveConversationId } from "@/lib/conversation-session";
 
 // ─── 消息 Part 模型 ──────────────────────────────────────
@@ -1059,6 +1060,65 @@ case "agent.paused": {
         // Forward editorial events to the editorial store for auto-refresh
         const evt = p as unknown as { type: string; task_id: string; payload: Record<string, unknown>; timestamp: string };
         useEditorialStore.getState().pushEvent(evt);
+        break;
+      }
+
+      // Beta: 编辑部模式 DAG 工作流消息 — 转发到 workflow-store
+      case "workflow.created":
+      case "workflow.started":
+      case "workflow.completed":
+      case "workflow.failed":
+      case "workflow.paused":
+      case "workflow.resumed":
+      case "node.started":
+      case "node.stream.delta":
+      case "node.completed":
+      case "node.failed": {
+        // 转发到 workflow-store 处理
+        const ws = useWorkflowStore.getState();
+        const payload = p as Record<string, unknown>;
+
+        switch (type) {
+          case "workflow.created":
+            ws.setPlan({
+              agents: (payload.agents as WFAgentConfig[]) || [],
+              workflow: (payload.workflow as WFWorkflowSpec) || ({} as WFWorkflowSpec),
+              rationale: (payload.rationale as string) || "",
+            });
+            if (payload.task_id) ws.setTaskId(payload.task_id as string);
+            break;
+          case "workflow.started":
+            ws.setRunStatus("running");
+            break;
+          case "node.started":
+            ws.setNodeStarted(payload.node_id as string, payload.agent_name as string);
+            break;
+          case "node.stream.delta":
+            ws.appendNodeStream(payload.node_id as string, payload.delta as string);
+            break;
+          case "node.completed":
+            ws.setNodeCompleted(
+              payload.node_id as string,
+              payload.artifact_id as string,
+              payload.artifact_type as string,
+              payload.tokens_used as number,
+              payload.duration_ms as number
+            );
+            break;
+          case "node.failed":
+            ws.setNodeFailed(
+              payload.node_id as string,
+              payload.error as string,
+              payload.duration_ms as number
+            );
+            break;
+          case "workflow.completed":
+            ws.setWorkflowCompleted(payload.total_tokens as number);
+            break;
+          case "workflow.failed":
+            ws.setWorkflowFailed(payload.error as string);
+            break;
+        }
         break;
       }
     }

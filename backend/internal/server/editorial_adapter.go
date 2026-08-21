@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
@@ -21,7 +22,17 @@ func (e *editorialWSEmitter) Emit(evt editorial.OrchestratorEvent) {
 		return
 	}
 
-	// 广播给所有连接的客户端（编辑部事件是全局的）
+	// DAG 工作流事件（workflow.*/node.*）直接用事件 type 作为 WS 消息 type，
+	// 前端 WorkflowPage 直接监听这些 type。
+	if strings.HasPrefix(evt.Type, "workflow.") || strings.HasPrefix(evt.Type, "node.") {
+		e.hub.Broadcast(&websocket.ServerMessage{
+			Type:    evt.Type,
+			Payload: json.RawMessage(data),
+		})
+		return
+	}
+
+	// 其他编辑部事件保持原有格式
 	e.hub.Broadcast(&websocket.ServerMessage{
 		Type:    "editorial.event",
 		Payload: json.RawMessage(data),

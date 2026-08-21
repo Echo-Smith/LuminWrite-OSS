@@ -19,26 +19,31 @@ import (
 
 // DAGExecutor DAG 执行器
 type DAGExecutor struct {
-	registry   *DynamicAgentRegistry
-	store      *Store
-	emitter    EventEmitter
-	executors  map[string]AgentExecutorAdapter // agentID → executor
+	registry    *DynamicAgentRegistry
+	store       *Store
+	emitter     EventEmitter
+	executors   map[string]AgentExecutorAdapter // agentID → executor
 	tokenBudget *DAGTokenBudget
 
 	mu      sync.Mutex
 	status  WorkflowStatus
 	results map[string]*NodeResult // nodeID → result
+
+	// plan 缓存: taskID → PlanResult
+	planCache map[string]*PlanResult
 }
 
 // NewDAGExecutor 创建 DAG 执行器
 func NewDAGExecutor(registry *DynamicAgentRegistry, store *Store, emitter EventEmitter) *DAGExecutor {
 	return &DAGExecutor{
-		registry:  registry,
-		store:      store,
-		emitter:    emitter,
-		executors:  make(map[string]AgentExecutorAdapter),
-		results:    make(map[string]*NodeResult),
-		status:     WorkflowStatusCreated,
+		registry:    registry,
+		store:       store,
+		emitter:     emitter,
+		executors:   make(map[string]AgentExecutorAdapter),
+		results:     make(map[string]*NodeResult),
+		status:      WorkflowStatusCreated,
+		tokenBudget: NewDAGTokenBudget(0), // 默认无限制
+		planCache:   make(map[string]*PlanResult),
 	}
 }
 
@@ -48,6 +53,33 @@ func (e *DAGExecutor) RegisterExecutor(agentID string, exec AgentExecutorAdapter
 	defer e.mu.Unlock()
 	e.executors[agentID] = exec
 	slog.Info("dag executor: executor registered", "agent_id", agentID)
+}
+
+// CachePlan 缓存 Planner 输出，并注册生成的 Agent 到 registry。
+func (e *DAGExecutor) CachePlan(taskID string, plan *PlanResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.planCache[taskID] = plan
+	// 注册生成的 Agent 到 registry
+	configs := make([]*AgentConfig, len(plan.Agents))
+	for i := range plan.Agents {
+		configs[i] = &plan.Agents[i]
+	}
+	e.registry.ApplyGeneratedAgents(taskID, configs)
+	slog.Info("dag executor: plan cached", "task_id", taskID, "agents", len(plan.Agents))
+}
+
+// GetPlan 获取缓存的 Planner 输出
+func (e *DAGExecutor) GetPlan(taskID string) (*PlanResult, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	plan, ok := e.planCache[taskID]
+	return plan, ok
+}
+
+// GetRegistry 返回 registry 引用
+func (e *DAGExecutor) GetRegistry() *DynamicAgentRegistry {
+	return e.registry
 }
 
 // Execute 遍历 DAG，按拓扑序执行就绪节点
@@ -109,9 +141,25 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 
 		case nodeID, ok := <-readyQueue:
 			if !ok {
-				continue
+				// channel 关闭，所有节点已处理
+				break
 			}
 			if hasFailed.Load() {
+				// 标记剩余节点为 skipped
+				e.mu.Lock()
+				if _, exists := e.results[nodeID]; !exists {
+					e.results[nodeID] = &NodeResult{
+						NodeID: nodeID,
+						Status: NodeStatusSkipped,
+						Error:  "upstream dependency failed",
+					}
+				}
+				e.mu.Unlock()
+				completedCount.Add(1)
+				if int(completedCount.Load()) == int(totalNodes) {
+					e.finalize(ctx, task, spec, false)
+					return nil
+				}
 				continue
 			}
 
@@ -172,7 +220,6 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 
 				completedCount.Add(1)
 				if int(completedCount.Load()) == int(totalNodes) {
-					close(readyQueue)
 					if !hasFailed.Load() {
 						e.finalize(ctx, task, spec, true)
 					} else {
@@ -226,12 +273,14 @@ func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap ma
 	}
 
 	// 根据上下文传递模式构建 Agent 上下文
+	// 根据 AgentConfig.BaseRole 映射到对应的 AgentRole
+	agentRole := baseRoleToAgentRole(agentCfg.BaseRole)
 	ac := ForkContext(
 		node.ContextFork,
 		node.ForkNTurns,
 		upstreamArtifacts,
 		nil, // DAG 模式下暂不传递完整对话历史
-		RoleResearch, // 默认用 research_agent 角色，实际由 AgentConfig 决定
+		agentRole,
 		task.ID,
 		task.OwnerID,
 	)
@@ -394,4 +443,18 @@ func tokenCost(a *Artifact) int {
 // GenerateNodeID 生成节点 ID
 func GenerateNodeID() string {
 	return "node-" + uuid.New().String()[:8]
+}
+
+// baseRoleToAgentRole 将 AgentConfig.BaseRole 映射到对应的 AgentRole
+func baseRoleToAgentRole(baseRole string) AgentRole {
+	switch baseRole {
+	case "researcher":
+		return RoleResearch
+	case "writer":
+		return RoleWriting
+	case "reviewer":
+		return RoleReview
+	default:
+		return RoleResearch // 安全 fallback
+	}
 }

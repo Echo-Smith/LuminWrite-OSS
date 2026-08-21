@@ -58,7 +58,7 @@ func ForkContext(
 		}
 		slog.Debug("context fork: last N turns",
 			"task_id", taskID, "n", nTurns,
-			"history_len", len(parentHistory), "kept", min(nTurns, len(parentHistory)))
+			"history_len", len(parentHistory), "kept", minInt(nTurns, len(parentHistory)))
 
 	case ContextForkSummary:
 		// 只传 Artifact + 摘要 — 不传历史
@@ -69,8 +69,9 @@ func ForkContext(
 	return ac
 }
 
-// min returns the smaller of a and b.
-func min(a, b int) int {
+// minInt returns the smaller of a and b.
+// Go 1.21+ has a built-in min() generic function, so we rename this to avoid shadowing.
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

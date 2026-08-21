@@ -9,7 +9,7 @@ import {
   Plus, Trash2, Compass,
   Settings, Sun, Moon, LogOut, UserPlus,
   PanelLeftClose, PanelLeftOpen, Pen,
-  ChevronRight, User, AlertTriangle, Newspaper,
+  ChevronRight, User, AlertTriangle, Newspaper, Workflow,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -116,6 +116,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           title="编辑部"
         >
           <Newspaper className="h-4 w-4" />
+        </button>
+
+        <button
+          onClick={() => navigate("/workflow")}
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+          title="工作流 (Beta)"
+        >
+          <Workflow className="h-4 w-4" />
         </button>
 
         {/* 占位 */}

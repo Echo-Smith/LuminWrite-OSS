@@ -13,6 +13,7 @@ import { TopicCenter } from "@/pages/topic-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
 import { EditorialBoard } from "@/pages/editorial/editorial-board";
+import { WorkflowPage } from "@/components/workflow/workflow-page";
 import { MyStylesPage } from "@/pages/my-styles";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
@@ -113,6 +114,18 @@ export function App() {
               <ProtectedRoute>
                 <PageTransition>
                   <EditorialBoard />
+                </PageTransition>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 编辑部 Beta: DAG 工作流 — 需登录 */}
+          <Route
+            path="/workflow"
+            element={
+              <ProtectedRoute>
+                <PageTransition>
+                  <WorkflowPage />
                 </PageTransition>
               </ProtectedRoute>
             }
