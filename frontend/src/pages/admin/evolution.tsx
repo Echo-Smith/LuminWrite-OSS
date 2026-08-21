@@ -8,11 +8,11 @@
  * 4. 灰度 metrics 面板（新旧版本流量分配）
  * 5. 回滚 / 全量发布
  */
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   GitBranch, RefreshCw, Check, X, FlaskConical, TrendingUp,
   AlertTriangle, ArrowUpCircle, ArrowDownCircle, Activity,
-  Users, PieChart, ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, type LucideIcon,
 } from "lucide-react";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
 import { AdminPageHeader, AdminLoading, AdminEmptyState } from "@/components/admin";
@@ -26,7 +26,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -511,8 +510,8 @@ function MetricsPanel({ metrics }: { metrics: CanaryMetrics }) {
         <div className="bg-gray-300" style={{ width: `${oldPct}%` }} />
       </div>
       <div className="flex justify-between text-xs text-muted-foreground">
-        <span className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-blue-500" /> 新版 v{(metrics.new_version > 0) ? "+" : ""}1
+          <span className="flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full bg-blue-500" /> 新版 (灰度候选)
         </span>
         <span className="flex items-center gap-1">
           <span className="w-2 h-2 rounded-full bg-gray-300" /> 旧版 (fallback)
@@ -529,7 +528,7 @@ function MetricBox({
   sub,
   color,
 }: {
-  icon: typeof Activity;
+  icon: LucideIcon;
   label: string;
   value: number;
   sub?: string;

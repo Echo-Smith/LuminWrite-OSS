@@ -413,21 +413,26 @@ func (s *Server) handleAdminPromoteToFull(w http.ResponseWriter, r *http.Request
 //
 // GET /api/v2/admin/evolution/candidates/{id}/metrics
 func (s *Server) handleAdminGetCanaryMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.evolutionSvc == nil {
+		response.Err(w, http.StatusServiceUnavailable, "service_unavailable", "evolution service not available")
+		return
+	}
+
 	candidateID := chi.URLParam(r, "id")
 	if candidateID == "" {
 		response.Err(w, http.StatusBadRequest, "bad_request", "candidate ID is required")
 		return
 	}
 
-	// Get routing metrics
-	metrics := routing.RolloutMetrics
-
-	// Get candidate for slug
+	// Get candidate for slug + version info
 	candidate, err := s.getEvolutionCandidate(r.Context(), candidateID)
 	if err != nil {
 		response.Err(w, http.StatusNotFound, "not_found", "candidate not found")
 		return
 	}
+
+	// Get routing metrics (global atomic counters)
+	metrics := routing.RolloutMetrics
 
 	// Get the rollout config for this style
 	var config routing.RolloutConfig
@@ -439,6 +444,8 @@ func (s *Server) handleAdminGetCanaryMetrics(w http.ResponseWriter, r *http.Requ
 		"candidate_id":   candidateID,
 		"style_slug":     candidate.StyleSlug,
 		"rollout_config": config,
+		"new_version":    candidate.ParentVersion + 1,
+		"old_version":    candidate.ParentVersion,
 		"metrics": map[string]int64{
 			"total":       metrics.Requests.Load(),
 			"new_version": metrics.NewVersion.Load(),
