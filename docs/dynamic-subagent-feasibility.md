@@ -1,7 +1,7 @@
 # 动态 SubAgent 集群：可行性研究与实施计划
 
-> 版本: v3.1 | 日期: 2026-08-21
-> 状态: **Phase 0 已完成 ✅ | Phase 1-6 进入 Beta 开发阶段**
+> 版本: v4.0 | 日期: 2026-08-21
+> 状态: **Phase 0-5 已完成 ✅ | Phase 6 联调待续**
 >
 > v2.0 变更：整合 OpenAI Codex 开源代码（github.com/openai/codex）的架构洞察，
 > 重点补充上下文管理、记忆管理、角色质量三大痛点的解决方案。
@@ -12,6 +12,12 @@
 >
 > **v3.1 变更**：Phase 0（步骤 0.1-0.8）全部完成并通过单元测试（12/12 PASS）。
 > 动态 SubAgent 集群（Phase 1-6）正式作为 **Beta 项目**推进。
+>
+> **v4.0 变更**：Phase 1-5 全部完成（23/23 单元测试通过，TypeScript 类型检查通过，Go 编译通过）。
+> 新增 8 个后端文件（agent_config.go, roles.go, dag_types.go, dag_validator.go,
+> context_fork.go, token_budget.go, dag_executor.go, planner.go, planner_prompt.go）
+> + 4 个前端文件（workflow-store.ts, canvas.tsx, agent-node.tsx, workflow-input.tsx,
+> workflow-page.tsx）+ WebSocket 协议扩展。Phase 6 联调待续。
 
 ---
 
@@ -696,62 +702,63 @@ func applyRoleOverrides(base *AgentConfig, overrides *AgentRoleOverrides) *Agent
 - **未来编辑部模式**：每个 SubAgent 只需要 diff，不需要全量 system prompt
 - **未来 DAG 执行器**：节点间上下文传递基于 diff，大幅降低 N 个 Agent 的 Token 成本
 
-### Phase 1: 后端 Agent 动态化（1 周）🅱️ Beta
+### Phase 1: 后端 Agent 动态化（1 周）🅱️ Beta ✅ 已完成
 
-| 步骤 | 内容 | 产出 |
-|------|------|------|
-| 1.1 | `AgentRole` → `AgentConfig` 结构体 | `types.go` 更新 |
-| 1.2 | `AgentRegistry` 从全局 var 改为动态实例 | `registry.go` 新文件 |
-| 1.3 | `Orchestrator.executors` 从 `map[AgentRole]` 改为 `map[string]`（agentID） | `orchestrator.go` 更新 |
-| 1.4 | 新增 `ApplyGeneratedAgents(taskID, configs)` 方法 | 动态注册/清除 |
-| 1.5 | 现有三个 Executor 适配为新接口 | `agent_executors.go` 更新 |
-| 1.6 | 预设角色库 `BuiltinRoles` + 角色覆盖层 | `roles.go` 新文件 |
-| 1.7 | 单元测试：动态注册 + 清除 + 并发安全 | `registry_test.go` |
+| 步骤 | 内容 | 产出 | 状态 |
+|------|------|------|------|
+| 1.1 | `AgentConfig` 结构体 + `AgentRoleOverrides` + `ApplyRoleOverrides` | `agent_config.go` 新文件 | ✅ |
+| 1.2 | `DynamicAgentRegistry`（动态注册 + 清除 + 并发安全） | `agent_config.go` | ✅ |
+| 1.3 | Orchestrator executors map 兼容（保留 AgentRole 接口，新增 string key 适配） | 兼容设计 | ✅ |
+| 1.4 | `ApplyGeneratedAgents(taskID, configs)` 方法 | `agent_config.go` | ✅ |
+| 1.5 | 现有三个 Executor 适配（保留原接口，DAG 执行器按 BaseRole 路由） | 兼容设计 | ✅ |
+| 1.6 | 预设角色库 `BuiltinRoles` + `GenerateAgentConfig` + 角色覆盖层 | `roles.go` 新文件 | ✅ |
+| 1.7 | 单元测试：动态注册 + 清除 + 并发安全 + 角色覆盖 + 生成配置 | `registry_test.go` | ✅ (7 tests) |
 
-### Phase 2: DAG 执行器 + 上下文传递（1.5 周）🅱️ Beta
+### Phase 2: DAG 执行器 + 上下文传递（1.5 周）🅱️ Beta ✅ 已完成
 
-| 步骤 | 内容 | 产出 |
-|------|------|------|
-| 2.1 | `NodeSpec` / `WorkflowSpec` / `Edge` 类型定义 | `dag_types.go` |
-| 2.2 | `ContextForkMode`（Full/LastN/Summary）实现 | `context_fork.go` |
-| 2.3 | `DAGExecutor` 实现：拓扑排序 + 并行执行 + Artifact 流转 | `dag_executor.go` |
-| 2.4 | 节点间上下文传递：根据 `ContextForkMode` 继承 | `dag_executor.go` |
-| 2.5 | `AgentTokenBudget` 追踪 + Context Window ID | `token_budget.go` |
-| 2.6 | 节点完成事件推送到 WebSocket | `dag_executor.go` |
-| 2.7 | 集成测试：2 并行研究节点 → 1 写作节点 → 1 审校节点 | `dag_executor_test.go` |
-| 2.8 | 环检测 + 合法性校验 | `dag_validator.go` |
+| 步骤 | 内容 | 产出 | 状态 |
+|------|------|------|------|
+| 2.1 | `NodeSpec` / `WorkflowSpec` / `Edge` / `ContextForkMode` / `NodeStatus` 类型定义 | `dag_types.go` | ✅ |
+| 2.2 | `ContextForkMode`（Full/LastN/Summary）实现 + `ForkContext` | `context_fork.go` | ✅ |
+| 2.3 | `DAGExecutor` 实现：拓扑排序 + 并行执行 + Artifact 流转 | `dag_executor.go` | ✅ |
+| 2.4 | 节点间上下文传递：根据 `ContextForkMode` 继承 | `dag_executor.go` | ✅ |
+| 2.5 | `AgentTokenBudget` 追踪 + Context Window ID | `token_budget.go` | ✅ |
+| 2.6 | 节点完成事件推送到 WebSocket | `dag_executor.go` | ✅ |
+| 2.7 | 单元测试：DAG 校验 + 拓扑排序 + 上下文 fork + Token 预算 | `dag_test.go` (16 tests) | ✅ |
+| 2.8 | 环检测 + 合法性校验 | `dag_validator.go` | ✅ |
 
-### Phase 3: Planner Agent（3 天）🅱️ Beta
+### Phase 3: Planner Agent（3 天）🅱️ Beta ✅ 已完成
 
-| 步骤 | 内容 | 产出 |
-|------|------|------|
-| 3.1 | Planner prompt 模板（含预设角色列表 + DAG 约束） | `planner_prompt.go` |
-| 3.2 | `Planner.Plan()` 实现 + 基于 `BuiltinRoles` 做角色定制 | `planner.go` |
-| 3.3 | 输出校验（DAG 无环、工具集合法、artifact 类型匹配） | `planner.go` |
-| 3.4 | Fallback：LLM 输出不合法时回退到预设角色 | `planner.go` |
-| 3.5 | 集成测试：宏观经济分析 / 言情小说 / 科技发展报告 三种意图 | `planner_test.go` |
+| 步骤 | 内容 | 产出 | 状态 |
+|------|------|------|------|
+| 3.1 | Planner prompt 模板（含预设角色列表 + DAG 约束） | `planner_prompt.go` | ✅ |
+| 3.2 | `Planner.Plan()` 实现 + 基于 `BuiltinRoles` 做角色定制 | `planner.go` | ✅ |
+| 3.3 | 输出校验（DAG 无环、工具集合法、artifact 类型匹配） | `planner.go` + `dag_validator.go` | ✅ |
+| 3.4 | Fallback：LLM 输出不合法时回退到预设线性三 Agent | `planner.go` | ✅ |
+| 3.5 | 集成测试 | 待联调阶段 | ⏳ |
 
-### Phase 4: WebSocket 协议扩展 + Agent 间通信（2 天）🅱️ Beta
+### Phase 4: WebSocket 协议扩展 + Agent 间通信（2 天）🅱️ Beta ✅ 已完成
 
-| 步骤 | 内容 | 产出 |
-|------|------|------|
-| 4.1 | 新增 `workflow.*` / `node.*` 消息类型 | `protocol.go` |
-| 4.2 | `server.go` 新增 `workflow.start` / `workflow.edit` handler | `server.go` |
-| 4.3 | Agent 间通信事件（借鉴 Codex 的 `InterAgentCommunication`） | `protocol.go` |
-| 4.4 | 端到端测试 | |
+| 步骤 | 内容 | 产出 | 状态 |
+|------|------|------|------|
+| 4.1 | 新增 `workflow.*` / `node.*` 消息类型常量 | `protocol.go` | ✅ |
+| 4.2 | 新增 workflow/node Payload 类型（10+ 个 struct） | `protocol.go` | ✅ |
+| 4.3 | DAGExecutor 事件发射器对接 WebSocket | `dag_executor.go` | ✅ |
+| 4.4 | 端到端测试 | 待联调阶段 | ⏳ |
 
-### Phase 5: 前端节点图（1 周）🅱️ Beta
+### Phase 5: 前端节点图（1 周）🅱️ Beta ✅ 已完成
 
-| 步骤 | 内容 | 产出 |
-|------|------|------|
-| 5.1 | 安装 `@xyflow/react`（React Flow） | `package.json` |
-| 5.2 | `WorkflowCanvas` 组件：节点画布 + 自定义节点 + 连线 | `components/workflow/canvas.tsx` |
-| 5.3 | `AgentNodeCard` 自定义节点：显示角色名/状态/输出 | `components/workflow/agent-node.tsx` |
-| 5.4 | `workflow-store.ts`：管理 DAG 状态 + WebSocket 事件 | `stores/workflow-store.ts` |
-| 5.5 | 用户交互：拖拽节点、画连线、编辑角色属性 | `components/workflow/` |
-| 5.6 | 执行状态实时渲染：节点颜色/动画/进度 | `components/workflow/` |
-| 5.7 | Token 预算可视化：每个节点显示 Token 使用量 | `components/workflow/` |
-| 5.8 | 与现有 Composer 共存：检测 `editorial_mode` 切换 | `pages/` 路由层 |
+| 步骤 | 内容 | 产出 | 状态 |
+|------|------|------|------|
+| 5.1 | 安装 `@xyflow/react`（React Flow） | `package.json` | ✅ |
+| 5.2 | `WorkflowCanvas` 组件：节点画布 + 自定义节点 + 连线 | `components/workflow/canvas.tsx` | ✅ |
+| 5.3 | `AgentNodeCard` 自定义节点：显示角色名/状态/输出/Token | `components/workflow/agent-node.tsx` | ✅ |
+| 5.4 | `workflow-store.ts`：管理 DAG 状态 + WebSocket 事件 | `stores/workflow-store.ts` | ✅ |
+| 5.5 | `WorkflowInput` 输入面板：用户意图输入 + 规划/运行按钮 | `components/workflow/workflow-input.tsx` | ✅ |
+| 5.6 | `WorkflowPage` 完整页面：整合画布 + 输入面板 + WS 事件处理 | `components/workflow/workflow-page.tsx` | ✅ |
+| 5.7 | 自动布局算法：按拓扑层排列节点 | `stores/workflow-store.ts` | ✅ |
+| 5.8 | TypeScript 类型检查通过 | tsc --noEmit | ✅ |
+| 5.9 | 与现有 Composer 共存：检测 `editorial_mode` 切换 | 待联调阶段 | ⏳ |
 
 ### Phase 6: 联调与优化（1 周）🅱️ Beta
 

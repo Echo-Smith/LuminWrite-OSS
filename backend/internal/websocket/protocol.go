@@ -4,14 +4,21 @@ import "encoding/json"
 
 // ClientMessage types (client → server)
 const (
-	MsgAgentStart   = "agent.start"
-	MsgAgentPause   = "agent.pause"
-	MsgAgentResume  = "agent.resume"
-	MsgAgentCancel  = "agent.cancel"
-	MsgAgentConfirm = "agent.confirm"
-	MsgAgentEdit    = "agent.edit"
-	MsgFeedback     = "feedback.submit"
-	MsgSessionResume = "session.resume"
+	MsgAgentStart      = "agent.start"
+	MsgAgentPause      = "agent.pause"
+	MsgAgentResume     = "agent.resume"
+	MsgAgentCancel     = "agent.cancel"
+	MsgAgentConfirm    = "agent.confirm"
+	MsgAgentEdit       = "agent.edit"
+	MsgFeedback        = "feedback.submit"
+	MsgSessionResume   = "session.resume"
+
+	// Beta: 编辑部模式 DAG 工作流消息（client → server）
+	MsgWorkflowStart = "workflow.start"   // 用户确认 DAG 后启动
+	MsgWorkflowEdit   = "workflow.edit"    // 用户修改 DAG（增删节点/改依赖）
+	MsgWorkflowPause  = "workflow.pause"   // 暂停工作流
+	MsgWorkflowResume = "workflow.resume"  // 恢复工作流
+	MsgWorkflowCancel = "workflow.cancel"  // 取消工作流
 )
 
 // ServerMessage types (server → client)
@@ -35,6 +42,18 @@ const (
 	MsgMemoryUsed        = "memory.used"
 	MsgMemoryDismiss     = "memory.dismiss"
 	MsgAgentCompaction   = "agent.compaction"
+
+	// Beta: 编辑部模式 DAG 工作流消息（server → client）
+	MsgWorkflowCreated   = "workflow.created"    // Planner 返回角色集 + DAG
+	MsgWorkflowStarted   = "workflow.started"     // DAG 开始执行
+	MsgNodeStarted       = "node.started"         // 节点开始执行
+	MsgNodeStreamDelta   = "node.stream.delta"     // 节点流式输出
+	MsgNodeCompleted     = "node.completed"       // 节点完成
+	MsgNodeFailed        = "node.failed"           // 节点失败
+	MsgWorkflowCompleted = "workflow.completed"   // 整个 DAG 完成
+	MsgWorkflowFailed    = "workflow.failed"      // 整个 DAG 失败
+	MsgWorkflowPaused    = "workflow.paused"      // DAG 已暂停
+	MsgWorkflowResumed   = "workflow.resumed"      // DAG 已恢复
 )
 
 // ClientMessage is a message from the client.
@@ -225,4 +244,95 @@ type SessionResumedPayload struct {
 	ConversationID   string      `json:"conversation_id,omitempty"`     // for continuing the conversation
 	UserInput        string      `json:"user_input,omitempty"`           // original user request
 	CanResume        bool        `json:"can_resume,omitempty"`          // true if paused session can be resumed
+}
+
+// ─── Beta: 编辑部模式 DAG 工作流 Payload 类型 ─────────────
+
+// WorkflowStartPayload 客户端发起 workflow.start
+type WorkflowStartPayload struct {
+	TaskID    string `json:"task_id"`
+	UserInput string `json:"user_input,omitempty"` // 用户写作意图（如果还没有跑 Planner）
+}
+
+// WorkflowEditPayload 客户端修改 DAG
+type WorkflowEditPayload struct {
+	TaskID   string          `json:"task_id"`
+	Workflow json.RawMessage `json:"workflow"` // 修改后的 WorkflowSpec JSON
+}
+
+// WorkflowControlPayload 用于 pause/resume/cancel
+type WorkflowControlPayload struct {
+	TaskID string `json:"task_id"`
+}
+
+// WorkflowCreatedPayload Planner 返回的角色集 + DAG
+type WorkflowCreatedPayload struct {
+	TaskID    string      `json:"task_id"`
+	Agents    interface{} `json:"agents"`     // []AgentConfig
+	Workflow  interface{} `json:"workflow"`   // WorkflowSpec
+	Rationale string      `json:"rationale"`  // LLM 设计理由
+}
+
+// WorkflowStartedPayload DAG 开始执行
+type WorkflowStartedPayload struct {
+	TaskID    string `json:"task_id"`
+	NodeCount int    `json:"node_count"`
+}
+
+// NodeStartedPayload 节点开始执行
+type NodeStartedPayload struct {
+	TaskID     string `json:"task_id"`
+	NodeID     string `json:"node_id"`
+	AgentID    string `json:"agent_id"`
+	AgentName  string `json:"agent_name"`
+	Label      string `json:"label"`
+}
+
+// NodeStreamDeltaPayload 节点流式输出
+type NodeStreamDeltaPayload struct {
+	TaskID string `json:"task_id"`
+	NodeID string `json:"node_id"`
+	Delta  string `json:"delta"`
+}
+
+// NodeCompletedPayload 节点完成
+type NodeCompletedPayload struct {
+	TaskID         string `json:"task_id"`
+	NodeID         string `json:"node_id"`
+	ArtifactID     string `json:"artifact_id"`
+	ArtifactType   string `json:"artifact_type"`
+	DurationMs     int64  `json:"duration_ms"`
+	TokensUsed     int    `json:"tokens_used"`
+}
+
+// NodeFailedPayload 节点失败
+type NodeFailedPayload struct {
+	TaskID      string `json:"task_id"`
+	NodeID      string `json:"node_id"`
+	Error       string `json:"error"`
+	DurationMs  int64  `json:"duration_ms"`
+}
+
+// WorkflowCompletedPayload 整个 DAG 完成
+type WorkflowCompletedPayload struct {
+	TaskID      string `json:"task_id"`
+	NodeCount   int    `json:"node_count"`
+	TotalTokens int64 `json:"total_tokens"`
+}
+
+// WorkflowFailedPayload 整个 DAG 失败
+type WorkflowFailedPayload struct {
+	TaskID  string `json:"task_id"`
+	Error   string `json:"error,omitempty"`
+}
+
+// WorkflowPausedPayload DAG 已暂停
+type WorkflowPausedPayload struct {
+	TaskID  string `json:"task_id"`
+	Message string `json:"message,omitempty"`
+}
+
+// WorkflowResumedPayload DAG 已恢复
+type WorkflowResumedPayload struct {
+	TaskID string `json:"task_id"`
 }
