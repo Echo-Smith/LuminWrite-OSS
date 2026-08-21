@@ -45,6 +45,7 @@ services:
       context: ./docker/docreader
       dockerfile: Dockerfile
     image: luminbuddy-v2-docreader:latest
+    platform: linux/amd64
     container_name: luminbuddy-v2-docreader
     volumes:
       - docreader_tmp:/tmp/docreader
@@ -62,6 +63,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     image: luminbuddy-v2-backend:latest
+    platform: linux/amd64
     container_name: luminbuddy-v2-backend
     env_file:
       - .env.docker
@@ -99,6 +101,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     image: luminbuddy-v2-frontend:latest
+    platform: linux/amd64
     container_name: luminbuddy-v2-frontend
     ports:
       - "${FRONTEND_PORT:-3002}:8080"
