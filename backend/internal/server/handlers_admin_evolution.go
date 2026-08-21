@@ -58,7 +58,7 @@ func (s *Server) handleAdminListEvolutionCandidates(w http.ResponseWriter, r *ht
 	result := make([]candidateWithRollout, 0, len(candidates))
 	for _, c := range candidates {
 		item := candidateWithRollout{evolutionCandidate: c}
-		if c.Status == "rollout" || c.Status == "canary" {
+		if c.Status == "rollout" {
 			if rollout, _ := s.getActiveCanaryRollout(r.Context(), c.ID); rollout != nil {
 				item.Rollout = rollout
 			}
@@ -567,6 +567,10 @@ func (s *Server) getActiveCanaryRollout(ctx context.Context, candidateID string)
 		&r.Percentage, &r.Enabled, &r.StartedAt, &r.EndedAt, &r.RollbackReason)
 	if err != nil {
 		return nil, err
+	}
+	// DB stores percentage as 0-1 decimal; convert to 0-100 for consistent API output
+	if r.Percentage <= 1.0 {
+		r.Percentage *= 100
 	}
 	return &r, nil
 }

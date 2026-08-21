@@ -383,9 +383,7 @@ function CandidateCard({
               </Badge>
               {c.rollout && (
                 <Badge variant="outline" className="text-xs">
-                  {c.rollout.percentage > 0 && c.rollout.percentage < 1
-                    ? `${(c.rollout.percentage * 100).toFixed(0)}%`
-                    : `${c.rollout.percentage}%`} 流量
+                  {c.rollout.percentage.toFixed(0)}% 流量
                 </Badge>
               )}
             </div>
