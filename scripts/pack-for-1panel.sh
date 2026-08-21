@@ -97,7 +97,7 @@ trap 'rm -f "$FILELIST" "$FILTERED_FILELIST" "$TEMP_TAR"' EXIT
 # 使用 git ls-files 获取版本控制文件
 git ls-files > "$FILELIST"
 
-# 补充未跟踪但部署需要的文件
+# 补充未跟踪但部署需要的文件（仅部署必需，不包含文档）
 for extra in \
     ".env.docker" \
     ".env.docker.example" \
@@ -105,10 +105,7 @@ for extra in \
     "backend/Dockerfile" \
     "frontend/Dockerfile" \
     "frontend/nginx.conf" \
-    "frontend/vite.config.ts" \
-    "PROJECT_LEDGER.md" \
-    "docs/runbook.md" \
-    "DEPLOY.md"; do
+    "frontend/vite.config.ts"; do
     if [ -f "$PROJECT_DIR/$extra" ] && ! grep -qxF "$extra" "$FILELIST"; then
         echo "$extra" >> "$FILELIST"
     fi
@@ -123,14 +120,18 @@ while IFS= read -r uf; do
 done < <(git ls-files --others --exclude-standard | grep -E '\.(go|sql|tsx|ts|sh|yaml|yml|json|mod|sum)$')
 
 # ── 排除规则：部署不需要的文件 ────────────────────────
+# 部署只需要：docker-compose.yml, .env.docker.example, backend/, frontend/,
+#             docker/, scripts/, config/（排除 weknora）, Makefile
+# 排除所有文档、测试、技能、CI、IDE 缓存等
+#
+# docs/           所有开发文档（架构设计、API spec、计划等）
 # tests/          测试和基准报告
 # skills/         技能定义（部署后从 GitHub 拉取）
-# docs/0*         开发文档（仅保留 runbook.md）
-# docs/responses* 迁移报告
 # .github/        CI 配置
 # config/weknora/ 旧版 WeKnora 配置（已内化）
 # .learnings/     学习记录
 # .meituan-catpaw/ IDE 缓存
+# *.md            根目录文档（README/DEPLOY/PROJECT_LEDGER 等非部署必需）
 # agentops-*      临时文件
 # *_test.go       单元测试
 # .dockerignore   Docker 构建时不需要
@@ -139,8 +140,7 @@ done < <(git ls-files --others --exclude-standard | grep -E '\.(go|sql|tsx|ts|sh
 EXCLUDE_PATTERNS=(
     "tests/"
     "skills/"
-    "docs/0"
-    "docs/responses"
+    "docs/"
     ".github/"
     "config/weknora/"
     ".learnings/"
@@ -152,9 +152,19 @@ EXCLUDE_PATTERNS=(
     "node_modules/"
     "dist/"
     ".tar.gz"
+    ".sha256"
+    "README.md"
+    "README.en.md"
+    "DEPLOY.md"
+    "PROJECT_LEDGER.md"
+    "LICENSE"
     "migrate_weknora_to_local.sh"
     "verify_weknora_kb_limit.sh"
     "luminbuddy-kb-data.tar.gz"
+    "e2e-"
+    "e2e_"
+    "scrape_"
+    ".mjs"
 )
 
 while IFS= read -r f; do
