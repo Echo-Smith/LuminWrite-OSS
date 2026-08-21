@@ -23,6 +23,7 @@ import { KnowledgeBasePage } from "./admin/knowledge-base";
 import { AuditLogsPage } from "./admin/audit-logs";
 import { SecurityAuditPage } from "./admin/security-audit";
 import { EvolutionPage } from "./admin/evolution";
+import { RbacPage } from "./admin/rbac";
 
 // localStorage key for sidebar collapsed state
 const SIDEBAR_COLLAPSED_KEY = "luminbuddy_admin_sidebar_collapsed";
@@ -72,6 +73,7 @@ export function AdminDashboard() {
       {activePage === "audit" && <AuditLogsPage />}
       {activePage === "security" && <SecurityAuditPage />}
       {activePage === "evolution" && <EvolutionPage />}
+      {activePage === "rbac" && <RbacPage />}
     </AdminLayout>
   );
 }

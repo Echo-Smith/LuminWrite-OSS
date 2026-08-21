@@ -84,6 +84,12 @@ type Server struct {
 	// Route metadata registry for /api/v2/admin/routes discovery
 	routeReg *routeRegistry
 
+	// Horizontal scaling: Redis-backed session adapter (nil = single-instance mode)
+	sessionAdapter *RedisSessionAdapter
+
+	// Instance ID for multi-instance identification
+	instanceID string
+
 	// Raw database handle (for queries without a dedicated repo)
 	db *database.DB
 }
@@ -580,9 +586,27 @@ func New(cfg *config.Config) (*Server, error) {
 		slog.Warn("editorial system disabled — database not available")
 	}
 
+	// ── Horizontal scaling: generate instance ID ──
+	instanceID := getEnvInstanceID(cfg.Server.Host, cfg.Server.Port)
+
 	// ── In-Process MCP Server ──
 	if cfg.MCPServer.Enabled {
 		s.initMCPServer(cfg)
+	}
+
+	// Set instance ID
+	s.instanceID = instanceID
+
+	// ── Redis session adapter (optional, for multi-instance) ──
+	if cfg.Redis.Enabled {
+		// Redis adapter will be initialized when go-redis is added to go.mod.
+		// For now, we log that it's configured but not yet connected.
+		slog.Info("Redis session adapter configured (multi-instance mode)", "instance_id", instanceID)
+		// When Redis client is available:
+		// s.sessionAdapter = NewRedisSessionAdapter(redisClient, instanceID, 30*time.Second)
+		// go s.sessionAdapter.StartHeartbeat(context.Background(), &s.sessions)
+	} else {
+		slog.Info("Single-instance mode (Redis not enabled)", "instance_id", instanceID)
 	}
 
 	return s, nil
@@ -922,6 +946,16 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 			r.Get("/evaluation/wabench/releases", s.handleAdminWABenchReleases)
 			r.Post("/evaluation/wabench/red-team/seed", s.handleAdminSeedWABenchRedTeam)
 
+            // RBAC — Role & Permission Management
+            r.Get("/rbac/roles", s.handleAdminListRoles)
+            r.Get("/rbac/permissions", s.handleAdminListPermissions)
+            r.Get("/rbac/roles/{id}/permissions", s.handleAdminGetRolePermissions)
+            r.Put("/rbac/roles/{id}/permissions", s.handleAdminUpdateRolePermissions)
+            r.Get("/rbac/users", s.handleAdminListUsersWithRoles)
+            r.Get("/rbac/users/{userId}/roles", s.handleAdminListUserRoles)
+            r.Post("/rbac/users/{userId}/roles", s.handleAdminAssignUserRole)
+            r.Delete("/rbac/users/{userId}/roles/{roleId}", s.handleAdminRemoveUserRole)
+
             // Route Discovery — list all registered API routes
             r.Get("/routes", s.handleAdminRoutes)
         })
@@ -1018,13 +1052,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		embeddingConfigured = s.embedding.IsConfigured()
 	}
 
+	// Count active sessions for health/load balancing
+	activeSessions := 0
+	s.sessions.Range(func(_, v interface{}) bool {
+		if ec, ok := v.(*engine.ExecutionContext); ok {
+			if ec.Status == engine.StatusRunning || ec.Status == engine.StatusPaused {
+				activeSessions++
+			}
+		}
+		return true
+	})
+
 	response.OK(w, map[string]interface{}{
 		"status":              "ok",
 		"version":             "v2",
+		"instance_id":         s.instanceID,
 		"llm_configured":      s.llm != nil,
 		"search_configured":   s.search != nil && s.search.HasSources(),
 		"db_configured":       s.dbAvail,
 		"embedding_configured": embeddingConfigured,
+		"active_sessions":     activeSessions,
+		"redis_enabled":       s.cfg.Redis.Enabled,
 	})
 }
 

@@ -1,0 +1,93 @@
+# ─── LuminBuddy V2 — Docker Swarm / Multi-Instance Overlay ──────────
+# Use this file as an overlay on top of docker-compose.yml for horizontal scaling:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d
+#
+# This overlay:
+#   1. Adds a Redis service for distributed session state
+#   2. Scales the backend to multiple replicas
+#   3. Adds Nginx as a load balancer with sticky sessions for WebSocket
+#   4. Configures health checks that report instance_id + active_sessions
+
+services:
+  # ── Redis (for distributed session state) ──────────────
+  redis:
+    image: redis:7-alpine
+    container_name: luminbuddy-v2-redis
+    networks:
+      - internal
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped
+
+  # ── Backend scaled to multiple instances ──────────────
+  backend:
+    environment:
+      REDIS_ENABLED: "true"
+      REDIS_URL: "redis://redis:6379/0"
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      restart_policy:
+        condition: any
+        max_attempts: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Nginx Load Balancer (sticky sessions for WebSocket) ──
+  # The frontend container already runs Nginx, but in multi-instance mode
+  # we need a dedicated load balancer that routes WebSocket connections
+  # with sticky sessions (ip_hash) to ensure the same backend handles
+  # the same client throughout a session.
+  loadbalancer:
+    image: nginx:alpine
+    container_name: luminbuddy-v2-lb
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - ./docker/lb/nginx.scale.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - frontend
+    depends_on:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    restart: unless-stopped
+
+  # ── Frontend (no longer exposes backend port directly) ──
+  frontend:
+    ports:
+      - "${FRONTEND_PORT:-3002}:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  internal:
+    driver: bridge
+  frontend:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local

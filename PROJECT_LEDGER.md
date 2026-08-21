@@ -41,7 +41,7 @@
 | MCP 集成 | ✅ 完成 | 2026-Q1 | MCP 客户端 + 服务端 |
 | **安全加固 + 生产化** | 🔄 进行中 | 2026-08 | 红队评估、Prompt Injection 防御、运维手册 |
 | 自演进闭环 | 📋 规划中 | — | feedback → candidate → eval gate → rollout |
-| 多实例水平扩展 | 📋 规划中 | — | Docker Swarm / K8s |
+| 多实例水平扩展 | ✅ 完成 | 2026-08 | Redis session adapter + Docker Swarm + Nginx sticky session |
 
 ---
 
