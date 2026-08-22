@@ -38,36 +38,6 @@ docker-compose.override.yml
 logs/
 tmp/
 
-# ─── 内部模块 ─────────────────────────────────────────
-backend/internal/tools/search_tavily_zhihu.go
-backend/internal/tools/search_tencent_weibo.go
-backend/internal/tools/search_bing.go
-backend/internal/tools/search_extra_hot.go
-backend/internal/tools/anysearch.go
-backend/internal/tools/tencent_news_cli.go
-backend/internal/tools/jiaozhen.go
-backend/internal/tools/url_fetcher.go
-backend/internal/tools/search_test.go
-backend/internal/database/billing.go
-backend/internal/services/point_calculator.go
-backend/internal/server/billing_middleware.go
-backend/internal/server/handlers_billing.go
-backend/internal/server/handlers_admin_billing.go
-backend/internal/server/handlers_sessions_mgmt.go
-backend/internal/server/handlers_material_folders.go
-backend/internal/database/migrations/068_billing_tables.*
-backend/internal/database/migrations/069_redeem_codes.*
-backend/internal/database/migrations/070_extended_permissions.*
-backend/internal/database/migrations/071_user_deactivation.*
-backend/internal/database/migrations/072_backfill_user_points.*
-backend/internal/database/migrations/074_user_sessions.*
-frontend/src/stores/billing-store.ts
-frontend/src/pages/admin/billing.tsx
-frontend/src/pages/personal/wallet-section.tsx
-frontend/src/pages/personal/devices-section.tsx
-skills/tencent-news/
-skills/jiaozhen-factcheck/
-
 # ─── Skills ───────────────────────────────────────────
 skills/**/tencent-news-cli
 skills/**/*.zip
@@ -82,7 +52,7 @@ agentops-*.zip
 agentops-*.md
 scripts/check_go_imports.py
 
-# ─── A/B 测试结果（临时产物） ──────────────────────────
+# ─── A/B 测试结果 ─────────────────────────────────────
 ab-test-results-*.json
 ab-test-report.html
 

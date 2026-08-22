@@ -109,7 +109,7 @@ LLM 在持续会话中自主调用的工具：
 | `fact_check` | 提取事实声明并通过搜索验证 |
 | `retrieve_context` | 按需获取会话上下文 |
 
-> **搜索源扩展**：本仓库提供了 `SearchClient` 的完整接口和多源并发搜索框架。搜索源的具体对接实现（Tavily、知乎、腾讯新闻、微博、Bing 等）不包含在本仓库中，开发者可以参照 `SearchClient` 结构自行实现 `NewSearchClient` 中各搜索源的构造函数。
+> **搜索源扩展**：本仓库提供了 `SearchClient` 的完整接口和多源并发搜索框架。各搜索源以独立模块形式接入，开发者可以参照 `search_stubs.go` 中的 stub 实现来对接自己的搜索源。
 
 ### 在线编辑与导出
 
@@ -293,7 +293,7 @@ cd frontend && npm ci && npm run build
 - `Search` / `FetchHotTopics` 并发搜索方法
 - `KnowledgeSearcher` 知识库搜索接口
 
-搜索源的具体对接实现不包含在本仓库中。开发者可以参照 `SearchClient` 的字段定义，自行实现以下搜索源的构造函数：
+搜索源以独立模块形式接入。本仓库在 `search_stubs.go` 中提供了所有搜索源类型的 stub 实现，开发者可以参照这些 stub 来对接自己的搜索源：
 
 ```go
 // 示例：实现一个自定义搜索源
@@ -385,7 +385,7 @@ func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([
 ## 项目声明
 
 - 这是可运行的个人产品与工程项目，不代表已完成规模化市场验证。
-- 搜索源的具体对接实现不包含在本仓库中，开发者需要自行实现。
+- 搜索源以独立模块形式接入，参照 `search_stubs.go` 中的 stub 实现自行对接。
 - 仓库不包含生产环境密钥；请从示例环境文件创建本地配置。
 
 ## License
