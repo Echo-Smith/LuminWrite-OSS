@@ -201,15 +201,18 @@ type MCPAgentTool struct {
 	toolName    string
 
 	// sandbox is the optional security hook (nil = use defaults)
-	sandbox SandboxHook
+	// Uses atomic.Pointer for concurrent read access during Execute.
+	sandbox atomic.Pointer[SandboxHook]
 
 	// callCount tracks total invocations (atomic for thread-safety).
 	callCount atomic.Int64
 }
 
 // SetSandboxHook sets the security sandbox hook for this tool.
+// This is called once during server initialization before any tool execution.
+// Uses atomic pointer store for thread-safety.
 func (t *MCPAgentTool) SetSandboxHook(hook SandboxHook) {
-	t.sandbox = hook
+	t.sandbox.Store(&hook)
 }
 
 func (t *MCPAgentTool) Name() string        { return t.name }
@@ -237,8 +240,9 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 	}
 
 	// ── Sandbox: policy-driven pre-execution check ──
-	if t.sandbox != nil {
-		result := t.sandbox.Check(t.client.Name(), t.toolName, args, execCtx.TraceID, userID)
+	if hookPtr := t.sandbox.Load(); hookPtr != nil {
+		hook := *hookPtr
+		result := hook.Check(t.client.Name(), t.toolName, args, execCtx.TraceID, userID)
 		if !result.Allowed {
 			slog.Warn("MCP tool blocked by sandbox policy",
 				"server", t.client.Name(),
@@ -261,8 +265,8 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 
 	// ── Sandbox: enforce timeout (policy-driven if available) ──
 	timeout := defaultMCPToolTimeout
-	if t.sandbox != nil {
-		if pt := t.sandbox.GetTimeout(t.client.Name(), t.toolName); pt > 0 {
+	if hookPtr := t.sandbox.Load(); hookPtr != nil {
+		if pt := (*hookPtr).GetTimeout(t.client.Name(), t.toolName); pt > 0 {
 			timeout = pt
 		}
 	}
@@ -286,8 +290,8 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 
 	// ── Sandbox: output truncation (policy-driven if available) ──
 	truncated := false
-	if t.sandbox != nil {
-		truncatedResult := t.sandbox.TruncateResult(t.client.Name(), t.toolName, result)
+	if hookPtr := t.sandbox.Load(); hookPtr != nil {
+		truncatedResult := (*hookPtr).TruncateResult(t.client.Name(), t.toolName, result)
 		if len(truncatedResult) < len(result) {
 			truncated = true
 		}

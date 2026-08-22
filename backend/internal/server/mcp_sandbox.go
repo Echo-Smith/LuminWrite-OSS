@@ -113,9 +113,10 @@ func (sb *MCPSandbox) loadPoliciesFromDB() {
 	}
 	defer rows.Close()
 
-	sb.policiesMu.Lock()
-	defer sb.policiesMu.Unlock()
-
+	// Scan all rows into a local map before acquiring the write lock.
+	// This minimizes the time the write lock is held, avoiding blocking
+	// concurrent findPolicy() reads during database iteration.
+	tmp := make(map[string]*ToolPolicy)
 	for rows.Next() {
 		var p ToolPolicy
 		var allowedJSON, blockedJSON []byte
@@ -132,10 +133,15 @@ func (sb *MCPSandbox) loadPoliciesFromDB() {
 			json.Unmarshal(blockedJSON, &p.BlockedDomains)
 		}
 		key := sb.policyKey(p.ServerName, p.ToolName)
-		sb.policies[key] = &p
+		tmp[key] = &p
 	}
 
-	slog.Info("sandbox: policies loaded", "count", len(sb.policies))
+	// Atomically swap the policy cache under the write lock.
+	sb.policiesMu.Lock()
+	sb.policies = tmp
+	sb.policiesMu.Unlock()
+
+	slog.Info("sandbox: policies loaded", "count", len(tmp))
 }
 
 // policyKey generates a cache key for a policy.
@@ -367,9 +373,9 @@ func extractDomains(s string) []string {
 				endIdx = i
 			}
 		}
-		url := rest[:endIdx]
+		rawURL := rest[:endIdx]
 		// Extract domain from URL
-		domain := extractDomainFromURL(url)
+		domain := extractDomainFromURL(rawURL)
 		if domain != "" {
 			domains = append(domains, domain)
 		}
@@ -385,20 +391,20 @@ func extractDomains(s string) []string {
 }
 
 // extractDomainFromURL extracts the host from a URL string.
-func extractDomainFromURL(url string) string {
+func extractDomainFromURL(rawURL string) string {
 	// Strip scheme
-	if i := strings.Index(url, "://"); i >= 0 {
-		url = url[i+3:]
+	if i := strings.Index(rawURL, "://"); i >= 0 {
+		rawURL = rawURL[i+3:]
 	}
 	// Strip path
-	if i := strings.Index(url, "/"); i >= 0 {
-		url = url[:i]
+	if i := strings.Index(rawURL, "/"); i >= 0 {
+		rawURL = rawURL[:i]
 	}
 	// Strip port
-	if i := strings.LastIndex(url, ":"); i >= 0 {
-		url = url[:i]
+	if i := strings.LastIndex(rawURL, ":"); i >= 0 {
+		rawURL = rawURL[:i]
 	}
-	return strings.ToLower(url)
+	return strings.ToLower(rawURL)
 }
 
 // ─── Admin API: Policy CRUD ────────────────────────────────
@@ -425,7 +431,7 @@ func (s *Server) handleAdminListMCPToolPolicies(w http.ResponseWriter, r *http.R
 	}
 	defer rows.Close()
 
-	var policies []ToolPolicy
+	var policies []ToolPolicy = []ToolPolicy{}
 	for rows.Next() {
 		var p ToolPolicy
 		var allowedJSON, blockedJSON []byte
@@ -708,7 +714,7 @@ func (s *Server) handleAdminListMCPViolations(w http.ResponseWriter, r *http.Req
 	}
 	defer rows.Close()
 
-	var violations []ViolationRecord
+	var violations []ViolationRecord = []ViolationRecord{}
 	for rows.Next() {
 		var v ViolationRecord
 		if err := rows.Scan(&v.ID, &v.PolicyID, &v.ServerName, &v.ToolName,

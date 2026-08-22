@@ -494,8 +494,10 @@ func New(cfg *config.Config) (*Server, error) {
 	// ── Canary Health Monitor (auto-rollback) ──
 	s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
 	s.canaryMonitor.Start()
+	}
 
 	// ── MCP Security Sandbox ──
+	// Initialized even without DB (fails open with defaults)
 	s.sandbox = NewMCPSandbox(s.db)
 	// Inject sandbox hook into all registered MCP tools
 	if s.mcpRegistry != nil && s.toolRegistry != nil {
@@ -505,7 +507,6 @@ func New(cfg *config.Config) (*Server, error) {
 				mcpTool.SetSandboxHook(adapter)
 			}
 		}
-	}
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -920,7 +921,7 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Delete("/mcp/servers/{id}", s.handleAdminDeleteMCPServer)
             r.Post("/mcp/servers/{id}/reconnect", s.handleAdminReconnectMCPServer)
 
-// MCP Security Sandbox
+		// MCP Security Sandbox
 		r.Get("/mcp/sandbox/policies", s.handleAdminListMCPToolPolicies)
 		r.Post("/mcp/sandbox/policies", s.handleAdminCreateMCPToolPolicy)
 		r.Put("/mcp/sandbox/policies/{id}", s.handleAdminUpdateMCPToolPolicy)
