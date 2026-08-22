@@ -12,7 +12,7 @@
 
 **笔润智谈**（LuminBuddy）是一款面向中文内容生产场景的 AI 写作助手。它不追求"一键生成"的魔法，而是将写作过程拆解为可观察、可干预、可迭代的工程流程——让创作者在关键决策点保持控制权，同时让 AI 在素材搜集、结构规划、风格适配和质量检查等环节提供有效辅助。
 
-**当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。对照 [AgentOps Awesome List](https://github.com/redmaplewww/agentops-awesome-list) T3 Production Project 基线，35+ 架构组件中 32 个达到完整实现，详见[架构评估报告](docs/architecture-assessment.md)。
+**当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。
 
 ---
 
@@ -84,7 +84,7 @@ System Prompt 从全量注入（3000+ tokens）精简为常驻层（500-800 toke
 | 功能 | 说明 |
 |------|------|
 | **意图识别** | 规则优先路由，支持写作/润色/压缩/扩写/自由对话 |
-| **多源检索** | 网络搜索（Tavily/Bing/腾讯新闻）+ 内部知识库（BM25 + Dense + GraphRAG） |
+| **多源检索** | 可扩展的多源搜索架构 + 内部知识库（BM25 + Dense + GraphRAG） |
 | **引导模式** | 提纲确认、编辑、最多五次重做 |
 | **风格配置** | Style Profile 独立管理，支持版本、灰度发布和回滚 |
 | **流式输出** | WebSocket 实时推送，支持暂停/恢复/取消 |
@@ -97,7 +97,7 @@ LLM 在持续会话中自主调用的工具：
 
 | 工具 | 用途 |
 |------|------|
-| `search_web` | 搜索互联网获取最新信息 |
+| `search_web` | 搜索互联网获取最新信息（搜索源可插拔） |
 | `search_knowledge` | 检索内部知识库范文和风格规范 |
 | `read_source` | 读取搜索结果的详细内容 |
 | `generate_outline` | 生成文章提纲供用户确认 |
@@ -108,6 +108,8 @@ LLM 在持续会话中自主调用的工具：
 | `rewrite_title` | 生成 3 个备选标题及推荐理由 |
 | `fact_check` | 提取事实声明并通过搜索验证 |
 | `retrieve_context` | 按需获取会话上下文 |
+
+> **搜索源扩展**：本仓库提供了 `SearchClient` 的完整接口和多源并发搜索框架。搜索源的具体对接实现（Tavily、知乎、腾讯新闻、微博、Bing 等）不包含在本仓库中，开发者可以参照 `SearchClient` 结构自行实现 `NewSearchClient` 中各搜索源的构造函数。
 
 ### 在线编辑与导出
 
@@ -128,16 +130,6 @@ LLM 在持续会话中自主调用的工具：
 
 支持文件层双向同步（Markdown 文件 ↔ 数据库），人类可读、可编辑。
 
-### 管理后台
-
-- **风格管理**：Profile 创建、编辑、版本控制、灰度发布
-- **模型配置**：多模型接入（DeepSeek/OpenAI 兼容接口）、密钥管理
-- **A/B 评测**：对照组/实验组自动化评测与指标对比
-- **Luminbuddy Eval Center**：以 WABench 统一管理数据集、冻结候选、Shadow Run、人工评审、Badcase 与发布证据
-- **反馈分析**：分段反馈统计、质量趋势
-- **审计日志**：操作追踪、安全审计
-- **Token 监控**：用量统计、成本分析
-
 ### 编辑部多 Agent 协作
 
 编辑部内部供稿流程的完整三 Agent 编排系统：
@@ -147,19 +139,29 @@ LLM 在持续会话中自主调用的工具：
   → 质量路由：通过→待发布 / 一般问题→退回 / 严重问题→升级人工
 ```
 
+- **角色化 Agent 执行器**（RoleAgentRunner）：每个 Agent 有独立 Persona、工具集和信号工具
+- **工具注册式管理**（EditorialToolRegistry）：新增工具只需 `Register`，无需修改 switch-case
 - **三层模型**：Event（客观事实）+ Decision（人类/系统选择）+ Transition（状态转换）
 - **质量路由**：信源数、信息缺口、验证声明自动评分，达标自动推进
-- **自动重试**：Agent 重试上限 2 次，超限升级人工
 - **Agent 信誉**：记录成功率、Token 成本、质量评分
 - **对照实验**：Pipeline / Harness / Editorial 三组盲评（六维度 LLM 评分）
+
+### A2A Agent Card
+
+实现了 A2A（Agent-to-Agent）协议的 Agent Card 概念，每个 Agent 角色有自描述的 JSON 文档，支持能力发现：
+- **Identity**：名称、角色、描述、版本
+- **Capabilities**：可产出/消费的 Artifact 类型、决策类型
+- **Skills**：工具列表
+- **Constraints**：隔离要求、Persona
 
 ### 认证与安全
 
 - **Passkey/WebAuthn**：无密码登录，设备级安全
 - **游客模式**：无需注册即可体验，支持后续升级
 - **Prompt Injection 防御**：输入清洗（SanitizeExternalContent）+ System Prompt 7 条防御指令
-- **红队安全评估**：20 个对抗测试用例覆盖 6 类攻击（注入/信息提取/内容策略/工具误用），LLM 安全审计评分
-- **敏感词检查**：内置敏感内容过滤 + PII 检查注入记忆系统
+- **安全审计持久化**：所有安全事件记录到数据库，支持历史查询和合规审计
+- **RBAC 细粒度权限**：角色 + 权限管理，支持自定义角色和权限分配
+- **MCP 安全沙箱**：工具调用策略控制、域名限制、资源限制、违规审计
 
 ### MCP 双向集成
 
@@ -167,6 +169,18 @@ LLM 在持续会话中自主调用的工具：
 - **MCP Server**：进程内 MCP Server，通过 JSON-RPC 2.0 暴露本地工具
 - **工具注册表**：统一管理内置工具、MCP 工具和 Pipeline 步骤，命名 `mcp__server__tool`
 - **管理后台**：可视化管理 MCP 服务器连接状态和工具发现
+
+### 管理后台
+
+- **风格管理**：Profile 创建、编辑、版本控制、灰度发布
+- **模型配置**：多模型接入（DeepSeek/OpenAI 兼容接口）、密钥管理
+- **A/B 评测**：对照组/实验组自动化评测与指标对比
+- **Luminbuddy Eval Center**：以 WABench 统一管理数据集、冻结候选、Shadow Run、人工评审、Badcase 与发布证据
+- **反馈分析**：分段反馈统计、质量趋势
+- **审计日志**：操作追踪、安全审计
+- **Token 监控**：用量统计、成本分析
+- **安全审计**：Prompt Injection 事件统计、拦截趋势、攻击模式分析
+- **RBAC 管理**：角色创建、权限分配、用户角色绑定
 
 ---
 
@@ -200,8 +214,8 @@ LLM 在持续会话中自主调用的工具：
 │  └────────────────────────────────────────────────────────┘  │
 │                     │                                       │
 │  ┌──────────┬──────────┬──────────┬──────────┬──────────┐  │
-│  │ DeepSeek │  Tavily  │ 知乎搜索 │ IMA KB   │ DashScope│  │
-│  │  Client  │  Client  │  Client  │  Client  │ Embedding│  │
+│  │ DeepSeek │  Search  │ IMA KB   │ DashScope│ MCP Server│  │
+│  │  Client  │  Client  │  Client  │ Embedding│ (JSON-RPC) │  │
 │  └──────────┴──────────┴──────────┴──────────┴──────────┘  │
 └─────────────────────┬───────────────────────────────────────┘
                       │
@@ -271,6 +285,29 @@ cd frontend && npm ci && npm run build
 ./scripts/pack-for-1panel.sh --images
 ```
 
+### 搜索源扩展
+
+本仓库提供了搜索客户端的核心框架（`backend/internal/tools/search.go`），包含：
+- `SearchClient` 多源并发搜索结构体
+- `NewSearchClient` 构造函数
+- `Search` / `FetchHotTopics` 并发搜索方法
+- `KnowledgeSearcher` 知识库搜索接口
+
+搜索源的具体对接实现不包含在本仓库中。开发者可以参照 `SearchClient` 的字段定义，自行实现以下搜索源的构造函数：
+
+```go
+// 示例：实现一个自定义搜索源
+type MySearchClient struct { /* ... */ }
+
+func NewMySearchClient(/* params */) *MySearchClient { /* ... */ }
+
+func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
+    // 你的搜索逻辑
+}
+```
+
+然后在 `NewSearchClient` 中初始化你的搜索源即可。
+
 ---
 
 ## 设计文档
@@ -288,7 +325,6 @@ cd frontend && npm ci && npm run build
 | [管理后台](docs/08-admin-dashboard.md) | 配置、评测与可观测入口 |
 | [记忆系统](docs/11-memory-system.md) | 硬偏好、行为模式与反馈信号 |
 | [编辑部系统](docs/12-editorial-system.md) | 编辑任务管理与工作流 |
-| [架构评估报告](docs/architecture-assessment.md) | AgentOps T3 基线对照、组件清单与缺口分析 |
 | [WritingAgentBench 数据层](docs/13-wabench-data-layer.md) | WABench v1 表、Legacy importer、分区、隐私和内置/自定义风格引用 |
 | [Luminbuddy Eval Center](docs/16-wabench-eval-center.md) | 七个评测工作区、中文 Excel、评审溯源、仲裁、隐私与发布边界 |
 | [WritingAgentBench V2 执行](docs/14-wabench-v2-evaluation.md) | 真实 Harness Adapter、五项 Rubric、失败优先、独立红队和 Shadow 门禁 |
@@ -298,9 +334,16 @@ cd frontend && npm ci && npm run build
 
 ## 更新日志
 
+### v0.6.0 (2026-08-23)
+
+- **编辑部 Agent 工具化**：角色化 Agent 执行器（RoleAgentRunner），工具注册式管理（EditorialToolRegistry），信号工具机制
+- **A2A Agent Card**：Agent 能力自描述，支持 A2A 协议发现
+- **安全审计持久化**：安全事件记录到数据库，支持历史查询和合规审计
+- **品牌 UI 升级**：统一品牌标识，favicon/apple-touch-icon 更新
+- **个人中心重构**：拆分为 8 个独立 section 组件
+
 ### v0.5.0 (2026-08-21)
 
-- **架构评估**：对照 AgentOps Awesome List T3 Production Project 基线完成全面自检，35+ 组件中 32 个达标，详见[评估报告](docs/architecture-assessment.md)
 - **编辑部多 Agent**：文档补充三 Agent 编排系统（研究→写作→审校 + 质量路由 + 信誉系统 + 对照实验）
 - **安全体系**：文档补充红队 20 用例评估、Prompt Injection 防御细节、MCP 双向集成
 - **文档统一**：UnifiedAgent → Harness 命名统一 + 架构历史文档化
@@ -342,7 +385,7 @@ cd frontend && npm ci && npm run build
 ## 项目声明
 
 - 这是可运行的个人产品与工程项目，不代表已完成规模化市场验证。
-- 外部模型、检索和数据源的可用性取决于各服务配置与条款。
+- 搜索源的具体对接实现不包含在本仓库中，开发者需要自行实现。
 - 仓库不包含生产环境密钥；请从示例环境文件创建本地配置。
 
 ## License
