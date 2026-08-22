@@ -25,16 +25,19 @@ var jwtHeader = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ
 type JWTPayload struct {
 	Sub  string `json:"sub"`  // subject (user ID)
 	Role string `json:"role"` // role: "user", "admin"
+	Jti  string `json:"jti"`  // JWT ID (session ID) — unique per token, used for session tracking
 	Iat  int64  `json:"iat"`  // issued at (unix seconds)
 	Exp  int64  `json:"exp"`  // expiration (unix seconds)
 }
 
 // GenerateJWT creates a signed JWT token for the given user ID and role.
-func (s *Server) GenerateJWT(userID, role string) (string, error) {
+// The jti (JWT ID) is a unique session identifier used for multi-device session management.
+func (s *Server) GenerateJWT(userID, role, jti string) (string, error) {
 	now := time.Now()
 	payload := JWTPayload{
 		Sub:  userID,
 		Role: role,
+		Jti:  jti,
 		Iat:  now.Unix(),
 		Exp:  now.Add(s.cfg.JWT.Expiry).Unix(),
 	}
@@ -132,6 +135,15 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 			response.Err(w, http.StatusUnauthorized, "invalid_token", err.Error())
 			return
 		}
+
+		// Check if session has been revoked (multi-device management)
+		if s.isSessionRevoked(payload.Jti) {
+			response.Err(w, http.StatusUnauthorized, "session_revoked", "this session has been revoked")
+			return
+		}
+
+		// Update session activity timestamp (best-effort, non-blocking)
+		s.updateSessionActivity(payload.Jti)
 
 		ctx := withUser(r.Context(), payload)
 		// Set the shared auth.Principal so editorial and other packages can read identity

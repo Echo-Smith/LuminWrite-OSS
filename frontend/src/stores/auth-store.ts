@@ -17,6 +17,7 @@ export interface AuthUser {
   userId: string;
   username: string;
   role: "guest" | "user" | "admin";
+  permissions?: string[];
 }
 
 /**
@@ -36,11 +37,13 @@ interface AuthState {
 
   // Actions
   init: () => Promise<void>;
-  login: (token: string, userId: string, username: string, role: string, expiresIn: number) => void;
+  login: (token: string, userId: string, username: string, role: string, expiresIn: number, permissions?: string[]) => void;
   logout: () => void;
   refreshToken: () => Promise<boolean>;
   isAuthenticated: () => boolean;
   isGuest: () => boolean;
+  hasPermission: (perm: string) => boolean;
+  hasAdminAccess: () => boolean;
   getAuthHeaders: () => Record<string, string>;
 }
 
@@ -54,6 +57,7 @@ interface StoredAuth {
   username: string;
   role: string;
   expiresAt: number;
+  permissions?: string[];
 }
 
 // ─── 工具函数 ──────────────────────────────────────────────
@@ -75,7 +79,7 @@ function loadFromStorage(): { token: string; user: AuthUser; expiresAt: number }
 
     return {
       token: stored.token,
-      user: { userId: stored.userId, username: stored.username || "", role: stored.role as "user" | "admin" },
+      user: { userId: stored.userId, username: stored.username || "", role: stored.role as "user" | "admin", permissions: stored.permissions },
       expiresAt: stored.expiresAt,
     };
   } catch {
@@ -83,8 +87,8 @@ function loadFromStorage(): { token: string; user: AuthUser; expiresAt: number }
   }
 }
 
-function saveToStorage(token: string, userId: string, username: string, role: string, expiresAt: number) {
-  const data: StoredAuth = { token, userId, username, role, expiresAt };
+function saveToStorage(token: string, userId: string, username: string, role: string, expiresAt: number, permissions?: string[]) {
+  const data: StoredAuth = { token, userId, username, role, expiresAt, permissions };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
@@ -100,6 +104,7 @@ async function callRefreshAPI(currentToken: string): Promise<{
   username: string;
   role: string;
   expires_in: number;
+  permissions?: string[];
 } | null> {
   try {
     const res = await fetch("/api/v2/auth/refresh", {
@@ -119,7 +124,7 @@ async function callRefreshAPI(currentToken: string): Promise<{
 }
 
 async function callLoginAPI(body: Record<string, unknown>): Promise<{
-  data: { token: string; user_id: string; username: string; role: string; expires_in: number };
+  data: { token: string; user_id: string; username: string; role: string; expires_in: number; permissions?: string[] };
 } | { error: { code: string; message: string } }> {
   try {
     const res = await fetch("/api/v2/auth/login", {
@@ -145,6 +150,7 @@ async function callGuestAPI(): Promise<{
   username: string;
   role: string;
   expires_in: number;
+  permissions?: string[];
 } | null> {
   try {
     const res = await fetch("/api/v2/auth/guest", {
@@ -161,7 +167,7 @@ async function callGuestAPI(): Promise<{
 }
 
 async function callRegisterAPI(body: Record<string, unknown>): Promise<{
-  data: { token: string; user_id: string; username: string; role: string; expires_in: number };
+  data: { token: string; user_id: string; username: string; role: string; expires_in: number; permissions?: string[] };
 } | { error: { code: string; message: string } }> {
   try {
     const res = await fetch("/api/v2/auth/register", {
@@ -237,11 +243,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  login: (token, userId, username, role, expiresIn) => {
+  login: (token, userId, username, role, expiresIn, permissions) => {
+    const prev = get();
     const expiresAt = Math.floor(Date.now() / 1000) + expiresIn;
-    const user: AuthUser = { userId, username, role: role as AuthUser["role"] };
+    const user: AuthUser = { userId, username, role: role as AuthUser["role"], permissions };
 
-    saveToStorage(token, userId, username, role, expiresAt);
+    saveToStorage(token, userId, username, role, expiresAt, permissions);
 
     set({ token, user, expiresAt, initialized: true });
 
@@ -250,6 +257,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     // 从云端加载用户偏好设置
     void useSettingsStore.getState().loadFromServer();
+
+    // ── Token 变更时（如游客注册升级），断开旧 WebSocket 连接 ──
+    // 旧连接携带的是 guest token，后端仍识别为 guest 角色，
+    // 必须断开后重连才能让新 token 生效。
+    if (prev.token && prev.token !== token) {
+      // 延迟导入避免循环依赖
+      import("@/stores/agent-store").then((m) => {
+        const agentState = m.useAgentStore.getState();
+        const oldWs = agentState.ws;
+        if (oldWs) {
+          // 主动关闭旧连接，触发 onclose → wsConnected=false
+          // useAgentWebSocket hook 会监听到并自动用新 token 重连
+          try { oldWs.close(); } catch { /* ignore */ }
+          m.useAgentStore.setState({ ws: null, wsConnected: false });
+        }
+      });
+    }
   },
 
   logout: () => {
@@ -273,11 +297,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     const expiresAt = Math.floor(Date.now() / 1000) + result.expires_in;
-    saveToStorage(result.token, result.user_id, result.username || "", result.role, expiresAt);
+    saveToStorage(result.token, result.user_id, result.username || "", result.role, expiresAt, result.permissions);
 
     set({
       token: result.token,
-      user: { userId: result.user_id, username: result.username || "", role: result.role as AuthUser["role"] },
+      user: { userId: result.user_id, username: result.username || "", role: result.role as AuthUser["role"], permissions: result.permissions },
       expiresAt,
     });
 
@@ -295,6 +319,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isGuest: () => {
     const { user } = get();
     return user?.role === "guest";
+  },
+
+  hasPermission: (perm: string) => {
+    const { user } = get();
+    if (!user) return false;
+    // Legacy admin role has all permissions
+    if (user.role === "admin") return true;
+    // RBAC: check if user has the specific permission or wildcard
+    const perms = user.permissions ?? [];
+    return perms.includes("*") || perms.includes(perm);
+  },
+
+  hasAdminAccess: () => {
+    const { user } = get();
+    if (!user) return false;
+    // Legacy admin role
+    if (user.role === "admin") return true;
+    // RBAC: user has any assigned permissions (non-empty list)
+    const perms = user.permissions ?? [];
+    return perms.length > 0;
   },
 
   getAuthHeaders: () => {
@@ -321,6 +365,11 @@ const ERROR_MESSAGES_ZH: Record<string, string> = {
   network_error: "网络错误，请检查连接",
   guest_failed: "访客登录失败，请确认后端服务正在运行",
   db_unavailable: "数据库不可用，请联系管理员",
+  password_required: "请输入密码",
+  wrong_password: "密码不正确",
+  no_password: "该账号未设置密码",
+  points_exist: "账号内还有剩余点数，需确认放弃后才能注销",
+  deactivate_failed: "注销失败，请重试",
 };
 
 function localizeError(code: string, fallback: string): string {
@@ -333,7 +382,7 @@ export const authStore = {
     if ("error" in result) {
       return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
     }
-    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in);
+    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in, result.data.permissions);
     return { ok: true };
   },
 
@@ -342,7 +391,7 @@ export const authStore = {
     if (!result) {
       return { ok: false, code: "guest_failed", message: "访客登录失败，请确认后端服务正在运行" };
     }
-    useAuthStore.getState().login(result.token, result.user_id, result.username || "", result.role, result.expires_in);
+    useAuthStore.getState().login(result.token, result.user_id, result.username || "", result.role, result.expires_in, result.permissions);
     return { ok: true };
   },
 
@@ -351,11 +400,42 @@ export const authStore = {
     if ("error" in result) {
       return { ok: false, code: result.error.code, message: localizeError(result.error.code, result.error.message) };
     }
-    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in);
+    useAuthStore.getState().login(result.data.token, result.data.user_id, result.data.username || "", result.data.role, result.data.expires_in, result.data.permissions);
     return { ok: true };
   },
 
   logout: () => useAuthStore.getState().logout(),
+
+  deactivateAccount: async (params: { password?: string; confirmForfeitPoints?: boolean }): Promise<AuthResult> => {
+    try {
+      const token = useAuthStore.getState().token;
+      const res = await fetch("/api/v2/auth/deactivate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          password: params.password ?? "",
+          confirm_forfeit_points: params.confirmForfeitPoints ?? false,
+        }),
+      });
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        const code = json.error?.code || "deactivate_failed";
+        const message = localizeError(code, json.error?.message || "注销失败，请重试");
+        return { ok: false, code, message };
+      }
+
+      // 注销成功后清理本地状态
+      useAuthStore.getState().logout();
+
+      return { ok: true };
+    } catch {
+      return { ok: false, code: "network_error", message: "网络错误，请检查连接" };
+    }
+  },
 
   getToken: () => useAuthStore.getState().token,
 

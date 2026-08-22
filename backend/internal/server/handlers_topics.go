@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -483,15 +484,17 @@ func (s *Server) handleTopicTrend(w http.ResponseWriter, r *http.Request) {
 // ─── Helper: extract user ID from JWT in request ─────────
 
 func (s *Server) getUserIDFromRequest(r *http.Request) string {
+	// 1. Try Authorization header (normal fetch requests)
 	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return "anonymous"
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+
+	// 2. Fall back to URL query param "token" (EventSource cannot set headers)
+	if token == "" {
+		token = r.URL.Query().Get("token")
 	}
 
-	// Strip "Bearer " prefix
-	token := authHeader
-	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-		token = authHeader[7:]
+	if token == "" {
+		return "anonymous"
 	}
 
 	payload, err := s.ValidateJWT(token)

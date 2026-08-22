@@ -10,13 +10,19 @@ import (
 
 // WSEmitter implements engine.EventEmitter by sending events via WebSocket.
 type WSEmitter struct {
-	hub     *websocket.Hub
-	traceID string
+	hub        *websocket.Hub
+	traceID    string
+	pointsUsed float64 // 供 Completed 事件携带
 }
 
 // NewWSEmitter creates a new WebSocket-based event emitter.
 func NewWSEmitter(hub *websocket.Hub, traceID string) *WSEmitter {
 	return &WSEmitter{hub: hub, traceID: traceID}
+}
+
+// SetPointsUsed sets the points used for this session (for Completed event).
+func (e *WSEmitter) SetPointsUsed(points float64) {
+	e.pointsUsed = points
 }
 
 func (e *WSEmitter) StepStart(step engine.StepName, stepIndex int) {
@@ -165,6 +171,7 @@ func (e *WSEmitter) Completed(article string, articleTitle string, review interf
 			ArticleTitle: articleTitle,
 			Review:       review,
 			TokenUsage:   tokenUsage,
+			PointsUsed:   e.pointsUsed,
 		},
 	})
 }

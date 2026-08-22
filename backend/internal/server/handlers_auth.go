@@ -46,7 +46,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		username := s.lookupUsername(r.Context(), userID)
-		s.issueToken(w, userID, role, username)
+		s.issueToken(w, r, userID, role, username)
 		return
 	}
 
@@ -57,7 +57,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			response.Err(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 			return
 		}
-		s.issueToken(w, userID, role, username)
+		s.issueToken(w, r, userID, role, username)
 		return
 	}
 
@@ -92,7 +92,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		username := s.lookupUsername(r.Context(), dbUserID)
-		s.issueToken(w, dbUserID, roleVal, username)
+		s.issueToken(w, r, dbUserID, roleVal, username)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 	username := s.lookupUsername(r.Context(), payload.Sub)
 
 	// Issue a new token with fresh expiry
-	s.issueToken(w, payload.Sub, payload.Role, username)
+	s.issueToken(w, r, payload.Sub, payload.Role, username)
 }
 
 // handleVerifyToken returns the user info from a valid JWT.
@@ -152,10 +152,14 @@ func (s *Server) handleVerifyToken(w http.ResponseWriter, r *http.Request) {
 
 	username := s.lookupUsername(r.Context(), user.Sub)
 
+	// Fetch RBAC permissions for the user
+	perms, _ := s.userPermissions(r.Context(), user.Sub, user.Role)
+
 	response.OK(w, map[string]interface{}{
-		"user_id":    user.Sub,
+		"user_id":     user.Sub,
 		"username":   username,
 		"role":       user.Role,
+		"permissions": perms,
 		"issued_at":  user.Iat,
 		"expires_at": user.Exp,
 		"expires_in": max(0, user.Exp-time.Now().Unix()),
@@ -165,22 +169,36 @@ func (s *Server) handleVerifyToken(w http.ResponseWriter, r *http.Request) {
 // ─── Auth Helpers ───────────────────────────────────────
 
 // issueToken generates a JWT and sends it in the response.
-func (s *Server) issueToken(w http.ResponseWriter, userID, role, username string) {
-	token, err := s.GenerateJWT(userID, role)
+// Also queries RBAC permissions and includes them in the response.
+// The *http.Request is used to extract device info (User-Agent, IP) for session tracking.
+func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, userID, role, username string) {
+	jti := generateSessionID()
+	token, err := s.GenerateJWT(userID, role, jti)
 	if err != nil {
 		slog.Error("failed to generate JWT", "error", err, "user_id", userID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to generate token")
 		return
 	}
 
+	// Record session for multi-device management
+	s.recordSession(r, userID, jti)
+
+	// Query RBAC permissions for the user (best-effort, non-blocking on error)
+	perms, permErr := s.userPermissions(context.Background(), userID, role)
+	if permErr != nil {
+		slog.Warn("failed to fetch RBAC permissions during token issue", "error", permErr, "user_id", userID)
+		perms = nil
+	}
+
 	response.OK(w, map[string]interface{}{
-		"token":      token,
-		"token_type": "Bearer",
-		"expires_in": int(s.cfg.JWT.Expiry.Seconds()),
-		"user_id":    userID,
-		"username":   username,
-		"role":       role,
-		"issued_at":  time.Now().Format(time.RFC3339),
+		"token":       token,
+		"token_type":  "Bearer",
+		"expires_in":  int(s.cfg.JWT.Expiry.Seconds()),
+		"user_id":     userID,
+		"username":    username,
+		"role":        role,
+		"permissions": perms,
+		"issued_at":   time.Now().Format(time.RFC3339),
 	})
 }
 
@@ -294,7 +312,7 @@ func (s *Server) handleGuestLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("guest user created", "uid", guestUID, "user_id", userID)
-	s.issueToken(w, userID, "guest", guestUID)
+	s.issueToken(w, r, userID, "guest", guestUID)
 }
 
 // handleRegister creates a new user account or upgrades a guest account.
@@ -386,7 +404,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 
 		slog.Info("guest upgraded to registered user", "username", req.Username, "user_id", payload.Sub)
-		s.issueToken(w, payload.Sub, "user", req.Username)
+
+		// Initialize point balance for upgraded user (500 free points)
+		s.InitNewUserBalance(ctx, payload.Sub)
+
+		s.issueToken(w, r, payload.Sub, "user", req.Username)
 		return
 	}
 
@@ -404,7 +426,140 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("user registered", "username", req.Username, "user_id", userID)
-	s.issueToken(w, userID, "user", req.Username)
+
+	// Initialize point balance for new user (500 free points)
+	s.InitNewUserBalance(ctx, userID)
+
+	s.issueToken(w, r, userID, "user", req.Username)
 }
 
+// handleDeactivateAccount permanently deletes a user account and all associated data.
+//
+// The handler supports two modes based on the user's role:
+//
+//   - Guest: no password verification required (guest accounts have no password).
+//     The guest user record is directly deleted from the database.
+//
+//   - Registered user: password verification is required.
+//     If the user has a remaining point balance, the client must pass
+//     confirm_forfeit_points=true to acknowledge the forfeiture.
+//
+// All user-related data is removed via ON DELETE CASCADE constraints
+// (migration 071). Tables that use VARCHAR user_id without FK constraints
+// (passkey_credentials, user_preferences, user_weknora_mapping, user_materials)
+// are manually cleaned up before the user row is deleted.
+//
+// POST /api/v2/auth/deactivate
+// Header: Authorization: Bearer <jwt>
+// Body: { "password": "...", "confirm_forfeit_points": true }
+func (s *Server) handleDeactivateAccount(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
 
+	var req struct {
+		Password            string `json:"password"`
+		ConfirmForfeitPoints bool   `json:"confirm_forfeit_points"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if s.adminRepo == nil || s.adminRepo.DB() == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	isGuest := user.Role == "guest"
+
+	// ── 1. 验证密码（非 guest 用户）──
+	if !isGuest {
+		var storedHash *string
+		err := s.adminRepo.DB().QueryRowContext(ctx,
+			`SELECT password_hash FROM users WHERE id = $1`,
+			user.Sub,
+		).Scan(&storedHash)
+		if err != nil || storedHash == nil || *storedHash == "" {
+			response.Err(w, http.StatusBadRequest, "no_password", "no password set for this account")
+			return
+		}
+
+		if req.Password == "" {
+			response.Err(w, http.StatusBadRequest, "password_required", "password is required to deactivate account")
+			return
+		}
+
+		if bcrypt.CompareHashAndPassword([]byte(*storedHash), []byte(req.Password)) != nil {
+			response.Err(w, http.StatusUnauthorized, "wrong_password", "password is incorrect")
+			return
+		}
+	}
+
+	// ── 2. 检查点数余额（非 guest 用户）──
+	if !isGuest && s.billingRepo != nil {
+		balance, _ := s.billingRepo.GetBalance(ctx, user.Sub)
+		if balance != nil && balance.Balance > 0 {
+			if !req.ConfirmForfeitPoints {
+				response.Err(w, http.StatusConflict, "points_exist", fmt.Sprintf(
+					"your account has %.2f points. you must confirm forfeiture to proceed",
+					balance.Balance,
+				))
+				return
+			}
+			slog.Info("user confirmed point forfeiture before deactivation",
+				"user_id", user.Sub, "balance", balance.Balance)
+		}
+	}
+
+	// ── 3. 手动清理非 FK 关联数据 ──
+	// passkey_credentials.user_id is VARCHAR, not a FK to users(id)
+	_, _ = s.adminRepo.DB().ExecContext(ctx,
+		`DELETE FROM passkey_credentials WHERE user_id = $1`,
+		user.Sub,
+	)
+
+	// user_preferences.user_id is VARCHAR, not a FK to users(id)
+	_, _ = s.adminRepo.DB().ExecContext(ctx,
+		`DELETE FROM user_preferences WHERE user_id = $1`,
+		user.Sub,
+	)
+
+	// user_weknora_mapping.user_id is VARCHAR, not a FK to users(id)
+	_, _ = s.adminRepo.DB().ExecContext(ctx,
+		`DELETE FROM user_weknora_mapping WHERE user_id = $1`,
+		user.Sub,
+	)
+
+	// user_materials.user_id is VARCHAR, not a FK to users(id)
+	_, _ = s.adminRepo.DB().ExecContext(ctx,
+		`DELETE FROM user_materials WHERE user_id = $1`,
+		user.Sub,
+	)
+
+	// ── 4. 删除用户行（所有 FK CASCADE 的表会自动清理）──
+	result, err := s.adminRepo.DB().ExecContext(ctx,
+		`DELETE FROM users WHERE id = $1`,
+		user.Sub,
+	)
+	if err != nil {
+		slog.Error("failed to deactivate user", "error", err, "user_id", user.Sub)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to deactivate account")
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		response.Err(w, http.StatusNotFound, "not_found", "user not found or already deleted")
+		return
+	}
+
+	slog.Info("user account deactivated", "user_id", user.Sub, "role", user.Role, "guest", isGuest)
+
+	response.OK(w, map[string]interface{}{
+		"deactivated": true,
+		"user_id":     user.Sub,
+	})
+}

@@ -77,6 +77,7 @@ type Task struct {
 	Tags           []string      `json:"tags,omitempty"`
 	StyleSlug      string        `json:"style_slug"`
 	ConversationID string        `json:"conversation_id,omitempty"`
+	KBEnabled      *bool         `json:"kb_enabled,omitempty"` // 知识库搜索开关（nil=默认开启）
 	CreatedBy      string        `json:"created_by"`
 	CreatedAt      time.Time     `json:"created_at"`
 	UpdatedAt      time.Time     `json:"updated_at"`
@@ -510,6 +511,12 @@ type AgentContext struct {
 	Timeout        time.Duration
 	MaxLLMFails    int
 	RetryCount     int // 当前 Agent 在同一阶段的重试次数
+
+	// AgentConfig DAG 模式下，由 DAGExecutor 注入的 Planner 生成的角色配置。
+	// 线性模式下为 nil，执行器内部 fallback 到 BuiltinRoles。
+	// 注意：LocalMemory 用于多用途传递（OrgKnowledge、对话历史等），
+	// AgentConfig 独立存储，避免类型冲突。
+	AgentConfig *AgentConfig
 }
 
 // NewAgentContext 创建新的 Agent 上下文

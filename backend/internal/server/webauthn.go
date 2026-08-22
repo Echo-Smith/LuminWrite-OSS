@@ -925,15 +925,24 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	// Use authenticated user if not specified
-	if req.UserID == "" {
-		user := userFromContext(r.Context())
-		if user != nil {
-			req.UserID = user.Sub
+	// Priority: JWT context > request body > AdminUserID fallback
+	// If the user is authenticated (jwtOptionalMiddleware resolved the token),
+	// always use the authenticated user_id — this prevents a logged-in user
+	// from registering a passkey for a different user by sending a forged user_id.
+	if user := userFromContext(r.Context()); user != nil {
+		req.UserID = user.Sub
+		if req.UserName == "" || req.UserName == req.UserID {
+			// Look up username if not provided or still the raw ID
+			if username := s.lookupUsername(r.Context(), user.Sub); username != "" {
+				req.UserName = username
+			}
 		}
 	}
 	if req.UserID == "" {
-		req.UserID = AdminUserID
+		// Not authenticated — use user_id from request body (for login page registration)
+		if req.UserID == "" {
+			req.UserID = AdminUserID
+		}
 	}
 	if req.UserName == "" {
 		req.UserName = req.UserID
@@ -951,27 +960,14 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Store the challenge in the database (survives container restarts)
-	if s.adminRepo != nil && s.adminRepo.DB() != nil {
-		_, dbErr := s.adminRepo.DB().ExecContext(r.Context(), `
-			INSERT INTO passkey_challenges (challenge, user_id, purpose, created_at, expires_at, used)
-			VALUES ($1, $2, 'registration', NOW(), NOW() + INTERVAL '5 minutes', false)
-		`, challenge.Challenge, req.UserID)
-		if dbErr != nil {
-			slog.Warn("failed to store passkey registration challenge in DB, falling back to memory", "error", dbErr)
-			s.passkeyChallenges.Store(challenge.Challenge, req.UserID, &WebAuthnUser{
-				ID:          challenge.UserID,
-				Name:        req.UserName,
-				DisplayName: displayName,
-			}, "registration")
-		}
-	} else {
-		s.passkeyChallenges.Store(challenge.Challenge, req.UserID, &WebAuthnUser{
-			ID:          challenge.UserID,
-			Name:        req.UserName,
-			DisplayName: displayName,
-		}, "registration")
-	}
+	// Store the challenge via the unified challenge store (DB + memory dual-write).
+	// This ensures regUserInfo is always available in memory for the complete step,
+	// and survives container restarts via DB storage.
+	s.passkeyChallenges.Store(challenge.Challenge, req.UserID, &WebAuthnUser{
+		ID:          challenge.UserID,
+		Name:        req.UserName,
+		DisplayName: displayName,
+	}, "registration")
 
 	response.OK(w, challenge)
 }
@@ -1030,11 +1026,19 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 			regUserInfo = sc.userInfo
 		} else {
 			regUserID = dbUserID
+			// Try to get userInfo from memory (Store always writes to both DB and memory)
 			regUserInfo = &WebAuthnUser{
 				ID:          base64.RawURLEncoding.EncodeToString([]byte(dbUserID)),
 				Name:        dbUserID,
 				DisplayName: dbUserID,
 			}
+			// Check memory store for richer userInfo (populated during registration begin)
+			s.passkeyChallenges.mu.Lock()
+			if memEntry, hasMem := s.passkeyChallenges.challenges[clientData.Challenge]; hasMem && memEntry.userInfo != nil {
+				regUserInfo = memEntry.userInfo
+			}
+			delete(s.passkeyChallenges.challenges, clientData.Challenge)
+			s.passkeyChallenges.mu.Unlock()
 		}
 	} else {
 		sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
@@ -1048,6 +1052,14 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 		}
 		regUserID = sc.userID
 		regUserInfo = sc.userInfo
+	}
+
+	// If the user is authenticated (JWT present), override regUserID with the
+	// authenticated user's ID. This ensures the credential is always bound to the
+	// correct user even if the challenge store has a stale or incorrect user_id
+	// (e.g. the token expired between begin and complete).
+	if jwtUser := userFromContext(r.Context()); jwtUser != nil && jwtUser.Sub != "" {
+		regUserID = jwtUser.Sub
 	}
 
 	// Verify the registration response
@@ -1080,6 +1092,10 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to store credential")
 			return
 		}
+	} else {
+		slog.Error("passkey register complete: database not available")
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
 	}
 
 	slog.Info("passkey registered", "user_id", regUserID, "credential_id", cred.CredentialID[:16]+"...")
@@ -1137,20 +1153,8 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Store the challenge in the database (survives container restarts)
-	if s.adminRepo != nil && s.adminRepo.DB() != nil {
-		_, dbErr := s.adminRepo.DB().ExecContext(r.Context(), `
-			INSERT INTO passkey_challenges (challenge, user_id, purpose, created_at, expires_at, used)
-			VALUES ($1, NULLIF($2, ''), 'authentication', NOW(), NOW() + INTERVAL '5 minutes', false)
-		`, challenge.Challenge, req.UserID)
-		if dbErr != nil {
-			slog.Warn("failed to store passkey challenge in DB, falling back to memory", "error", dbErr)
-			// Fallback to in-memory store
-			s.passkeyChallenges.Store(challenge.Challenge, req.UserID, nil, "authentication")
-		}
-	} else {
-		s.passkeyChallenges.Store(challenge.Challenge, req.UserID, nil, "authentication")
-	}
+	// Store the challenge via the unified challenge store (DB + memory dual-write).
+	s.passkeyChallenges.Store(challenge.Challenge, req.UserID, nil, "authentication")
 
 	response.OK(w, challenge)
 }
@@ -1186,12 +1190,13 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 	// Consume the challenge — try DB first, then fallback to in-memory
 	var challengeUserID string
 	if s.adminRepo != nil && s.adminRepo.DB() != nil {
+		var dbUserID sql.NullString
 		err = s.adminRepo.DB().QueryRowContext(r.Context(), `
 			UPDATE passkey_challenges
 			SET used = true
 			WHERE challenge = $1 AND purpose = 'authentication' AND used = false AND expires_at > NOW()
-			RETURNING NULLIF(user_id, '')
-		`, clientData.Challenge).Scan(&challengeUserID)
+			RETURNING user_id
+		`, clientData.Challenge).Scan(&dbUserID)
 		if err != nil {
 			// Log the challenge lookup failure for debugging
 			challengePreview := clientData.Challenge
@@ -1212,6 +1217,8 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			challengeUserID = sc.userID
+		} else if dbUserID.Valid {
+			challengeUserID = dbUserID.String
 		}
 	} else {
 		sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
@@ -1315,7 +1322,7 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 	username := s.lookupUsername(r.Context(), userID)
 
 	// Issue JWT
-	s.issueToken(w, userID, role, username)
+	s.issueToken(w, r, userID, role, username)
 
 	slog.Info("passkey login successful", "user_id", userID)
 }

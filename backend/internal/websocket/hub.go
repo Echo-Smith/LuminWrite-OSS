@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	writeTimeout  = 120 * time.Second
-	readTimeout   = 600 * time.Second // 10 min — allows time for user to edit outlines in guided mode
-	bufSize       = 256
+	writeTimeout    = 120 * time.Second
+	readTimeout     = 600 * time.Second // 10 min — allows time for user to edit outlines in guided mode
+	bufSize         = 256
+	heartbeatPeriod = 30 * time.Second // send ping every 30s to keep Nginx proxy alive
 )
 
 // WSMetrics holds lightweight atomic counters for WebSocket errors.
@@ -79,8 +80,14 @@ func (c *Client) TraceID() string {
 }
 
 // ReadLoop reads messages from the WebSocket connection.
+// It also starts a heartbeat goroutine that sends ping messages every 30s
+// to keep the connection alive through Nginx reverse proxies (default
+// proxy_read_timeout is 60s).
 func (c *Client) ReadLoop(handler func(*ClientMessage)) {
 	defer close(c.send)
+
+	// Start heartbeat ping goroutine
+	go c.heartbeat()
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
@@ -122,6 +129,32 @@ func (c *Client) WriteLoop() {
 	}
 }
 
+// heartbeat sends a ping ServerMessage every heartbeatPeriod to keep
+// the WebSocket connection alive. This is critical when behind Nginx or
+// other reverse proxies that have idle timeout settings (default 60s).
+// The ping is a lightweight JSON message; the client can optionally
+// respond but is not required to.
+func (c *Client) heartbeat() {
+	ticker := time.NewTicker(heartbeatPeriod)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.mu.Lock()
+		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+		pingMsg, _ := json.Marshal(&ServerMessage{
+			Type:    "ping",
+			Payload: map[string]interface{}{"ts": time.Now().Unix()},
+		})
+		err := c.conn.Write(ctx, websocket.MessageText, pingMsg)
+		cancel()
+		c.mu.Unlock()
+		if err != nil {
+			// Connection likely closed; stop heartbeat
+			return
+		}
+	}
+}
+
 // Close closes the WebSocket connection.
 func (c *Client) Close() {
 	c.conn.Close(websocket.StatusNormalClosure, "")
@@ -147,7 +180,11 @@ func (h *Hub) Register(traceID string, client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if old, ok := h.clients[traceID]; ok {
-		old.Close()
+		// Only close if it's a different connection; same connection re-registering
+		// (e.g. workflow plan → execute on same WS) should not close itself.
+		if old != client {
+			old.Close()
+		}
 		delete(h.clients, traceID)
 	}
 	h.clients[traceID] = client

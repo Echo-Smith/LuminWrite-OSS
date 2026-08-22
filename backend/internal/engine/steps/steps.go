@@ -1276,7 +1276,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			"trace_id", execCtx.TraceID,
 			"search_results", len(execCtx.SearchResults))
 
-		toolExecutor := WritingToolExecutor(s.search, s.kbSearcher, execCtx.SearchResults)
+		toolExecutor := WritingToolExecutor(s.search, s.kbSearcher, execCtx.UserID, execCtx.SearchResults)
 		fullText, tokens, err = s.llm.ChatWithTools(
 			ctx, messages, streamCallback, onReasoning, onStreamReset,
 			WritingTools(s.kbSearcher != nil), toolExecutor, streamOpts...,

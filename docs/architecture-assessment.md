@@ -301,15 +301,15 @@ Profile 变更后自动触发评测，与 baseline 对比，单维度下降 >0.3
 |------|------|---------|
 | MCP 工具安全沙箱 | 外部工具可能执行任意代码或访问网络 | ✅ 已完成：DB 驱动的 per-tool 安全策略（mcp_tool_policies）+ 域名黑白名单拦截 + 参数/输出大小限制 + 可配超时 + 每分钟频率限制 + 违规审计日志（mcp_tool_violations）+ SandboxHook 接口注入 MCPAgentTool.Execute + Admin 策略 CRUD API + 沙箱测试面板 + 前端管理 UI |
 | 自演进闭环门控 | Profile 迭代缺少审批门控 | ✅ 已完成：eval gate 结果持久化 + canary 健康监控自动回滚 + 门控配置表 (evolution_gate_configs) + 审计事件时间线 (evolution_gate_events) + 健康快照 (canary_health_snapshots) + 全量前端门控 UI（门控配置面板 + 事件时间线 + 健康快照历史 + eval 结果展示） |
-| 安全审计可视化 | Prompt Injection 拦截记录不可见 | 添加安全审计面板展示拦截统计 |
+| 安全审计可视化 | Prompt Injection 拦截记录不可见 | ✅ 已完成：security_events 持久化表 + SecurityEventRecorder 接口注入 guardrails（非阻塞批量写入）+ 6 类攻击分类标签（direct_override/identity_override/prompt_extraction/fake_system_msg/credential_extract/instruction_chain）+ 增强 API（24h 趋势/7天分类统计/Top 10 来源/MCP 沙箱违规聚合）+ 分页事件查询 + 全量前端仪表盘（实时+历史双统计卡 + 24h 柱状趋势图 + 攻击分类进度条 + 防御层级状态 + MCP 沙箱概览 + 高频来源排行 + 可展开拦截记录） |
 
 ### 次要缺口（P2）
 
 | 缺口 | 风险 | 建议修复 |
 |------|------|---------|
-| A2A Agent Card | 多 Agent 缺少正式能力发现文档 | 为每个 Agent 角色生成 Agent Card |
-| GraphRAG 可视化 | 后端有 API 但无前端展示 | 添加图谱可视化组件 |
-| fact_check 独立展示 | 事实核查结果不突出 | 添加事实核查结果专用 UI |
+| A2A Agent Card | 多 Agent 缺少正式能力发现文档 | ✅ 已完成：A2A/v1 协议 Agent Card 生成（4 个角色：Orchestrator + Research + Writing + Review）+ 公开 API（/api/v2/agent-cards）+ 角色能力（产出/消费/决策权限）+ 技能列表 + Persona 展示 + 前端可展开卡片 UI |
+| GraphRAG 可视化 | 后端有 API 但无前端展示 | ✅ 已完成：知识库「实体图谱」Tab（KBGraphPanel）+ SVG 力导向图可视化（节点按类型着色 + 边连接 + 可选数量 Top 30-200）+ 实体/关系详情面板 + API /api/v2/kb/graph |
+| fact_check 独立展示 | 事实核查结果不突出 | ✅ 已完成：AgentStepCard 中 fact_check 专用渲染组件（FactCheckResult）+ 双格式支持（批量声明提取结果 + Jiaozhen 较真单条查证）+ 核查状态徽章 + 验证说明 |
 | 多实例水平扩展 | 单实例部署无法扩展 | ✅ 已完成：Redis session adapter + Docker Swarm 多实例 + Nginx sticky session 负载均衡 + 健康检查 |
 | RBAC 细粒度权限 | 仅 admin/user 两级角色 | ✅ 已完成：roles + permissions + user_roles 三表 RBAC + 24 项细粒度权限 + Admin 角色管理 UI |
 
@@ -317,9 +317,9 @@ Profile 变更后自动触发评测，与 baseline 对比，单维度下降 >0.3
 
 ## 9. 结论
 
-**Verdict: Ready（有小缺口）**
+**Verdict: Ready（全部缺口已清零）**
 
-LuminBuddy V2 对照 T3 Production Project 基线的 35+ 组件全部达到 present 状态。所有 R（必需）级组件均有代码证据支撑，P1 缺口已全部修复（MCP 安全沙箱 + 自演进闭环门控 + RBAC + 多实例水平扩展）。剩余 P2 缺口（安全审计可视化）不影响生产可用性。
+LuminBuddy V2 对照 T3 Production Project 基线的 35+ 组件全部达到 present 状态。所有 R（必需）级组件均有代码证据支撑，P1 缺口已全部修复（MCP 安全沙箱 + 自演进闭环门控 + 安全审计可视化 + RBAC + 多实例水平扩展），P2 缺口已全部修复（A2A Agent Card + GraphRAG 可视化 + fact_check 独立展示）。
 
 项目的核心工程贡献：
 1. **Harness 单层会话架构**：从 13 次 LLM 调用降到 1 次持续会话，首字延迟 30-60s → 3-5s

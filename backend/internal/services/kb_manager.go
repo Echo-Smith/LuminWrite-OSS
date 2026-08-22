@@ -1025,10 +1025,24 @@ type UserMaterial struct {
 	FileSize       int64     `json:"file_size,omitempty"`
 	DocID          string    `json:"doc_id"`
 	ChunkCount     int       `json:"chunk_count"`
+	FolderID       string    `json:"folder_id,omitempty"`
 	Metadata       any       `json:"metadata,omitempty"`
 	Status         string    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// MaterialFolder represents a user's material folder for organization.
+type MaterialFolder struct {
+	ID            string    `json:"id"`
+	UserID        string    `json:"user_id"`
+	Name          string    `json:"name"`
+	ParentID      string    `json:"parent_id,omitempty"`
+	SortOrder     int       `json:"sort_order"`
+	Description   string    `json:"description,omitempty"`
+	MaterialCount int       `json:"material_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // SaveMaterial saves a user material entry (now points to local KB document).
@@ -1037,18 +1051,29 @@ func (m *KbManager) SaveMaterial(ctx context.Context, mat *UserMaterial) error {
 		return fmt.Errorf("database not available")
 	}
 	metadataJSON, _ := json.Marshal(mat.Metadata)
+
+	var folderID any
+	if mat.FolderID != "" {
+		folderID = mat.FolderID
+	}
+
 	_, err := m.db.ExecContext(ctx, `
-		INSERT INTO user_materials (id, user_id, title, content_preview, source_type, source_url, file_name, file_size, doc_id, chunk_count, metadata, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
-		ON CONFLICT (id) DO UPDATE SET title = $3, content_preview = $4, doc_id = $9, chunk_count = $10, updated_at = NOW()
+		INSERT INTO user_materials (id, user_id, title, content_preview, source_type, source_url, file_name, file_size, doc_id, chunk_count, folder_id, metadata, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+		ON CONFLICT (id) DO UPDATE SET title = $3, content_preview = $4, doc_id = $9, chunk_count = $10, folder_id = $11, updated_at = NOW()
 	`, mat.ID, mat.UserID, mat.Title, mat.ContentPreview, mat.SourceType,
 		mat.SourceURL, mat.FileName, mat.FileSize, mat.DocID, mat.ChunkCount,
-		metadataJSON, mat.Status)
+		folderID, metadataJSON, mat.Status)
 	return err
 }
 
 // ListMaterials lists user materials with pagination.
 func (m *KbManager) ListMaterials(ctx context.Context, userID string, page, pageSize int) ([]*UserMaterial, int, error) {
+	return m.ListMaterialsInFolder(ctx, userID, "", page, pageSize)
+}
+
+// ListMaterialsInFolder lists user materials in a specific folder (empty = root, "all" = all folders).
+func (m *KbManager) ListMaterialsInFolder(ctx context.Context, userID, folderID string, page, pageSize int) ([]*UserMaterial, int, error) {
 	if m.db == nil {
 		return nil, 0, fmt.Errorf("database not available")
 	}
@@ -1059,26 +1084,62 @@ func (m *KbManager) ListMaterials(ctx context.Context, userID string, page, page
 		pageSize = 20
 	}
 
+	var countQuery, dataQuery string
+	var countArgs, dataArgs []interface{}
+
+	if folderID == "all" {
+		// All folders
+		countQuery = `SELECT COUNT(*) FROM user_materials WHERE user_id = $1 AND status != 'deleted'`
+		countArgs = []interface{}{userID}
+		dataQuery = `
+			SELECT id, user_id, title, content_preview, source_type,
+			       COALESCE(source_url, ''), COALESCE(file_name, ''), COALESCE(file_size, 0),
+			       COALESCE(doc_id::text, ''), COALESCE(chunk_count, 0),
+			   COALESCE(folder_id::text, ''),
+			   metadata, status, created_at, updated_at
+			FROM user_materials
+			WHERE user_id = $1 AND status != 'deleted'
+			ORDER BY created_at DESC
+			LIMIT $2 OFFSET $3`
+		dataArgs = []interface{}{userID, pageSize, (page - 1) * pageSize}
+	} else if folderID == "" {
+		// Root folder (folder_id IS NULL)
+		countQuery = `SELECT COUNT(*) FROM user_materials WHERE user_id = $1 AND status != 'deleted' AND folder_id IS NULL`
+		countArgs = []interface{}{userID}
+		dataQuery = `
+			SELECT id, user_id, title, content_preview, source_type,
+			       COALESCE(source_url, ''), COALESCE(file_name, ''), COALESCE(file_size, 0),
+			       COALESCE(doc_id::text, ''), COALESCE(chunk_count, 0),
+			   COALESCE(folder_id::text, ''),
+			   metadata, status, created_at, updated_at
+			FROM user_materials
+			WHERE user_id = $1 AND status != 'deleted' AND folder_id IS NULL
+			ORDER BY created_at DESC
+			LIMIT $2 OFFSET $3`
+		dataArgs = []interface{}{userID, pageSize, (page - 1) * pageSize}
+	} else {
+		// Specific folder
+		countQuery = `SELECT COUNT(*) FROM user_materials WHERE user_id = $1 AND status != 'deleted' AND folder_id = $2`
+		countArgs = []interface{}{userID, folderID}
+		dataQuery = `
+			SELECT id, user_id, title, content_preview, source_type,
+			       COALESCE(source_url, ''), COALESCE(file_name, ''), COALESCE(file_size, 0),
+			       COALESCE(doc_id::text, ''), COALESCE(chunk_count, 0),
+			   COALESCE(folder_id::text, ''),
+			   metadata, status, created_at, updated_at
+			FROM user_materials
+			WHERE user_id = $1 AND status != 'deleted' AND folder_id = $2
+			ORDER BY created_at DESC
+			LIMIT $3 OFFSET $4`
+		dataArgs = []interface{}{userID, folderID, pageSize, (page - 1) * pageSize}
+	}
+
 	var total int
-	err := m.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM user_materials WHERE user_id = $1 AND status != 'deleted'`,
-		userID,
-	).Scan(&total)
-	if err != nil {
+	if err := m.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	offset := (page - 1) * pageSize
-	rows, err := m.db.QueryContext(ctx, `
-		SELECT id, user_id, title, content_preview, source_type,
-		       COALESCE(source_url, ''), COALESCE(file_name, ''), COALESCE(file_size, 0),
-		       COALESCE(doc_id::text, ''), COALESCE(chunk_count, 0),
-		       metadata, status, created_at, updated_at
-		FROM user_materials
-		WHERE user_id = $1 AND status != 'deleted'
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
-	`, userID, pageSize, offset)
+	rows, err := m.db.QueryContext(ctx, dataQuery, dataArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1088,14 +1149,14 @@ func (m *KbManager) ListMaterials(ctx context.Context, userID string, page, page
 	for rows.Next() {
 		var mat UserMaterial
 		var metadataBytes []byte
-		var sourceURL, fileName sql.NullString
+		var sourceURL, fileName, docID, folderIDStr sql.NullString
 		var fileSize sql.NullInt64
-		var docID sql.NullString
 		var chunkCount sql.NullInt64
 
 		if err := rows.Scan(
 			&mat.ID, &mat.UserID, &mat.Title, &mat.ContentPreview, &mat.SourceType,
 			&sourceURL, &fileName, &fileSize, &docID, &chunkCount,
+			&folderIDStr,
 			&metadataBytes, &mat.Status, &mat.CreatedAt, &mat.UpdatedAt,
 		); err != nil {
 			continue
@@ -1105,6 +1166,7 @@ func (m *KbManager) ListMaterials(ctx context.Context, userID string, page, page
 		mat.FileSize = fileSize.Int64
 		mat.DocID = docID.String
 		mat.ChunkCount = int(chunkCount.Int64)
+		mat.FolderID = folderIDStr.String
 		if len(metadataBytes) > 0 {
 			json.Unmarshal(metadataBytes, &mat.Metadata)
 		}
@@ -1122,21 +1184,22 @@ func (m *KbManager) GetMaterial(ctx context.Context, userID, materialID string) 
 
 	var mat UserMaterial
 	var metadataBytes []byte
-	var sourceURL, fileName sql.NullString
+	var sourceURL, fileName, docID, folderIDStr sql.NullString
 	var fileSize sql.NullInt64
-	var docID sql.NullString
 	var chunkCount sql.NullInt64
 
 	err := m.db.QueryRowContext(ctx, `
 		SELECT id, user_id, title, content_preview, source_type,
 		       COALESCE(source_url, ''), COALESCE(file_name, ''), COALESCE(file_size, 0),
 		       COALESCE(doc_id::text, ''), COALESCE(chunk_count, 0),
+		       COALESCE(folder_id::text, ''),
 		       metadata, status, created_at, updated_at
 		FROM user_materials
 		WHERE id = $1 AND user_id = $2 AND status != 'deleted'
 	`, materialID, userID).Scan(
 		&mat.ID, &mat.UserID, &mat.Title, &mat.ContentPreview, &mat.SourceType,
 		&sourceURL, &fileName, &fileSize, &docID, &chunkCount,
+		&folderIDStr,
 		&metadataBytes, &mat.Status, &mat.CreatedAt, &mat.UpdatedAt,
 	)
 
@@ -1152,6 +1215,7 @@ func (m *KbManager) GetMaterial(ctx context.Context, userID, materialID string) 
 	mat.FileSize = fileSize.Int64
 	mat.DocID = docID.String
 	mat.ChunkCount = int(chunkCount.Int64)
+	mat.FolderID = folderIDStr.String
 	if len(metadataBytes) > 0 {
 		json.Unmarshal(metadataBytes, &mat.Metadata)
 	}
@@ -1779,4 +1843,161 @@ func (m *KbManager) GetStatsForKB(ctx context.Context, kbID string) (*KbStats, e
 	`, kbID).Scan(&stats.RelationCount)
 
 	return stats, nil
+}
+
+// ─── Material Folder Management ──────────────────────────
+
+// ListFolders lists all material folders for a user.
+func (m *KbManager) ListFolders(ctx context.Context, userID string) ([]*MaterialFolder, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT f.id::text, f.user_id, f.name,
+		       COALESCE(f.parent_id::text, ''),
+		       f.sort_order, COALESCE(f.description, ''),
+		       COALESCE((
+		       		SELECT COUNT(*) FROM user_materials um
+		       		WHERE um.folder_id = f.id AND um.status != 'deleted'
+		       ), 0),
+		       f.created_at, f.updated_at
+		FROM material_folders f
+		WHERE f.user_id = $1
+		ORDER BY f.sort_order ASC, f.created_at ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var folders []*MaterialFolder
+	for rows.Next() {
+		var f MaterialFolder
+		if err := rows.Scan(
+			&f.ID, &f.UserID, &f.Name, &f.ParentID,
+			&f.SortOrder, &f.Description, &f.MaterialCount,
+			&f.CreatedAt, &f.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		folders = append(folders, &f)
+	}
+
+	return folders, nil
+}
+
+// CreateFolder creates a new material folder.
+func (m *KbManager) CreateFolder(ctx context.Context, userID, name, parentID, description string) (*MaterialFolder, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("folder name is required")
+	}
+
+	var parentArg any
+	if parentID != "" {
+		parentArg = parentID
+	}
+
+	var f MaterialFolder
+	err := m.db.QueryRowContext(ctx, `
+		INSERT INTO material_folders (user_id, name, parent_id, description)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id::text, user_id, name, COALESCE(parent_id::text, ''), sort_order, COALESCE(description, ''), 0, created_at, updated_at
+	`, userID, name, parentArg, description).Scan(
+		&f.ID, &f.UserID, &f.Name, &f.ParentID,
+		&f.SortOrder, &f.Description, &f.MaterialCount,
+		&f.CreatedAt, &f.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create folder: %w", err)
+	}
+
+	return &f, nil
+}
+
+// UpdateFolder updates a material folder's name and/or description.
+func (m *KbManager) UpdateFolder(ctx context.Context, userID, folderID, name, description string) (*MaterialFolder, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	if folderID == "" {
+		return nil, fmt.Errorf("folder ID is required")
+	}
+
+	var f MaterialFolder
+	err := m.db.QueryRowContext(ctx, `
+		UPDATE material_folders
+		SET name = COALESCE(NULLIF($3, ''), name),
+		    description = COALESCE($4, description),
+		    updated_at = NOW()
+		WHERE id = $1 AND user_id = $2
+		RETURNING id::text, user_id, name, COALESCE(parent_id::text, ''), sort_order, COALESCE(description, ''),
+		          COALESCE((SELECT COUNT(*) FROM user_materials um WHERE um.folder_id = f.id AND um.status != 'deleted'), 0),
+		          created_at, updated_at
+	`, folderID, userID, name, description).Scan(
+		&f.ID, &f.UserID, &f.Name, &f.ParentID,
+		&f.SortOrder, &f.Description, &f.MaterialCount,
+		&f.CreatedAt, &f.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update folder: %w", err)
+	}
+
+	return &f, nil
+}
+
+// DeleteFolder deletes a material folder. Materials in it are moved to root (folder_id = NULL).
+func (m *KbManager) DeleteFolder(ctx context.Context, userID, folderID string) error {
+	if m.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	if folderID == "" {
+		return fmt.Errorf("folder ID is required")
+	}
+
+	// Move materials to root first
+	_, err := m.db.ExecContext(ctx, `
+		UPDATE user_materials SET folder_id = NULL WHERE folder_id = $1 AND user_id = $2
+	`, folderID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to move materials: %w", err)
+	}
+
+	// Delete the folder
+	_, err = m.db.ExecContext(ctx, `
+		DELETE FROM material_folders WHERE id = $1 AND user_id = $2
+	`, folderID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete folder: %w", err)
+	}
+
+	return nil
+}
+
+// MoveMaterialToFolder moves a material to a different folder (empty = root).
+func (m *KbManager) MoveMaterialToFolder(ctx context.Context, userID, materialID, folderID string) error {
+	if m.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	if materialID == "" {
+		return fmt.Errorf("material ID is required")
+	}
+
+	var folderArg any
+	if folderID != "" {
+		folderArg = folderID
+	}
+
+	_, err := m.db.ExecContext(ctx, `
+		UPDATE user_materials SET folder_id = $3, updated_at = NOW()
+		WHERE id = $1 AND user_id = $2 AND status != 'deleted'
+	`, materialID, userID, folderArg)
+	if err != nil {
+		return fmt.Errorf("failed to move material: %w", err)
+	}
+
+	return nil
 }

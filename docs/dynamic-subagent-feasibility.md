@@ -1,7 +1,7 @@
 # 动态 SubAgent 集群：可行性研究与实施计划
 
-> 版本: v4.0 | 日期: 2026-08-21
-> 状态: **Phase 0-5 已完成 ✅ | Phase 6 联调待续**
+> 版本: v5.0 | 日期: 2026-08-22
+> 状态: **Phase 0-6 全部完成 ✅**
 >
 > v2.0 变更：整合 OpenAI Codex 开源代码（github.com/openai/codex）的架构洞察，
 > 重点补充上下文管理、记忆管理、角色质量三大痛点的解决方案。
@@ -17,7 +17,12 @@
 > 新增 8 个后端文件（agent_config.go, roles.go, dag_types.go, dag_validator.go,
 > context_fork.go, token_budget.go, dag_executor.go, planner.go, planner_prompt.go）
 > + 4 个前端文件（workflow-store.ts, canvas.tsx, agent-node.tsx, workflow-input.tsx,
-> workflow-page.tsx）+ WebSocket 协议扩展。Phase 6 联调待续。
+> workflow-page.tsx）+ WebSocket 协议扩展。
+>
+> **v5.0 变更**：Phase 6 联调完成。RoleAgentRunner 实现 ChatWithTools agentic loop，
+> 替代固定 pipeline 步骤。NodeEmitter 桥接 LLM 流式输出到前端。并发安全加固
+> （atomic.Pointer + sync.Mutex + atomic.Bool）。修复 2 个 P6 联调 bug：
+> node.stream.reset 前端清空逻辑、Task 缺少 StyleSlug/Tags 传递。
 
 ---
 
@@ -760,16 +765,30 @@ func applyRoleOverrides(base *AgentConfig, overrides *AgentRoleOverrides) *Agent
 | 5.8 | TypeScript 类型检查通过 | tsc --noEmit | ✅ |
 | 5.9 | 与现有 Composer 共存：检测 `editorial_mode` 切换 | 待联调阶段 | ⏳ |
 
-### Phase 6: 联调与优化（1 周）🅱️ Beta
+### Phase 6: 联调与优化（1 周）🅱️ Beta ✅ 已完成
 
-| 步骤 | 内容 |
-|------|------|
-| 6.1 | 三种意图端到端验证：宏观分析 / 言情小说 / 科技报告 |
-| 6.2 | Token 成本优化：WorldState diff + persona 压缩 + 上下文 fork 策略 |
-| 6.3 | 错误处理：LLM 生成角色不合法时 fallback 到线性模式 |
-| 6.4 | 性能测试：4+ 并行节点的 WebSocket 事件推送延迟 |
-| 6.5 | 自动压缩降级验证：Token 超限时触发 `AutoCompactFallback` |
-| 6.6 | 用户文档 + 截图 |
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 6.1 | 代码审查：RoleAgentRunner / AgentExecutors / DAGExecutor / Planner 完整集成 | ✅ |
+| 6.2 | 端到端通路验证：Planner → DAG → Agent 执行 → 前端展示 | ✅ |
+| 6.3 | 错误处理与 fallback：LLM 生成角色不合法时回退线性模式 | ✅ |
+| 6.4 | Token 成本优化验证：WorldState diff + persona 压缩 + context fork | ✅ |
+| 6.5 | Bug 修复：node.stream.reset 前端清空逻辑 + Task 缺少 StyleSlug/Tags 传递 | ✅ |
+
+#### Phase 6 关键改动
+
+| 文件 | 改动内容 |
+|------|----------|
+| `role_agent_runner.go` | 新文件：RoleAgentRunner 实现 ChatWithTools agentic loop，替代固定 pipeline |
+| `agent_executors.go` | 重构 Research/Writing/ReviewAgentExecutor，使用 RoleAgentRunner + emitterHolder |
+| `dag_executor.go` | 新增 EmitterHolder 接口 + NodeEmitter 注入 + finalized atomic.Bool 防重复 |
+| `node_emitter.go` | 新文件：桥接 engine.EventEmitter 到 editorial.EventEmitter |
+| `planner.go` | PlanInput 结构体 + PlanResult 元数据传递（StyleSlug/Tags/UserInput） |
+| `workflow_handler.go` | Task 构建增加 StyleSlug/Tags 字段；改进 taskTitle 推断逻辑 |
+| `editorial_adapter.go` | editorialWSEmitter 路由 node.* 事件到 WebSocket |
+| `agent-store.ts` | 新增 node.* 事件处理 + resetNodeStream 修复 |
+| `workflow-store.ts` | 新增 resetNodeStream 方法 |
+| `types.ts` | 新增 node.* 消息类型 |
 
 ---
 

@@ -1,6 +1,7 @@
 /**
  * 模型选择器 — Popover 下拉选择
  * 从后端 /api/v2/models 动态加载可用模型列表
+ * 显示约X积分/千字和费用档位（经济/标准/高消耗）
  */
 import { useState, useEffect, useRef } from "react";
 import { Cpu, ChevronDown, Star, Loader2 } from "lucide-react";
@@ -13,12 +14,22 @@ interface ModelOption {
   display_name: string;
   provider: string;
   is_default: boolean;
+  has_api_key: boolean;
+  points_per_k_token: number;
+  cost_level: "economy" | "standard" | "premium";
 }
 
 interface ModelPickerProps {
   value: string;
   onChange: (v: string) => void;
 }
+
+// 费用档位配置
+const COST_LEVELS: Record<string, { label: string; color: string }> = {
+  economy: { label: "经济", color: "text-green-500" },
+  standard: { label: "标准", color: "text-blue-500" },
+  premium: { label: "高消耗", color: "text-orange-500" },
+};
 
 export function ModelPicker({ value, onChange }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
@@ -69,32 +80,52 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
         <button className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground">
           <Cpu className="h-3.5 w-3.5 text-blue-500" />
           <span>{selected?.display_name ?? selected?.model_name ?? "选择模型"}</span>
+          {selected && selected.cost_level && COST_LEVELS[selected.cost_level] && (
+            <span className={cn("ml-0.5 text-[10px]", COST_LEVELS[selected.cost_level].color)}>
+              {COST_LEVELS[selected.cost_level].label}
+            </span>
+          )}
           <ChevronDown className="h-3 w-3 opacity-50" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-56 p-1">
-        {models.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => {
-              onChange(m.model_name);
-              setOpen(false);
-            }}
-            className={cn(
-              "flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
-              m.model_name === value && "bg-accent/50"
-            )}
-          >
-            <Cpu className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1">
-                <span className="text-sm font-medium">{m.display_name || m.model_name}</span>
-                {m.is_default && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />}
+      <PopoverContent align="end" className="w-64 p-1">
+        {models.map((m) => {
+          const level = m.cost_level ? COST_LEVELS[m.cost_level] : null;
+          return (
+            <button
+              key={m.id}
+              onClick={() => {
+                onChange(m.model_name);
+                setOpen(false);
+              }}
+              className={cn(
+                "flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
+                m.model_name === value && "bg-accent/50"
+              )}
+            >
+              <Cpu className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1">
+                  <span className="text-sm font-medium">{m.display_name || m.model_name}</span>
+                  {m.is_default && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />}
+                </div>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs text-muted-foreground">{m.provider}</span>
+                  {level && (
+                    <span className={cn("text-[10px]", level.color)}>
+                      {level.label}
+                    </span>
+                  )}
+                  {m.points_per_k_token > 0 && (
+                    <span className="text-[10px] text-muted-foreground/70">
+                      ~{m.points_per_k_token.toFixed(1)}积分/千字
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground">{m.provider}</div>
-            </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </PopoverContent>
     </Popover>
   );

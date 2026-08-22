@@ -84,6 +84,7 @@ func WritingTools(hasKnowledge bool) []tools.ToolDef {
 func WritingToolExecutor(
 	search *tools.SearchClient,
 	kbSearcher tools.KnowledgeSearcher,
+	userID string,
 	searchResults []engine.SearchResult,
 ) tools.ToolExecutor {
 	return func(name string, arguments string) (string, error) {
@@ -124,7 +125,7 @@ func WritingToolExecutor(
 			if kbSearcher == nil {
 				return "Error: knowledge base not available", nil
 			}
-			results, err := kbSearcher.SearchKB(context.Background(), args.Query, 5)
+			results, err := kbSearcher.SearchKB(context.Background(), userID, args.Query, 5)
 			if err != nil {
 				return fmt.Sprintf("KB search error: %v", err), nil
 			}

@@ -53,11 +53,36 @@ func (s *Server) handleListMyStyles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	styles, err := store.ListProfilesByOwner(r.Context(), userID)
+	// Use ListProfilesWithLatestVersion to include config JSON in a single query,
+	// avoiding N+1 requests from the frontend.
+	profiles, err := store.ListProfilesWithLatestVersion(r.Context(), userID)
 	if err != nil {
 		slog.Error("failed to list user styles", "error", err, "user_id", userID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list styles")
 		return
+	}
+
+	styles := make([]map[string]any, 0, len(profiles))
+	for _, pwc := range profiles {
+		item := map[string]any{
+			"id":             pwc.ID,
+			"slug":           pwc.Slug,
+			"name":           pwc.Name,
+			"description":    pwc.Description,
+			"status":         pwc.Status,
+			"current_version": pwc.CurrentVersion,
+			"created_at":     pwc.CreatedAt,
+			"updated_at":     pwc.UpdatedAt,
+		}
+		// Parse the config JSON string into a proper object so the frontend
+		// receives a ready-to-use config without extra requests.
+		if pwc.ConfigJSON != "" {
+			var cfg any
+			if json.Unmarshal([]byte(pwc.ConfigJSON), &cfg) == nil {
+				item["config"] = cfg
+			}
+		}
+		styles = append(styles, item)
 	}
 
 	response.OK(w, map[string]any{"styles": styles})
@@ -124,7 +149,14 @@ func (s *Server) handleGetMyStyle(w http.ResponseWriter, r *http.Request) {
 
 	if p.CurrentVersion > 0 {
 		if v, err := s.userStyleStore.GetLatestVersion(r.Context(), p.ID); err == nil {
-			result["config"] = v.Config
+			// v.Config is a JSON string; unmarshal it so the response contains
+			// a proper JSON object instead of a doubly-encoded string.
+			var cfg any
+			if json.Unmarshal([]byte(v.Config), &cfg) == nil {
+				result["config"] = cfg
+			} else {
+				result["config"] = v.Config // fallback: raw string
+			}
 		}
 	}
 
@@ -236,6 +268,35 @@ func (s *Server) handleSubmitMyStyleForReview(w http.ResponseWriter, r *http.Req
 		"review_id": req.ID,
 		"status":    req.Status,
 		"message":   "style submitted for review",
+	})
+}
+
+func (s *Server) handleWithdrawMyStyleReview(w http.ResponseWriter, r *http.Request) {
+	userID, store, ok := s.requireUserAndStore(w, r)
+	if !ok {
+		return
+	}
+
+	p, ok := s.requireOwnedProfile(w, r, userID)
+	if !ok {
+		return
+	}
+
+	if p.Status != "pending_review" {
+		response.Err(w, http.StatusConflict, "not_pending", "only pending review can be withdrawn")
+		return
+	}
+
+	if err := store.WithdrawReview(r.Context(), p.ID); err != nil {
+		slog.Error("failed to withdraw review", "error", err, "profile_id", p.ID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to withdraw review")
+		return
+	}
+
+	response.OK(w, map[string]any{
+		"id":      p.ID,
+		"status":  "draft",
+		"message": "review withdrawn, style reverted to draft",
 	})
 }
 

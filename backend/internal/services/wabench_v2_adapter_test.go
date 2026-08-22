@@ -71,7 +71,7 @@ func TestLuminbuddyV2AdapterExecutesRealHarness(t *testing.T) {
 
 type fixtureWABenchKnowledgeSearcher struct{}
 
-func (fixtureWABenchKnowledgeSearcher) SearchKB(context.Context, string, int) ([]engine.SearchResult, error) {
+func (fixtureWABenchKnowledgeSearcher) SearchKB(_ context.Context, _ string, _ string, _ int) ([]engine.SearchResult, error) {
 	return []engine.SearchResult{{Title: "fixture", Snippet: "fixture", Source: "local_kb"}}, nil
 }
 

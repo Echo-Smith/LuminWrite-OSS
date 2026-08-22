@@ -33,6 +33,8 @@ export function useAgentWebSocket() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── 自动连接 ──────────────────────────────────────────
+  // 依赖 token：当 token 变化（如游客注册升级）时，上层 login() 会先
+  // close 旧 WS 并置 null，此处随之触发用新 token 重连。
   useEffect(() => {
     if (!isAuthenticated) return;
 
@@ -43,7 +45,7 @@ export function useAgentWebSocket() {
     }
 
     connectWS();
-  }, [isAuthenticated, connectWS]);
+  }, [isAuthenticated, token, connectWS]);
 
   // ─── 监听断线 → 指数退避重连 ────────────────────────────
   useEffect(() => {

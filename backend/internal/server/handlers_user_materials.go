@@ -29,6 +29,7 @@ func (s *Server) getUserID(r *http.Request) string {
 }
 
 // handleUserMaterialList lists the authenticated user's materials.
+// Supports ?folder_id= query param: empty=root, "all"=all folders, UUID=specific folder.
 func (s *Server) handleUserMaterialList(w http.ResponseWriter, r *http.Request) {
 	if s.kbMgr == nil {
 		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
@@ -43,8 +44,9 @@ func (s *Server) handleUserMaterialList(w http.ResponseWriter, r *http.Request) 
 
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 20)
+	folderID := r.URL.Query().Get("folder_id") // empty=root, "all"=all, UUID=specific
 
-	materials, total, err := s.kbMgr.ListMaterials(r.Context(), userID, page, pageSize)
+	materials, total, err := s.kbMgr.ListMaterialsInFolder(r.Context(), userID, folderID, page, pageSize)
 	if err != nil {
 		slog.Warn("list user materials failed", "error", err, "user_id", userID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list materials")
@@ -73,8 +75,9 @@ func (s *Server) handleUserMaterialCreate(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		Title   string `json:"title"`
-		Content string `json:"content"`
+		Title    string `json:"title"`
+		Content  string `json:"content"`
+		FolderID string `json:"folder_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
@@ -120,6 +123,7 @@ func (s *Server) handleUserMaterialCreate(w http.ResponseWriter, r *http.Request
 		SourceType:     "text",
 		DocID:          doc.ID,
 		ChunkCount:     len(chunks),
+		FolderID:       req.FolderID,
 		Status:         "active",
 	}
 	if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {
@@ -159,6 +163,7 @@ func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request
 	defer file.Close()
 
 	title := r.FormValue("title")
+	folderID := r.FormValue("folder_id")
 	if title == "" {
 		title = header.Filename
 	}
@@ -217,6 +222,7 @@ func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request
 			FileSize:       header.Size,
 			DocID:          docID,
 			ChunkCount:     0, // will be updated by parser
+			FolderID:       folderID,
 			Status:         "active",
 		}
 		if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {
@@ -246,6 +252,7 @@ func (s *Server) handleUserMaterialUpload(w http.ResponseWriter, r *http.Request
 		FileSize:       header.Size,
 		DocID:          docID,
 		ChunkCount:     chunkCount,
+		FolderID:       folderID,
 		Status:         "active",
 	}
 	if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {

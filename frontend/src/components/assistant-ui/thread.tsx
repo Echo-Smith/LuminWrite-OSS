@@ -4,14 +4,20 @@
  * 使用动画体系：
  *   - 空状态：品牌渐变图标 + 淡入上移 + stagger 建议按钮
  *   - 消息列表：自动平滑滚动
+ *
+ * 空状态建议按钮接入热搜 API：
+ *   - 进入空状态时请求 /api/v2/topics?filter=hot&page_size=5，取 Top 3
+ *   - 点击建议时携带 topic_url 等完整 Topic 上下文（后端可据此抓取事件背景）
+ *   - 请求失败或为空时 fallback 到硬编码建议
  */
 import { useRef, useEffect, useCallback, useState } from "react";
-import { PenLine, Lightbulb, Sparkles, ArrowDown } from "lucide-react";
+import { PenLine, Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-react";
 import { UserMessage } from "./user-message";
 import { AssistantMessage } from "./assistant-message";
 import { useAgentStore } from "@/stores/agent-store";
 import { Button } from "@/components/ui/button";
 import { FadeIn, StaggerItem } from "@/components/animation";
+import type { Topic, AgentStartPayload } from "@/lib/types";
 
 export function Thread() {
   const sessions = useAgentStore((s) => s.sessions);
@@ -58,51 +64,7 @@ export function Thread() {
 
   // 空状态
   if (messages.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center p-8">
-        <div className="max-w-md text-center space-y-8">
-          {/* 品牌图标 */}
-          <FadeIn direction="scale" className="flex justify-center">
-            <div className="relative flex h-20 w-20 items-center justify-center rounded-3xl bg-brand-gradient shadow-lg">
-              <PenLine className="h-9 w-9 text-white" />
-              <div className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 shadow-sm">
-                <Sparkles className="h-3.5 w-3.5 text-white" />
-              </div>
-            </div>
-          </FadeIn>
-
-          {/* 标题 */}
-          <FadeIn direction="up" delay={100} className="space-y-2">
-            <h2 className="text-2xl font-bold tracking-tight">笔润智谈写作工作台</h2>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              输入你的写作需求，AI 会自动检索素材、生成提纲、撰写文章并进行质量自检。
-            </p>
-          </FadeIn>
-
-          {/* 建议按钮 */}
-          <FadeIn direction="up" delay={200} className="space-y-3">
-            <p className="text-xs text-muted-foreground font-mono-sm">试试这些</p>
-            <div className="flex flex-wrap justify-center gap-2">
-              {[
-                "基于热搜写一篇关于外卖骑手闯红灯的评论",
-                "写一篇关于城市垃圾分类的政论文章",
-                "帮我润色一段关于社区治理的文字",
-              ].map((suggestion, i) => (
-                <StaggerItem
-                  key={suggestion}
-                  index={i}
-                  interval={80}
-                  animation="fade-up"
-                  as="div"
-                >
-                  <SuggestionButton text={suggestion} />
-                </StaggerItem>
-              ))}
-            </div>
-          </FadeIn>
-        </div>
-      </div>
-    );
+    return <EmptyState />;
   }
 
   return (
@@ -167,18 +129,174 @@ export function Thread() {
   );
 }
 
-function SuggestionButton({ text }: { text: string }) {
+// ─── 空状态组件 ───────────────────────────────────────────
+
+/** 硬编码 fallback 建议（热搜 API 失败时使用） */
+const FALLBACK_SUGGESTIONS = [
+  "写一篇关于城市垃圾分类的政论文章",
+  "帮我润色一段关于社区治理的文字",
+  "基于热搜写一篇关于外卖骑手闯红灯的评论",
+];
+
+/**
+ * 从热搜话题生成写作建议文案
+ * 格式：基于热搜「话题标题」写一篇评论
+ * 截断长标题以适配按钮宽度
+ */
+function buildSuggestionText(topic: Topic): string {
+  const title = topic.title.length > 24 ? `${topic.title.slice(0, 24)}…` : topic.title;
+  return `基于热搜「${title}」写一篇评论`;
+}
+
+/**
+ * 将 Topic 转换为 AgentStartPayload
+ * 携带 topic_url（后端可据此抓取事件背景增强写作）
+ * 并将选题描述注入 user_materials
+ */
+function topicToPayload(topic: Topic): AgentStartPayload {
+  const userMaterials: string[] = [];
+  if (topic.description) {
+    userMaterials.push(`📎 ${topic.title}: ${topic.description}`);
+  }
+
+  return {
+    message: `基于热搜选题「${topic.title}」写一篇评论文章${topic.url ? `\n热搜来源：${topic.url}` : ""}`,
+    mode: "writing",
+    topic_url: topic.url || undefined,
+    user_materials: userMaterials.length > 0 ? userMaterials : undefined,
+  };
+}
+
+/** 单个建议按钮 — 支持纯文本和 Topic 两种模式 */
+function SuggestionButton({
+  text,
+  payload,
+  isHot = false,
+}: {
+  text: string;
+  payload?: AgentStartPayload;
+  isHot?: boolean;
+}) {
   const startWriting = useAgentStore((s) => s.startWriting);
 
   return (
     <Button
       variant="outline"
       size="sm"
-      className="gap-1.5 text-xs "
-      onClick={() => startWriting({ message: text })}
+      className="gap-1.5 text-xs"
+      onClick={() => startWriting(payload ?? { message: text })}
     >
-      <Lightbulb className="h-3 w-3 text-amber-500" />
+      {isHot ? (
+        <Flame className="h-3 w-3 text-orange-500" />
+      ) : (
+        <Lightbulb className="h-3 w-3 text-amber-500" />
+      )}
       {text}
     </Button>
+  );
+}
+
+function EmptyState() {
+  const [suggestions, setSuggestions] = useState<{ text: string; payload?: AgentStartPayload; isHot?: boolean }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/v2/topics?filter=hot&page=1&page_size=5");
+        const json = await res.json();
+        const data = json.data ?? json;
+        const topics = (data?.topics ?? []) as Topic[];
+
+        if (cancelled) return;
+
+        if (topics.length > 0) {
+          const topThree = topics.slice(0, 3);
+          setSuggestions(
+            topThree.map((topic) => ({
+              text: buildSuggestionText(topic),
+              payload: topicToPayload(topic),
+              isHot: true,
+            })),
+          );
+        } else {
+          // 没有热搜数据 → fallback
+          setSuggestions(
+            FALLBACK_SUGGESTIONS.map((text) => ({ text })),
+          );
+        }
+      } catch {
+        if (cancelled) return;
+        setSuggestions(FALLBACK_SUGGESTIONS.map((text) => ({ text })));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="max-w-md text-center space-y-8">
+        {/* 品牌图标 */}
+        <FadeIn direction="scale" className="flex justify-center">
+          <div className="relative flex h-20 w-20 items-center justify-center rounded-3xl bg-brand-gradient shadow-lg">
+            <PenLine className="h-9 w-9 text-white" />
+            <div className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 shadow-sm">
+              <Sparkles className="h-3.5 w-3.5 text-white" />
+            </div>
+          </div>
+        </FadeIn>
+
+        {/* 标题 */}
+        <FadeIn direction="up" delay={100} className="space-y-2">
+          <h2 className="text-2xl font-bold tracking-tight">笔润智谈写作工作台</h2>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            输入你的写作需求，AI 会自动检索素材、生成提纲、撰写文章并进行质量自检。
+          </p>
+        </FadeIn>
+
+        {/* 建议按钮 */}
+        <FadeIn direction="up" delay={200} className="space-y-3">
+          <div className="flex items-center justify-center gap-1.5">
+            <Flame className="h-3.5 w-3.5 text-orange-500" />
+            <p className="text-xs text-muted-foreground font-mono-sm">
+              {loading ? "正在获取热搜话题…" : suggestions.some((s) => s.isHot) ? "试试这些热搜话题" : "试试这些"}
+            </p>
+            {loading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+          </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            {loading ? (
+              // 骨架占位
+              [0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="h-8 w-48 animate-pulse rounded-md bg-muted/60"
+                />
+              ))
+            ) : (
+              suggestions.map((suggestion, i) => (
+                <StaggerItem
+                  key={suggestion.text}
+                  index={i}
+                  interval={80}
+                  animation="fade-up"
+                  as="div"
+                >
+                  <SuggestionButton
+                    text={suggestion.text}
+                    payload={suggestion.payload}
+                    isHot={suggestion.isHot}
+                  />
+                </StaggerItem>
+              ))
+            )}
+          </div>
+        </FadeIn>
+      </div>
+    </div>
   );
 }

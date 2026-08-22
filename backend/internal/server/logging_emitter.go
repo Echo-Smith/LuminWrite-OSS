@@ -52,10 +52,11 @@ const (
 
 // LoggingEmitter wraps another EventEmitter and records events to the database.
 type LoggingEmitter struct {
-	inner  engine.EventEmitter // the wrapped emitter (typically WSEmitter)
-	repo   *database.SessionEventRepo
-	trace  string
-	level  EventLogLevel
+	inner      engine.EventEmitter // the wrapped emitter (typically WSEmitter)
+	repo       *database.SessionEventRepo
+	trace      string
+	level      EventLogLevel
+	pointsUsed float64 // 供 Completed 事件携带
 
 	// Async write queue: events are buffered and written in a background goroutine
 	// to avoid blocking the WebSocket forwarding path.
@@ -238,12 +239,14 @@ func (e *LoggingEmitter) Error(code, message string, step engine.StepName) {
 
 func (e *LoggingEmitter) Completed(article string, articleTitle string, review interface{}, tokenUsage interface{}) {
 	e.inner.Completed(article, articleTitle, review, tokenUsage)
-	e.enqueue(EventCompleted, "", map[string]interface{}{
+	data := map[string]interface{}{
 		"article_title":  articleTitle,
 		"article_length": len(article),
 		"review":         review,
 		"token_usage":    tokenUsage,
-	})
+		"points_used":    e.pointsUsed,
+	}
+	e.enqueue(EventCompleted, "", data)
 	// Flush after completion to ensure all events are persisted
 	go e.Flush()
 }
@@ -263,6 +266,14 @@ func (e *LoggingEmitter) Compaction(originalMessages, savedTokens int, summaryPr
 		"history_version":   historyVersion,
 		"trigger_reason":    triggerReason,
 	})
+}
+
+// SetPointsUsed sets the points used for this session (for Completed event).
+func (e *LoggingEmitter) SetPointsUsed(points float64) {
+	e.pointsUsed = points
+	if ws, ok := e.inner.(*WSEmitter); ok {
+		ws.SetPointsUsed(points)
+	}
 }
 
 // EmitMemoryUsed delegates to WSEmitter's memory event.

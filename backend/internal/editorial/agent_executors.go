@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
+	"sync/atomic"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
@@ -16,28 +16,32 @@ import (
 
 // ─── 研究 Agent 执行器 ───────────────────────────────────
 //
-// 复用 V2 的 QueryPlanStep + SearchStep + RelevanceStep + CompressStep
+// 使用 RoleAgentRunner 让 LLM 自主调用 search_web / search_knowledge / read_source
 // 产出 Artifact: research_brief + source_pack + fact_claims
 
 // ResearchAgentExecutor 研究 Agent 执行器
 type ResearchAgentExecutor struct {
-	llm      *tools.LLMClient
-	search   *tools.SearchClient
-	embedding *tools.EmbeddingClient
-	store    *Store
+	llm          *tools.LLMClient
+	search       *tools.SearchClient
+	embedding    *tools.EmbeddingClient
+	kbSearcher   tools.KnowledgeSearcher
+	store        *Store
+	toolRegistry *EditorialToolRegistry
+	*emitterHolder
 }
 
 // NewResearchAgentExecutor 创建研究 Agent 执行器
-func NewResearchAgentExecutor(llm *tools.LLMClient, search *tools.SearchClient, embedding *tools.EmbeddingClient, store *Store) *ResearchAgentExecutor {
+func NewResearchAgentExecutor(llm *tools.LLMClient, search *tools.SearchClient, embedding *tools.EmbeddingClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ResearchAgentExecutor {
 	return &ResearchAgentExecutor{
-		llm: llm, search: search, embedding: embedding, store: store,
+		llm: llm, search: search, embedding: embedding, store: store, kbSearcher: kbSearcher,
+		toolRegistry:  toolRegistry,
+		emitterHolder: newEmitterHolder(),
 	}
 }
 
 func (e *ResearchAgentExecutor) Role() AgentRole { return RoleResearch }
 
 func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, task *Task) (*Artifact, error) {
-	// 构建一个临时的 ExecutionContext 用于复用 V2 Steps
 	execCtx := engine.NewExecutionContext("task_"+task.ID, task.OwnerID, task.Description)
 	execCtx.StyleSlug = task.StyleSlug
 	execCtx.Mode = "auto"
@@ -50,96 +54,81 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		execCtx.UserInput = task.Title + ": " + task.Description
 	}
 
-	// ── 注入组织知识 ──
-	if org := ac.GetOrgKnowledge(); org != nil {
-		// 注入高可信度信源提示
-		if len(org.TopSources) > 0 {
-			var sourceHints []string
-			for _, s := range org.TopSources {
-				sourceHints = append(sourceHints, fmt.Sprintf("%s (可信度: %.1f, 已验证: %d次)",
-					s.SourceDomain, s.CredibilityScore, s.VerifiedCount))
-			}
-			execCtx.UserInput += "\n\n[高可信度信源] 优先参考以下信源：\n" + strings.Join(sourceHints, "\n")
-		}
-		// 注入活跃知识
-		if len(org.ActiveKnowledge) > 0 {
-			var knowledgeHints []string
-			for _, k := range org.ActiveKnowledge {
-				knowledgeHints = append(knowledgeHints, fmt.Sprintf("- %s: %s", k.Title, k.Content))
-			}
-			execCtx.UserInput += "\n\n[组织知识] 以下为编辑部已确认的知识：\n" + strings.Join(knowledgeHints, "\n")
-		}
-		// 注入栏目偏好
-		if org.ColumnPref != nil && org.ColumnPref.Tone != "" {
-			execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + org.ColumnPref.Tone
-		}
-		slog.Info("research agent: org knowledge injected",
-			"task_id", task.ID, "knowledge_count", len(org.ActiveKnowledge), "sources_count", len(org.TopSources))
+	// ── 获取角色配置（优先使用 DAG Planner 生成的，否则用 BuiltinRoles）──
+	agentCfg := getAgentConfig(ac, "researcher")
+
+	// ── 启动 RoleAgentRunner ──
+	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, nil, e.currentOrNoop(), e.toolRegistry)
+	result, err := runner.Run(ctx, RoleRunConfig{
+		AgentConfig:      agentCfg,
+		Task:             task,
+		AgentContext:     ac,
+		ExecutionContext: execCtx,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("research agent runner: %w", err)
 	}
 
-	emitter := &noopEmitter{}
+	tokenUsed := result.Tokens
 
-	// 1. Query Plan
-	queryPlanStep := steps.NewQueryPlanStep(e.llm)
-	if err := queryPlanStep.Execute(ctx, execCtx, emitter); err != nil {
-		return nil, fmt.Errorf("query plan: %w", err)
-	}
-
-	// 2. Search
-	searchStep := steps.NewSearchStep(e.llm, e.search)
-	if err := searchStep.Execute(ctx, execCtx, emitter); err != nil {
-		return nil, fmt.Errorf("search: %w", err)
-	}
-
-	// 3. Relevance
-	relevanceStep := steps.NewRelevanceStepWithEmbedding(e.embedding)
-	if err := relevanceStep.Execute(ctx, execCtx, emitter); err != nil {
-		return nil, fmt.Errorf("relevance: %w", err)
-	}
-
-	// 4. Compress
-	compressStep := steps.NewCompressStep(e.llm)
-	if err := compressStep.Execute(ctx, execCtx, emitter); err != nil {
-		return nil, fmt.Errorf("compress: %w", err)
-	}
-
-	// 5. 产出交付物
-	tokenUsed := execCtx.TotalTokens
-
-	// 事实声明表 — 从搜索结果中提取关键事实声明（先构建，brief 中需引用）
+	// ── 从信号工具参数中提取研究简报 ──
+	researchBriefText := result.Output
+	var briefSources []map[string]interface{}
 	factClaims := make([]map[string]interface{}, 0)
-	for _, sr := range execCtx.SearchResults {
-		if sr.Relevance == "strong" || sr.Relevance == "medium" {
-			factClaims = append(factClaims, map[string]interface{}{
-				"claim":      sr.Snippet,
-				"source_url": sr.URL,
-				"source":     sr.Source,
-				"relevance":  sr.Relevance,
-				"verified":   false, // 待审校 Agent 验证
+
+	if briefArgs, ok := result.SignalToolArgs["submit_research_brief"]; ok {
+		var parsed struct {
+			Summary string                   `json:"summary"`
+			Sources []map[string]interface{} `json:"sources"`
+			Claims  []map[string]interface{} `json:"claims"`
+		}
+		if err := json.Unmarshal([]byte(briefArgs), &parsed); err == nil {
+			if parsed.Summary != "" {
+				researchBriefText = parsed.Summary
+			}
+			if len(parsed.Sources) > 0 {
+				briefSources = parsed.Sources
+			}
+			if len(parsed.Claims) > 0 {
+				factClaims = parsed.Claims
+			}
+		}
+	}
+
+	// Fallback: 如果信号工具没被调用，从搜索结果中构建
+	if len(briefSources) == 0 {
+		for _, sr := range result.SearchResults {
+			briefSources = append(briefSources, map[string]interface{}{
+				"url":       sr.URL,
+				"source":    sr.Source,
+				"relevance": sr.Relevance,
 			})
 		}
 	}
+	if len(factClaims) == 0 {
+		for _, sr := range result.SearchResults {
+			if sr.Relevance == "strong" || sr.Relevance == "medium" {
+				factClaims = append(factClaims, map[string]interface{}{
+					"claim":      sr.Snippet,
+					"source_url": sr.URL,
+					"source":     sr.Source,
+					"relevance":  sr.Relevance,
+					"verified":   false,
+				})
+			}
+		}
+	}
 
-	// 研究简报 — 存为结构化 JSON 供动态路由评估
-	researchBriefText := execCtx.CompressedContext
 	if researchBriefText == "" {
 		researchBriefText = "无可用研究简报"
 	}
 
-	// 构建 brief JSON: { summary, sources, claims, gaps }
-	briefSources := make([]map[string]interface{}, 0, len(execCtx.SearchResults))
-	for _, sr := range execCtx.SearchResults {
-		briefSources = append(briefSources, map[string]interface{}{
-			"url":       sr.URL,
-			"source":    sr.Source,
-			"relevance": sr.Relevance,
-		})
-	}
+	// 构建 brief JSON
 	briefData, _ := json.Marshal(map[string]interface{}{
 		"summary": researchBriefText,
 		"sources": briefSources,
 		"claims":  factClaims,
-		"gaps":    []string{}, // 研究 Agent 当前不产 gaps
+		"gaps":    []string{},
 	})
 	researchBriefContent := string(briefData)
 	briefArtifact, err := e.store.CreateArtifact(ctx, SubmitArtifactInput{
@@ -152,7 +141,7 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		return nil, fmt.Errorf("create research brief: %w", err)
 	}
 
-	// 信源包 — 包含分级和可信度
+	// 信源包
 	type sourceEntry struct {
 		Title     string `json:"title"`
 		Snippet   string `json:"snippet"`
@@ -161,8 +150,8 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		Relevance string `json:"relevance,omitempty"`
 		Score     float64 `json:"score,omitempty"`
 	}
-	sources := make([]sourceEntry, 0, len(execCtx.SearchResults))
-	for _, sr := range execCtx.SearchResults {
+	sources := make([]sourceEntry, 0, len(result.SearchResults))
+	for _, sr := range result.SearchResults {
 		sources = append(sources, sourceEntry{
 			Title: sr.Title, Snippet: sr.Snippet, URL: sr.URL,
 			Source: sr.Source, Relevance: sr.Relevance, Score: sr.Score,
@@ -198,7 +187,7 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 		}
 	}
 
-	// 自动批准所有研究交付物（研究 Agent 的产出默认可信，由审校 Agent 验证）
+	// 自动批准所有研究交付物
 	autoApprove := func(artID string, note string) {
 		if artID == "" {
 			return
@@ -217,7 +206,7 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 	}
 
 	// ── 组织记忆：记录信源使用情况 ──
-	for _, sr := range execCtx.SearchResults {
+	for _, sr := range result.SearchResults {
 		domain := extractDomain(sr.URL)
 		if domain == "" {
 			domain = sr.Source
@@ -230,7 +219,7 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 			SourceName:   sr.Source,
 			Category:     categorizeSource(sr.Source),
 			TaskID:       task.ID,
-			Verified:     false, // 研究 Agent 阶段未验证，待审校 Agent 确认
+			Verified:     false,
 			Refuted:      false,
 		}); err != nil {
 			slog.Warn("failed to record source usage", "domain", domain, "error", err)
@@ -238,27 +227,30 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 	}
 
 	slog.Info("research agent completed",
-		"task_id", task.ID, "sources", len(execCtx.SearchResults), "fact_claims", len(factClaims), "tokens", tokenUsed)
+		"task_id", task.ID, "sources", len(result.SearchResults), "fact_claims", len(factClaims), "tokens", tokenUsed)
 
 	return briefArtifact, nil
 }
 
 // ─── 写作 Agent 执行器 ───────────────────────────────────
 //
-// 复用 V2 的 OutlineStep + WriteStep + StyleProfile
+// 使用 RoleAgentRunner 让 LLM 自主调用 search_knowledge / read_source / generate_outline / write_article
 // 产出 Artifact: outline → draft / revised_draft
 
 // WritingAgentExecutor 写作 Agent 执行器
 type WritingAgentExecutor struct {
-	llm     *tools.LLMClient
-	profile *profile.StyleProfile
-	search  *tools.SearchClient
-	store   *Store
+	llm          *tools.LLMClient
+	profile      *profile.StyleProfile
+	search       *tools.SearchClient
+	kbSearcher   tools.KnowledgeSearcher
+	store        *Store
+	toolRegistry *EditorialToolRegistry
+	*emitterHolder
 }
 
 // NewWritingAgentExecutor 创建写作 Agent 执行器
-func NewWritingAgentExecutor(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, store *Store) *WritingAgentExecutor {
-	return &WritingAgentExecutor{llm: llm, profile: p, search: search, store: store}
+func NewWritingAgentExecutor(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
+	return &WritingAgentExecutor{llm: llm, profile: p, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *WritingAgentExecutor) Role() AgentRole { return RoleWriting }
@@ -269,82 +261,36 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	execCtx.Mode = "guided"
 	execCtx.MaxTokens = task.TokenBudget - task.TokenUsed
 
-	// ── 注入组织知识：活跃知识 + 栏目偏好 ──
-	if org := ac.GetOrgKnowledge(); org != nil {
-		// 注入活跃知识（审校经验、拒稿原因等）
-		if len(org.ActiveKnowledge) > 0 {
-			var knowledgeHints []string
-			for _, k := range org.ActiveKnowledge {
-				knowledgeHints = append(knowledgeHints, fmt.Sprintf("- %s: %s", k.Title, k.Content))
-			}
-			execCtx.UserInput += "\n\n[组织知识] 以下为编辑部已确认的知识：\n" + strings.Join(knowledgeHints, "\n")
-		}
-		// 注入栏目偏好
-		if org.ColumnPref != nil {
-			cp := org.ColumnPref
-			if cp.Tone != "" {
-				execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + cp.Tone
-			}
-			if len(cp.ForbiddenWords) > 0 {
-				execCtx.UserInput += "\n[栏目偏好] 禁用词：" + strings.Join(cp.ForbiddenWords, ", ")
-			}
-			if cp.PreferredLengthMin > 0 || cp.PreferredLengthMax > 0 {
-				execCtx.UserInput += fmt.Sprintf("\n[栏目偏好] 建议字数：%d-%d", cp.PreferredLengthMin, cp.PreferredLengthMax)
-			}
-			if cp.ReviewCriteria != "" {
-				execCtx.UserInput += "\n[栏目偏好] 审校标准：" + cp.ReviewCriteria
-			}
-			slog.Info("writing agent: loaded column preference from org knowledge",
-				"column_tag", cp.ColumnTag, "tone", cp.Tone)
-		}
-	} else {
-		// Fallback: 直接从 Store 查询栏目偏好（兼容旧路径）
-		if len(task.Tags) > 0 {
-			columnTag := task.Tags[0]
-			if cp, err := e.store.GetColumnPreference(ctx, columnTag); err == nil && cp != nil {
-				if cp.Tone != "" {
-					execCtx.UserInput += "\n\n[栏目偏好] 语气风格：" + cp.Tone
-				}
-				if len(cp.ForbiddenWords) > 0 {
-					execCtx.UserInput += "\n[栏目偏好] 禁用词：" + strings.Join(cp.ForbiddenWords, ", ")
-				}
-				if cp.PreferredLengthMin > 0 || cp.PreferredLengthMax > 0 {
-					execCtx.UserInput += fmt.Sprintf("\n[栏目偏好] 建议字数：%d-%d", cp.PreferredLengthMin, cp.PreferredLengthMax)
-				}
-				if cp.ReviewCriteria != "" {
-					execCtx.UserInput += "\n[栏目偏好] 审校标准：" + cp.ReviewCriteria
-				}
-				slog.Info("writing agent: loaded column preference (fallback)", "column_tag", columnTag, "tone", cp.Tone)
-			}
-		}
-	}
+	// ── 构建角色特定的 system prompt 额外内容 ──
+	var promptExtra strings.Builder
 
 	// 注入研究简报
 	if brief := ac.GetArtifact(ArtifactResearchBrief); brief != nil {
-		execCtx.CompressedContext = brief.Content
+		promptExtra.WriteString("--- 研究简报 ---\n")
+		promptExtra.WriteString(brief.Content)
+		promptExtra.WriteString("\n\n")
 	}
 
 	// 注入审查报告（修改场景）
 	hasReviewReport := false
 	if report := ac.GetArtifact(ArtifactReviewReport); report != nil {
 		hasReviewReport = true
-		// 将审查报告作为用户材料注入
-		execCtx.UserMaterials = []string{report.Content}
+		promptExtra.WriteString("--- 审查报告 ---\n")
+		promptExtra.WriteString(report.Content)
+		promptExtra.WriteString("\n\n")
 	}
 
-	// 修改场景：注入上一版稿件作为基础文本，避免"重新写一篇"
+	// 修改场景：注入上一版稿件
 	if hasReviewReport {
-		// 优先取修改稿，没有则取初稿
 		prevDraft := ac.GetArtifact(ArtifactRevisedDraft)
 		if prevDraft == nil {
 			prevDraft = ac.GetArtifact(ArtifactDraft)
 		}
 		if prevDraft != nil {
-			// 将上一版稿件内容解析并注入到执行上下文
 			var prevData struct {
 				Title   string `json:"title"`
 				Content string `json:"content"`
-				Body    string `json:"body"` // 兼容旧格式
+				Body    string `json:"body"`
 			}
 			if err := json.Unmarshal([]byte(prevDraft.Content), &prevData); err == nil {
 				prevBody := prevData.Content
@@ -352,45 +298,62 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 					prevBody = prevData.Body
 				}
 				if prevBody != "" {
-					// 将上一版稿件作为已有文章注入，让 WriteStep 基于它修改
 					execCtx.Article = prevBody
 					execCtx.ArticleTitle = prevData.Title
+					promptExtra.WriteString("--- 上一版稿件 ---\n")
+					promptExtra.WriteString(fmt.Sprintf("标题：%s\n", prevData.Title))
+					promptExtra.WriteString(prevBody)
+					promptExtra.WriteString("\n\n请基于审查报告修改以上稿件。\n")
 				}
 			}
 		}
+	} else {
+		promptExtra.WriteString("请根据选题和研究简报，撰写一篇完整文章。\n")
 	}
 
-	emitter := &noopEmitter{}
-
-	// 1. Outline（仅首次写作，修改时跳过）
-	if !hasReviewReport {
-		outlineStep := steps.NewOutlineStep(e.llm)
-		// 自动确认提纲（编辑部模式下，提纲自动通过，由审校 Agent 把关）
-		execCtx.ConfirmTimeout = 1 * time.Second
-		if err := outlineStep.Execute(ctx, execCtx, emitter); err != nil {
-			slog.Warn("outline step failed, continuing", "error", err)
-		}
-
-		// 存储提纲 Artifact
-		if execCtx.Outline != nil {
-			outlineData, _ := json.Marshal(execCtx.Outline)
-			e.store.CreateArtifact(ctx, SubmitArtifactInput{
-				Type:       ArtifactOutline,
-				Content:    string(outlineData),
-				ProducedBy: "writing_agent",
-				TokenCost:  0,
-			}, task.ID)
+	// ── Fallback: 直接从 Store 查询栏目偏好 ──
+	if ac.GetOrgKnowledge() == nil && len(task.Tags) > 0 {
+		columnTag := task.Tags[0]
+		if cp, err := e.store.GetColumnPreference(ctx, columnTag); err == nil && cp != nil {
+			ac.LocalMemory = &OrgKnowledge{ColumnPref: cp}
 		}
 	}
 
-	// 2. Write
-	writeStep := steps.NewWriteStepWithSearch(e.llm, e.profile, e.search)
-	if err := writeStep.Execute(ctx, execCtx, emitter); err != nil {
-		return nil, fmt.Errorf("write: %w", err)
+	// ── 获取角色配置 ──
+	agentCfg := getAgentConfig(ac, "writer")
+
+	// ── 启动 RoleAgentRunner ──
+	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, e.profile, e.currentOrNoop(), e.toolRegistry)
+	result, err := runner.Run(ctx, RoleRunConfig{
+		AgentConfig:          agentCfg,
+		Task:                 task,
+		AgentContext:         ac,
+		ExecutionContext:     execCtx,
+		RoleSystemPromptExtra: promptExtra.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("writing agent runner: %w", err)
 	}
 
-	// 3. 产出交付物
-	tokenUsed := execCtx.TotalTokens
+	tokenUsed := result.Tokens
+
+	// 从 LLM 输出中提取文章内容
+	articleBody := result.Output
+	articleTitle := steps.ExtractTitleFromMarkdown(articleBody)
+	if articleTitle == "" {
+		articleTitle = execCtx.ArticleTitle
+	}
+
+	// 存储提纲 Artifact（如果有）
+	if execCtx.Outline != nil {
+		outlineData, _ := json.Marshal(execCtx.Outline)
+		e.store.CreateArtifact(ctx, SubmitArtifactInput{
+			Type:       ArtifactOutline,
+			Content:    string(outlineData),
+			ProducedBy: "writing_agent",
+			TokenCost:  0,
+		}, task.ID)
+	}
 
 	// 判断是初稿还是修改稿
 	artType := ArtifactDraft
@@ -398,9 +361,7 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 		artType = ArtifactRevisedDraft
 	}
 
-	// 将文章内容包装为 JSON（字段名与 routeAfterWriting 解析保持一致）
-	// 统计正文字数（中文按 rune 计数）
-	wordCount := len([]rune(execCtx.Article))
+	wordCount := len([]rune(articleBody))
 	outlineSections := make([]map[string]interface{}, 0)
 	if execCtx.Outline != nil {
 		for _, s := range execCtx.Outline.Outline {
@@ -410,8 +371,8 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 		}
 	}
 	articleData, _ := json.Marshal(map[string]interface{}{
-		"title":      execCtx.ArticleTitle,
-		"content":    execCtx.Article,
+		"title":      articleTitle,
+		"content":    articleBody,
 		"word_count": wordCount,
 		"outline":    outlineSections,
 	})
@@ -426,7 +387,6 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 		return nil, fmt.Errorf("create draft artifact: %w", err)
 	}
 
-	// 自动批准写作交付物
 	e.store.ReviewArtifact(ctx, art.ID, ReviewArtifactInput{
 		Status:     ArtifactStatusApproved,
 		ReviewerID: "writing_agent",
@@ -434,35 +394,37 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	})
 
 	slog.Info("writing agent completed",
-		"task_id", task.ID, "type", artType, "length", len(execCtx.Article), "tokens", tokenUsed)
+		"task_id", task.ID, "type", artType, "length", wordCount, "tokens", tokenUsed)
 
 	return art, nil
 }
 
 // ─── 审校 Agent 执行器 ───────────────────────────────────
 //
-// 复用 V2 的 PostReviewStep + 事实核查(jiaozhen)
+// 使用 RoleAgentRunner 让 LLM 自主调用 fact_check / search_knowledge / read_source
 // 产出 Artifact: review_report
 // 上下文隔离：只看 Artifact，不看写作过程
 
 // ReviewAgentExecutor 审校 Agent 执行器
 type ReviewAgentExecutor struct {
-	llm     *tools.LLMClient
-	profile *profile.StyleProfile
-	search  *tools.SearchClient
-	store   *Store
+	llm          *tools.LLMClient
+	profile      *profile.StyleProfile
+	search       *tools.SearchClient
+	kbSearcher   tools.KnowledgeSearcher
+	store        *Store
+	toolRegistry *EditorialToolRegistry
+	*emitterHolder
 }
 
 // NewReviewAgentExecutor 创建审校 Agent 执行器
-func NewReviewAgentExecutor(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, store *Store) *ReviewAgentExecutor {
-	return &ReviewAgentExecutor{llm: llm, profile: p, search: search, store: store}
+func NewReviewAgentExecutor(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
+	return &ReviewAgentExecutor{llm: llm, profile: p, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *ReviewAgentExecutor) Role() AgentRole { return RoleReview }
 
 func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, task *Task) (*Artifact, error) {
 	// 上下文隔离：审校 Agent 只看交付物，不看写作过程
-	// 优先审查修改稿（如果存在），否则审查初稿
 	draft := ac.GetArtifact(ArtifactRevisedDraft)
 	if draft == nil {
 		draft = ac.GetArtifact(ArtifactDraft)
@@ -471,85 +433,96 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 		return nil, fmt.Errorf("no draft artifact to review")
 	}
 
-	// 解析文章内容（与写作 Agent 产出的 JSON 字段对齐）
 	var articleData struct {
 		Title   string `json:"title"`
 		Content string `json:"content"`
-		Body    string `json:"body"` // 兼容旧格式
+		Body    string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(draft.Content), &articleData); err != nil {
 		return nil, fmt.Errorf("parse draft content: %w", err)
 	}
-	// 优先使用 content，旧格式回退到 body
 	articleBody := articleData.Content
 	if articleBody == "" {
 		articleBody = articleData.Body
 	}
 
-	// 构建独立 ExecutionContext（隔离上下文）
 	execCtx := engine.NewExecutionContext("review_"+task.ID, task.OwnerID, articleBody)
 	execCtx.StyleSlug = task.StyleSlug
 	execCtx.Article = articleBody
 	execCtx.ArticleTitle = articleData.Title
 	execCtx.MaxTokens = task.TokenBudget - task.TokenUsed
 
-	// ── 注入组织知识：活跃知识 + 栏目偏好 + 信源可信度 ──
-	if org := ac.GetOrgKnowledge(); org != nil {
-		// 注入活跃知识（历史审校经验、拒稿原因等）
-		if len(org.ActiveKnowledge) > 0 {
-			var knowledgeHints []string
-			for _, k := range org.ActiveKnowledge {
-				knowledgeHints = append(knowledgeHints, fmt.Sprintf("- %s: %s", k.Title, k.Content))
-			}
-			execCtx.UserInput += "\n\n[组织知识] 以下为编辑部已确认的审校经验：\n" + strings.Join(knowledgeHints, "\n")
-		}
-		// 注入栏目偏好（审校标准）
-		if org.ColumnPref != nil {
-			cp := org.ColumnPref
-			if cp.ReviewCriteria != "" {
-				execCtx.UserInput += "\n\n[栏目审校标准] " + cp.ReviewCriteria
-			}
-			if len(cp.ForbiddenWords) > 0 {
-				execCtx.UserInput += "\n[栏目禁用词] " + strings.Join(cp.ForbiddenWords, ", ")
-			}
-			if cp.PreferredLengthMin > 0 || cp.PreferredLengthMax > 0 {
-				execCtx.UserInput += fmt.Sprintf("\n[栏目建议字数] %d-%d", cp.PreferredLengthMin, cp.PreferredLengthMax)
-			}
-		}
-		slog.Info("review agent: org knowledge injected",
-			"task_id", task.ID, "knowledge_count", len(org.ActiveKnowledge))
-	}
+	// ── 构建角色特定的 system prompt 额外内容 ──
+	var promptExtra strings.Builder
+	promptExtra.WriteString("--- 待审文章 ---\n")
+	promptExtra.WriteString(fmt.Sprintf("标题：%s\n", articleData.Title))
+	promptExtra.WriteString(articleBody)
+	promptExtra.WriteString("\n\n")
 
-	// 注入信源包和事实声明（用于事实核查）
+	// 注入信源包
 	if sourcePack := ac.GetArtifact(ArtifactSourcePack); sourcePack != nil {
-		// 信源包格式为 {"sources": [...], "count": N}
-		var sourceData struct {
-			Sources []engine.SearchResult `json:"sources"`
-		}
-		if err := json.Unmarshal([]byte(sourcePack.Content), &sourceData); err == nil {
-			execCtx.SearchResults = sourceData.Sources
-		}
+		promptExtra.WriteString("--- 信源包 ---\n")
+		promptExtra.WriteString(sourcePack.Content)
+		promptExtra.WriteString("\n\n")
 	}
 
-	emitter := &noopEmitter{}
-
-	// 执行审查 Step
-	// 注意：这里只复用 PostReviewStep 的审查逻辑，不复用 AutoFixStep
-	// 审校 Agent 只负责发现问题并报告，不负责修改
-	reviewStep := steps.NewPostReviewStep(e.llm)
-	if err := reviewStep.Execute(ctx, execCtx, emitter); err != nil {
-		return nil, fmt.Errorf("post review: %w", err)
+	// 注入事实声明
+	if factClaims := ac.GetArtifact(ArtifactFactClaims); factClaims != nil {
+		promptExtra.WriteString("--- 事实声明 ---\n")
+		promptExtra.WriteString(factClaims.Content)
+		promptExtra.WriteString("\n\n")
 	}
 
-	// 产出审查报告
-	tokenUsed := execCtx.TotalTokens
-	reviewResult := execCtx.ReviewResult
+	// ── 获取角色配置 ──
+	agentCfg := getAgentConfig(ac, "reviewer")
+
+	// ── 启动 RoleAgentRunner ──
+	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, e.profile, e.currentOrNoop(), e.toolRegistry)
+	result, err := runner.Run(ctx, RoleRunConfig{
+		AgentConfig:          agentCfg,
+		Task:                 task,
+		AgentContext:         ac,
+		ExecutionContext:     execCtx,
+		RoleSystemPromptExtra: promptExtra.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("review agent runner: %w", err)
+	}
+
+	tokenUsed := result.Tokens
+
+	// ── 从信号工具参数中提取审查报告 ──
+	passed := false
+	severity := "low"
+	var issues []engine.ReviewIssue
+	scores := map[string]float64{}
+
+	if reportArgs, ok := result.SignalToolArgs["submit_review_report"]; ok {
+		var parsed struct {
+			Passed   bool                   `json:"passed"`
+			Severity string                 `json:"severity"`
+			Issues   []engine.ReviewIssue   `json:"issues"`
+			Scores   map[string]float64     `json:"scores"`
+		}
+		if err := json.Unmarshal([]byte(reportArgs), &parsed); err == nil {
+			passed = parsed.Passed
+			if parsed.Severity != "" {
+				severity = parsed.Severity
+			}
+			if len(parsed.Issues) > 0 {
+				issues = parsed.Issues
+			}
+			if len(parsed.Scores) > 0 {
+				scores = parsed.Scores
+			}
+		}
+	}
 
 	reportData, _ := json.Marshal(map[string]interface{}{
-		"passed":   reviewResult.Passed,
-		"severity": severityFromReview(reviewResult),
-		"issues":   reviewResult.Issues,
-		"scores":   reviewResult.Scores,
+		"passed":   passed,
+		"severity": severity,
+		"issues":   issues,
+		"scores":   scores,
 	})
 
 	art, err := e.store.CreateArtifact(ctx, SubmitArtifactInput{
@@ -562,7 +535,6 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 		return nil, fmt.Errorf("create review report: %w", err)
 	}
 
-	// 自动批准审查报告
 	e.store.ReviewArtifact(ctx, art.ID, ReviewArtifactInput{
 		Status:     ArtifactStatusApproved,
 		ReviewerID: "review_agent",
@@ -570,12 +542,12 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 	})
 
 	// ── 组织记忆：自动沉淀审校知识 ──
-	if len(reviewResult.Issues) > 0 {
+	if len(issues) > 0 {
 		columnTag := ""
 		if len(task.Tags) > 0 {
 			columnTag = task.Tags[0]
 		}
-		for _, issue := range reviewResult.Issues {
+		for _, issue := range issues {
 			category := "review_tip"
 			if issue.Severity == "high" {
 				category = "rejection_reason"
@@ -587,12 +559,12 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 				Content:          issue.Message,
 				SourceTaskID:     task.ID,
 				SourceArtifactID: art.ID,
-				Confidence:       0.7, // 审校 Agent 产出的知识默认中等置信度
+				Confidence:       0.7,
 			}); err != nil {
 				slog.Warn("failed to create knowledge from review issue", "error", err)
 			}
 		}
-		slog.Info("review agent: knowledge deposited", "task_id", task.ID, "issues", len(reviewResult.Issues))
+		slog.Info("review agent: knowledge deposited", "task_id", task.ID, "issues", len(issues))
 	}
 
 	// ── 组织记忆：更新信源可信度（基于审校结果） ──
@@ -609,13 +581,12 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 				if domain == "" {
 					continue
 				}
-				// 审校通过 → 信源验证为真；不通过 → 未验证（不直接证伪，除非有明确证据）
 				if err := e.store.RecordSourceUsage(ctx, RecordSourceInput{
 					SourceDomain: domain,
 					SourceName:   sr.Source,
 					Category:     categorizeSource(sr.Source),
 					TaskID:       task.ID,
-					Verified:     reviewResult.Passed,
+					Verified:     passed,
 					Refuted:      false,
 				}); err != nil {
 					slog.Warn("failed to update source credibility", "domain", domain, "error", err)
@@ -625,25 +596,34 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 	}
 
 	slog.Info("review agent completed",
-		"task_id", task.ID, "passed", reviewResult.Passed, "issues", len(reviewResult.Issues), "tokens", tokenUsed)
+		"task_id", task.ID, "passed", passed, "issues", len(issues), "tokens", tokenUsed)
 
 	return art, nil
 }
 
-// severityFromReview 从审查结果推断严重程度
-func severityFromReview(rr *engine.ReviewResult) string {
-	if rr == nil {
-		return "low"
+// getAgentConfig 获取角色配置：优先使用 DAGExecutor 注入的 AgentConfig，
+// 否则使用 BuiltinRoles 中的预设角色。
+func getAgentConfig(ac *AgentContext, defaultRole string) *AgentConfig {
+	// DAG 模式：DAGExecutor 在 executeNode 中直接注入 AgentConfig 到 AgentContext
+	if ac != nil && ac.AgentConfig != nil {
+		return ac.AgentConfig
 	}
-	for _, issue := range rr.Issues {
-		if issue.Severity == "high" {
-			return "high"
+	// 兼容：检查 LocalMemory 是否直接携带 AgentConfig（旧路径）
+	if ac != nil && ac.LocalMemory != nil {
+		if cfg, ok := ac.LocalMemory.(*AgentConfig); ok && cfg != nil {
+			return cfg
 		}
 	}
-	if len(rr.Issues) > 3 {
-		return "medium"
+	// Fallback: 使用 BuiltinRoles
+	if role, ok := BuiltinRoles[defaultRole]; ok {
+		return role.ToAgentConfig()
 	}
-	return "low"
+	// 最终 fallback
+	return &AgentConfig{
+		Name:    defaultRole,
+		Role:    defaultRole,
+		Persona: "你是一个编辑部 Agent。",
+	}
 }
 
 // extractDomain 从 URL 中提取域名
@@ -697,3 +677,36 @@ func (n *noopEmitter) Error(code, message string, step engine.StepName)         
 func (n *noopEmitter) Completed(article string, articleTitle string, review interface{}, tokenUsage interface{}) {}
 func (n *noopEmitter) Cancelled()                                                                    {}
 func (n *noopEmitter) Compaction(originalMessages, savedTokens int, summaryPreview string, historyVersion uint64, triggerReason string) {}
+
+// ─── emitterHolder: goroutine 安全的 emitter 传递 mixin ──────────
+//
+// 问题：DAGExecutor 的 executors map 中，执行器按 BaseRole 注册并共享。
+// 当两个同角色节点并行执行时，直接在共享实例上写 emitter 字段会产生数据竞态。
+//
+// 解决方案：emitterHolder 使用 atomic.Pointer 存储 emitter，每次 Execute 调用
+// 独立设置和清除。currentOrNoop() 读取时使用 atomic load，保证并发安全。
+//
+// 使用方式：执行器结构体内嵌 *emitterHolder，实现 EmitterHolder 接口。
+type emitterHolder struct {
+	val atomic.Pointer[engine.EventEmitter]
+}
+
+func newEmitterHolder() *emitterHolder {
+	return &emitterHolder{}
+}
+
+func (h *emitterHolder) SetCurrentEmitter(em engine.EventEmitter) {
+	h.val.Store(&em)
+}
+
+func (h *emitterHolder) ClearCurrentEmitter() {
+	h.val.Store(nil)
+}
+
+func (h *emitterHolder) currentOrNoop() engine.EventEmitter {
+	ptr := h.val.Load()
+	if ptr != nil && *ptr != nil {
+		return *ptr
+	}
+	return &noopEmitter{}
+}

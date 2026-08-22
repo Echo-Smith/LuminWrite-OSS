@@ -16,15 +16,14 @@ type editorialWSEmitter struct {
 
 // Emit 实现 editorial.EventEmitter 接口
 func (e *editorialWSEmitter) Emit(evt editorial.OrchestratorEvent) {
-	data, err := json.Marshal(evt)
-	if err != nil {
-		slog.Warn("editorial: failed to marshal event", "error", err)
-		return
-	}
-
 	// DAG 工作流事件（workflow.*/node.*）直接用事件 type 作为 WS 消息 type，
-	// 前端 WorkflowPage 直接监听这些 type。
+	// 只发送 evt.Payload（而非整个 OrchestratorEvent），避免前端嵌套 payload 问题。
 	if strings.HasPrefix(evt.Type, "workflow.") || strings.HasPrefix(evt.Type, "node.") {
+		data, err := json.Marshal(evt.Payload)
+		if err != nil {
+			slog.Warn("editorial: failed to marshal event payload", "error", err, "type", evt.Type)
+			return
+		}
 		e.hub.Broadcast(&websocket.ServerMessage{
 			Type:    evt.Type,
 			Payload: json.RawMessage(data),
@@ -32,7 +31,12 @@ func (e *editorialWSEmitter) Emit(evt editorial.OrchestratorEvent) {
 		return
 	}
 
-	// 其他编辑部事件保持原有格式
+	// 其他编辑部事件保持原有格式（发送完整 OrchestratorEvent）
+	data, err := json.Marshal(evt)
+	if err != nil {
+		slog.Warn("editorial: failed to marshal event", "error", err)
+		return
+	}
 	e.hub.Broadcast(&websocket.ServerMessage{
 		Type:    "editorial.event",
 		Payload: json.RawMessage(data),

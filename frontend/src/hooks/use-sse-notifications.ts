@@ -10,9 +10,19 @@
  *
  * 注意：两个 hook 会各自创建独立的 EventSource 连接，
  * 但 SSE 是轻量级的，服务器端 SSEHub 支持多客户端。
+ *
+ * JWT token 通过 URL query param 传递（EventSource 不支持自定义 header），
+ * 当用户登录/登出时自动重新连接。
+ *
+ * 设计说明：
+ * 不直接使用 useAuthStore((s) => s.token) 的 hook 形式，
+ * 而是通过 useSyncExternalStore 订阅 store 变化，避免在 App 根组件
+ * 渲染路径中通过 zustand 的 useStore 内部注册额外的 hooks，
+ * 防止 StrictMode 下 "Rendered more hooks than during the previous render" 错误。
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { toast } from "@/stores/toast-store";
+import { useAuthStore } from "@/stores/auth-store";
 
 const MAX_RECONNECT_DELAY = 30_000;
 const BASE_RECONNECT_DELAY = 3_000;
@@ -21,8 +31,20 @@ export function useSSENotifications() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectAttempt = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tokenRef = useRef<string | null>(null);
+
+  // 使用 useSyncExternalStore 直接订阅 useAuthStore 的 token 字段，
+  // 避免通过 zustand 的 useStore hook 间接注册 useCallback hooks。
+  // zustand 的 useStore 内部使用 useSyncExternalStore + 2× useCallback，
+  // 在 StrictMode 下可能因 selector 每次渲染新引用导致 hooks 链表不一致。
+  const token = useSyncExternalStore(
+    useAuthStore.subscribe,
+    () => useAuthStore.getState().token ?? null,
+  );
 
   useEffect(() => {
+    tokenRef.current = token;
+
     const connect = () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -30,9 +52,11 @@ export function useSSENotifications() {
       }
 
       const isDev = import.meta.env.DEV;
+      const currentToken = tokenRef.current;
+      const tokenParam = currentToken ? `?token=${encodeURIComponent(currentToken)}` : "";
       const sseUrl = isDev
-        ? "http://localhost:8080/api/v2/sse/topics"
-        : "/api/v2/sse/topics";
+        ? `http://localhost:8080/api/v2/sse/topics${tokenParam}`
+        : `/api/v2/sse/topics${tokenParam}`;
 
       const es = new EventSource(sseUrl);
       eventSourceRef.current = es;
@@ -60,6 +84,8 @@ export function useSSENotifications() {
       };
 
       // ── 文章完成通知 — 仅当后端确认生成了文章时才弹通知 ──
+      // 后端已通过 SSEEvent.UserID 做了服务端过滤（只有发起写作的用户会收到），
+      // 此处不再需要前端过滤，但仍保留 article_title/topic 非空检查。
       es.addEventListener("article:completed", (e) => {
         try {
           const data = JSON.parse((e as MessageEvent).data);
@@ -92,5 +118,5 @@ export function useSSENotifications() {
         reconnectTimer.current = null;
       }
     };
-  }, []);
+  }, [token]);
 }

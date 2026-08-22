@@ -79,6 +79,7 @@ type AgentStartPayload struct {
 	UserMaterials []string `json:"user_materials,omitempty"`
 	WordLimit    int      `json:"word_limit,omitempty"`
 	TopicURL     string   `json:"topic_url,omitempty"` // 热搜选题原始链接，用于抓取事件背景
+	KBEnabled    *bool    `json:"kb_enabled,omitempty"` // 知识库搜索开关（nil=默认开启）
 }
 
 // AgentControlPayload is the payload for pause/resume/cancel.
@@ -176,6 +177,7 @@ type CompletedPayload struct {
 	ArticleTitle string      `json:"article_title,omitempty"`
 	Review       interface{} `json:"review"`
 	TokenUsage   interface{} `json:"token_usage"`
+	PointsUsed   float64     `json:"points_used"`
 }
 
 // ErrorPayload
@@ -250,8 +252,13 @@ type SessionResumedPayload struct {
 
 // WorkflowStartPayload 客户端发起 workflow.start
 type WorkflowStartPayload struct {
-	TaskID    string `json:"task_id"`
-	UserInput string `json:"user_input,omitempty"` // 用户写作意图（如果还没有跑 Planner）
+	TaskID      string   `json:"task_id"`
+	UserInput   string   `json:"user_input,omitempty"`   // 用户写作意图（如果还没有跑 Planner）
+	Title       string   `json:"title,omitempty"`        // 任务标题（可选）
+	Description string   `json:"description,omitempty"`  // 任务详细描述（可选）
+	StyleSlug   string   `json:"style_slug,omitempty"`   // 写作风格标识（可选）
+	Tags        []string `json:"tags,omitempty"`          // 栏目标签（可选）
+	KBEnabled   *bool    `json:"kb_enabled,omitempty"`   // 知识库搜索开关（nil=默认开启）
 }
 
 // WorkflowEditPayload 客户端修改 DAG

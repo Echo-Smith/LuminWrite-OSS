@@ -487,7 +487,7 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 	h.worldState.Register(worldstate.NewArticleSection(session.CurrentArticle))
 	h.worldState.Register(worldstate.NewDateSection())
 	h.worldState.Register(worldstate.NewMaterialsSection(session.UserMaterials, len(session.SearchResults)))
-	h.worldState.Register(worldstate.NewRulesSection(h.profile, intentStr))
+	h.worldState.Register(worldstate.NewRulesSectionWithDetails(h.profile, intentStr, isGuided, 0))
 	h.worldState.Register(worldstate.NewTaskInstructionsSection(intentStr, isGuided))
 	h.worldState.Register(worldstate.NewSecuritySection())
 

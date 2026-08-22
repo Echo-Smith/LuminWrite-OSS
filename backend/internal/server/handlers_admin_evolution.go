@@ -49,7 +49,25 @@ func (s *Server) handleAdminListEvolutionCandidates(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Enrich each candidate with its canary rollout info if any
+	// Enrich each candidate with its canary rollout info if any.
+	//
+	// NOTE: This loop introduces an N+1 query pattern — for each candidate in
+	// "rollout" status we issue a separate SELECT against canary_rollouts.
+	// At present this is acceptable because:
+	//   1. The candidate list is capped at 50 rows (LIMIT 50 in SQL).
+	//   2. Only candidates with status = 'rollout' trigger the extra query,
+	//      and typically only a handful (1–5) are in rollout at any time.
+	//   3. The number of distinct style slugs is small (a few built-in styles
+	//      plus a limited set of user-defined ones).
+	//
+	// If this evolves into a "style factory" scenario with hundreds of
+	// user-defined styles and many simultaneous rollouts, this should be
+	// replaced with a single batch query:
+	//     SELECT ... FROM canary_rollouts
+	//     WHERE candidate_id = ANY($1) AND enabled = TRUE
+	// using a PostgreSQL array parameter to fetch all rollouts in one round-trip.
+	// The candidate IDs can be collected in a slice first, then passed as a
+	// pq.Array or pgx-compatible parameter.
 	type candidateWithRollout struct {
 		evolutionCandidate
 		Rollout *canaryRolloutInfo `json:"rollout,omitempty"`

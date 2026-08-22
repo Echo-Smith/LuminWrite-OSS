@@ -30,13 +30,15 @@ func NewKbSearchAdapter(mgr *KbManager) *KbSearchAdapter {
 // SearchKB implements tools.KnowledgeSearcher.
 // It calls KbManager.HybridSearch() (BM25 + Dense + RRF) and converts
 // the results to engine.SearchResult for compatibility with the search pipeline.
-func (a *KbSearchAdapter) SearchKB(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
+//
+// userID scopes the search to the user's private KBs + shared KBs.
+// When empty, searches all documents (admin/global scope).
+func (a *KbSearchAdapter) SearchKB(ctx context.Context, userID, query string, limit int) ([]engine.SearchResult, error) {
 	if a == nil || a.mgr == nil || !a.mgr.IsConfigured() {
 		return nil, nil
 	}
 
-	// Use global KB (userID = "" for shared knowledge)
-	results, err := a.mgr.HybridSearch(ctx, "", query, limit)
+	results, err := a.mgr.HybridSearch(ctx, userID, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +62,7 @@ func (a *KbSearchAdapter) SearchKB(ctx context.Context, query string, limit int)
 
 	slog.Debug("local KB search adapter completed",
 		"query", query,
+		"user_id", userID,
 		"results", len(engineResults),
 	)
 

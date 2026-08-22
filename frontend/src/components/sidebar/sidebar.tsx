@@ -8,9 +8,10 @@ import { useState } from "react";
 import {
   Plus, Trash2, Compass,
   Settings, Sun, Moon, LogOut, UserPlus,
-  PanelLeftClose, PanelLeftOpen, Pen,
-  ChevronRight, User, AlertTriangle, Newspaper, Workflow,
+  PanelLeftClose, PanelLeftOpen,
+  ChevronRight, User, AlertTriangle, Newspaper,
 } from "lucide-react";
+import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -67,7 +68,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { theme, toggle: toggleTheme } = useTheme();
 
   const isGuest = user?.role === "guest";
-  const isAdmin = user?.role === "admin";
+  const isAdmin = useAuthStore((s) => s.hasAdminAccess());
 
   const handleRegister = () => {
     const token = useAuthStore.getState().token;
@@ -118,14 +119,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Newspaper className="h-4 w-4" />
         </button>
 
-        <button
-          onClick={() => navigate("/workflow")}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-          title="工作流 (Beta)"
-        >
-          <Workflow className="h-4 w-4" />
-        </button>
-
         {/* 占位 */}
         <div className="flex-1" />
 
@@ -172,13 +165,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     <div className="flex h-full w-64 flex-col border-r bg-surface anim-slide-right">
       {/* 顶部品牌区 + 折叠按钮 */}
       <div className="flex items-center gap-2.5 px-3 py-3.5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-gradient shrink-0">
-          <Pen className="h-4 w-4 text-white" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-bold tracking-tight">笔润智谈</h1>
-          <p className="text-[11px] text-muted-foreground font-mono-sm">V2 · writing agent</p>
-        </div>
+        <BrandIcon size="md" showLabel subtitle="V2 · writing agent" />
         <button
           onClick={onToggle}
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-ui shrink-0"

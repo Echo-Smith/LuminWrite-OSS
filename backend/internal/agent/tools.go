@@ -34,7 +34,7 @@ import (
 // 包含 search_web + search_knowledge + read_source + generate_outline + write_article + review_article + revise_section + retrieve_context。
 // 调用方通过 ToolsForIntent 按需裁剪（移除 search_knowledge/generate_outline/search_web）。
 func WritingToolDefs() []tools.ToolDef {
-	return append([]tools.ToolDef{
+	return []tools.ToolDef{
 		{
 			Type: "function",
 			Function: tools.ToolDefFunction{
@@ -243,7 +243,7 @@ func WritingToolDefs() []tools.ToolDef {
 				},
 			},
 		},
-	})
+	}
 }
 
 // ChatToolDefs 是对话意图的工具集（搜索 + 读取）。
@@ -607,7 +607,7 @@ func executeSearchKnowledge(cfg ToolExecutorConfig, arguments string) (string, e
 		cfg.Emitter.StepStart("search_knowledge", 0)
 	}
 
-	results, err := cfg.KBSearcher.SearchKB(context.Background(), args.Query, 5)
+	results, err := cfg.KBSearcher.SearchKB(context.Background(), cfg.Session.UserID, args.Query, 5)
 	if err != nil {
 		slog.Warn("search_knowledge: search failed",
 			"error", err,
@@ -716,6 +716,8 @@ func executeReviewArticle(cfg ToolExecutorConfig, arguments string) (string, err
 }
 
 // executeReviseSection 是"信号工具"——告诉 LLM 定向修改并输出修改后的完整文章。
+// 注入 profile.RenderWritingConstraints() 确保修正后的文章仍然符合风格约束，
+// 防止修正过程中风格漂移。
 func executeReviseSection(cfg ToolExecutorConfig, arguments string) (string, error) {
 	var args struct {
 		SectionHint string `json:"section_hint"`
@@ -735,7 +737,13 @@ func executeReviseSection(cfg ToolExecutorConfig, arguments string) (string, err
 		}, int64(time.Since(start).Milliseconds()))
 	}
 
-	return fmt.Sprintf("请修改「%s」：%s。直接输出修改后的完整文章。", args.SectionHint, args.Instruction), nil
+	// 注入风格约束，确保修正后的文章仍符合 Profile 规范
+	styleConstraints := ""
+	if cfg.Profile != nil {
+		styleConstraints = cfg.Profile.RenderWritingConstraints("writing", false, 0)
+	}
+
+	return fmt.Sprintf("请修改「%s」：%s。\n直接输出修改后的完整文章。\n%s", args.SectionHint, args.Instruction, styleConstraints), nil
 }
 
 // executeWordCountCheck 检查文章字数是否符合风格要求。
@@ -1630,6 +1638,9 @@ func getString(m map[string]interface{}, key string) string {
 }
 
 // quickReviewArticle 使用 LLM 对文章做快速评审。
+// 复用 Pipeline 侧的 profile.RenderReviewCriteria() 注入风格评审标准，
+// 并追加规则确定性检查（fact_guard 关键词、title forbidden_patterns、word_range），
+// 确保 Harness 模式下的评审标准与 Pipeline 模式一致。
 func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article string, p *profile.StyleProfile) *engine.ReviewResult {
 	if llm == nil || len(article) < 50 {
 		return &engine.ReviewResult{
@@ -1641,22 +1652,29 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 		}
 	}
 
-	systemMsg := "你是文章质量评审员。只返回 JSON。"
+	systemMsg := "你是文章正文质量评审员。只评审正文，不评审标题。只返回 JSON。"
 	currentTime := time.Now().Format("2006年1月2日")
+
+	// 复用 Pipeline 侧的 RenderReviewCriteria，注入 Fact Guard + 修辞 + 字数 + 结构
+	var profileRules strings.Builder
+	if p != nil {
+		profileRules.WriteString(p.RenderReviewCriteria())
+	}
+	profileRules.WriteString(fmt.Sprintf("当前日期：%s（请据此判断文章中提及的政策、文件、规划等是已发布还是即将发布）\n", currentTime))
 
 	userMsg := fmt.Sprintf(`请评审以下文章正文：
 
 %s
 
 评审维度：factuality（事实准确性）、structure（结构合规）、style（风格符合）、rhetoric（修辞运用）、length（篇幅控制）、safety（内容安全）
-当前日期：%s
 
+%s
 返回格式：
 {
   "scores": {"factuality": 0.9, "structure": 0.85, "style": 0.8, "rhetoric": 0.85, "length": 0.9, "safety": 0.95},
   "issues": [{"severity": "high", "type": "fact", "message": "..."}],
   "passed": true
-}`, article, currentTime)
+}`, article, profileRules.String())
 
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
@@ -1692,6 +1710,54 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 				{Severity: "medium", Type: "review_skipped", Message: "质量评审因解析异常被跳过"},
 			},
 			Passed: true,
+		}
+	}
+
+	if review.Scores == nil {
+		review.Scores = map[string]float64{}
+	}
+	if review.Issues == nil {
+		review.Issues = []engine.ReviewIssue{}
+	}
+
+	// ── 规则确定性检查（与 Pipeline PostReviewStep 一致）──
+
+	// 1. fact_guard forbidden_results 关键词扫描
+	if p != nil && len(p.FactGuard.ForbiddenResults) > 0 {
+		articleLower := strings.ToLower(article)
+		for _, forbidden := range p.FactGuard.ForbiddenResults {
+			if strings.Contains(articleLower, strings.ToLower(forbidden)) {
+				review.Issues = append(review.Issues, engine.ReviewIssue{
+					Severity: "high",
+					Type:     "fact_guard",
+					Message:  fmt.Sprintf("文章包含禁止表述「%s」（事实红线：已完成事件不得用结果性动词）", forbidden),
+				})
+				review.Passed = false
+				if score, ok := review.Scores["factuality"]; ok {
+					review.Scores["factuality"] = score * 0.5
+				} else {
+					review.Scores["factuality"] = 0.5
+				}
+			}
+		}
+	}
+
+	// 2. word_range 字数检查
+	if p != nil && p.WordRange.Max > 0 {
+		wordCount := len([]rune(article))
+		minWords := p.WordRange.Min
+		maxWords := p.WordRange.Max
+		if wordCount < minWords || wordCount > maxWords {
+			severity := "medium"
+			if p.WordRange.HardLimit {
+				severity = "high"
+				review.Passed = false
+			}
+			review.Issues = append(review.Issues, engine.ReviewIssue{
+				Severity: severity,
+				Type:     "length",
+				Message:  fmt.Sprintf("字数 %d，要求 %d-%d 字", wordCount, minWords, maxWords),
+			})
 		}
 	}
 

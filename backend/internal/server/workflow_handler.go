@@ -32,12 +32,16 @@ func (s *Server) handleWorkflowStart(client *websocket.Client, payload json.RawM
 
 	// 模式 1: 有 user_input → 调用 Planner
 	if p.UserInput != "" {
-		s.handleWorkflowPlan(client, p.UserInput, userID)
+		s.handleWorkflowPlan(client, p, userID)
 		return
 	}
 
 	// 模式 2: 有 task_id → 直接执行 DAG
 	if p.TaskID != "" {
+		// 注册 client 到 hub，使 DAGExecutor 的 Broadcast 事件能送达前端
+		// Bug fix: 如果用户没有先发 agent.start，hub 中没有注册该 client，
+		// 导致 workflow.started / node.* 事件通过 Broadcast 发送时被丢弃。
+		s.hub.Register(p.TaskID, client)
 		s.handleWorkflowExecute(client, p.TaskID, userID)
 		return
 	}
@@ -49,7 +53,7 @@ func (s *Server) handleWorkflowStart(client *websocket.Client, payload json.RawM
 }
 
 // handleWorkflowPlan 调用 Planner 生成 DAG 工作流
-func (s *Server) handleWorkflowPlan(client *websocket.Client, userInput, userID string) {
+func (s *Server) handleWorkflowPlan(client *websocket.Client, p websocket.WorkflowStartPayload, userID string) {
 	if s.planner == nil || s.dagExecutor == nil {
 		client.Send(&websocket.ServerMessage{
 			Type:    websocket.MsgWorkflowFailed,
@@ -58,16 +62,24 @@ func (s *Server) handleWorkflowPlan(client *websocket.Client, userInput, userID 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	taskID := editorial.GenerateNodeID() // 临时 task ID
-	planResult, err := s.planner.Plan(ctx, userInput, taskID, userID)
+
+	planResult, err := s.planner.Plan(ctx, editorial.PlanInput{
+		UserInput:   p.UserInput,
+		Title:       p.Title,
+		Description: p.Description,
+		StyleSlug:   p.StyleSlug,
+		Tags:        p.Tags,
+		KBEnabled:   p.KBEnabled,
+	}, taskID, userID)
 	if err != nil {
-		slog.Error("workflow: planner failed", "error", err, "user_input", userInput)
+		slog.Error("workflow: planner failed", "error", err, "user_input", p.UserInput)
 		client.Send(&websocket.ServerMessage{
 			Type:    websocket.MsgWorkflowFailed,
-			Payload: map[string]string{"error": "planner failed: " + err.Error()},
+			Payload: map[string]string{"error": err.Error()},
 		})
 		return
 	}
@@ -111,11 +123,51 @@ func (s *Server) handleWorkflowExecute(client *websocket.Client, taskID, userID 
 		return
 	}
 
-	// 构建 task 对象
+	// 构建 task 标题和描述
+	taskTitle := "编辑部工作流"
+	if plan.UserInput != "" {
+		taskTitle = plan.UserInput
+		if len([]rune(taskTitle)) > 50 {
+			taskTitle = string([]rune(taskTitle)[:50]) + "..."
+		}
+	} else if plan.Rationale != "" {
+		taskTitle = plan.Rationale
+		if len([]rune(taskTitle)) > 50 {
+			taskTitle = string([]rune(taskTitle)[:50]) + "..."
+		}
+	}
+	taskDescription := ""
+	if plan.UserInput != "" {
+		taskDescription = plan.UserInput
+		if len([]rune(taskDescription)) > 200 {
+			taskDescription = string([]rune(taskDescription)[:200]) + "..."
+		}
+	} else {
+		for _, a := range plan.Agents {
+			if a.Role == "researcher" && a.Persona != "" {
+				taskDescription = a.Persona
+				if len([]rune(taskDescription)) > 200 {
+					taskDescription = string([]rune(taskDescription)[:200]) + "..."
+				}
+				break
+			}
+		}
+	}
+
+	// 构建 task 对象（含完整上下文，供 Agent 执行器使用）
 	task := &editorial.Task{
-		ID:      taskID,
-		OwnerID: userID,
-		Status:  editorial.StatusResearch,
+		ID:           taskID,
+		OwnerID:      userID,
+		Title:        taskTitle,
+		Description:  taskDescription,
+		Status:       editorial.StatusResearch,
+		TokenBudget:  200000, // 默认 20 万 token 预算
+		TokenUsed:    0,
+		StyleSlug:    plan.StyleSlug,
+		Tags:         plan.Tags,
+		KBEnabled:    plan.KBEnabled,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	// 异步执行 DAG
@@ -132,7 +184,7 @@ func (s *Server) handleWorkflowExecute(client *websocket.Client, taskID, userID 
 		}
 	}()
 
-	slog.Info("workflow: execution started", "task_id", taskID)
+	slog.Info("workflow: execution started", "task_id", taskID, "nodes", len(plan.Workflow.Nodes))
 }
 
 // handleWorkflowEdit 处理 workflow.edit 消息（用户修改 DAG）

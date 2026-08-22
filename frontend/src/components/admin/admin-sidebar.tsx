@@ -10,6 +10,7 @@
  */
 import { useNavigate } from "react-router-dom";
 import { type LucideIcon, ArrowLeft, LogOut, PanelLeftClose, PanelLeft, X } from "lucide-react";
+import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { useAuthStore } from "@/stores/auth-store";
@@ -32,12 +33,43 @@ export type AdminPageKey =
   | "security"
   | "evolution"
   | "rbac"
-  | "sandbox";
+  | "sandbox"
+  | "agent-cards"
+  | "billing";
+
+/**
+ * 每个导航项对应的 RBAC 权限 key。
+ * 用户必须拥有该权限（或拥有 "*" 通配符）才能看到此导航项。
+ * null 表示所有有 admin 入口权限的用户均可见（概览页）。
+ */
+const PAGE_PERMISSIONS: Record<AdminPageKey, string | null> = {
+  "overview":      null,
+  "styles":        "style.create",
+  "pending-styles": "style.review",
+  "traces":        "audit.view",
+  "models":        "model.manage",
+  "keys":          "apikey.manage",
+  "cron":          "cron.manage",
+  "evaluation":    "eval.view",
+  "feedback":      "audit.view",
+  "usage":         "audit.view",
+  "sensitive":     "sensitive.manage",
+  "kb":            "kb.view",
+  "audit":         "audit.view",
+  "security":      "security.view",
+  "evolution":     "evolution.manage",
+  "rbac":          "rbac.manage",
+  "sandbox":       "sandbox.manage",
+  "agent-cards":   "agent-cards.manage",
+  "billing":       "billing.view",
+};
 
 interface NavItem {
   key: AdminPageKey;
   label: string;
   icon: LucideIcon;
+  /** RBAC permission key required to see this nav item (null = always visible to admin users) */
+  permission: string | null;
 }
 
 import {
@@ -58,31 +90,49 @@ import {
   GitBranch,
   Users,
   ShieldCheck,
+  Bot,
+  Wallet,
 } from "lucide-react";
-
 export const NAV_ITEMS: NavItem[] = [
-  { key: "overview", label: "概览", icon: LayoutDashboard },
-  { key: "styles", label: "风格管理", icon: PenLine },
-  { key: "pending-styles", label: "社区审核", icon: SearchCheck },
-  { key: "traces", label: "Trace 历史", icon: ListTree },
-  { key: "models", label: "模型配置", icon: Cpu },
-  { key: "keys", label: "MCP 服务密钥", icon: KeyRound },
-  { key: "cron", label: "定时任务", icon: Clock },
-  { key: "evaluation", label: "评测面板", icon: ClipboardCheck },
-  { key: "feedback", label: "反馈分析", icon: MessageSquareText },
-  { key: "usage", label: "用量统计", icon: TrendingUp },
-  { key: "sensitive", label: "敏感词库", icon: Shield },
-  { key: "kb", label: "知识库", icon: BookOpen },
-  { key: "audit", label: "审计日志", icon: ScrollText },
-  { key: "security", label: "安全审计", icon: ShieldAlert },
-  { key: "evolution", label: "自演进", icon: GitBranch },
-  { key: "rbac", label: "角色权限", icon: Users },
-  { key: "sandbox", label: "MCP 沙箱", icon: ShieldCheck },
+  { key: "overview", label: "概览", icon: LayoutDashboard, permission: null },
+  { key: "styles", label: "风格管理", icon: PenLine, permission: "style.create" },
+  { key: "pending-styles", label: "社区审核", icon: SearchCheck, permission: "style.review" },
+  { key: "traces", label: "Trace 历史", icon: ListTree, permission: "audit.view" },
+  { key: "models", label: "模型配置", icon: Cpu, permission: "model.manage" },
+  { key: "keys", label: "MCP 服务密钥", icon: KeyRound, permission: "apikey.manage" },
+  { key: "cron", label: "定时任务", icon: Clock, permission: "cron.manage" },
+  { key: "evaluation", label: "评测面板", icon: ClipboardCheck, permission: "eval.view" },
+  { key: "feedback", label: "反馈分析", icon: MessageSquareText, permission: "audit.view" },
+  { key: "usage", label: "用量统计", icon: TrendingUp, permission: "audit.view" },
+  { key: "billing", label: "计费管理", icon: Wallet, permission: "billing.view" },
+  { key: "sensitive", label: "敏感词库", icon: Shield, permission: "sensitive.manage" },
+  { key: "kb", label: "知识库", icon: BookOpen, permission: "kb.view" },
+  { key: "audit", label: "审计日志", icon: ScrollText, permission: "audit.view" },
+  { key: "security", label: "安全审计", icon: ShieldAlert, permission: "security.view" },
+  { key: "evolution", label: "自演进", icon: GitBranch, permission: "evolution.manage" },
+  { key: "rbac", label: "角色权限", icon: Users, permission: "rbac.manage" },
+  { key: "sandbox", label: "MCP 沙箱", icon: ShieldCheck, permission: "sandbox.manage" },
+  { key: "agent-cards", label: "Agent Cards", icon: Bot, permission: "agent-cards.manage" },
 ];
+
+/** 返回用户有权限访问的导航项列表 */
+export function getVisibleNavItems(hasPermission: (perm: string) => boolean): NavItem[] {
+  return NAV_ITEMS.filter((item) => {
+    if (item.permission === null) return true;
+    return hasPermission(item.permission);
+  });
+}
 
 /** 根据 page key 获取 label（供面包屑使用） */
 export function getPageLabel(key: AdminPageKey): string {
   return NAV_ITEMS.find((item) => item.key === key)?.label ?? key;
+}
+
+/** 检查用户是否有权限访问某个页面 */
+export function hasPagePermission(hasPermission: (perm: string) => boolean, key: AdminPageKey): boolean {
+  const perm = PAGE_PERMISSIONS[key];
+  if (perm === null) return true;
+  return hasPermission(perm);
 }
 
 interface AdminSidebarProps {
@@ -105,6 +155,10 @@ export function AdminSidebar({
 }: AdminSidebarProps) {
   const navigate = useNavigate();
   const logout = useAuthStore((s) => s.logout);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+
+  // 根据用户权限过滤导航项
+  const visibleItems = getVisibleNavItems(hasPermission);
 
   const handlePageChange = (page: AdminPageKey) => {
     onPageChange(page);
@@ -124,14 +178,11 @@ export function AdminSidebar({
       {/* Logo / 标题 */}
       <div className="border-b px-4 py-4 flex items-center justify-between">
         {collapsed ? (
-          <div className="mx-auto h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-            <span className="text-sm font-bold text-primary">A</span>
+          <div className="mx-auto">
+            <BrandIcon size="sm" />
           </div>
         ) : (
-          <div>
-            <h1 className="text-base font-bold">Writing Agent V2</h1>
-            <p className="text-xs text-muted-foreground">Admin Dashboard</p>
-          </div>
+          <BrandIcon size="md" showLabel subtitle="Admin Dashboard" />
         )}
         {/* 移动端关闭按钮 */}
         <button
@@ -144,7 +195,7 @@ export function AdminSidebar({
 
       {/* 导航项 */}
       <div className="flex-1 overflow-y-auto py-2">
-        {NAV_ITEMS.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon;
           const isActive = activePage === item.key;
           return (

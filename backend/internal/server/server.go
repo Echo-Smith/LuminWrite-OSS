@@ -98,6 +98,10 @@ type Server struct {
 
 	// Raw database handle (for queries without a dedicated repo)
 	db *database.DB
+
+	// Billing
+	billingRepo *database.BillingRepo
+	pointCalc    *services.PointCalculator
 }
 
 // New creates a new Server.
@@ -477,6 +481,16 @@ func New(cfg *config.Config) (*Server, error) {
 		s.userStyleStore = database.NewUserStyleStore(db)
 		s.db = db
 	}
+
+	// ── Billing ──
+	if dbAvail && db != nil {
+		s.billingRepo = database.NewBillingRepo(db)
+		s.pointCalc = services.NewPointCalculator(db)
+		if s.db == nil {
+			s.db = db
+		}
+		slog.Info("billing system initialized", "db_available", true)
+	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
 		// Wire LLM metrics (Prometheus instrumentation)
@@ -507,6 +521,17 @@ func New(cfg *config.Config) (*Server, error) {
 				mcpTool.SetSandboxHook(adapter)
 			}
 		}
+	}
+
+	// ── Security Event Recorder (Prompt Injection Audit) ──
+	// Persists interception events to security_events table for audit dashboard.
+	// Falls back to in-memory only if DB is unavailable.
+	if dbAvail && s.db != nil {
+		recorder := newSecurityEventDBRecorder(s.db)
+		engine.SetSecurityEventRecorder(recorder)
+		slog.Info("security event recorder initialized — prompt injection interceptions will be persisted")
+	} else {
+		slog.Warn("DB not available — security events will only be tracked in-memory")
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -568,12 +593,18 @@ func New(cfg *config.Config) (*Server, error) {
 		searchClient.SetCredibilityLookup(editorial.NewCredibilityLookupAdapter(edStore))
 		slog.Info("source credibility lookup wired into search client")
 
-		// Register Agent executors (adapt V2 Steps to editorial AgentExecutor)
+		// Register Agent executors (using RoleAgentRunner with ChatWithTools loop)
 		if llm != nil {
-			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore))
+			kbAdapter := services.NewKbSearchAdapter(s.kbMgr)
+
+			// ── 初始化编辑部工具注册中心 ──
+			toolRegistry := editorial.NewEditorialToolRegistry()
+			editorial.RegisterBuiltinTools(toolRegistry)
+
+			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore, kbAdapter, toolRegistry))
 			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
-				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore))
-				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore))
+				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, toolRegistry))
+				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, toolRegistry))
 			}
 
 			// 初始化对照实验运行器
@@ -595,11 +626,17 @@ func New(cfg *config.Config) (*Server, error) {
 				editorial.NewDynamicAgentRegistry(), edStore, edEmitter,
 			)
 			// 注册预设 Agent 执行器到 DAGExecutor（以 BaseRole 作为 key）
-			researchExec := editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore)
+			kbAdapter := services.NewKbSearchAdapter(s.kbMgr)
+
+			// ── 初始化编辑部工具注册中心（DAG 模式独立实例）──
+			dagToolRegistry := editorial.NewEditorialToolRegistry()
+			editorial.RegisterBuiltinTools(dagToolRegistry)
+
+			researchExec := editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("researcher", researchExec)
 			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
-				writingExec := editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore)
-				reviewExec := editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore)
+				writingExec := editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, dagToolRegistry)
+				reviewExec := editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, dagToolRegistry)
 				s.dagExecutor.RegisterExecutor("writer", writingExec)
 				s.dagExecutor.RegisterExecutor("reviewer", reviewExec)
 			}
@@ -652,11 +689,14 @@ func (s *Server) Router() http.Handler {
 	// Prometheus metrics
 	r.Get("/metrics", s.handleMetrics)
 
+	// A2A Agent Cards (public — capability discovery)
+	r.Get("/api/v2/agent-cards", s.handleAgentCards)
+
 	// API v2
 	r.Route("/api/v2", func(r chi.Router) {
 		// Styles (jwtOptional: logged-in users see global + their private styles)
 		r.With(s.jwtOptionalMiddleware).Get("/styles", s.handleListStylesWithUserStyles)
-		r.Get("/styles/{slug}", s.handleGetStyle)
+		r.With(s.jwtOptionalMiddleware).Get("/styles/{slug}", s.handleGetStyle)
 
 		// User Custom Styles (requires auth)
 		r.With(s.jwtAuthMiddleware).Get("/my-styles", s.handleListMyStyles)
@@ -665,6 +705,7 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Put("/my-styles/{id}", s.handleUpdateMyStyle)
 		r.With(s.jwtAuthMiddleware).Delete("/my-styles/{id}", s.handleDeleteMyStyle)
 		r.With(s.jwtAuthMiddleware).Post("/my-styles/{id}/submit", s.handleSubmitMyStyleForReview)
+		r.With(s.jwtAuthMiddleware).Post("/my-styles/{id}/withdraw", s.handleWithdrawMyStyleReview)
 
 		// AI Style Builder (requires auth)
 		r.With(s.jwtAuthMiddleware).Post("/style-builder/sessions", s.handleCreateBuilderSession)
@@ -673,6 +714,18 @@ func (s *Server) Router() http.Handler {
 
 		// Models (public — list active models for composer)
 		r.Get("/models", s.handleListActiveModels)
+
+		// Billing (user-facing)
+		r.With(s.jwtAuthMiddleware).Get("/billing/balance", s.handleBillingBalance)
+		r.With(s.jwtAuthMiddleware).Get("/billing/plans", s.handleBillingPlans)
+		r.With(s.jwtAuthMiddleware).Get("/billing/subscription", s.handleBillingSubscription)
+		r.With(s.jwtAuthMiddleware).Post("/billing/subscribe", s.handleBillingSubscribe)
+		r.With(s.jwtAuthMiddleware).Get("/billing/consumption", s.handleBillingConsumption)
+		r.With(s.jwtAuthMiddleware).Get("/billing/consumption/summary", s.handleBillingConsumptionSummary)
+		r.With(s.jwtAuthMiddleware).Post("/billing/recharge", s.handleBillingRecharge)
+		r.With(s.jwtAuthMiddleware).Get("/billing/recharge/orders", s.handleBillingRechargeOrders)
+		r.With(s.jwtAuthMiddleware).Post("/billing/redeem", s.handleBillingRedeem)
+		r.With(s.jwtAuthMiddleware).Get("/billing/features", s.handleBillingFeatures)
 
 		// Topics
 		r.Get("/topics", s.handleListTopics)
@@ -696,11 +749,11 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 	r.Post("/feedback/aggregate", s.handleAggregateFeedback)
 	r.Post("/feedback/suggestions/{style}/{version}", s.handleGenerateSuggestions)
 
-	// Memory
-	r.Get("/memories", s.handleListMemories)
-	r.Post("/memories", s.handleCreateMemory)
-	r.Delete("/memories/{id}", s.handleDeleteMemory)
-	r.Post("/memories/{id}/dismiss", s.handleDismissMemory)
+	// Memory (requires auth — user identity from JWT)
+	r.With(s.jwtAuthMiddleware).Get("/memories", s.handleListMemories)
+	r.With(s.jwtAuthMiddleware).Post("/memories", s.handleCreateMemory)
+	r.With(s.jwtAuthMiddleware).Delete("/memories/{id}", s.handleDeleteMemory)
+	r.With(s.jwtAuthMiddleware).Post("/memories/{id}/dismiss", s.handleDismissMemory)
 
 	// Memory Files (Markdown memory layer)
 	r.With(s.jwtAuthMiddleware).Get("/memories/file", s.handleGetMemoryFile)
@@ -762,6 +815,13 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.With(s.jwtAuthMiddleware).Post("/materials/upload", s.handleUserMaterialUpload)
 		r.With(s.jwtAuthMiddleware).Delete("/materials/{id}", s.handleUserMaterialDelete)
 		r.With(s.jwtAuthMiddleware).Post("/materials/search", s.handleUserMaterialSearch)
+		r.With(s.jwtAuthMiddleware).Put("/materials/{id}/move", s.handleMaterialMove)
+
+		// Material Folders
+		r.With(s.jwtAuthMiddleware).Get("/material-folders", s.handleFolderList)
+		r.With(s.jwtAuthMiddleware).Post("/material-folders", s.handleFolderCreate)
+		r.With(s.jwtAuthMiddleware).Put("/material-folders/{id}", s.handleFolderUpdate)
+		r.With(s.jwtAuthMiddleware).Delete("/material-folders/{id}", s.handleFolderDelete)
 
 		// Topic-Material Association
 		r.With(s.jwtAuthMiddleware).Get("/topics/{topicId}/materials", s.handleTopicMaterialList)
@@ -799,6 +859,7 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/sse/topics", s.handleSSETopics)
 		r.Get("/topics/stream", s.handleSSETopics) // alias per docs/03-api-specification.md
 		r.Get("/sse/stats", s.handleSSEStats)
+		r.Post("/sse/test-notify", s.handleSSETestNotification) // user-scoped test notification
 
 
 		// Editorial (编辑部系统) — JWT-protected
@@ -817,10 +878,11 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/auth/verify", s.handleVerifyToken)
 
 		// Passkey / WebAuthn
-		// register/begin is public — allows registration from the login page before JWT is obtained.
-		// The handler resolves user_id from the request body (or falls back to AdminUserID).
-		r.Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
-		r.Post("/auth/passkey/register/complete", s.handlePasskeyRegisterComplete)
+		// register/begin uses optional JWT — if the user is logged in (e.g. from personal center),
+		// the user_id is resolved from the JWT context. If not (e.g. from the login page),
+		// user_id is taken from the request body.
+	r.With(s.jwtOptionalMiddleware).Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
+	r.With(s.jwtOptionalMiddleware).Post("/auth/passkey/register/complete", s.handlePasskeyRegisterComplete)
 		r.Post("/auth/passkey/login/begin", s.handlePasskeyLoginBegin)
 		r.Post("/auth/passkey/login/complete", s.handlePasskeyLoginComplete)
 		r.With(s.jwtAuthMiddleware).Get("/auth/passkey/list", s.handlePasskeyList)
@@ -837,168 +899,220 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions/{versionId}", s.handleGetArticleVersion)
 		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 		r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
+		r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
+		r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions)
 
-		// Admin (protected by admin token)
+		// Admin (protected by admin token + fine-grained RBAC permissions)
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(s.adminAuthMiddleware)
 
-			// Dashboard stats
+			// Dashboard stats (any admin user)
 			r.Get("/stats", s.handleAdminStats)
 			r.Get("/exit-stats", s.handleAdminExitStats)
+			r.Get("/routes", s.handleAdminRoutes)
 
-			// Traces
-			r.Get("/traces", s.handleAdminListTraces)
-			r.Get("/traces/{traceId}", s.handleAdminGetTrace)
+			// Traces (audit.view)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("audit.view"))
+				r.Get("/traces", s.handleAdminListTraces)
+				r.Get("/traces/{traceId}", s.handleAdminGetTrace)
+				r.Get("/audit-logs", s.handleAdminListAuditLogs)
+				r.Get("/ab-metrics", s.handleAdminABMetrics)
+				r.Get("/token-usage", s.handleAdminTokenUsage)
+				r.Get("/evidence/{traceId}", s.handleAdminGetEvidence)
+			})
 
-			// Style Profile CRUD
-			r.Get("/styles", s.handleAdminListStyles)
-			r.Get("/styles/{slug}", s.handleAdminGetStyle)
-			r.Post("/styles", s.handleAdminCreateStyle)
-			r.Put("/styles/{slug}", s.handleAdminUpdateStyle)
-			r.Post("/styles/{slug}/publish", s.handleAdminPublishStyle)
-			r.Post("/styles/{slug}/archive", s.handleAdminArchiveStyle)
-			r.Get("/styles/{slug}/versions", s.handleAdminListVersions)
-			r.Post("/styles/{slug}/versions/{version}/republish", s.handleAdminRepublishVersion)
-            r.Get("/styles/{slug}/versions/compare", s.handleAdminCompareVersions)
+			// Style Profile CRUD (style.create)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("style.create"))
+				r.Get("/styles", s.handleAdminListStyles)
+				r.Get("/styles/{slug}", s.handleAdminGetStyle)
+				r.Post("/styles", s.handleAdminCreateStyle)
+				r.Put("/styles/{slug}", s.handleAdminUpdateStyle)
+				r.Post("/styles/{slug}/publish", s.handleAdminPublishStyle)
+				r.Post("/styles/{slug}/archive", s.handleAdminArchiveStyle)
+				r.Get("/styles/{slug}/versions", s.handleAdminListVersions)
+				r.Post("/styles/{slug}/versions/{version}/republish", s.handleAdminRepublishVersion)
+				r.Get("/styles/{slug}/versions/compare", s.handleAdminCompareVersions)
+				// Rollout (Grayscale)
+				r.Get("/styles/{slug}/rollout", s.handleAdminGetRollout)
+				r.Put("/styles/{slug}/rollout", s.handleAdminUpdateRollout)
+				r.Post("/styles/{slug}/rollout/preview", s.handleAdminPreviewRollout)
+			})
 
-            // Community style review (pending user submissions)
-            r.Get("/pending-styles", s.handleAdminListPendingStyles)
-            r.Post("/pending-styles/{id}/approve", s.handleAdminApproveStyle)
-            r.Post("/pending-styles/{id}/reject", s.handleAdminRejectStyle)
+			// Community style review (style.review)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("style.review"))
+				r.Get("/pending-styles", s.handleAdminListPendingStyles)
+				r.Post("/pending-styles/{id}/approve", s.handleAdminApproveStyle)
+				r.Post("/pending-styles/{id}/reject", s.handleAdminRejectStyle)
+			})
 
-            // Rollout (Grayscale)
-            r.Get("/styles/{slug}/rollout", s.handleAdminGetRollout)
-            r.Put("/styles/{slug}/rollout", s.handleAdminUpdateRollout)
-            r.Post("/styles/{slug}/rollout/preview", s.handleAdminPreviewRollout)
+			// Sensitive Words (sensitive.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("sensitive.manage"))
+				r.Get("/sensitive-words", s.handleAdminListSensitiveWords)
+				r.Post("/sensitive-words", s.handleAdminAddSensitiveWord)
+				r.Delete("/sensitive-words/{id}", s.handleAdminDeleteSensitiveWord)
+				r.Put("/sensitive-words/config", s.handleAdminSensitiveConfig)
+				r.Get("/sensitive-words/config", s.handleAdminSensitiveConfig)
+			})
 
-        // Sensitive Words
-            r.Get("/sensitive-words", s.handleAdminListSensitiveWords)
-            r.Post("/sensitive-words", s.handleAdminAddSensitiveWord)
-            r.Delete("/sensitive-words/{id}", s.handleAdminDeleteSensitiveWord)
-            r.Put("/sensitive-words/config", s.handleAdminSensitiveConfig)
-            r.Get("/sensitive-words/config", s.handleAdminSensitiveConfig)
+			// Model Configs (model.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("model.manage"))
+				r.Get("/models", s.handleAdminListModelConfigs)
+				r.Post("/models", s.handleAdminCreateModelConfig)
+				r.Post("/models/discover", s.handleAdminDiscoverModels)
+				r.Put("/models/{id}", s.handleAdminUpdateModelConfig)
+				r.Delete("/models/{id}", s.handleAdminDeleteModelConfig)
+				r.Post("/models/batch", s.handleAdminBatchModels)
+			})
 
-            // Model Configs
-            r.Get("/models", s.handleAdminListModelConfigs)
-            r.Post("/models", s.handleAdminCreateModelConfig)
-            r.Post("/models/discover", s.handleAdminDiscoverModels)
-            r.Put("/models/{id}", s.handleAdminUpdateModelConfig)
-            r.Delete("/models/{id}", s.handleAdminDeleteModelConfig)
+			// API Keys (apikey.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("apikey.manage"))
+				r.Get("/api-keys", s.handleAdminListAPIKeys)
+				r.Post("/api-keys", s.handleAdminCreateAPIKey)
+				r.Put("/api-keys/{id}", s.handleAdminUpdateAPIKey)
+				r.Delete("/api-keys/{id}", s.handleAdminDeleteAPIKey)
+				r.Post("/api-keys/{id}/test", s.handleAdminTestAPIKey)
+				r.Post("/api-keys/batch", s.handleAdminBatchAPIKeys)
+			})
 
-            // API Keys
-            r.Get("/api-keys", s.handleAdminListAPIKeys)
-            r.Post("/api-keys", s.handleAdminCreateAPIKey)
-            r.Put("/api-keys/{id}", s.handleAdminUpdateAPIKey)
-            r.Delete("/api-keys/{id}", s.handleAdminDeleteAPIKey)
-            r.Post("/api-keys/{id}/test", s.handleAdminTestAPIKey)
+			// Cron Jobs (cron.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("cron.manage"))
+				r.Get("/cron-jobs", s.handleAdminListCronJobs)
+				r.Post("/cron-jobs", s.handleAdminCreateCronJob)
+				r.Put("/cron-jobs/{id}", s.handleAdminUpdateCronJob)
+				r.Delete("/cron-jobs/{id}", s.handleAdminDeleteCronJob)
+				r.Post("/cron-jobs/{id}/run", s.handleAdminRunCronJob)
+				r.Post("/cron-jobs/batch", s.handleAdminBatchCronJobs)
+			})
 
-            // Token Usage
-            r.Get("/token-usage", s.handleAdminTokenUsage)
+			// Knowledge Base Admin (kb.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("kb.manage"))
+				r.Post("/kb/generate-embeddings", s.handleKBGenerateEmbeddings)
+				r.Post("/kb/rechunk", s.handleKBRechunk)
+				r.Post("/kb/reimport", s.handleKBReimport)
+			})
 
-            // A/B Test Metrics (Responses API vs Chat Completions)
-            r.Get("/ab-metrics", s.handleAdminABMetrics)
+			// MCP Server Admin (mcp.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("mcp.manage"))
+				r.Get("/mcp/status", s.handleAdminMCPStatus)
+				r.Get("/mcp/tools", s.handleAdminMCPTools)
+				r.Get("/mcp/export", s.handleAdminMCPExport)
+				r.Get("/mcp/servers", s.handleAdminListMCPServers)
+				r.Post("/mcp/servers", s.handleAdminCreateMCPServer)
+				r.Put("/mcp/servers/{id}", s.handleAdminUpdateMCPServer)
+				r.Delete("/mcp/servers/{id}", s.handleAdminDeleteMCPServer)
+				r.Post("/mcp/servers/{id}/reconnect", s.handleAdminReconnectMCPServer)
+				// Tool Plugin Management
+				r.Get("/tool-plugins", s.handleAdminListToolPlugins)
+				r.Post("/tool-plugins", s.handleAdminCreateToolPlugin)
+				r.Get("/tool-plugins/{name}", s.handleAdminGetToolPlugin)
+				r.Delete("/tool-plugins/{name}", s.handleAdminDeleteToolPlugin)
+			})
 
-            // Cron Jobs
-            r.Get("/cron-jobs", s.handleAdminListCronJobs)
-            r.Post("/cron-jobs", s.handleAdminCreateCronJob)
-            r.Put("/cron-jobs/{id}", s.handleAdminUpdateCronJob)
-            r.Delete("/cron-jobs/{id}", s.handleAdminDeleteCronJob)
-            r.Post("/cron-jobs/{id}/run", s.handleAdminRunCronJob)
+			// MCP Security Sandbox (sandbox.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("sandbox.manage"))
+				r.Get("/mcp/sandbox/policies", s.handleAdminListMCPToolPolicies)
+				r.Post("/mcp/sandbox/policies", s.handleAdminCreateMCPToolPolicy)
+				r.Put("/mcp/sandbox/policies/{id}", s.handleAdminUpdateMCPToolPolicy)
+				r.Delete("/mcp/sandbox/policies/{id}", s.handleAdminDeleteMCPToolPolicy)
+				r.Get("/mcp/sandbox/violations", s.handleAdminListMCPViolations)
+				r.Get("/mcp/sandbox/stats", s.handleAdminGetSandboxStats)
+				r.Post("/mcp/sandbox/test", s.handleAdminTestSandbox)
+				r.Post("/mcp/sandbox/reload", s.handleAdminReloadSandbox)
+			})
 
-            // Knowledge Base Admin
-            r.Post("/kb/generate-embeddings", s.handleKBGenerateEmbeddings)
-            r.Post("/kb/rechunk", s.handleKBRechunk)
-            r.Post("/kb/reimport", s.handleKBReimport)
+			// Security Audit (security.view)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("security.view"))
+				r.Get("/security/audit", s.handleAdminSecurityAudit)
+				r.Get("/security/events", s.handleAdminSecurityEvents)
+			})
 
-            // MCP Server Admin
-            r.Get("/mcp/status", s.handleAdminMCPStatus)
-            r.Get("/mcp/tools", s.handleAdminMCPTools)
-            r.Get("/mcp/export", s.handleAdminMCPExport)
-            // MCP Server CRUD (DB-backed external server management)
-            r.Get("/mcp/servers", s.handleAdminListMCPServers)
-            r.Post("/mcp/servers", s.handleAdminCreateMCPServer)
-            r.Put("/mcp/servers/{id}", s.handleAdminUpdateMCPServer)
-            r.Delete("/mcp/servers/{id}", s.handleAdminDeleteMCPServer)
-            r.Post("/mcp/servers/{id}/reconnect", s.handleAdminReconnectMCPServer)
+			// Self-Evolution (evolution.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("evolution.manage"))
+				r.Get("/evolution/candidates", s.handleAdminListEvolutionCandidates)
+				r.Post("/evolution/candidates/{id}/approve", s.handleAdminApproveEvolutionCandidate)
+				r.Post("/evolution/candidates/{id}/reject", s.handleAdminRejectEvolutionCandidate)
+				r.Post("/evolution/candidates/{id}/canary", s.handleAdminEnableCanaryRollout)
+				r.Post("/evolution/candidates/{id}/rollback", s.handleAdminRollbackCanary)
+				r.Post("/evolution/candidates/{id}/promote", s.handleAdminPromoteToFull)
+				r.Get("/evolution/candidates/{id}/metrics", s.handleAdminGetCanaryMetrics)
+				r.Get("/evolution/gate-configs", s.handleAdminListGateConfigs)
+				r.Get("/evolution/gate-config/{slug}", s.handleAdminGetGateConfig)
+				r.Put("/evolution/gate-config/{slug}", s.handleAdminUpdateGateConfig)
+				r.Get("/evolution/candidates/{id}/events", s.handleAdminGetGateEvents)
+				r.Get("/evolution/candidates/{id}/health", s.handleAdminGetHealthSnapshots)
+			})
 
-		// MCP Security Sandbox
-		r.Get("/mcp/sandbox/policies", s.handleAdminListMCPToolPolicies)
-		r.Post("/mcp/sandbox/policies", s.handleAdminCreateMCPToolPolicy)
-		r.Put("/mcp/sandbox/policies/{id}", s.handleAdminUpdateMCPToolPolicy)
-		r.Delete("/mcp/sandbox/policies/{id}", s.handleAdminDeleteMCPToolPolicy)
-		r.Get("/mcp/sandbox/violations", s.handleAdminListMCPViolations)
-		r.Get("/mcp/sandbox/stats", s.handleAdminGetSandboxStats)
-		r.Post("/mcp/sandbox/test", s.handleAdminTestSandbox)
-		r.Post("/mcp/sandbox/reload", s.handleAdminReloadSandbox)
+			// WritingAgentBench V2 (wabench.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("wabench.manage"))
+				r.Put("/evaluation/wabench/candidates/{id}", s.handleAdminUpsertWABenchCandidate)
+				r.Get("/evaluation/wabench/overview", s.handleAdminWABenchOverview)
+				r.Get("/evaluation/wabench/suites", s.handleAdminWABenchSuites)
+				r.Get("/evaluation/wabench/candidates", s.handleAdminWABenchCandidates)
+				r.Get("/evaluation/wabench/runs", s.handleAdminWABenchRuns)
+				r.Post("/evaluation/wabench/runs", s.handleAdminCreateWABenchRun)
+				r.Get("/evaluation/wabench/runs/{id}", s.handleAdminGetWABenchRun)
+				r.Get("/evaluation/wabench/runs/{id}/bundle", s.handleAdminGetWABenchRunBundle)
+				r.Get("/evaluation/wabench/reviews", s.handleAdminWABenchReviews)
+				r.Get("/evaluation/wabench/reviews/template.xlsx", s.handleAdminWABenchReviewTemplate)
+				r.Post("/evaluation/wabench/reviews/import", s.handleAdminImportWABenchReviews)
+				r.Get("/evaluation/wabench/badcases", s.handleAdminWABenchBadcases)
+				r.Get("/evaluation/wabench/releases", s.handleAdminWABenchReleases)
+				r.Post("/evaluation/wabench/red-team/seed", s.handleAdminSeedWABenchRedTeam)
+			})
 
-            // Tool Plugin Management (hot-pluggable tool sets)
-            r.Get("/tool-plugins", s.handleAdminListToolPlugins)
-            r.Post("/tool-plugins", s.handleAdminCreateToolPlugin)
-            r.Get("/tool-plugins/{name}", s.handleAdminGetToolPlugin)
-            r.Delete("/tool-plugins/{name}", s.handleAdminDeleteToolPlugin)
+			// RBAC — Role & Permission Management (rbac.manage)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("rbac.manage"))
+				r.Get("/rbac/roles", s.handleAdminListRoles)
+				r.Get("/rbac/permissions", s.handleAdminListPermissions)
+				r.Get("/rbac/roles/{id}/permissions", s.handleAdminGetRolePermissions)
+				r.Put("/rbac/roles/{id}/permissions", s.handleAdminUpdateRolePermissions)
+				r.Get("/rbac/users", s.handleAdminListUsersWithRoles)
+				r.Get("/rbac/users/{userId}/roles", s.handleAdminListUserRoles)
+				r.Post("/rbac/users/{userId}/roles", s.handleAdminAssignUserRole)
+				r.Delete("/rbac/users/{userId}/roles/{roleId}", s.handleAdminRemoveUserRole)
+			})
 
-            // SSE Notifications (admin test notification)
-            r.Post("/sse/notify", s.handleSSESendNotification)
+			// Billing Management (billing.view for read, billing.manage for write)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("billing.view"))
+				r.Get("/billing/overview", s.handleAdminBillingOverview)
+				r.Get("/billing/users", s.handleAdminBillingUsers)
+				r.Get("/billing/users/{userId}", s.handleAdminBillingUserDetail)
+				r.Get("/billing/revenue", s.handleAdminBillingRevenue)
+				r.Get("/billing/consumption", s.handleAdminBillingConsumption)
+				r.Get("/billing/point-rates", s.handleAdminBillingPointRates)
+				r.Get("/billing/plans", s.handleAdminBillingPlans)
+				r.Get("/billing/redeem-codes", s.handleAdminBillingListRedeemCodes)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("billing.manage"))
+				r.Post("/billing/point-rates", s.handleAdminBillingCreatePointRate)
+				r.Put("/billing/point-rates/{id}", s.handleAdminBillingUpdatePointRate)
+				r.Delete("/billing/point-rates/{id}", s.handleAdminBillingDeletePointRate)
+				r.Put("/billing/multiplier", s.handleAdminBillingSetMultiplier)
+				r.Put("/billing/plans/{id}", s.handleAdminBillingUpdatePlan)
+				r.Post("/billing/recharge", s.handleAdminBillingRecharge)
+				r.Post("/billing/redeem-codes", s.handleAdminBillingCreateRedeemCodes)
+				r.Delete("/billing/redeem-codes/{id}", s.handleAdminBillingDisableRedeemCode)
+			})
 
-            // Audit Logs
-            r.Get("/audit-logs", s.handleAdminListAuditLogs)
-
-            // Security Audit (Prompt Injection Interception Stats)
-            r.Get("/security/audit", s.handleAdminSecurityAudit)
-
-            // Self-Evolution Candidate Management
-            r.Get("/evolution/candidates", s.handleAdminListEvolutionCandidates)
-            r.Post("/evolution/candidates/{id}/approve", s.handleAdminApproveEvolutionCandidate)
-            r.Post("/evolution/candidates/{id}/reject", s.handleAdminRejectEvolutionCandidate)
-            r.Post("/evolution/candidates/{id}/canary", s.handleAdminEnableCanaryRollout)
-            r.Post("/evolution/candidates/{id}/rollback", s.handleAdminRollbackCanary)
-            r.Post("/evolution/candidates/{id}/promote", s.handleAdminPromoteToFull)
-            r.Get("/evolution/candidates/{id}/metrics", s.handleAdminGetCanaryMetrics)
-
-            // Self-Evolution Gate Configuration & Monitoring
-            r.Get("/evolution/gate-configs", s.handleAdminListGateConfigs)
-            r.Get("/evolution/gate-config/{slug}", s.handleAdminGetGateConfig)
-            r.Put("/evolution/gate-config/{slug}", s.handleAdminUpdateGateConfig)
-            r.Get("/evolution/candidates/{id}/events", s.handleAdminGetGateEvents)
-            r.Get("/evolution/candidates/{id}/health", s.handleAdminGetHealthSnapshots)
-
-            // Batch Operations
-            r.Post("/models/batch", s.handleAdminBatchModels)
-            r.Post("/api-keys/batch", s.handleAdminBatchAPIKeys)
-            r.Post("/cron-jobs/batch", s.handleAdminBatchCronJobs)
-
-            // Evidence System
-            r.Get("/evidence/{traceId}", s.handleAdminGetEvidence)
-
-			// WritingAgentBench V2 shadow evaluation
-			r.Put("/evaluation/wabench/candidates/{id}", s.handleAdminUpsertWABenchCandidate)
-			r.Get("/evaluation/wabench/overview", s.handleAdminWABenchOverview)
-			r.Get("/evaluation/wabench/suites", s.handleAdminWABenchSuites)
-			r.Get("/evaluation/wabench/candidates", s.handleAdminWABenchCandidates)
-			r.Get("/evaluation/wabench/runs", s.handleAdminWABenchRuns)
-			r.Post("/evaluation/wabench/runs", s.handleAdminCreateWABenchRun)
-			r.Get("/evaluation/wabench/runs/{id}", s.handleAdminGetWABenchRun)
-			r.Get("/evaluation/wabench/runs/{id}/bundle", s.handleAdminGetWABenchRunBundle)
-			r.Get("/evaluation/wabench/reviews", s.handleAdminWABenchReviews)
-			r.Get("/evaluation/wabench/reviews/template.xlsx", s.handleAdminWABenchReviewTemplate)
-			r.Post("/evaluation/wabench/reviews/import", s.handleAdminImportWABenchReviews)
-			r.Get("/evaluation/wabench/badcases", s.handleAdminWABenchBadcases)
-			r.Get("/evaluation/wabench/releases", s.handleAdminWABenchReleases)
-			r.Post("/evaluation/wabench/red-team/seed", s.handleAdminSeedWABenchRedTeam)
-
-            // RBAC — Role & Permission Management
-            r.Get("/rbac/roles", s.handleAdminListRoles)
-            r.Get("/rbac/permissions", s.handleAdminListPermissions)
-            r.Get("/rbac/roles/{id}/permissions", s.handleAdminGetRolePermissions)
-            r.Put("/rbac/roles/{id}/permissions", s.handleAdminUpdateRolePermissions)
-            r.Get("/rbac/users", s.handleAdminListUsersWithRoles)
-            r.Get("/rbac/users/{userId}/roles", s.handleAdminListUserRoles)
-            r.Post("/rbac/users/{userId}/roles", s.handleAdminAssignUserRole)
-            r.Delete("/rbac/users/{userId}/roles/{roleId}", s.handleAdminRemoveUserRole)
-
-            // Route Discovery — list all registered API routes
-            r.Get("/routes", s.handleAdminRoutes)
-        })
+			// SSE Notifications (admin test — any admin)
+			r.Post("/sse/notify", s.handleSSESendNotification)
+		})
     })
 
 	// Walk chi router to discover all routes and populate metadata
@@ -1126,6 +1240,41 @@ func (s *Server) handleListStyles(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetStyle(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+
+	// Handle user custom styles (slug prefix "my_")
+	// These are stored in user_style_profiles, not in the global profile loader.
+	if strings.HasPrefix(slug, "my_") && s.userStyleStore != nil {
+		// Need the authenticated user to resolve which user's style this is.
+		userID := s.getUserIDFromRequest(r)
+		if userID == "anonymous" {
+			response.Err(w, http.StatusUnauthorized, "unauthorized", "login required to view custom styles")
+			return
+		}
+		rawSlug := strings.TrimPrefix(slug, "my_")
+		p, err := s.userStyleStore.GetProfileBySlugAndOwner(r.Context(), rawSlug, userID)
+		if err != nil {
+			response.Err(w, http.StatusNotFound, "not_found", "style not found")
+			return
+		}
+		// Load latest version config
+		if p.CurrentVersion == 0 {
+			response.Err(w, http.StatusNotFound, "no_version", "style has no saved version")
+			return
+		}
+		v, err := s.userStyleStore.GetLatestVersion(r.Context(), p.ID)
+		if err != nil {
+			response.Err(w, http.StatusNotFound, "not_found", "style version not found")
+			return
+		}
+		var sp profile.StyleProfile
+		if err := json.Unmarshal([]byte(v.Config), &sp); err != nil {
+			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to parse style config")
+			return
+		}
+		response.OK(w, sp)
+		return
+	}
+
 	// Support grayscale routing: if user_id is provided, use GetForUser
 	userID := r.URL.Query().Get("user_id")
 	if userID != "" {
@@ -1449,6 +1598,22 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 	}
 
+	// ── 余额检查（admin 豁免）──
+	if userRole != "admin" && userID != AdminUserID && s.billingRepo != nil {
+		balance, ok, err := s.CheckUserBalance(context.Background(), userID, 0)
+		if err == nil && !ok {
+			client.SendDirect(&websocket.ServerMessage{
+				Type: websocket.MsgAgentError,
+				Payload: map[string]interface{}{
+					"code":    "insufficient_balance",
+					"message": "积分余额不足，请充值后继续使用",
+					"balance": balance,
+				},
+			})
+			return
+		}
+	}
+
 	// ── Per-user concurrent agent limit ──
 	if s.cfg.Agent.MaxConcurrentPerUser > 0 {
 		userActive := 0
@@ -1593,7 +1758,28 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// Load style profile (needed by both pipeline and harness modes)
 	var styleProfile *profile.StyleProfile
-	if s.profiles != nil {
+	if strings.HasPrefix(execCtx.StyleSlug, "my_") && s.userStyleStore != nil && userID != "" && userID != "anonymous" {
+		// User custom style: load from user_style_store
+		rawSlug := strings.TrimPrefix(execCtx.StyleSlug, "my_")
+		userProfile, err := s.userStyleStore.GetProfileBySlugAndOwner(context.Background(), rawSlug, userID)
+		if err != nil {
+			slog.Warn("failed to load user custom style, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err, "user_id", userID)
+		} else if userProfile.CurrentVersion > 0 {
+			version, err := s.userStyleStore.GetLatestVersion(context.Background(), userProfile.ID)
+			if err != nil {
+				slog.Warn("failed to load user style version, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+			} else {
+				var sp profile.StyleProfile
+				if err := json.Unmarshal([]byte(version.Config), &sp); err != nil {
+					slog.Warn("failed to unmarshal user style config, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+				} else {
+					styleProfile = &sp
+					slog.Info("loaded user custom style profile", "slug", execCtx.StyleSlug, "name", sp.Name, "version", sp.Version)
+				}
+			}
+		}
+	}
+	if styleProfile == nil && s.profiles != nil {
 		if p, ok := s.profiles.Get(execCtx.StyleSlug); ok {
 			styleProfile = p
 		}
@@ -1610,6 +1796,16 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// Store agent mode so resume can rebuild the correct runner
 	execCtx.AgentMode = agentMode
+
+	// ── Knowledge base search toggle ──
+	// KBEnabled is a *bool: nil or true = KB enabled, false = KB disabled.
+	// When disabled, the Harness/Pipeline will not receive a kbSearcher,
+	// so the LLM won't get the search_knowledge tool.
+	kbEnabled := p.KBEnabled == nil || *p.KBEnabled
+	var kbSearcher tools.KnowledgeSearcher
+	if kbEnabled {
+		kbSearcher = services.NewKbSearchAdapter(s.kbMgr)
+	}
 
 	var agentRunner interface {
 		Run(context.Context, *engine.ExecutionContext) error
@@ -1697,12 +1893,12 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 
 		h := agent.NewHarness(
-			llmClient, s.search, services.NewKbSearchAdapter(s.kbMgr), styleProfile,
+			llmClient, s.search, kbSearcher, styleProfile,
 			&harnessSessionStore{svc: s.memorySvc},
 			emitter,
 		)
 		agentRunner = &harnessRunner{harness: h, session: writingSession}
-		slog.Info("using harness agent (单层持续会话)", "trace_id", traceID, "conversation_id", execCtx.ConversationID)
+		slog.Info("using harness agent (单层持续会话)", "trace_id", traceID, "conversation_id", execCtx.ConversationID, "kb_enabled", kbEnabled)
 	} else if agentMode == "pipeline" {
 		// Pipeline mode: build fixed step array
 		var engineSteps []engine.Step
@@ -1757,7 +1953,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 
 		engineSteps = append(engineSteps,
-			steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, services.NewKbSearchAdapter(s.kbMgr)),
+			steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, kbSearcher),
 			s.newPostReviewStepWithLLM(llmClient, styleProfile),
 			steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
 			s.newPostReviewStepWithLLM(llmClient, styleProfile), // re-review after fix
@@ -1790,12 +1986,12 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 
 		h := agent.NewHarness(
-			llmClient, s.search, services.NewKbSearchAdapter(s.kbMgr), styleProfile,
+			llmClient, s.search, kbSearcher, styleProfile,
 			&harnessSessionStore{svc: s.memorySvc},
 			emitter,
 		)
 		agentRunner = &harnessRunner{harness: h, session: writingSession}
-		slog.Info("using harness agent (default fallback)", "trace_id", traceID)
+		slog.Info("using harness agent (default fallback)", "trace_id", traceID, "kb_enabled", kbEnabled)
 	}
 
 	// Run in background
@@ -1906,8 +2102,8 @@ func (s *Server) runAgent(
 			s.traces.CompleteTrace(ctx, execCtx)
 		}
 
-		// Broadcast article:completed via SSE — only when an actual article was produced
-		// (skip chat/shorten/expand intents that don't generate a full article)
+		// Push article:completed via SSE — only to the user who initiated the writing
+		// (user-scoped delivery via SSEEvent.UserID filter)
 		if s.sseHub != nil && execCtx.Article != "" {
 			topic := ""
 			if execCtx.WritingTask != nil {
@@ -1915,6 +2111,7 @@ func (s *Server) runAgent(
 			}
 			s.sseHub.Broadcast(&SSEEvent{
 				Event: "article:completed",
+				UserID: execCtx.UserID,
 				Data: map[string]interface{}{
 					"trace_id":      traceID,
 					"user_id":       execCtx.UserID,
@@ -1944,6 +2141,20 @@ func (s *Server) runAgent(
 				recorder := editorial.NewArtifactRecorder(s.editorialSvc.Store())
 				if err := recorder.RecordWritingArtifacts(ctx, execCtx, taskID); err != nil {
 					slog.Warn("failed to record writing artifacts", "error", err, "trace_id", traceID)
+				}
+			}
+		}
+
+		// ── Billing: settle points ──
+		if s.billingRepo != nil && s.pointCalc != nil && execCtx.UserID != "" && execCtx.UserID != "anonymous" {
+			modelName := s.cfg.DeepSeek.DefaultModel
+			pointsUsed, settleErr := s.SettleWritingPoints(ctx, execCtx.UserID, traceID, modelName, "writing", execCtx.TotalTokens, 0)
+			if settleErr != nil {
+				slog.Warn("billing: settle points failed", "error", settleErr, "trace_id", traceID)
+			} else if pointsUsed > 0 {
+				// 设置 emitter 的 pointsUsed，供已发出的 Completed 事件携带
+				if le, ok := emitter.(*LoggingEmitter); ok {
+					le.SetPointsUsed(pointsUsed)
 				}
 			}
 		}
@@ -1997,13 +2208,41 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 
 			// Load style profile
 			var styleProfile *profile.StyleProfile
-			if s.profiles != nil {
+			if strings.HasPrefix(execCtx.StyleSlug, "my_") && s.userStyleStore != nil && execCtx.UserID != "" && execCtx.UserID != "anonymous" {
+				// User custom style: load from user_style_store
+				rawSlug := strings.TrimPrefix(execCtx.StyleSlug, "my_")
+				userProfile, err := s.userStyleStore.GetProfileBySlugAndOwner(context.Background(), rawSlug, execCtx.UserID)
+				if err != nil {
+					slog.Warn("failed to load user custom style on resume, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+				} else if userProfile.CurrentVersion > 0 {
+					version, err := s.userStyleStore.GetLatestVersion(context.Background(), userProfile.ID)
+					if err != nil {
+						slog.Warn("failed to load user style version on resume, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+					} else {
+						var sp profile.StyleProfile
+						if err := json.Unmarshal([]byte(version.Config), &sp); err != nil {
+							slog.Warn("failed to unmarshal user style config on resume, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+						} else {
+							styleProfile = &sp
+							slog.Info("loaded user custom style profile on resume", "slug", execCtx.StyleSlug, "name", sp.Name)
+						}
+					}
+				}
+			}
+			if styleProfile == nil && s.profiles != nil {
 				if sp, ok := s.profiles.Get(execCtx.StyleSlug); ok {
 					styleProfile = sp
 				}
 			}
 
 			// Rebuild agent runner based on mode
+			// Restore KB toggle from the original execution context
+			resumeKBEnabled := execCtx.KBEnabled == nil || *execCtx.KBEnabled
+			var resumeKBSearcher tools.KnowledgeSearcher
+			if resumeKBEnabled {
+				resumeKBSearcher = services.NewKbSearchAdapter(s.kbMgr)
+			}
+
 			var agentRunner interface {
 				Run(context.Context, *engine.ExecutionContext) error
 			}
@@ -2040,7 +2279,7 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 				}
 
 				h := agent.NewHarness(
-					llmClient, s.search, services.NewKbSearchAdapter(s.kbMgr), styleProfile,
+					llmClient, s.search, resumeKBSearcher, styleProfile,
 					&harnessSessionStore{svc: s.memorySvc},
 					emitter,
 				)
@@ -2086,7 +2325,7 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 					engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
 				}
 				engineSteps = append(engineSteps,
-					steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, services.NewKbSearchAdapter(s.kbMgr)),
+					steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, resumeKBSearcher),
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
 					steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
@@ -2603,9 +2842,15 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		)
 	}
 
+	// Build KB searcher based on execCtx.KBEnabled (defaults to true)
+	registryKB := tools.KnowledgeSearcher(services.NewKbSearchAdapter(s.kbMgr))
+	if execCtx.KBEnabled != nil && !*execCtx.KBEnabled {
+		registryKB = nil
+	}
+
 	registry.RegisterWithDescriptor(
 		engine.NewStepTool(
-			steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, services.NewKbSearchAdapter(s.kbMgr)),
+			steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, registryKB),
 			"文章生成：按风格 Profile 生成文章，支持流式输出和 Agent Loop",
 			true, // terminal — article is produced
 		),
@@ -2691,25 +2936,35 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 
 	// Filter to active only and return minimal info
 	type modelInfo struct {
-		ID          string `json:"id"`
-		ModelName   string `json:"model_name"`
-		DisplayName string `json:"display_name"`
-		Provider    string `json:"provider"`
-		IsDefault   bool   `json:"is_default"`
-		HasAPIKey   bool   `json:"has_api_key"`
+		ID            string  `json:"id"`
+		ModelName     string  `json:"model_name"`
+		DisplayName   string  `json:"display_name"`
+		Provider      string  `json:"provider"`
+		IsDefault     bool    `json:"is_default"`
+		HasAPIKey     bool    `json:"has_api_key"`
+		PointsPerKToken float64 `json:"points_per_k_token"`
+		CostLevel       string  `json:"cost_level"`
 	}
 
 	var models []modelInfo
 	for _, c := range configs {
 		if c.IsActive {
-			models = append(models, modelInfo{
+			mi := modelInfo{
 				ID:          c.ID,
 				ModelName:   c.ModelName,
 				DisplayName: c.DisplayName,
 				Provider:    c.Provider,
 				IsDefault:   c.IsDefault,
 				HasAPIKey:   c.HasAPIKey,
-			})
+			}
+			// 查询模型的点数费率信息
+			if s.pointCalc != nil {
+				if info, err := s.pointCalc.GetModelPointInfo(r.Context(), c.ModelName); err == nil && info != nil {
+					mi.PointsPerKToken = info.PointsPerKToken
+					mi.CostLevel = info.CostLevel
+				}
+			}
+			models = append(models, mi)
 		}
 	}
 	if models == nil {

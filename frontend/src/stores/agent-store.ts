@@ -82,6 +82,7 @@ export interface ChatMessage {
   createdAt: number;
   status?: "running" | "complete" | "error";
   articleTitle?: string;
+  pointsUsed?: number; // 本次写作消耗的积分
 }
 
 // ─── 会话模型 ────────────────────────────────────────────
@@ -91,7 +92,7 @@ export interface WritingSession {
   title: string;          // 显示标题：优先用 article_title，其次 user_input 截断
   messages: ChatMessage[];
   traceId: string | null; // 当前轮次 trace，用于暂停、恢复和取消
-  conversationId: string | null; // 首轮 trace，后续请求用它加载同一会话历史
+  conversationId: string | null; // 首次 trace，后续请求用它加载同一会话历史
   status: "idle" | "running" | "paused" | "completed" | "error";
   style: string;
   mode: string;
@@ -100,6 +101,7 @@ export interface WritingSession {
   injectedMaterials?: string[]; // 从选题关联注入的素材标签
   articleTitle?: string | null; // AI 生成的文章标题（完成后才有）
   artifacts?: WritingArtifact[]; // 写作流程交付物（加载详情时获取）
+  kbEnabled: boolean; // 是否启用知识库搜索（默认 true）
 }
 
 // ─── Store 定义 ──────────────────────────────────────────
@@ -175,6 +177,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       mode: "auto",
       createdAt: Date.now(),
       awaitInputAt: null,
+      kbEnabled: true,
     };
     set((state) => ({
       sessions: [session, ...state.sessions],
@@ -250,6 +253,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         mode: t.mode || "auto",
         createdAt: new Date(t.created_at).getTime(),
         awaitInputAt: null,
+        kbEnabled: true, // 历史会话默认 KB 开启（无法从 trace 恢复原值）
       }));
 
       // 合并 DB 会话与本地已有会话（保留本地进行中的会话，避免丢失）
@@ -429,10 +433,8 @@ articleTitle: d.article_title,
 
     socket.onclose = () => {
       set({ wsConnected: false, ws: null });
-      // 自动重连（3秒后）
-      setTimeout(() => {
-        if (get().activeSessionId) get().connectWS();
-      }, 3000);
+      // Reconnection is handled by useAgentWebSocket hook (exponential backoff).
+      // Do NOT add a competing setTimeout reconnection here.
     };
 
     socket.onmessage = (event) => {
@@ -472,6 +474,8 @@ articleTitle: d.article_title,
     const requestPayload: AgentStartPayload = {
       ...payload,
       session_id: resolveConversationId(payload.session_id, activeSession),
+      // 从 session 读取 kbEnabled（默认 true），与 payload.kb_enabled 合并
+      kb_enabled: payload.kb_enabled ?? activeSession?.kbEnabled ?? true,
     };
 
     // 添加用户消息
@@ -808,7 +812,8 @@ case "agent.paused": {
         const articleTitle = p.article_title as string | undefined;
         const review = p.review;
         const tokenUsage = p.token_usage;
-        const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"] };
+        const pointsUsed = p.points_used as number | undefined;
+        const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"], points_used: pointsUsed };
 
         get()._updateLastAssistantMessage((m) => {
           // 如果后端返回了 article，先移除所有旧 text parts，
@@ -835,7 +840,7 @@ case "agent.paused": {
               parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
             }
           }
-          return { ...m, parts, status: "complete" as const, articleTitle: articleTitle || m.articleTitle };
+          return { ...m, parts, status: "complete" as const, articleTitle: articleTitle || m.articleTitle, pointsUsed };
         });
 
         // 写作完成后，用 AI 生成的文章标题更新会话标题（比 user_input 截断更有辨识度）
@@ -858,6 +863,7 @@ case "agent.paused": {
           budget_exceeded: "💰 Token 预算已用尽，请稍后重试",
           circuit_breaker: "🔌 AI 服务暂时不可用，请稍后重试",
           quota_exceeded: "💳 AI 模型服务额度不足，请联系管理员充值后重试",
+          insufficient_balance: "积分余额不足，请充值后继续使用",
           server_busy: "🔧 服务器繁忙，请稍后重试",
           step_failed: `❌ 步骤执行失败：${errorMsg}`,
           panic: `❌ 内部错误：${errorMsg}`,
@@ -1072,8 +1078,13 @@ case "agent.paused": {
       case "workflow.resumed":
       case "node.started":
       case "node.stream.delta":
+      case "node.stream.reset":
+      case "node.reasoning.delta":
+      case "node.step_start":
+      case "node.step_complete":
       case "node.completed":
-      case "node.failed": {
+      case "node.failed":
+      case "node.error": {
         // 转发到 workflow-store 处理
         const ws = useWorkflowStore.getState();
         const payload = p as Record<string, unknown>;
@@ -1085,7 +1096,11 @@ case "agent.paused": {
               workflow: (payload.workflow as WFWorkflowSpec) || ({} as WFWorkflowSpec),
               rationale: (payload.rationale as string) || "",
             });
-            if (payload.task_id) ws.setTaskId(payload.task_id as string);
+            if (payload.task_id) {
+              ws.setTaskId(payload.task_id as string);
+              // 不再自动启动 DAG 执行，等待用户在 UI 上确认后手动发送 workflow.start
+              // ws.setRunStatus("created") 已在 setPlan 中设置
+            }
             break;
           case "workflow.started":
             ws.setRunStatus("running");
@@ -1095,6 +1110,24 @@ case "agent.paused": {
             break;
           case "node.stream.delta":
             ws.appendNodeStream(payload.node_id as string, payload.delta as string);
+            break;
+case "node.stream.reset":
+// 清空节点流式文本
+ws.resetNodeStream(payload.node_id as string);
+break;
+          case "node.reasoning.delta":
+            // 推理增量暂存到节点的 reasoning_text（可选展示）
+            // 目前复用 stream_text 机制，后续可独立展示
+            break;
+          case "node.step_start":
+            // 节点内部步骤开始（如 search_web, generate_outline）
+            break;
+          case "node.step_complete":
+            // 节点内部步骤完成
+            break;
+          case "node.error":
+            // 节点内部错误（非致命，Agent 可能自行恢复）
+            console.warn(`[DAG] Node error: ${payload.node_id}`, payload.message);
             break;
           case "node.completed":
             ws.setNodeCompleted(
@@ -1118,6 +1151,19 @@ case "agent.paused": {
           case "workflow.failed":
             ws.setWorkflowFailed(payload.error as string);
             break;
+        }
+        break;
+      }
+
+      case "ping": {
+        // Server heartbeat ping — silently ignore, connection is alive.
+        break;
+      }
+
+      default: {
+        // Unknown message type — log in dev for debugging
+        if (import.meta.env.DEV) {
+          console.debug("[WS] unknown message type:", type);
         }
         break;
       }

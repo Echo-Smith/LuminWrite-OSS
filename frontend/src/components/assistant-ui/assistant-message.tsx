@@ -131,7 +131,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             )}
             {/* 消息操作按钮 */}
             {!isRunning && textParts.some((p) => p.text.trim()) && (
-              <MessageActions text={textParts.map((t) => t.text).join("")} title={message.articleTitle} traceId={traceId} />
+              <MessageActions text={textParts.map((t) => t.text).join("")} title={message.articleTitle} traceId={traceId} pointsUsed={message.pointsUsed} />
             )}
           </div>
         )}
@@ -332,7 +332,7 @@ function ReviewCard({ data }: { data: Record<string, unknown> }) {
 /**
  * 消息操作按钮 — Copy / Regenerate
  */
-function MessageActions({ text, title, traceId }: { text: string; title?: string; traceId: string | null }) {
+function MessageActions({ text, title, traceId, pointsUsed }: { text: string; title?: string; traceId: string | null; pointsUsed?: number }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editedText, setEditedText] = useState(text);
@@ -458,7 +458,7 @@ const [saving, setSaving] = useState(false);
                 className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-ui"
               >
                 <FileType className="h-3.5 w-3.5 text-blue-600" />
-                <span>Word (.doc)</span>
+                <span>Word (.docx)</span>
               </button>
               <button
                 onClick={() => { exportPDF(editing ? editedText : text, title); setShowExport(false); }}
@@ -471,6 +471,17 @@ const [saving, setSaving] = useState(false);
           </>
         )}
       </div>
+      {pointsUsed != null && pointsUsed > 0 && (
+        <div className="group relative ml-auto">
+          <span className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-muted-foreground/60 cursor-default">
+            <span>消耗 ~{pointsUsed.toFixed(1)} 积分</span>
+          </span>
+          {/* hover 显示详细说明 — 向下弹出避免截断 */}
+          <div className="pointer-events-none absolute top-full right-0 mt-1 whitespace-nowrap rounded-md border border-border bg-popover px-2.5 py-1.5 text-[10px] text-muted-foreground opacity-0 shadow-lg z-50 transition-opacity group-hover:opacity-100">
+            本次写作消耗约 {pointsUsed.toFixed(1)} 积分
+          </div>
+        </div>
+      )}
       {editing && (
         <div className="w-full mt-2">
           <textarea

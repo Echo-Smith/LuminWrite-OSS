@@ -238,6 +238,51 @@
 .prose-article td {
   @apply border border-border px-4 py-2;
 }
+/* ── 论文引用文献格式 ── */
+/* <sup> 脚注引用上标 */
+.prose-article sup {
+  font-size: 0.7em;
+  line-height: 0;
+  vertical-align: super;
+}
+/* 参考文献列表 — 通常用有序列表 + 自定义样式 */
+.prose-article ol li::marker {
+  @apply text-muted-foreground;
+}
+/* 段内引用 [1] [2] 加粗高亮 */
+.prose-article p code {
+  @apply bg-muted px-1.5 py-0.5 rounded text-sm font-mono-sm;
+}
+/* 脚注/参考文献区域 */
+.prose-article .footnote,
+.prose-article .references {
+  @apply mt-6 pt-4 border-t border-border text-xs text-muted-foreground space-y-1;
+}
+.prose-article .references li {
+  @apply ml-1;
+}
+/* 定义列表（术语表） */
+.prose-article dl {
+  @apply my-3 space-y-1;
+}
+.prose-article dt {
+  @apply font-semibold text-sm mt-2;
+}
+.prose-article dd {
+  @apply text-sm text-muted-foreground pl-4 border-l-2 border-border;
+}
+/* 图片 */
+.prose-article img {
+  @apply max-w-full rounded-lg my-4;
+}
+/* 水平分割线 */
+.prose-article hr {
+  @apply border-t border-border my-6;
+}
+/* 行内引用角标链接 */
+.prose-article a {
+  @apply text-primary underline underline-offset-2;
+}
 
 /* ── Radix ScrollArea 修复 ── */
 /* Viewport 内部使用 display:table + min-width:100%，当内容含 nowrap 文本时

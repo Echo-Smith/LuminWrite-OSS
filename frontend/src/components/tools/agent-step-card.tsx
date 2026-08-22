@@ -1,7 +1,7 @@
 /**
  * Agent Step 卡片 — 单个步骤的渲染
  */
-import { useState } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import {
   Brain,
   Search as SearchIcon,
@@ -24,6 +24,8 @@ import {
   X,
   Loader2,
   ChevronRight,
+  ChevronDown,
+  Code2,
   AlertTriangle,
   type LucideIcon,
 } from "lucide-react";
@@ -195,7 +197,15 @@ function StepResult({ part }: { part: ToolCallPart }) {
       );
 
     case "search":
+    case "search_web":
+    case "search_knowledge":
       return <SearchResults result={result} />;
+
+    case "query_plan":
+      return <QueryPlanResult result={result} />;
+
+    case "memory_gate":
+      return <MemoryGateResult result={result} />;
 
     case "relevance":
       return (
@@ -220,23 +230,21 @@ function StepResult({ part }: { part: ToolCallPart }) {
       return <FactCheckResult result={result} />;
 
     default:
-      return (
-        <pre className="text-xs text-muted-foreground whitespace-pre-wrap overflow-x-auto">
-          {JSON.stringify(result, null, 2)}
-        </pre>
-      );
+      return <JsonResultView result={result} />;
   }
 }
 
 function SearchResults({ result }: { result: Record<string, unknown> }) {
+  // 兼容 Pipeline 模式（results 是数组）和 Harness 模式（items 是数组，results 是数量）
   const count = result.count as number | undefined;
-  const results = (result.results as Array<Record<string, unknown>>) ?? [];
+  const results = (result.results as Array<Record<string, unknown>>) ?? (result.items as Array<Record<string, unknown>>) ?? [];
+  const displayCount = count ?? results.length;
 
   return (
     <div className="space-y-1.5 text-sm">
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">检索结果：</span>
-        <Badge variant="secondary">{count ?? results.length} 条</Badge>
+        <Badge variant="secondary">{displayCount} 条</Badge>
       </div>
       {results.length > 0 && (
         <div className="space-y-1">
@@ -250,6 +258,151 @@ function SearchResults({ result }: { result: Record<string, unknown> }) {
             <p className="text-xs text-muted-foreground">还有 {results.length - 5} 条...</p>
           )}
         </div>
+      )}
+      {/* 如果结果有额外字段，展示 JSON */}
+      {Object.keys(result).length > 2 && (
+        <JsonResultView result={result} label="原始数据" defaultCollapsed={true} />
+      )}
+    </div>
+  );
+}
+
+// ─── 查询计划结果 ─────────────────────────────────────────
+function QueryPlanResult({ result }: { result: Record<string, unknown> }) {
+  const queries = (result.queries as string[]) ?? [];
+  const keywords = (result.keywords as string[]) ?? [];
+
+  return (
+    <div className="space-y-2 text-sm">
+      {queries.length > 0 && (
+        <div className="space-y-1">
+          <span className="text-muted-foreground text-xs">查询计划：</span>
+          {queries.map((q, i) => (
+            <div key={i} className="rounded-md border border-border/40 bg-card/50 px-2.5 py-1.5 text-xs">
+              <span className="text-muted-foreground/60 mr-1">Q{i + 1}:</span>
+              {q}
+            </div>
+          ))}
+        </div>
+      )}
+      {keywords.length > 0 && (
+        <div>
+          <span className="text-muted-foreground text-xs">关键词：</span>
+          <div className="flex flex-wrap gap-1 mt-1">
+            {keywords.map((kw, i) => (
+              <Badge key={i} variant="outline" className="text-[10px]">{kw}</Badge>
+            ))}
+          </div>
+        </div>
+      )}
+      {(queries.length === 0 && keywords.length === 0) && (
+        <JsonResultView result={result} />
+      )}
+    </div>
+  );
+}
+
+// ─── 记忆门控结果 ─────────────────────────────────────────
+function MemoryGateResult({ result }: { result: Record<string, unknown> }) {
+  const hit = result.hit as boolean | undefined;
+  const reason = result.reason as string | undefined;
+  const memories = (result.memories as Array<Record<string, unknown>>) ?? [];
+
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground">记忆检索：</span>
+        {hit ? (
+          <Badge variant="success">命中 {memories.length} 条</Badge>
+        ) : (
+          <Badge variant="outline">未命中</Badge>
+        )}
+      </div>
+      {reason && (
+        <p className="text-xs text-muted-foreground">{reason}</p>
+      )}
+      {memories.length > 0 && (
+        <div className="space-y-1">
+          {memories.slice(0, 3).map((m, i) => (
+            <div key={i} className="rounded-md border border-border/40 bg-card/50 px-2.5 py-1.5 text-xs">
+              <span className="text-muted-foreground/60">{String(m.content ?? m.text ?? "")}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {Object.keys(result).length > 3 && (
+        <JsonResultView result={result} label="原始数据" defaultCollapsed={true} />
+      )}
+    </div>
+  );
+}
+
+// ─── JSON 格式化展示（可折叠 + 语法高亮） ────────────────
+function highlightJson(jsonStr: string): ReactNode {
+  const tokens: ReactNode[] = [];
+  const regex = /("(?:[^"\\]|\\.)*"\s*:)|("(?:[^"\\]|\\.)*")|\b(true|false|null)\b|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([{}\[\],])/g;
+  let lastIndex = 0;
+  let key = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(jsonStr)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push(jsonStr.slice(lastIndex, match.index));
+    }
+    const [full, isKey, isString, isBool, isNum, isPunct] = match;
+    if (isKey) {
+      tokens.push(<span key={key++} className="text-purple-500 dark:text-purple-400">{full}</span>);
+    } else if (isString) {
+      tokens.push(<span key={key++} className="text-emerald-600 dark:text-emerald-400">{full}</span>);
+    } else if (isBool) {
+      tokens.push(<span key={key++} className="text-orange-500 dark:text-orange-400">{full}</span>);
+    } else if (isNum) {
+      tokens.push(<span key={key++} className="text-blue-500 dark:text-blue-400">{full}</span>);
+    } else if (isPunct) {
+      tokens.push(<span key={key++} className="text-muted-foreground">{full}</span>);
+    } else {
+      tokens.push(full);
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < jsonStr.length) {
+    tokens.push(jsonStr.slice(lastIndex));
+  }
+  return tokens;
+}
+
+function JsonResultView({ result, label = "JSON 数据", defaultCollapsed = true }: { result: Record<string, unknown>; label?: string; defaultCollapsed?: boolean }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const prettyJson = useMemo(() => {
+    try {
+      return JSON.stringify(result, null, 2);
+    } catch {
+      return String(result);
+    }
+  }, [result]);
+
+  // 截断过长的 JSON
+  const maxLen = 2000;
+  const truncated = prettyJson.length > maxLen;
+  const displayJson = truncated ? prettyJson.slice(0, maxLen) + "\n... (已截断，共 " + prettyJson.length + " 字符)" : prettyJson;
+
+  return (
+    <div className="space-y-1">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-ui"
+        type="button"
+      >
+        <Code2 className="h-3.5 w-3.5" />
+        <span>{label}</span>
+        <ChevronDown className={"h-3 w-3 transition-transform " + (collapsed ? "" : "rotate-180")} />
+      </button>
+      {!collapsed && (
+        <pre className="text-xs text-muted-foreground whitespace-pre-wrap overflow-x-auto rounded-md bg-muted/50 dark:bg-zinc-900/50 p-2.5 max-h-64 overflow-y-auto">
+          <code className="font-mono text-xs">
+            {highlightJson(displayJson)}
+          </code>
+        </pre>
       )}
     </div>
   );
@@ -302,12 +455,39 @@ function ReviewResult({ result }: { result: Record<string, unknown> }) {
 // ─── 事实核查结果 ─────────────────────────────────────────
 
 function FactCheckResult({ result }: { result: Record<string, unknown> }) {
+  // Format 1: executeFactCheck tool result — { claims: N, verified: bool }
+  const claimsCount = result.claims as number | undefined;
+  const verified = result.verified as boolean | undefined;
+
+  // Format 2: Jiaozhen single-claim result — { claim, status, source, content, error }
   const claim = String(result.claim ?? "");
   const status = String(result.status ?? "unknown");
   const source = String(result.source ?? "");
   const content = String(result.content ?? "");
   const error = String(result.error ?? "");
 
+  // ── Format 1: Batch fact-check summary ──
+  if (claimsCount !== undefined && claim === "") {
+    return (
+      <div className="space-y-2 text-sm">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className={`h-4 w-4 ${verified ? "text-emerald-500" : "text-amber-500"}`} />
+          <span className="font-medium">事实核查</span>
+          <Badge variant="outline" className={verified ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"}>
+            {verified ? "已验证" : "仅提取"}
+          </Badge>
+          <Badge variant="secondary">{claimsCount} 条声明</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {verified
+            ? "已通过搜索引擎验证关键事实声明，请人工复核搜索结果。"
+            : "搜索服务不可用，仅提取了事实性声明，请人工核实。"}
+        </p>
+      </div>
+    );
+  }
+
+  // ── Format 2: Jiaozhen single-claim result ──
   const isOk = status === "ok";
   const isSkipped = status === "skipped";
   const isError = status === "error";

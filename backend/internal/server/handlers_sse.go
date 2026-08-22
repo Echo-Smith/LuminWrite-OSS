@@ -14,10 +14,18 @@ import (
 
 // ─── SSE Topic Push ──────────────────────────────────────
 
+// SSEClient represents a single SSE connection with optional userID for isolation.
+type SSEClient struct {
+	id     string
+	userID string // empty = anonymous / not authenticated
+	ch     chan *SSEEvent
+}
+
 // SSEHub manages SSE client connections and topic broadcasting.
+// Supports both global broadcast (admin) and user-targeted push.
 type SSEHub struct {
 	mu      sync.RWMutex
-	clients map[string]chan *SSEEvent // clientID → event channel
+	clients map[string]*SSEClient // clientID → client
 	nextID  int
 }
 
@@ -26,26 +34,34 @@ type SSEEvent struct {
 	Event string      `json:"event"`
 	Data  interface{} `json:"data"`
 	ID    string      `json:"id,omitempty"`
+	// UserID, when non-empty, restricts delivery to clients whose userID matches.
+	// Empty = broadcast to all clients (admin notifications, global events).
+	UserID string `json:"-"`
 }
 
 // NewSSEHub creates a new SSEHub.
 func NewSSEHub() *SSEHub {
 	return &SSEHub{
-		clients: make(map[string]chan *SSEEvent),
+		clients: make(map[string]*SSEClient),
 	}
 }
 
 // Register adds a new SSE client and returns its ID and event channel.
-func (h *SSEHub) Register() (string, <-chan *SSEEvent) {
+// userID associates the connection with the authenticated user for targeted push.
+func (h *SSEHub) Register(userID string) (string, <-chan *SSEEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.nextID++
 	clientID := fmt.Sprintf("sse-%d-%d", h.nextID, time.Now().UnixNano())
 	ch := make(chan *SSEEvent, 64) // buffered to avoid blocking sender
-	h.clients[clientID] = ch
+	h.clients[clientID] = &SSEClient{
+		id:     clientID,
+		userID: userID,
+		ch:     ch,
+	}
 
-	slog.Info("SSE client registered", "client_id", clientID, "total", len(h.clients))
+	slog.Info("SSE client registered", "client_id", clientID, "user_id", userID, "total", len(h.clients))
 	return clientID, ch
 }
 
@@ -54,24 +70,45 @@ func (h *SSEHub) Unregister(clientID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if ch, ok := h.clients[clientID]; ok {
-		close(ch)
+	if client, ok := h.clients[clientID]; ok {
+		close(client.ch)
 		delete(h.clients, clientID)
 		slog.Info("SSE client unregistered", "client_id", clientID, "total", len(h.clients))
 	}
 }
 
 // Broadcast sends an event to all connected SSE clients.
+// If event.UserID is non-empty, only delivers to clients matching that userID.
 func (h *SSEHub) Broadcast(event *SSEEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, ch := range h.clients {
+	for _, client := range h.clients {
+		// User-scoped delivery: skip clients that don't match
+		if event.UserID != "" && client.userID != "" && client.userID != event.UserID {
+			continue
+		}
 		select {
-		case ch <- event:
+		case client.ch <- event:
 		default:
-			// Client buffer full, skip (don't block other clients)
-			slog.Warn("SSE client buffer full, skipping event", "event", event.Event)
+			slog.Warn("SSE client buffer full, skipping event", "event", event.Event, "client_id", client.id)
+		}
+	}
+}
+
+// SendToUser sends an event only to clients matching the given userID.
+func (h *SSEHub) SendToUser(userID string, event *SSEEvent) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, client := range h.clients {
+		if client.userID != userID {
+			continue
+		}
+		select {
+		case client.ch <- event:
+		default:
+			slog.Warn("SSE client buffer full, skipping event", "event", event.Event, "client_id", client.id)
 		}
 	}
 }
@@ -81,6 +118,20 @@ func (h *SSEHub) ClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
+}
+
+// UserClientCount returns the number of active SSE connections for a given user.
+// Used by the multi-device session list to show real-time online status.
+func (h *SSEHub) UserClientCount(userID string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	for _, client := range h.clients {
+		if client.userID == userID && client.userID != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // ─── SSE HTTP Handler ────────────────────────────────────
@@ -101,8 +152,11 @@ func (s *Server) handleSSETopics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Register client
-	clientID, eventCh := s.sseHub.Register()
+	// Extract userID from JWT for user-scoped event delivery
+	sseUserID := s.getUserIDFromRequest(r)
+
+	// Register client with userID for targeted push
+	clientID, eventCh := s.sseHub.Register(sseUserID)
 	defer s.sseHub.Unregister(clientID)
 
 	// Send initial connection event
@@ -173,7 +227,7 @@ func (s *Server) handleSSESendNotification(w http.ResponseWriter, r *http.Reques
 		req.Body = "这是一条来自管理员的测试通知"
 	}
 
-	// Broadcast notification to all SSE clients
+	// Broadcast notification to all SSE clients (admin broadcast)
 	s.sseHub.Broadcast(&SSEEvent{
 		Event: "notification",
 		Data: map[string]interface{}{
@@ -184,11 +238,53 @@ func (s *Server) handleSSESendNotification(w http.ResponseWriter, r *http.Reques
 	})
 
 	response.OK(w, map[string]interface{}{
-		"title":    req.Title,
-		"body":     req.Body,
-		"pushed":   true,
-		"clients":  s.sseHub.ClientCount(),
-		"message":  "notification sent to all SSE clients",
+		"title":   req.Title,
+		"body":    req.Body,
+		"pushed":  true,
+		"clients": s.sseHub.ClientCount(),
+		"message": "notification sent to all SSE clients",
+	})
+}
+
+// handleSSETestNotification allows any authenticated user to send a test
+// notification to themselves. This replaces the admin-only endpoint for
+// the personal-center "发送测试通知" button.
+func (s *Server) handleSSETestNotification(w http.ResponseWriter, r *http.Request) {
+	userID := s.getUserIDFromRequest(r)
+	if userID == "" || userID == "anonymous" {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	var req struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	// Body is optional — we have sensible defaults
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if req.Title == "" {
+		req.Title = "测试通知"
+	}
+	if req.Body == "" {
+		req.Body = "如果你能看到这条消息，说明 SSE 在线通知工作正常！"
+	}
+
+	// Send only to this user's SSE connections
+	s.sseHub.SendToUser(userID, &SSEEvent{
+		Event: "notification",
+		Data: map[string]interface{}{
+			"title":     req.Title,
+			"body":      req.Body,
+			"timestamp": time.Now().Format(time.RFC3339),
+		},
+	})
+
+	response.OK(w, map[string]interface{}{
+		"title":   req.Title,
+		"body":    req.Body,
+		"pushed":  true,
+		"message": "test notification sent to your connections",
 	})
 }
 

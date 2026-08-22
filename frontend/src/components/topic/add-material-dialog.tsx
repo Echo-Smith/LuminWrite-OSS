@@ -32,6 +32,7 @@ interface AddMaterialDialogProps {
   onOpenChange: (open: boolean) => void;
   onAdded?: () => void;
   onError?: (message: string) => void;
+  folderId?: string;
 }
 
 export function AddMaterialDialog({
@@ -39,6 +40,7 @@ export function AddMaterialDialog({
   onOpenChange,
   onAdded,
   onError,
+  folderId,
 }: AddMaterialDialogProps) {
   const [addMode, setAddMode] = useState<"text" | "file">("text");
   const [title, setTitle] = useState("");
@@ -67,7 +69,7 @@ export function AddMaterialDialog({
       if (!title.trim() || !content.trim()) return;
       setUploading(true);
       try {
-        await createMaterial(title, content);
+        await createMaterial(title, content, folderId);
         reset();
         onOpenChange(false);
         onAdded?.();
@@ -79,7 +81,7 @@ export function AddMaterialDialog({
     } else if (addMode === "file" && file) {
       setUploading(true);
       try {
-        await uploadMaterial(file, title || undefined);
+        await uploadMaterial(file, title || undefined, folderId);
         reset();
         onOpenChange(false);
         onAdded?.();

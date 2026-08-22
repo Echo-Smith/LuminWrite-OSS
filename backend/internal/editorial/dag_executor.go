@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
 
 // ─── DAG 执行器（Beta: 编辑部模式 Phase 2.3）────────────
@@ -25,9 +26,10 @@ type DAGExecutor struct {
 	executors   map[string]AgentExecutorAdapter // agentID → executor
 	tokenBudget *DAGTokenBudget
 
-	mu      sync.Mutex
-	status  WorkflowStatus
-	results map[string]*NodeResult // nodeID → result
+	mu           sync.Mutex
+	status       WorkflowStatus
+	results      map[string]*NodeResult // nodeID → result
+	finalized    atomic.Bool            // 防止 finalize 被多次调用
 
 	// plan 缓存: taskID → PlanResult
 	planCache map[string]*PlanResult
@@ -53,6 +55,16 @@ func (e *DAGExecutor) RegisterExecutor(agentID string, exec AgentExecutorAdapter
 	defer e.mu.Unlock()
 	e.executors[agentID] = exec
 	slog.Info("dag executor: executor registered", "agent_id", agentID)
+}
+
+// EmitterHolder 接口用于在 DAG 执行前注入事件发射器。
+// Agent 执行器实现此接口后，DAGExecutor 会为每个节点创建 NodeEmitter 并注入。
+//
+// 设计：使用 emitterHolder mixin 提供 goroutine 安全的 emitter 传递，
+// 避免共享执行器实例上的数据竞态。
+type EmitterHolder interface {
+	SetCurrentEmitter(em engine.EventEmitter)
+	ClearCurrentEmitter()
 }
 
 // CachePlan 缓存 Planner 输出，并注册生成的 Agent 到 registry。
@@ -91,6 +103,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 
 	e.mu.Lock()
 	e.status = WorkflowStatusRunning
+	e.finalized.Store(false) // 重置 finalize 标志
 	e.mu.Unlock()
 
 	e.emit(OrchestratorEvent{
@@ -130,6 +143,12 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 	totalNodes := int32(len(spec.Nodes))
 	var hasFailed atomic.Bool
 
+	// done channel: 当所有节点完成时，通知主循环退出
+	// Bug fix: 原实现在最后一个节点完成后，主循环阻塞在 select 的 readyQueue 上，
+	// 因为最后一个节点没有下游，不会向 readyQueue 发送新数据。
+	// 导致 Execute 方法一直阻塞到 10 分钟超时才返回。
+	done := make(chan struct{})
+
 	// 启动 worker goroutine 池
 	const maxWorkers = 4
 	sem := make(chan struct{}, maxWorkers)
@@ -137,12 +156,21 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return ctx.Err()
+
+		case <-done:
+			// 所有节点已完成，等待 goroutine 退出
+			wg.Wait()
+			if hasFailed.Load() {
+				return fmt.Errorf("DAG execution failed: one or more nodes failed")
+			}
+			return nil
 
 		case nodeID, ok := <-readyQueue:
 			if !ok {
 				// channel 关闭，所有节点已处理
-				break
+				continue
 			}
 			if hasFailed.Load() {
 				// 标记剩余节点为 skipped
@@ -155,10 +183,9 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 					}
 				}
 				e.mu.Unlock()
-				completedCount.Add(1)
-				if int(completedCount.Load()) == int(totalNodes) {
+				if completedCount.Add(1) == totalNodes {
 					e.finalize(ctx, task, spec, false)
-					return nil
+					close(done)
 				}
 				continue
 			}
@@ -178,10 +205,9 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 			e.mu.Unlock()
 
 			if failed {
-				completedCount.Add(1)
-				if int(completedCount.Load()) == int(totalNodes) {
+				if completedCount.Add(1) == totalNodes {
 					e.finalize(ctx, task, spec, false)
-					return nil
+					close(done)
 				}
 				continue
 			}
@@ -193,59 +219,47 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 				defer wg.Done()
 				defer func() { <-sem }() // 释放信号量
 
-			err := e.executeNode(ctx, n, nodeMap, task)
+				err := e.executeNode(ctx, n, nodeMap, task)
 
-			e.mu.Lock()
-			result := &NodeResult{
-				NodeID:     n.ID,
-				StartedAt:  ptrTime(time.Now()),
-			}
-			if err != nil {
-				result.Status = NodeStatusFailed
-				result.Error = err.Error()
-				hasFailed.Store(true)
-			} else {
-				result.Status = NodeStatusCompleted
-			}
-			result.FinishedAt = ptrTime(time.Now())
-			e.results[n.ID] = result
-			e.mu.Unlock()
-
-			if err == nil {
-				// 更新下游节点的依赖计数（需要加锁防止并发 map 写入）
 				e.mu.Lock()
-				for _, ds := range downstream[n.ID] {
-					remainingDeps[ds]--
-					if remainingDeps[ds] == 0 {
-						readyQueue <- ds
-					}
+				result := &NodeResult{
+					NodeID:     n.ID,
+					StartedAt:  ptrTime(time.Now()),
 				}
+				if err != nil {
+					result.Status = NodeStatusFailed
+					result.Error = err.Error()
+					hasFailed.Store(true)
+				} else {
+					result.Status = NodeStatusCompleted
+				}
+				result.FinishedAt = ptrTime(time.Now())
+				e.results[n.ID] = result
 				e.mu.Unlock()
-			}
 
-				completedCount.Add(1)
-				if int(completedCount.Load()) == int(totalNodes) {
+				if err == nil {
+					// 更新下游节点的依赖计数（需要加锁防止并发 map 写入）
+					e.mu.Lock()
+					for _, ds := range downstream[n.ID] {
+						remainingDeps[ds]--
+						if remainingDeps[ds] == 0 {
+							readyQueue <- ds
+						}
+					}
+					e.mu.Unlock()
+				}
+
+				if completedCount.Add(1) == totalNodes {
 					if !hasFailed.Load() {
 						e.finalize(ctx, task, spec, true)
 					} else {
 						e.finalize(ctx, task, spec, false)
 					}
+					close(done)
 				}
 			}(node)
 		}
-
-		// 检查是否全部完成
-		if int(completedCount.Load()) >= int(totalNodes) {
-			break
-		}
 	}
-
-	wg.Wait()
-
-	if hasFailed.Load() {
-		return fmt.Errorf("DAG execution failed: one or more nodes failed")
-	}
-	return nil
 }
 
 // executeNode 执行单个 DAG 节点
@@ -266,6 +280,19 @@ func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap ma
 		} else {
 			return fmt.Errorf("executor not registered for agent: %s (base: %s)", node.AgentID, baseRole)
 		}
+	}
+
+	// ── 注入 NodeEmitter 到执行器，实现流式事件桥接 ──
+	// DAG 模式下，每个节点创建一个 NodeEmitter，将 LLM 的 StreamDelta /
+	// ReasoningDelta 等事件通过 DAGExecutor 的 emit() 转发到 WebSocket。
+	//
+	// 注意：执行器实例在 executors map 中是共享的（按 BaseRole 注册），
+	// 不能用 SetEmitter 直接写共享实例，否则并行同角色节点会产生数据竞态。
+	// 解决方案：用 emitterHolder 包装，为每次 Execute 调用创建独立的 emitter 上下文。
+	nodeEmitter := NewNodeEmitter(task.ID, node.ID, node.AgentID, e.emitter)
+	if holder, ok := exec.(EmitterHolder); ok {
+		holder.SetCurrentEmitter(nodeEmitter)
+		defer holder.ClearCurrentEmitter()
 	}
 
 	// 加载上游 Artifact
@@ -290,11 +317,13 @@ func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap ma
 		task.OwnerID,
 	)
 
-	// 注入组织知识
-	// ac.LocalMemory = orgKnowledge // 可选
+	// ── 关键：注入 Planner 生成的 AgentConfig 到 AgentContext ──
+	// 这样执行器内部的 getAgentConfig 能获取到 Planner 生成的 Persona，
+	// 而不是 fallback 到 BuiltinRoles。
+	ac.AgentConfig = agentCfg
 
-	// 注入 AgentConfig 的 Persona 到 AgentContext
-	// （通过 LocalMemory 或直接在 Executor 中处理）
+	// 注入组织知识（如果有）
+	// ac.LocalMemory = orgKnowledge // 可选
 
 	// 发射 node.started 事件
 	e.emit(OrchestratorEvent{
@@ -371,6 +400,11 @@ func (e *DAGExecutor) hasFailedDependency(node NodeSpec, results map[string]*Nod
 
 // finalize 完成 DAG 执行
 func (e *DAGExecutor) finalize(ctx context.Context, task *Task, spec *WorkflowSpec, success bool) {
+	// 防止多个 goroutine 同时完成时重复调用 finalize
+	if !e.finalized.CompareAndSwap(false, true) {
+		return
+	}
+
 	e.mu.Lock()
 	if success {
 		e.status = WorkflowStatusCompleted

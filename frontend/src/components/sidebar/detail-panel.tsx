@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useAgentStore } from "@/stores/agent-store";
+import { useAuthStore } from "@/stores/auth-store";
 import type { ToolCallPart } from "@/stores/agent-store";
 import { toast } from "@/stores/toast-store";
 import { cn } from "@/lib/utils";
@@ -626,7 +627,10 @@ function StyleInfo({ slug }: { slug: string }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/v2/styles/${encodeURIComponent(slug)}`)
+    const token = useAuthStore.getState().token;
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    fetch(`/api/v2/styles/${encodeURIComponent(slug)}`, { headers })
       .then((res) => res.json())
       .then((data) => {
         if (cancelled) return;

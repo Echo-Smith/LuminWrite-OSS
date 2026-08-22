@@ -40,7 +40,7 @@ export function ProtectedRoute({ children, requireAdmin = false }: ProtectedRout
   }
 
   // 需要管理员权限但不是管理员
-  if (requireAdmin && user?.role !== "admin") {
+  if (requireAdmin && !useAuthStore.getState().hasAdminAccess()) {
     return <Navigate to="/write" replace />;
   }
 

@@ -4,6 +4,14 @@
  * 管理用户记忆列表、memory.used 事件状态、dismiss 操作
  */
 import { create } from "zustand";
+import { useAuthStore } from "@/stores/auth-store";
+
+// ─── 辅助：获取认证 header ───────────────────────────────────
+
+function authHeaders(): Record<string, string> {
+  const token = useAuthStore.getState().token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 // ─── 类型定义 ──────────────────────────────────────────────
 
@@ -71,7 +79,9 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   fetchMemories: async () => {
     set({ loading: true });
     try {
-      const res = await fetch(`${API_BASE}/memories?limit=100`);
+      const res = await fetch(`${API_BASE}/memories?limit=100`, {
+        headers: authHeaders(),
+      });
       if (!res.ok) return;
       const json = await res.json();
       if (json.success) {
@@ -88,7 +98,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     try {
       const res = await fetch(`${API_BASE}/memories`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ category, key, value }),
       });
       if (!res.ok) return false;
@@ -105,7 +115,10 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
 
   deleteMemory: async (id) => {
     try {
-      const res = await fetch(`${API_BASE}/memories/${id}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/memories/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
       if (!res.ok) return false;
       const json = await res.json();
       if (json.success) {
@@ -122,7 +135,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     try {
       const res = await fetch(`${API_BASE}/memories/${memoryId}/dismiss`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ session_id: sessionId }),
       });
       if (!res.ok) return false;

@@ -178,18 +178,30 @@ func (s *MaterialsSection) RenderDiff(previous interface{}) *ContextFragment {
 	}
 }
 
-// ── RulesSection: 结构要求 + 修辞要求 + 标题规范 ──
+// ── RulesSection: 完整风格约束（复用 Profile 渲染层） ──
 
-// RulesSection 包含写作风格的结构、修辞、标题等规则。
-// 这些规则在同一 Profile 下通常不变。
+// RulesSection 包含写作风格的完整约束，复用 profile.RenderWritingConstraints()
+// 实现分层注入（P0 强制约束 / P1 写作要求 / P2 风格参考），与 Pipeline 的
+// WriteStep 保持单一真相源，避免两套渲染逻辑割裂导致风格漂移。
+//
+// 覆盖维度：fact_guard + structure(含 argument_variations) + rhetoric(详细)
+// + title_guidelines(含 forbidden_patterns) + word_range + value_orientation
 type RulesSection struct {
-	profile *profile.StyleProfile
-	intent  string
+	profile    *profile.StyleProfile
+	intent     string
+	isGuided   bool
+	wordLimit  int
 }
 
 // NewRulesSection 创建规则 section。
 func NewRulesSection(p *profile.StyleProfile, intent string) *RulesSection {
 	return &RulesSection{profile: p, intent: intent}
+}
+
+// NewRulesSectionWithDetails 创建带 guided/wordLimit 的规则 section。
+// 用于 Harness 模式下需要传递 guided 标志和字数限制的场景。
+func NewRulesSectionWithDetails(p *profile.StyleProfile, intent string, isGuided bool, wordLimit int) *RulesSection {
+	return &RulesSection{profile: p, intent: intent, isGuided: isGuided, wordLimit: wordLimit}
 }
 
 func (s *RulesSection) ID() string { return "rules" }
@@ -198,12 +210,9 @@ func (s *RulesSection) Snapshot() interface{} {
 	if s.profile == nil {
 		return ""
 	}
-	// 用结构 + 修辞 + 标题的 hash 作为快照
-	return fmt.Sprintf("%v|%v|%v",
-		s.profile.Structure,
-		s.profile.Rhetoric,
-		s.profile.TitleGuidelines,
-	)
+	// 用完整 RenderWritingConstraints 输出作为快照，
+	// 确保任何 Profile 字段变化都能被 diff 检测到
+	return s.profile.RenderWritingConstraints(s.intent, s.isGuided, s.wordLimit)
 }
 
 func (s *RulesSection) RenderDiff(previous interface{}) *ContextFragment {
@@ -211,65 +220,20 @@ func (s *RulesSection) RenderDiff(previous interface{}) *ContextFragment {
 		return nil // chat 意图不注入规则
 	}
 
-	var sb strings.Builder
-
-	// 结构要求
-	if s.profile.Structure.Type != "" {
-		sb.WriteString(fmt.Sprintf("\n结构要求：%s\n", s.profile.Structure.Type))
-		if s.profile.Structure.Opening != "" {
-			sb.WriteString(fmt.Sprintf("- 开头：%s\n", s.profile.Structure.Opening))
-		}
-		if s.profile.Structure.Body != "" {
-			sb.WriteString(fmt.Sprintf("- 主体：%s\n", s.profile.Structure.Body))
-		}
-		if s.profile.Structure.Conclusion != "" {
-			sb.WriteString(fmt.Sprintf("- 结尾：%s\n", s.profile.Structure.Conclusion))
-		}
-	}
-
-	// 修辞要求
-	if s.profile.Rhetoric.RequiredMetaphor || s.profile.Rhetoric.RequiredParallelism || s.profile.Rhetoric.RequiredRhetoricalQuestion {
-		sb.WriteString("\n修辞要求：")
-		if s.profile.Rhetoric.RequiredMetaphor {
-			sb.WriteString("必须使用比喻")
-			if s.profile.Rhetoric.MetaphorDescription != "" {
-				sb.WriteString(fmt.Sprintf("（%s）", s.profile.Rhetoric.MetaphorDescription))
-			}
-			sb.WriteString("；")
-		}
-		if s.profile.Rhetoric.RequiredParallelism {
-			sb.WriteString("必须使用排比；")
-		}
-		if s.profile.Rhetoric.RequiredRhetoricalQuestion {
-			sb.WriteString("必须使用设问；")
-		}
-		sb.WriteString("\n")
-	}
-
-	// 标题规范
-	if s.profile.TitleGuidelines.Style != "" {
-		sb.WriteString(fmt.Sprintf("\n标题规范：%s（%d-%d字）\n",
-			s.profile.TitleGuidelines.Style,
-			s.profile.TitleGuidelines.Length.Min,
-			s.profile.TitleGuidelines.Length.Max))
-		if len(s.profile.TitleGuidelines.Examples) > 0 {
-			sb.WriteString(fmt.Sprintf("示例：%s\n", strings.Join(s.profile.TitleGuidelines.Examples, "、")))
-		}
-	}
-
-	if sb.Len() == 0 {
+	// 复用 Pipeline 侧的 RenderWritingConstraints，确保 14 维度全量注入
+	current := s.profile.RenderWritingConstraints(s.intent, s.isGuided, s.wordLimit)
+	if current == "" {
 		return nil
 	}
 
 	// 与前一次比较
-	current := s.Snapshot().(string)
 	if prev, ok := previous.(string); ok && prev == current {
-		return nil
+		return nil // 无变化
 	}
 
 	return &ContextFragment{
 		Role: "system",
-		Body: sb.String(),
+		Body: current,
 	}
 }
 
@@ -385,7 +349,7 @@ func BuildWorldStateForHarness(
 	ws.Register(NewArticleSection(article))
 	ws.Register(NewDateSection())
 	ws.Register(NewMaterialsSection(userMaterials, searchCount))
-	ws.Register(NewRulesSection(p, intent))
+	ws.Register(NewRulesSectionWithDetails(p, intent, isGuided, 0))
 	ws.Register(NewTaskInstructionsSection(intent, isGuided))
 	ws.Register(NewSecuritySection())
 

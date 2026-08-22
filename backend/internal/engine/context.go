@@ -140,6 +140,10 @@ type ExecutionContext struct {
 	// Used when resuming a paused session to rebuild the correct runner.
 	AgentMode    string         `json:"agent_mode,omitempty"`
 
+	// KBEnabled controls whether the knowledge base search tool is available.
+	// Defaults to true (nil = enabled). Set to false to disable search_knowledge.
+	KBEnabled    *bool          `json:"kb_enabled,omitempty"`
+
 	// Populated during execution
 	TaskIntent    *TaskIntent     `json:"task_intent,omitempty"`
 	WritingTask   *WritingTask    `json:"writing_task,omitempty"`

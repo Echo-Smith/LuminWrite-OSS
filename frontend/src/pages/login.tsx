@@ -4,6 +4,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Loader2, KeyRound, User, ArrowRight, Fingerprint, Plus } from "lucide-react";
+import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -146,8 +147,8 @@ export function LoginPage() {
       <FadeIn direction="scale" className="relative z-10">
       <Card className="w-[420px] shadow-xl border-border/60">
         <CardHeader className="space-y-3 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-brand-gradient shadow-md">
-            <span className="text-lg font-bold text-white">笔</span>
+          <div className="mx-auto">
+            <BrandIcon size="lg" />
           </div>
           <CardTitle className="text-xl tracking-tight">笔润智谈 · 登录</CardTitle>
           <p className="text-sm text-muted-foreground">选择适合你的登录方式</p>

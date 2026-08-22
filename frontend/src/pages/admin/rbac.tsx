@@ -20,6 +20,84 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+// ─── 权限中文翻译映射 ──────────────────────────────────
+
+const PERM_LABELS: Record<string, string> = {
+  "style.create": "风格管理 · 创建",
+  "style.publish": "风格管理 · 发布",
+  "style.archive": "风格管理 · 归档",
+  "style.review": "风格管理 · 审核社区投稿",
+  "kb.manage": "知识库 · 管理（导入/分块/嵌入）",
+  "kb.view": "知识库 · 查看",
+  "user.manage": "用户管理 · 角色分配/禁用",
+  "user.view": "用户管理 · 查看列表",
+  "model.manage": "模型配置 · 管理",
+  "apikey.manage": "API 密钥 · 管理",
+  "eval.run": "评测 · 运行",
+  "eval.view": "评测 · 查看结果",
+  "redteam.run": "红队安全 · 运行",
+  "redteam.view": "红队安全 · 查看报告",
+  "cron.manage": "定时任务 · 管理",
+  "mcp.manage": "MCP 服务 · 管理配置",
+  "sensitive.manage": "敏感词库 · 管理",
+  "editorial.manage": "编辑部 · 管理任务",
+  "editorial.view": "编辑部 · 查看",
+  "audit.view": "审计日志 · 查看",
+  "evolution.manage": "自演进 · 管理候选",
+  "wabench.manage": "评测中心 · 管理",
+  "session.delete": "会话 · 删除任意用户会话",
+  "agent.start": "写作 Agent · 启动会话",
+  "billing.manage": "计费 · 管理（套餐/费率/充值/兑换码）",
+  "billing.view": "计费 · 查看统计",
+  "sandbox.manage": "MCP 沙箱 · 管理安全策略",
+  "security.view": "安全审计 · 查看拦截统计",
+  "agent-cards.manage": "A2A Agent Cards · 管理",
+  "rbac.manage": "RBAC · 管理角色权限",
+};
+
+const PERM_DESCRIPTIONS: Record<string, string> = {
+  "style.create": "创建新的写作风格配置",
+  "style.publish": "将风格配置发布到生产环境",
+  "style.archive": "归档不再使用的风格配置",
+  "style.review": "审核和批准/拒绝社区风格投稿",
+  "kb.manage": "管理知识库 — 导入、分块、生成向量嵌入",
+  "kb.view": "查看知识库内容",
+  "user.manage": "管理用户 — 分配角色、禁用账号",
+  "user.view": "查看用户列表和资料",
+  "model.manage": "管理大语言模型配置",
+  "apikey.manage": "管理 API 密钥",
+  "eval.run": "运行评测套件",
+  "eval.view": "查看评测结果",
+  "redteam.run": "运行红队安全评测",
+  "redteam.view": "查看红队安全报告",
+  "cron.manage": "管理定时任务",
+  "mcp.manage": "管理 MCP 服务器配置",
+  "sensitive.manage": "管理敏感词库和配置",
+  "editorial.manage": "管理编辑部任务和决策",
+  "editorial.view": "查看编辑部工作流",
+  "audit.view": "查看安全审计日志",
+  "evolution.manage": "管理自演进候选",
+  "wabench.manage": "管理 WritingAgentBench 评测中心",
+  "session.delete": "删除任意用户的会话（不限于自己）",
+  "agent.start": "启动写作 Agent 会话",
+  "billing.manage": "管理计费 — 套餐、费率、充值、兑换码",
+  "billing.view": "查看计费概览、收入和消费统计",
+  "sandbox.manage": "管理 MCP 安全沙箱 — 策略、违规记录、测试",
+  "security.view": "查看安全审计 — Prompt 注入拦截事件和统计",
+  "agent-cards.manage": "管理 A2A Agent Cards — 创建、更新、发布",
+  "rbac.manage": "管理 RBAC — 角色、权限、用户角色分配",
+};
+
+/** 将权限 key 翻译为中文标签 */
+function permLabel(key: string): string {
+  return PERM_LABELS[key] ?? key;
+}
+
+/** 将权限 key 翻译为中文描述 */
+function permDesc(key: string, fallback?: string): string {
+  return PERM_DESCRIPTIONS[key] ?? fallback ?? key;
+}
+
 // ─── Types ──────────────────────────────────────────────
 
 interface Role {
@@ -230,9 +308,10 @@ function RolesTab() {
                   }`}>
                     {rolePerms.has(perm.key) && <Check className="h-3 w-3" />}
                   </div>
-                  <div>
-                    <p className="text-sm font-medium font-mono">{perm.key}</p>
-                    <p className="text-xs text-muted-foreground">{perm.description}</p>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{permLabel(perm.key)}</p>
+                    <p className="text-xs text-muted-foreground">{permDesc(perm.key, perm.description)}</p>
+                    <p className="text-[10px] text-muted-foreground/50 font-mono mt-0.5">{perm.key}</p>
                   </div>
                 </div>
               </div>
@@ -380,7 +459,7 @@ function UsersTab() {
 
       {/* User Role Management Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>
               角色管理 — {selectedUser?.name || selectedUser?.uid}
@@ -429,8 +508,8 @@ function UsersTab() {
                   )
                 ) : (
                   userPerms.map((p) => (
-                    <Badge key={p} variant="outline" className="font-mono text-[10px]">
-                      {p}
+                    <Badge key={p} variant="outline" className="text-[10px]" title={p}>
+                      {permLabel(p)}
                     </Badge>
                   ))
                 )}
@@ -440,9 +519,9 @@ function UsersTab() {
             {/* Assign new role */}
             <div className="space-y-2">
               <p className="text-sm font-medium">分配新角色</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <select
-                  className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={assignRoleId}
                   onChange={(e) => setAssignRoleId(e.target.value)}
                 >
@@ -455,7 +534,7 @@ function UsersTab() {
                       </option>
                     ))}
                 </select>
-                <Button size="sm" onClick={assignRole} disabled={!assignRoleId}>
+                <Button size="sm" onClick={assignRole} disabled={!assignRoleId} className="shrink-0">
                   <Plus className="h-4 w-4 mr-1" />
                   分配
                 </Button>

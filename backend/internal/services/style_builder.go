@@ -116,14 +116,21 @@ func (s *StyleBuilderService) SendMessage(ctx context.Context, sessionID, userMe
 		if err := json.Unmarshal([]byte(jsonStr), &p); err == nil && p.Slug != "" && p.SystemPrompt != "" {
 			styleProfile = &p
 			ready = true
-			reply = stripTrailingJSON(reply)
 		}
 	}
 
-	// Append assistant message
+	// For session history (LLM context), strip the JSON to keep the conversation clean.
+	// For the frontend response, preserve the full original reply so the UI can
+	// render the JSON in a nicely formatted, collapsible code block.
+	historyContent := reply
+	if ready {
+		historyContent = stripTrailingJSON(reply)
+	}
+
+	// Append assistant message (stripped version for LLM context)
 	session.Messages = append(session.Messages, StyleBuilderMessage{
 		Role:    "assistant",
-		Content: reply,
+		Content: historyContent,
 	})
 
 	if ready {
@@ -132,7 +139,7 @@ func (s *StyleBuilderService) SendMessage(ctx context.Context, sessionID, userMe
 	}
 
 	return &StyleBuilderResponse{
-		Message: reply,
+		Message: reply, // full original reply (with JSON) for frontend
 		Ready:   ready,
 		Profile: styleProfile,
 	}, nil
@@ -158,10 +165,44 @@ func (s *StyleBuilderService) DeleteSession(sessionID string) {
 // stripTrailingJSON removes the last balanced JSON object from text,
 // keeping only the conversational prefix. Returns the original text
 // if no balanced JSON block is found.
+//
+// This function handles both raw JSON and markdown-fenced JSON (```json ... ```).
+// It also cleans up residual markdown fence markers left behind after removal.
 func stripTrailingJSON(text string) string {
+	// First, try to remove a markdown code block (```json ... ``` or ``` ... ```)
+	// from the end of the text.
+	if fenceEnd := strings.LastIndex(text, "```"); fenceEnd >= 0 {
+		// Find the matching opening fence
+		beforeFence := text[:fenceEnd]
+		fenceStart := strings.LastIndex(beforeFence, "```")
+		if fenceStart >= 0 {
+			// Extract content between fences
+			inner := beforeFence[fenceStart+3:]
+			// Strip optional "json" language tag
+			inner = strings.TrimPrefix(inner, "json")
+			inner = strings.TrimSpace(inner)
+			// Verify it looks like JSON
+			if strings.HasPrefix(inner, "{") && strings.HasSuffix(inner, "}") {
+				// Remove the entire code block + preceding whitespace
+				return strings.TrimRight(text[:fenceStart], " \n\r\t")
+			}
+		}
+	}
+
+	// Fallback: remove a raw (unfenced) JSON object from the end
 	depth := 0
+	inString := false
 	for i := len(text) - 1; i >= 0; i-- {
-		switch text[i] {
+		ch := text[i]
+		// Track string boundaries to avoid counting braces inside strings
+		if ch == '"' && (i == 0 || text[i-1] != '\\') {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
 		case '}':
 			depth++
 		case '{':
@@ -190,7 +231,8 @@ const styleBuilderSystemPrompt = `你是一个专业的写作风格配置助手�
 
 ## 输出规则
 - 在对话阶段，正常回复文字（不包含 JSON）
-- 当信息充分时，先简短说明"风格已配置完成"，然后输出一个 JSON 对象
+- 当信息充分时，先简短说明"风格已配置完成"，然后直接输出一个 JSON 对象
+- **禁止使用 markdown 代码块（三反引号）包裹 JSON**，直接输出裸 JSON 即可
 - JSON 必须包含以下所有字段：
 
 {
@@ -247,4 +289,5 @@ const styleBuilderSystemPrompt = `你是一个专业的写作风格配置助手�
 ## 重要
 - slug 必须是英文，仅小写字母和下划线
 - system_prompt 是最关键字段，需详细定义写作角色、语言风格、结构要求和输出格式
-- 不要在 JSON 外输出多余内容`
+- 不要在 JSON 外输出多余内容
+- **绝对不要用 markdown 代码块（三反引号）包裹 JSON 输出**`

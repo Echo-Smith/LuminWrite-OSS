@@ -86,6 +86,7 @@ interface WorkflowState {
   runStatus: WorkflowRunStatus;
   nodeStates: Map<string, NodeRunState>;
   totalTokensUsed: number;
+  errorMessage: string | null; // 工作流失败时的错误信息
 
   // 输入
   userInput: string;
@@ -103,6 +104,7 @@ interface WorkflowState {
   setNodeCompleted: (nodeId: string, artifactId: string, artifactType: string, tokensUsed: number, durationMs: number) => void;
   setNodeFailed: (nodeId: string, error: string, durationMs: number) => void;
   appendNodeStream: (nodeId: string, delta: string) => void;
+  resetNodeStream: (nodeId: string) => void;
 
   // 工作流完成
   setWorkflowCompleted: (totalTokens: number) => void;
@@ -206,6 +208,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   runStatus: "idle",
   nodeStates: new Map(),
   totalTokensUsed: 0,
+  errorMessage: null,
   userInput: "",
   taskId: "",
 
@@ -230,6 +233,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       runStatus: "created",
       nodeStates: new Map(),
       totalTokensUsed: 0,
+      errorMessage: null,
     });
   },
 
@@ -287,12 +291,22 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     set({ nodeStates: states });
   },
 
+  resetNodeStream: (nodeId) => {
+    const states = new Map(get().nodeStates);
+    const existing = states.get(nodeId) || { node_id: nodeId, status: "running" };
+    states.set(nodeId, {
+      ...existing,
+      stream_text: "",
+    });
+    set({ nodeStates: states });
+  },
+
   setWorkflowCompleted: (totalTokens) => {
     set({ runStatus: "completed", totalTokensUsed: totalTokens });
   },
 
-  setWorkflowFailed: (_error) => {
-    set({ runStatus: "failed" });
+  setWorkflowFailed: (error) => {
+    set({ runStatus: "failed", errorMessage: error });
   },
 
   getFlowNodes: () => {
@@ -348,6 +362,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       runStatus: "idle",
       nodeStates: new Map(),
       totalTokensUsed: 0,
+      errorMessage: null,
       userInput: "",
       taskId: "",
     });

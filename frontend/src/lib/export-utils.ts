@@ -1,12 +1,93 @@
 /**
- * 文章导出工具 — 支持 Markdown / Word (doc) / PDF 格式
+ * 文章导出工具 — 支持 Markdown / Word (docx) / PDF 格式
  *
  * 设计原则：
  *   - 纯前端实现，无需后端 API
- *   - Word 使用 application/msword MIME + HTML 格式（兼容 WPS 和 Word）
+ *   - Word 使用 application/vnd.openxmlformats-officedocument.wordprocessingml.document MIME + HTML 格式（兼容 Word 和 WPS）
  *   - PDF 使用浏览器原生 print + 专用打印窗口
+ *   - 导出 Word/PDF 前清除 Markdown 原始符号（##、**、^、* 等）
  *   - 无需额外 npm 依赖
  */
+
+/**
+ * 清除 Markdown 原始符号，保留纯文本内容
+ *
+ * 处理内容：
+ *   - 行首标题前缀 ## # ### → 移除前缀保留文本
+ *   - 粗体 **text** → text
+ *   - 斜体 *text* → text
+ *   - 删除线 ~~text~~ → text
+ *   - 上标 ^text^ → text
+ *   - 行内代码 `text` → text
+ *   - 引用前缀 > → 移除
+ *   - 列表标记 - / * / \d+. → 移除
+ *   - 分隔线 --- / *** → 移除
+ *   - 表格管道符 | → 保留文本，移除管道
+ *   - HTML 标签 <sup>...</sup> 等 → 保留内容，移除标签
+ */
+function stripMarkdownSymbols(markdown: string): string {
+  let text = markdown;
+
+  // 1. 先处理代码块（整块提取，避免内部被清洗）
+  const codeBlocks: string[] = [];
+  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+    const placeholder = `__CODEBLOCK_${codeBlocks.length}__`;
+    codeBlocks.push(code.trim());
+    return placeholder;
+  });
+
+  // 2. 行内代码 → 提取纯文本
+  text = text.replace(/`([^`]+)`/g, "$1");
+
+  // 3. 标题前缀 ## / ### / # → 移除前缀，保留文本
+  text = text.replace(/^#{1,6}\s+/gm, "");
+
+  // 4. 粗体 **text** → text
+  text = text.replace(/\*\*([^*]+)\*\*/g, "$1");
+
+  // 5. 斜体 *text* → text（注意在粗体之后处理）
+  text = text.replace(/\*([^*]+)\*/g, "$1");
+
+  // 6. 删除线 ~~text~~ → text
+  text = text.replace(/~~([^~]+)~~/g, "$1");
+
+  // 7. 上标 ^text^ → text（Markdown 扩展语法的上标）
+  text = text.replace(/\^([^\^\n]+)\^/g, "$1");
+
+  // 8. HTML 标签 <sup>...</sup> / <sub>...</sub> → 保留内容，移除标签
+  text = text.replace(/<sup[^>]*>([\s\S]*?)<\/sup>/gi, "$1");
+  text = text.replace(/<sub[^>]*>([\s\S]*?)<\/sub>/gi, "$1");
+  text = text.replace(/<[^>]+>/g, ""); // 移除其他残留 HTML 标签
+
+  // 9. 引用前缀 > → 移除
+  text = text.replace(/^>\s+/gm, "");
+
+  // 10. 无序列表标记 - / * → 移除（行首）
+  text = text.replace(/^[-*]\s+/gm, "");
+
+  // 11. 有序列表标记 1. → 移除（行首）
+  text = text.replace(/^\d+\.\s+/gm, "");
+
+  // 12. 分隔线 --- / *** → 移除整行
+  text = text.replace(/^(---+|\*\*\*+)\s*$/gm, "");
+
+  // 13. 表格管道符 | → 移除管道，保留文本
+  text = text.replace(/^\|/gm, "");
+  text = text.replace(/\|$/gm, "");
+  text = text.replace(/\|/g, "  ");
+  // 表格分隔行（---:---）移除
+  text = text.replace(/^[\s:|-]+$/gm, "");
+
+  // 14. 恢复代码块
+  codeBlocks.forEach((block, i) => {
+    text = text.replace(`__CODEBLOCK_${i}__`, block);
+  });
+
+  // 15. 清理多余空行
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  return text.trim();
+}
 
 /**
  * 简单 Markdown → HTML 转换器
@@ -108,11 +189,13 @@ export function exportMarkdown(text: string, title?: string) {
 }
 
 /**
- * 导出为 Word (.doc) 文件
- * 使用 HTML 格式 + application/msword MIME，兼容 Word 和 WPS
+ * 导出为 Word (.docx) 文件
+ * 使用 HTML 格式 + application/vnd.openxmlformats-officedocument.wordprocessingml.document MIME
+ * 导出前清除 Markdown 原始符号（##、**、^ 等）
  */
 export function exportWord(text: string, title?: string) {
-  const bodyHtml = markdownToHtml(text);
+  const cleanText = stripMarkdownSymbols(text);
+  const bodyHtml = markdownToHtml(cleanText);
   const fullTitle = title ?? "未命名文章";
 
   // 构建 Word 兼容的 HTML 文档
@@ -153,11 +236,11 @@ ${bodyHtml}
 </body>
 </html>`;
 
-  const blob = new Blob(["\ufeff", html], { type: "application/msword;charset=utf-8" });
+  const blob = new Blob(["\ufeff", html], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${safeFileName(title)}.doc`;
+  a.download = `${safeFileName(title)}.docx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -169,7 +252,8 @@ ${bodyHtml}
  * 打开一个新窗口，写入格式化 HTML，触发 print
  */
 export function exportPDF(text: string, title?: string) {
-  const bodyHtml = markdownToHtml(text);
+  const cleanText = stripMarkdownSymbols(text);
+  const bodyHtml = markdownToHtml(cleanText);
   const fullTitle = title ?? "未命名文章";
 
   const html = `<!DOCTYPE html>

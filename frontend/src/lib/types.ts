@@ -90,8 +90,14 @@ export type WSServerMessageType =
   | "workflow.resumed"
   | "node.started"
   | "node.stream.delta"
+  | "node.stream.reset"
+  | "node.reasoning.delta"
+  | "node.step_start"
+  | "node.step_complete"
   | "node.completed"
-  | "node.failed";
+  | "node.failed"
+  | "node.error"
+  | "ping"; // server heartbeat — keeps connection alive through proxies
 
 export interface WSClientMessage {
   type: WSClientMessageType;
@@ -118,6 +124,8 @@ export interface AgentStartPayload {
   word_limit?: number;
   /** 热搜选题原始链接（用于后端抓取事件背景增强写作叙事） */
   topic_url?: string;
+  /** 是否启用知识库搜索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
+  kb_enabled?: boolean;
 }
 
 // ─── 写作结果 ────────────────────────────────────────────
@@ -140,6 +148,7 @@ export interface AgentResult {
   article: string;
   review: ReviewResult;
   token_usage: { total_tokens: number };
+  points_used?: number;
 }
 
 // ─── Style Profile ───────────────────────────────────────

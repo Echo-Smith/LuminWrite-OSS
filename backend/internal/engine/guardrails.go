@@ -70,6 +70,68 @@ var injectionPatterns = []*regexp.Regexp{
 // injectionReplacement is the text used to replace detected injection patterns.
 const injectionReplacement = "[已过滤潜在注入内容]"
 
+// injectionPatternCategories maps each pattern to a human-readable category.
+// Used for audit logging and security dashboard grouping.
+var injectionPatternCategories = []string{
+	"direct_override",   // 指令覆盖
+	"direct_override",
+	"direct_override",
+	"direct_override",
+	"direct_override",
+	"direct_override",
+
+	"identity_override", // 身份/角色覆盖
+	"identity_override",
+	"identity_override",
+
+	"prompt_extraction", // 系统提示词窃取
+	"prompt_extraction",
+
+	"fake_system_msg",   // 伪造系统消息
+	"fake_system_msg",
+	"fake_system_msg",
+	"fake_system_msg",
+	"fake_system_msg",
+	"fake_system_msg",
+	"fake_system_msg",
+
+	"credential_extract", // 凭据窃取
+	"credential_extract",
+
+	"instruction_chain", // 指令链注入
+	"instruction_chain",
+}
+
+// ─── Security Event Recorder (DB injection interface) ────
+
+// SecurityEventRecorder persists security events to durable storage.
+// Implemented by the server layer to avoid circular imports.
+// If nil, events are only tracked in-memory (graceful degradation).
+type SecurityEventRecorder interface {
+	Record(event SecurityEvent)
+}
+
+// SecurityEvent represents a single prompt injection interception.
+type SecurityEvent struct {
+	EventType      string   // "external_content" | "user_input"
+	Source         string   // origin of the intercepted content
+	PatternCount   int      // number of patterns matched
+	PatternTypes   []string // categories matched (e.g. ["direct_override","identity_override"])
+	ContentSnippet string   // truncated snippet of intercepted content (max 500 chars)
+	TraceID        string
+	UserID         string
+	SessionID      string
+	Timestamp      time.Time
+}
+
+var securityRecorder atomic.Pointer[SecurityEventRecorder]
+
+// SetSecurityEventRecorder injects a DB-backed recorder.
+// Called once during server initialization.
+func SetSecurityEventRecorder(r SecurityEventRecorder) {
+	securityRecorder.Store(&r)
+}
+
 // ─── Injection Audit Counters ────────────────────────────
 //
 // Global atomic counters tracking prompt injection interception statistics.
@@ -95,22 +157,45 @@ const maxRecentInterceptions = 50
 var recentInterceptionsMu sync.Mutex
 var recentInterceptionsList = make([]recentInterception, 0, maxRecentInterceptions)
 
-// recordInterception appends a recent interception record (bounded LRU).
-func recordInterception(source string, count int) {
-	recentInterceptionsMu.Lock()
-	defer recentInterceptionsMu.Unlock()
+// recordInterception appends a recent interception record (bounded LRU) and
+// optionally persists to DB via the injected recorder.
+func recordInterception(source string, count int, categories []string, snippet string) {
+	now := time.Now()
 
+	// In-memory ring buffer
+	recentInterceptionsMu.Lock()
 	entry := recentInterception{
 		Source:       source,
 		PatternCount: count,
-		Timestamp:    time.Now(),
+		Timestamp:    now,
 	}
-
 	if len(recentInterceptionsList) >= maxRecentInterceptions {
-		// Shift: drop oldest
 		recentInterceptionsList = recentInterceptionsList[1:]
 	}
 	recentInterceptionsList = append(recentInterceptionsList, entry)
+	recentInterceptionsMu.Unlock()
+
+	// DB persistence (best-effort, non-blocking)
+	if recPtr := securityRecorder.Load(); recPtr != nil {
+		eventType := "external_content"
+		if source == "user_input" {
+			eventType = "user_input"
+		}
+
+		// Truncate snippet to 500 chars
+		if len(snippet) > 500 {
+			snippet = snippet[:500]
+		}
+
+		(*recPtr).Record(SecurityEvent{
+			EventType:      eventType,
+			Source:         source,
+			PatternCount:   count,
+			PatternTypes:   categories,
+			ContentSnippet: snippet,
+			Timestamp:      now,
+		})
+	}
 }
 
 // GetInjectionStats returns the current injection interception statistics.
@@ -148,22 +233,33 @@ func SanitizeExternalContent(content string, source string) string {
 
 	sanitized := content
 	injectionCount := 0
+	matchedCategories := make(map[string]bool)
 
-	for _, pattern := range injectionPatterns {
+	for i, pattern := range injectionPatterns {
 		matches := pattern.FindAllStringIndex(sanitized, -1)
 		if len(matches) > 0 {
 			injectionCount += len(matches)
 			sanitized = pattern.ReplaceAllString(sanitized, injectionReplacement)
+			if i < len(injectionPatternCategories) {
+				matchedCategories[injectionPatternCategories[i]] = true
+			}
 		}
 	}
 
 	if injectionCount > 0 {
 		globalInjectionStats.ExternalContentInterceptions.Add(int64(injectionCount))
 		globalInjectionStats.UniqueSources.Add(1)
-		recordInterception(source, injectionCount)
+
+		cats := make([]string, 0, len(matchedCategories))
+		for cat := range matchedCategories {
+			cats = append(cats, cat)
+		}
+		recordInterception(source, injectionCount, cats, content)
+
 		slog.Warn("prompt injection patterns detected and sanitized",
 			"source", source,
 			"pattern_count", injectionCount,
+			"categories", cats,
 			"original_length", len(content),
 			"sanitized_length", len(sanitized),
 		)
@@ -258,10 +354,24 @@ func SanitizeUserInput(input string) string {
 	// Log if injection indicators are present (for monitoring)
 	if HasInjectionIndicators(input) && sanitized != input {
 		globalInjectionStats.UserInputInterceptions.Add(1)
-		recordInterception("user_input", 1)
+
+		// Detect categories for user input
+		matchedCategories := make(map[string]bool)
+		for i, pattern := range injectionPatterns {
+			if pattern.MatchString(input) && i < len(injectionPatternCategories) {
+				matchedCategories[injectionPatternCategories[i]] = true
+			}
+		}
+		cats := make([]string, 0, len(matchedCategories))
+		for cat := range matchedCategories {
+			cats = append(cats, cat)
+		}
+
+		recordInterception("user_input", 1, cats, input)
 		slog.Warn("user input contained injection indicators, sanitized",
 			"original_length", len(input),
 			"sanitized_length", len(sanitized),
+			"categories", cats,
 		)
 	}
 

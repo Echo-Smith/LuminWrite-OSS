@@ -1,12 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 透明底（无白底） -->
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="hsl(0, 0%, 20%)"/>
-      <stop offset="100%" stop-color="hsl(0, 0%, 10%)"/>
+      <stop offset="0%" stop-color="#333333"/>
+      <stop offset="100%" stop-color="#1a1a1a"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-  <text x="32" y="44" text-anchor="middle" font-family="'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif" font-size="34" font-weight="700" fill="white">笔</text>
-  <circle cx="50" cy="14" r="7" fill="rgb(251, 191, 36)"/>
-  <path d="M47 14 L50 11 L53 14 L50 17 Z" fill="white" opacity="0.9"/>
+  <!-- 圆角方形容器：rounded-xl = 0.75rem = 12px，比例 12/64 → rx=12 -->
+  <rect width="64" height="64" rx="12" fill="url(#bg)"/>
+  <!-- "笔" 字：font-bold 白色，精确居中 -->
+  <text
+    x="32"
+    y="34"
+    text-anchor="middle"
+    dominant-baseline="middle"
+    fill="white"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif"
+    font-weight="700"
+    font-size="32"
+  >笔</text>
 </svg>

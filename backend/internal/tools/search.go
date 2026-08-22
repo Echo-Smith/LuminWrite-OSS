@@ -20,8 +20,12 @@ import (
 // KnowledgeSearcher is the interface for local knowledge base search.
 // It replaces the concrete WeKnoraClient, allowing the search pipeline
 // to use the local KbManager (in services package) without circular imports.
+//
+// userID enables per-user KB isolation: when non-empty, the search is scoped
+// to documents owned by that user (user_id = userID) plus shared documents
+// (user_id IS NULL). When empty, all documents are searched (admin/global scope).
 type KnowledgeSearcher interface {
-	SearchKB(ctx context.Context, query string, limit int) ([]engine.SearchResult, error)
+	SearchKB(ctx context.Context, userID, query string, limit int) ([]engine.SearchResult, error)
 }
 
 // SearchClient manages multi-source search with concurrent execution.

@@ -39,7 +39,9 @@ func (s *Server) handleKBListKBs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kbs, err := s.kbMgr.ListKBs(r.Context(), "")
+	// Scope to current user: returns user's private KBs + shared KBs (user_id IS NULL)
+	userID := s.getUserIDFromRequest(r)
+	kbs, err := s.kbMgr.ListKBs(r.Context(), userID)
 	if err != nil {
 		slog.Warn("KB list failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list KBs")
@@ -72,7 +74,9 @@ func (s *Server) handleKBCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kb, err := s.kbMgr.CreateKB(r.Context(), req.ID, req.Name, req.Description, "")
+	// Associate KB with current user for tenant isolation
+	userID := s.getUserIDFromRequest(r)
+	kb, err := s.kbMgr.CreateKB(r.Context(), req.ID, req.Name, req.Description, userID)
 	if err != nil {
 		slog.Warn("KB create failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to create KB")
@@ -152,7 +156,9 @@ func (s *Server) handleKBListKnowledge(w http.ResponseWriter, r *http.Request) {
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 20)
 
-	docs, total, err := s.kbMgr.ListDocumentsInKB(r.Context(), "", kbID, page, pageSize)
+	// Scope to current user for tenant isolation
+	userID := s.getUserIDFromRequest(r)
+	docs, total, err := s.kbMgr.ListDocumentsInKB(r.Context(), userID, kbID, page, pageSize)
 	if err != nil {
 		slog.Warn("KB list knowledge failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list knowledge")
@@ -184,7 +190,9 @@ func (s *Server) handleKBAddKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := s.kbMgr.AddDocumentToKB(r.Context(), "", req.KBID, req.Title, req.Content, "text", req.Metadata)
+	// Associate document with current user for tenant isolation
+	addUserID := s.getUserIDFromRequest(r)
+	doc, err := s.kbMgr.AddDocumentToKB(r.Context(), addUserID, req.KBID, req.Title, req.Content, "text", req.Metadata)
 	if err != nil {
 		slog.Warn("KB add knowledge failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to add knowledge")
@@ -223,8 +231,10 @@ func (s *Server) handleKBAddFromURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Associate imported document with current user for tenant isolation
+	importUserID := s.getUserIDFromRequest(r)
 	importer := services.NewURLImporter(s.kbMgr, services.DefaultChunkConfig())
-	docID, err := importer.ImportURLToKB(r.Context(), "", req.KBID, req.URL, req.Title)
+	docID, err := importer.ImportURLToKB(r.Context(), importUserID, req.KBID, req.URL, req.Title)
 	if err != nil {
 		slog.Warn("KB add from URL failed", "error", err, "url", req.URL)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to import URL")
@@ -259,8 +269,10 @@ func (s *Server) handleKBUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chunkConfig := services.DefaultChunkConfig()
+	// Associate uploaded file with current user for tenant isolation
+	uploadUserID := s.getUserIDFromRequest(r)
 	parser := services.NewFileParser(s.kbMgr, chunkConfig, s.cfg.Kb.DocreaderAddr)
-	docID, err := parser.ParseAndImport(r.Context(), "", header.Filename, file, title)
+	docID, err := parser.ParseAndImport(r.Context(), uploadUserID, header.Filename, file, title)
 	if err != nil {
 		slog.Warn("KB upload file failed", "error", err, "filename", header.Filename)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to upload file")
@@ -283,7 +295,9 @@ func (s *Server) handleKBDeleteKnowledge(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.kbMgr.DeleteDocument(r.Context(), "", knowledgeID); err != nil {
+	// Scope to current user for tenant isolation (can only delete own docs)
+	deleteUserID := s.getUserIDFromRequest(r)
+	if err := s.kbMgr.DeleteDocument(r.Context(), deleteUserID, knowledgeID); err != nil {
 		slog.Warn("KB delete knowledge failed", "error", err, "id", knowledgeID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to delete knowledge")
 		return
@@ -325,7 +339,9 @@ func (s *Server) handleKBSearch(w http.ResponseWriter, r *http.Request) {
 		mode = services.SearchModeHybrid
 	}
 
-	results, err := s.kbMgr.HybridSearchInKB(r.Context(), "", req.KBID, req.Query, req.Limit, mode, req.BM25Weight, req.DenseWeight)
+	// Scope search to current user for tenant isolation
+	searchUserID := s.getUserIDFromRequest(r)
+	results, err := s.kbMgr.HybridSearchInKB(r.Context(), searchUserID, req.KBID, req.Query, req.Limit, mode, req.BM25Weight, req.DenseWeight)
 	if err != nil {
 		slog.Warn("KB search failed", "error", err)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "search failed")

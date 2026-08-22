@@ -118,6 +118,22 @@ func (s *UserStyleStore) GetProfile(ctx context.Context, id string) (*UserStyleP
 	return &p, nil
 }
 
+// GetProfileBySlugAndOwner returns a single user style profile by slug + owner.
+// This is used when the agent.start handler needs to resolve a "my_<slug>"
+// style slug to the actual StyleProfile config.
+func (s *UserStyleStore) GetProfileBySlugAndOwner(ctx context.Context, slug, ownerUserID string) (*UserStyleProfile, error) {
+	var p UserStyleProfile
+	err := s.db.QueryRowContext(ctx, `
+		SELECT `+userProfileColumns+`
+		FROM user_style_profiles
+		WHERE slug = $1 AND owner_user_id = $2
+	`, slug, ownerUserID).Scan(&p.ID, &p.OwnerUserID, &p.Slug, &p.Name, &p.Description, &p.Status, &p.CurrentVersion, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get user style profile by slug: %w", err)
+	}
+	return &p, nil
+}
+
 // ListProfilesByOwner returns all style profiles for a user.
 func (s *UserStyleStore) ListProfilesByOwner(ctx context.Context, ownerUserID string) ([]UserStyleProfile, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -375,6 +391,53 @@ func (s *UserStyleStore) SubmitForReview(ctx context.Context, profileID string) 
 	}
 
 	return &r, nil
+}
+
+// WithdrawReview cancels a pending review request by the profile owner.
+// The profile status reverts from 'pending_review' to 'draft', and the
+// associated review request is marked as 'withdrawn'.
+func (s *UserStyleStore) WithdrawReview(ctx context.Context, profileID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify the profile is currently pending review
+	var status string
+	err = tx.QueryRowContext(ctx, `
+		SELECT status FROM user_style_profiles WHERE id = $1 FOR UPDATE
+	`, profileID).Scan(&status)
+	if err != nil {
+		return fmt.Errorf("lock profile for withdraw: %w", err)
+	}
+	if status != "pending_review" {
+		return fmt.Errorf("cannot withdraw: profile status is %s, not pending_review", status)
+	}
+
+	// Revert profile status to draft
+	_, err = tx.ExecContext(ctx, `
+		UPDATE user_style_profiles SET status = 'draft', updated_at = NOW() WHERE id = $1
+	`, profileID)
+	if err != nil {
+		return fmt.Errorf("revert profile status: %w", err)
+	}
+
+	// Mark the pending review request as withdrawn
+	_, err = tx.ExecContext(ctx, `
+		UPDATE style_review_requests
+		SET status = 'withdrawn', reviewed_at = NOW()
+		WHERE profile_id = $1 AND status = 'pending'
+	`, profileID)
+	if err != nil {
+		return fmt.Errorf("mark review as withdrawn: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
 }
 
 // ListPendingReviews returns all pending review requests with joined profile info.

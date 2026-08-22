@@ -15,6 +15,7 @@
  */
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { Topic } from "@/lib/types";
+import { useAuthStore } from "@/stores/auth-store";
 
 const MAX_RECONNECT_DELAY = 30_000;
 const BASE_RECONNECT_DELAY = 2_000;
@@ -43,9 +44,11 @@ export function useSSETopics(
     }
 
     const isDev = import.meta.env.DEV;
+    const token = useAuthStore.getState().token;
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
     const sseUrl = isDev
-      ? "http://localhost:8080/api/v2/sse/topics"
-      : "/api/v2/sse/topics";
+      ? `http://localhost:8080/api/v2/sse/topics${tokenParam}`
+      : `/api/v2/sse/topics${tokenParam}`;
 
     const es = new EventSource(sseUrl);
     eventSourceRef.current = es;

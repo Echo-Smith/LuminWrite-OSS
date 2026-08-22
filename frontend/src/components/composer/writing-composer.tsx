@@ -6,31 +6,24 @@
  *   - 聚焦时微妙阴影上浮
  *   - 极简边框（border/60 透明度）
  *   - 控件行与输入框整合在同一个容器内
- *   - 支持动态建议词（从 API 获取热搜/历史）
  *   - 支持错误 Toast 通知
  */
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
-import { Pause, Play, Square, Plus, X, TrendingUp, Lightbulb, FileEdit, MessageCircle, PenLine, Paperclip, Loader2, Database, type LucideIcon } from "lucide-react";
+import { Pause, Play, Square, Plus, X, PenLine, Paperclip, Loader2, Database, BookOpen, FolderSearch } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useWorkflowStore } from "@/stores/workflow-store";
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { StaggerItem } from "@/components/animation";
+import { listMaterials, getMaterialContent, type UserMaterial } from "@/lib/material-api";
 
 export interface WritingComposerHandle {
   focusTextarea: () => void;
 }
-
-const FALLBACK_SUGGESTIONS = [
-  { icon: TrendingUp, label: "基于热搜写评论", text: "基于热搜写一篇评论" },
-  { icon: FileEdit, label: "写一篇议论文", text: "写一篇关于人工智能与就业的议论文" },
-  { icon: Lightbulb, label: "帮我构思选题", text: "帮我构思3个关于城市交通的选题" },
-  { icon: MessageCircle, label: "提炼核心观点", text: "提炼以下文章的核心观点：\n\n" },
-];
 
 // 稳定的空数组引用，避免 Zustand selector 每次返回新 [] 导致无限重渲染
 const EMPTY_MATERIALS: string[] = [];
@@ -42,6 +35,23 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   const [showMaterials, setShowMaterials] = useState(false);
   const [materialInput, setMaterialInput] = useState("");
   const [uploading, setUploading] = useState(false);
+  // 素材库选择器
+  const [showMaterialPicker, setShowMaterialPicker] = useState(false);
+  const [kbMaterials, setKbMaterials] = useState<UserMaterial[]>([]);
+  const [kbMaterialsLoading, setKbMaterialsLoading] = useState(false);
+  const [kbSearchQuery, setKbSearchQuery] = useState("");
+  // 知识库开关状态（从 session 读取，默认 true）
+  const kbEnabled = useAgentStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return session?.kbEnabled ?? true;
+  });
+  const handleToggleKB = useCallback(() => {
+    useAgentStore.setState((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === s.activeSessionId ? { ...sess, kbEnabled: !sess.kbEnabled } : sess
+      ),
+    }));
+  }, []);
   // Composer 抖动状态（空消息发送时触发）
   const [shakeKey, setShakeKey] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -57,6 +67,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   const pauseWriting = useAgentStore((s) => s.pauseWriting);
   const resumeWriting = useAgentStore((s) => s.resumeWriting);
   const cancelWriting = useAgentStore((s) => s.cancelWriting);
+  const sendWS = useAgentStore((s) => s.sendWS);
   const agentMode = useSettingsStore((s) => s.agentMode);
 
   // Sync mode & style from active session so external callers (e.g. topic center)
@@ -107,7 +118,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     return session?.awaitInputAt != null;
   });
 
-  const isRunning = sessionStatus === "running" && !isAwaitingInput;
+  // 编辑部模式运行状态
+  const wfRunStatus = useWorkflowStore((s) => s.runStatus);
+  const isWorkflowBusy = agentMode === "editorial" && (wfRunStatus === "planning" || wfRunStatus === "running" || wfRunStatus === "created");
+
+  const isRunning = (sessionStatus === "running" && !isAwaitingInput) || isWorkflowBusy;
   const isPaused = sessionStatus === "paused";
 
   // 自动调整 textarea 高度
@@ -133,6 +148,16 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       return;
     }
 
+    if (agentMode === "editorial") {
+      // 编辑部模式：发送 workflow.start 触发 Planner + DAG 执行
+      const { setUserInput, setRunStatus } = useWorkflowStore.getState();
+      setUserInput(message.trim());
+      setRunStatus("planning");
+      sendWS("workflow.start", { user_input: message.trim(), kb_enabled: kbEnabled });
+      setMessage("");
+      return;
+    }
+
     startWriting({
       message: message.trim(),
       style,
@@ -140,10 +165,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       model,
       agent_mode: agentMode,
       user_materials: materials.length > 0 ? materials : undefined,
+      kb_enabled: kbEnabled,
     });
 
     setMessage("");
-  }, [message, style, mode, model, materials, isRunning, startWriting, agentMode]);
+  }, [message, style, mode, model, materials, isRunning, startWriting, agentMode, sendWS, kbEnabled]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -177,12 +203,10 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       fd.append("title", file.name);
       const res = await fetch("/api/v2/materials/upload", {
         method: "POST",
-        headers: { Authorization: `Bearer ${localStorage.getItem("token") || ""}` },
         body: fd,
       });
       const json = await res.json();
       if (json.success && json.data) {
-        // Add as material tag — agent will search KB for this user's chunks
         const tag = `📎 ${file.name}`;
         setMaterials([...materials, tag]);
       }
@@ -194,6 +218,38 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
+
+  // ─── 从素材库选择素材 ───
+  const loadKbMaterials = useCallback(async () => {
+    setKbMaterialsLoading(true);
+    try {
+      const { materials } = await listMaterials(1, 50, "all");
+      setKbMaterials(materials);
+    } catch {
+      // silent
+    } finally {
+      setKbMaterialsLoading(false);
+    }
+  }, []);
+
+  const handleOpenMaterialPicker = useCallback(() => {
+    setShowMaterialPicker(true);
+    loadKbMaterials();
+  }, [loadKbMaterials]);
+
+  const handlePickMaterial = useCallback(async (mat: UserMaterial) => {
+    let content = mat.content_preview || "";
+    try {
+      const detail = await getMaterialContent(mat.id);
+      content = detail.content_preview || content;
+    } catch {
+      // use preview
+    }
+    const tag = `📎 ${mat.title}: ${content}`;
+    setMaterials((prev) => [...prev, tag]);
+    setShowMaterialPicker(false);
+    toast.success("已注入素材", mat.title);
+  }, []);
 
   return (
     <div className="px-4 pb-4 pt-2">
@@ -223,11 +279,6 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
           <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">写作已暂停</span>
           <span className="text-xs text-amber-500">— 点击播放按钮继续</span>
         </div>
-      )}
-
-      {/* Suggestion 快捷入口（仅空闲且无输入时显示）*/}
-      {!isRunning && !isPaused && !message.trim() && (
-        <DynamicSuggestions onSelect={(text) => setMessage(text)} />
       )}
 
       {/* ── Composer 药丸容器 ── */}
@@ -298,6 +349,89 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 )}
                 {uploading ? "解析中..." : "文件"}
               </button>
+              {/* 从素材库选择已有素材 */}
+              <button
+                onClick={handleOpenMaterialPicker}
+                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent"
+                title="从素材库选择已有素材"
+              >
+                <FolderSearch className="h-3.5 w-3.5" />
+                素材库
+              </button>
+              {/* 知识库开关 — 控制是否启用 search_knowledge 工具 */}
+              <button
+                onClick={handleToggleKB}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-ui",
+                  kbEnabled
+                    ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                    : "border-border/60 bg-card text-muted-foreground hover:bg-accent"
+                )}
+                title={kbEnabled ? "知识库搜索已开启（点击关闭）" : "知识库搜索已关闭（点击开启）"}
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                {kbEnabled ? "知识库 ON" : "知识库 OFF"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 素材库选择器弹窗 */}
+        {showMaterialPicker && (
+          <div className="px-4 pt-3 anim-fade-in">
+            <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <FolderSearch className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-xs font-medium">从素材库选择</span>
+                  {kbMaterialsLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                </div>
+                <button
+                  onClick={() => setShowMaterialPicker(false)}
+                  className="text-muted-foreground hover:text-foreground transition-ui"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {/* Search */}
+              <div className="px-3 py-2 border-b">
+                <input
+                  value={kbSearchQuery}
+                  onChange={(e) => setKbSearchQuery(e.target.value)}
+                  placeholder="筛选素材标题..."
+                  className="w-full rounded-md border border-border/40 bg-background px-2.5 py-1.5 text-xs outline-none placeholder:text-muted-foreground focus:border-border"
+                />
+              </div>
+              {/* List */}
+              <div className="max-h-[240px] overflow-y-auto">
+                {kbMaterials.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <Database className="h-6 w-6 text-muted-foreground mx-auto mb-1" />
+                    <p className="text-xs text-muted-foreground">
+                      {kbMaterialsLoading ? "加载中..." : "素材库为空，请先上传素材"}
+                    </p>
+                  </div>
+                ) : (
+                  kbMaterials
+                    .filter((m) => !kbSearchQuery.trim() || m.title.toLowerCase().includes(kbSearchQuery.toLowerCase()))
+                    .map((mat) => (
+                      <button
+                        key={mat.id}
+                        onClick={() => handlePickMaterial(mat)}
+                        className="flex items-start gap-2 w-full px-3 py-2 hover:bg-accent/50 transition-ui text-left border-b last:border-0"
+                      >
+                        <Database className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium truncate">{mat.title}</div>
+                          <div className="text-[10px] text-muted-foreground line-clamp-1">
+                            {mat.content_preview || mat.file_name || "—"}
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -309,7 +443,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isRunning ? "写作进行中… 可先编辑下一条需求，完成后发送" : "输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"}
+            placeholder={isRunning ? (agentMode === "editorial" ? "工作流执行中…" : "写作进行中… 可先编辑下一条需求，完成后发送") : "输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"}
             className="flex-1 min-h-[40px] max-h-[200px] resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
             rows={1}
           />
@@ -350,7 +484,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
 
           {/* 右侧：发送/暂停/取消按钮 — 笔头像黑色圆 */}
           <div className="flex items-center gap-1.5">
-            {isRunning && (
+            {isRunning && agentMode !== "editorial" && (
               <button
                 onClick={pauseWriting}
                 className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
@@ -376,7 +510,13 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
 
             {(isRunning || isPaused) && (
               <button
-                onClick={cancelWriting}
+                onClick={() => {
+                  if (agentMode === "editorial") {
+                    useWorkflowStore.getState().reset();
+                  } else {
+                    cancelWriting();
+                  }
+                }}
                 className="flex items-center justify-center h-8 w-8 rounded-full border border-destructive/30 text-destructive transition-transform-precise hover:scale-105 active:scale-95 hover:bg-destructive/10"
                 title="停止"
               >
@@ -416,65 +556,4 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   );
 });
 
-/**
- * DynamicSuggestions — 动态建议词
- * 尝试从 /api/v2/hot-topics 获取热搜话题，失败时用本地 fallback
- */
-function DynamicSuggestions({ onSelect }: { onSelect: (text: string) => void }) {
-  const [suggestions, setSuggestions] = useState(FALLBACK_SUGGESTIONS);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/v2/hot-topics?limit=4")
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const topics = data?.data ?? data;
-        if (Array.isArray(topics) && topics.length > 0) {
-          const dynamic = topics.slice(0, 4).map((t: { title?: string; text?: string; category?: string }, i: number) => {
-            const icons = [TrendingUp, FileEdit, Lightbulb, MessageCircle];
-            const labels = ["热搜", "议论文", "选题", "提炼"];
-            return {
-              icon: icons[i % icons.length],
-              label: t.category ?? labels[i % labels.length],
-              text: t.text ?? `写一篇关于${t.title}的评论`,
-            };
-          });
-          setSuggestions(dynamic);
-        }
-      })
-      .catch(() => {
-        // 保留 fallback，不需要错误提示
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  return (
-    <div className="mb-2.5 flex flex-wrap gap-1.5">
-      {suggestions.map((s, i) => (
-        <StaggerItem key={i} index={i} interval={60} animation="fade-up">
-          <SuggestionButton icon={s.icon} label={s.label} onClick={() => onSelect(s.text)} />
-        </StaggerItem>
-      ))}
-    </div>
-  );
-}
-function SuggestionButton({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: LucideIcon;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1.5 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </button>
-  );
-}
