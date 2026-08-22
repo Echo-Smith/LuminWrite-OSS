@@ -24,6 +24,7 @@ import { AuditLogsPage } from "./admin/audit-logs";
 import { SecurityAuditPage } from "./admin/security-audit";
 import { EvolutionPage } from "./admin/evolution";
 import { RbacPage } from "./admin/rbac";
+import { MCPSandboxPage } from "./admin/mcp-sandbox";
 
 // localStorage key for sidebar collapsed state
 const SIDEBAR_COLLAPSED_KEY = "luminbuddy_admin_sidebar_collapsed";
@@ -74,6 +75,7 @@ export function AdminDashboard() {
       {activePage === "security" && <SecurityAuditPage />}
       {activePage === "evolution" && <EvolutionPage />}
       {activePage === "rbac" && <RbacPage />}
+      {activePage === "sandbox" && <MCPSandboxPage />}
     </AdminLayout>
   );
 }

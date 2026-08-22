@@ -84,6 +84,9 @@ type Server struct {
 	// Canary health monitor for auto-rollback
 	canaryMonitor *CanaryHealthMonitor
 
+	// MCP security sandbox
+	sandbox *MCPSandbox
+
 	// Route metadata registry for /api/v2/admin/routes discovery
 	routeReg *routeRegistry
 
@@ -491,6 +494,18 @@ func New(cfg *config.Config) (*Server, error) {
 	// ── Canary Health Monitor (auto-rollback) ──
 	s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
 	s.canaryMonitor.Start()
+
+	// ── MCP Security Sandbox ──
+	s.sandbox = NewMCPSandbox(s.db)
+	// Inject sandbox hook into all registered MCP tools
+	if s.mcpRegistry != nil && s.toolRegistry != nil {
+		adapter := &mcpSandboxAdapter{sb: s.sandbox}
+		for _, t := range s.toolRegistry.All() {
+			if mcpTool, ok := t.(*mcp.MCPAgentTool); ok {
+				mcpTool.SetSandboxHook(adapter)
+			}
+		}
+	}
 	}
 
 	// ── Knowledge Manager (operates directly on local PG) ──
@@ -904,6 +919,16 @@ r.Post("/auth/refresh", s.handleRefreshToken)
             r.Put("/mcp/servers/{id}", s.handleAdminUpdateMCPServer)
             r.Delete("/mcp/servers/{id}", s.handleAdminDeleteMCPServer)
             r.Post("/mcp/servers/{id}/reconnect", s.handleAdminReconnectMCPServer)
+
+// MCP Security Sandbox
+		r.Get("/mcp/sandbox/policies", s.handleAdminListMCPToolPolicies)
+		r.Post("/mcp/sandbox/policies", s.handleAdminCreateMCPToolPolicy)
+		r.Put("/mcp/sandbox/policies/{id}", s.handleAdminUpdateMCPToolPolicy)
+		r.Delete("/mcp/sandbox/policies/{id}", s.handleAdminDeleteMCPToolPolicy)
+		r.Get("/mcp/sandbox/violations", s.handleAdminListMCPViolations)
+		r.Get("/mcp/sandbox/stats", s.handleAdminGetSandboxStats)
+		r.Post("/mcp/sandbox/test", s.handleAdminTestSandbox)
+		r.Post("/mcp/sandbox/reload", s.handleAdminReloadSandbox)
 
             // Tool Plugin Management (hot-pluggable tool sets)
             r.Get("/tool-plugins", s.handleAdminListToolPlugins)

@@ -156,15 +156,37 @@ func ParseMCPToolName(name string) (server, tool string, ok bool) {
 	return parts[0], parts[1], true
 }
 
+// ─── Sandbox Hook Interface ──────────────────────────────
+//
+// SandboxHook is implemented by the server layer to enforce
+// database-driven security policies (domain restrictions, rate
+// limits, configurable timeouts, etc.) on MCP tool calls.
+// The mcp package defines the interface; the server package
+// provides the concrete implementation to avoid circular imports.
+
+// SandboxCheckResult is the outcome of a pre-execution sandbox check.
+type SandboxCheckResult struct {
+	Allowed       bool
+	ViolationType string
+	Detail        string
+}
+
+// SandboxHook is called before each MCP tool execution.
+type SandboxHook interface {
+	// Check evaluates whether a tool call should be allowed.
+	Check(serverName, toolName string, args map[string]any, traceID, userID string) SandboxCheckResult
+	// TruncateResult truncates output according to the policy.
+	TruncateResult(serverName, toolName, output string) string
+	// GetTimeout returns the timeout for a tool.
+	GetTimeout(serverName, toolName string) time.Duration
+}
+
 // ─── MCPAgentTool: MCP Tool → AgentTool Adapter ──────────
 
-// mcpSandboxConfig holds the security constraints for MCP tool execution.
+// Default sandbox limits (used when no SandboxHook is configured).
 const (
-	// mcpToolTimeout is the maximum duration for a single MCP tool call.
-	mcpToolTimeout = 30 * time.Second
-	// mcpToolMaxOutput is the maximum output length (characters) from an MCP tool.
-	mcpToolMaxOutput = 2000
-	// mcpToolMaxCallsPerSession is the maximum number of calls to a single MCP tool per session.
+	defaultMCPToolTimeout     = 30 * time.Second
+	defaultMCPToolMaxOutput   = 2000
 	mcpToolMaxCallsPerSession = 10
 )
 
@@ -178,8 +200,16 @@ type MCPAgentTool struct {
 	client      *MCPClient
 	toolName    string
 
+	// sandbox is the optional security hook (nil = use defaults)
+	sandbox SandboxHook
+
 	// callCount tracks total invocations (atomic for thread-safety).
 	callCount atomic.Int64
+}
+
+// SetSandboxHook sets the security sandbox hook for this tool.
+func (t *MCPAgentTool) SetSandboxHook(hook SandboxHook) {
+	t.sandbox = hook
 }
 
 func (t *MCPAgentTool) Name() string        { return t.name }
@@ -200,6 +230,27 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 		return nil, fmt.Errorf("MCP tool %s 已达到单次会话调用上限 (%d 次)，请减少调用频率或使用内置工具替代", t.name, mcpToolMaxCallsPerSession)
 	}
 
+	// Extract user ID from execCtx (best-effort)
+	userID := ""
+	if execCtx != nil && execCtx.UserID != "" {
+		userID = execCtx.UserID
+	}
+
+	// ── Sandbox: policy-driven pre-execution check ──
+	if t.sandbox != nil {
+		result := t.sandbox.Check(t.client.Name(), t.toolName, args, execCtx.TraceID, userID)
+		if !result.Allowed {
+			slog.Warn("MCP tool blocked by sandbox policy",
+				"server", t.client.Name(),
+				"tool", t.toolName,
+				"violation", result.ViolationType,
+				"detail", result.Detail,
+				"trace_id", execCtx.TraceID,
+			)
+			return nil, fmt.Errorf("MCP tool %s 被安全沙箱拦截: %s", t.name, result.Detail)
+		}
+	}
+
 	slog.Info("MCP tool executing",
 		"server", t.client.Name(),
 		"tool", t.toolName,
@@ -208,8 +259,14 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 		"call_count", current,
 	)
 
-	// ── Sandbox: enforce timeout ──
-	toolCtx, cancel := context.WithTimeout(ctx, mcpToolTimeout)
+	// ── Sandbox: enforce timeout (policy-driven if available) ──
+	timeout := defaultMCPToolTimeout
+	if t.sandbox != nil {
+		if pt := t.sandbox.GetTimeout(t.client.Name(), t.toolName); pt > 0 {
+			timeout = pt
+		}
+	}
+	toolCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	result, err := t.client.CallTool(toolCtx, t.toolName, args)
@@ -219,18 +276,24 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 			slog.Warn("MCP tool timed out",
 				"server", t.client.Name(),
 				"tool", t.toolName,
-				"timeout", mcpToolTimeout,
+				"timeout", timeout,
 				"trace_id", execCtx.TraceID,
 			)
-			return nil, fmt.Errorf("MCP tool %s 执行超时 (%v)，请稍后重试或检查外部服务状态", t.name, mcpToolTimeout)
+			return nil, fmt.Errorf("MCP tool %s 执行超时 (%v)，请稍后重试或检查外部服务状态", t.name, timeout)
 		}
 		return nil, fmt.Errorf("MCP tool %s failed: %w", t.name, err)
 	}
 
-	// ── Sandbox: output truncation with audit log ──
+	// ── Sandbox: output truncation (policy-driven if available) ──
 	truncated := false
-	if len(result) > mcpToolMaxOutput {
-		result = result[:mcpToolMaxOutput] + "...(截断)"
+	if t.sandbox != nil {
+		truncatedResult := t.sandbox.TruncateResult(t.client.Name(), t.toolName, result)
+		if len(truncatedResult) < len(result) {
+			truncated = true
+		}
+		result = truncatedResult
+	} else if len(result) > defaultMCPToolMaxOutput {
+		result = result[:defaultMCPToolMaxOutput] + "...(截断)"
 		truncated = true
 	}
 
