@@ -38,9 +38,7 @@ docker-compose.override.yml
 logs/
 tmp/
 
-# ─── 搜索源实现（不公开） ─────────────────────────────
-# 搜索客户端的核心接口和结构体在 search.go 中公开，
-# 但各搜索源的具体对接实现不包含在仓库中。
+# ─── 内部模块 ─────────────────────────────────────────
 backend/internal/tools/search_tavily_zhihu.go
 backend/internal/tools/search_tencent_weibo.go
 backend/internal/tools/search_bing.go
@@ -50,12 +48,6 @@ backend/internal/tools/tencent_news_cli.go
 backend/internal/tools/jiaozhen.go
 backend/internal/tools/url_fetcher.go
 backend/internal/tools/search_test.go
-
-# ─── 搜索 CLI 工具和 Skills（不公开） ──────────────────
-skills/tencent-news/
-skills/jiaozhen-factcheck/
-
-# ─── 计费系统（不公开） ───────────────────────────────
 backend/internal/database/billing.go
 backend/internal/services/point_calculator.go
 backend/internal/server/billing_middleware.go
@@ -73,9 +65,10 @@ frontend/src/stores/billing-store.ts
 frontend/src/pages/admin/billing.tsx
 frontend/src/pages/personal/wallet-section.tsx
 frontend/src/pages/personal/devices-section.tsx
+skills/tencent-news/
+skills/jiaozhen-factcheck/
 
-# ─── Skills (技能包) ───────────────────────────────────
-# Skill source files are tracked, but downloaded binaries are not
+# ─── Skills ───────────────────────────────────────────
 skills/**/tencent-news-cli
 skills/**/*.zip
 
@@ -93,5 +86,5 @@ scripts/check_go_imports.py
 ab-test-results-*.json
 ab-test-report.html
 
-# ─── 本地评估文档（不提交） ───────────────────────────
+# ─── 文档 ───────────────────────────────────────────
 docs/architecture-assessment.md
