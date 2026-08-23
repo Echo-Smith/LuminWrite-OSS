@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 · 页面不存在 — 笔润智谈</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #0f0f12;
+      color: #e4e4e7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 520px;
+      text-align: center;
+    }
+    .code {
+      font-size: 6rem;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.05em;
+    }
+    .message {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #d4d4d8;
+      margin-bottom: 0.5rem;
+    }
+    .description {
+      font-size: 0.9375rem;
+      color: #a1a1aa;
+      margin-bottom: 2rem;
+      line-height: 1.6;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      justify-content: center;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.625rem 1.25rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white;
+    }
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+    .btn-secondary {
+      background: transparent;
+      color: #d4d4d8;
+      border: 1px solid #3f3f46;
+    }
+    .btn-secondary:hover {
+      background: #27272a;
+      border-color: #52525b;
+    }
+    .btn svg {
+      width: 16px;
+      height: 16px;
+    }
+    .links {
+      margin-top: 2rem;
+      padding-top: 2rem;
+      border-top: 1px solid #27272a;
+    }
+    .links-title {
+      font-size: 0.8125rem;
+      color: #71717a;
+      margin-bottom: 0.75rem;
+    }
+    .links-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      justify-content: center;
+    }
+    .links-list a {
+      font-size: 0.8125rem;
+      color: #818cf8;
+      text-decoration: none;
+    }
+    .links-list a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="code">404</div>
+    <div class="message">页面不存在</div>
+    <p class="description">
+      您访问的页面可能已被移除、重命名或暂时不可用。<br>
+      请检查地址是否正确，或返回以下页面继续。
+    </p>
+    <div class="actions">
+      <a href="/" class="btn btn-primary">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 12l9-9 9 9M5 10v10h4v-6h6v6h4V10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        返回首页
+      </a>
+      <button onclick="history.back()" class="btn btn-secondary">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M19 12H5M12 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        返回上一页
+      </button>
+    </div>
+    <div class="links">
+      <p class="links-title">您也可以访问以下页面：</p>
+      <div class="links-list">
+        <a href="/write">写作工作台</a>
+        <a href="/topics">选题中心</a>
+        <a href="/editorial">编辑部</a>
+        <a href="/styles">我的风格</a>
+        <a href="/personal">个人中心</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

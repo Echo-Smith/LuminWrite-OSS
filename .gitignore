@@ -51,6 +51,8 @@ data/
 agentops-*.zip
 agentops-*.md
 scripts/check_go_imports.py
+scripts/pack-commercial.sh
+scripts/sync-commercial.sh
 
 # ─── A/B 测试结果 ─────────────────────────────────────
 ab-test-results-*.json

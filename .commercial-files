@@ -1,0 +1,51 @@
+# 商业文件清单 — sync-commercial.sh 读取此文件判断文件归属
+# 每行一个 glob 模式，匹配到的文件属于商业版（push commercial）
+# # 开头的行是注释，空行忽略
+#
+# 命名约定：
+#   - 新增商业文件时，在此文件中添加匹配模式
+#   - 开源文件不要匹配到这里的任何模式
+
+# ── 后端：搜索源实现 ──
+backend/internal/tools/search_tavily*
+backend/internal/tools/search_tencent*
+backend/internal/tools/search_bing*
+backend/internal/tools/search_extra*
+backend/internal/tools/anysearch*
+backend/internal/tools/tencent_news_cli*
+backend/internal/tools/jiaozhen*
+backend/internal/tools/url_fetcher*
+backend/internal/tools/search_test*
+
+# ── 后端：计费系统 ──
+backend/internal/database/billing*
+backend/internal/services/point_calculator*
+backend/internal/server/billing*
+backend/internal/server/handlers_billing*
+backend/internal/server/handlers_admin_billing*
+backend/internal/server/handlers_sessions_mgmt*
+backend/internal/server/handlers_material_folders*
+
+# ── 后端：商业迁移文件（068-079 为商业版保留段）──
+backend/internal/database/migrations/068_*
+backend/internal/database/migrations/069_*
+backend/internal/database/migrations/070_*
+backend/internal/database/migrations/071_*
+backend/internal/database/migrations/072_*
+backend/internal/database/migrations/073_*
+backend/internal/database/migrations/074_*
+backend/internal/database/migrations/075_*
+backend/internal/database/migrations/076_*
+backend/internal/database/migrations/077_*
+backend/internal/database/migrations/078_*
+backend/internal/database/migrations/079_*
+
+# ── 前端：计费相关 ──
+frontend/src/stores/billing-store*
+frontend/src/pages/admin/billing*
+frontend/src/pages/personal/wallet*
+frontend/src/pages/personal/devices*
+
+# ── Skills（商业 CLI 工具）──
+skills/tencent-news/**
+skills/jiaozhen-factcheck/**

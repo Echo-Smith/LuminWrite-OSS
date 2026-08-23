@@ -8,7 +8,6 @@
  * - agentMode: "harness" | "pipeline" | "editorial" — 编排模式选择
  */
 import { create } from "zustand";
-import { useAuthStore } from "@/stores/auth-store";
 
 export type AgentMode = "harness" | "pipeline" | "editorial";
 
@@ -32,6 +31,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   loadFromServer: async () => {
     if (get().loaded) return;
+    // 延迟导入避免循环依赖 (auth-store → settings-store → auth-store)
+    const { useAuthStore } = await import("@/stores/auth-store");
     const token = useAuthStore.getState().token;
     try {
       const res = await fetch("/api/v2/preferences", {
@@ -53,6 +54,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   // Internal: push preferences to server
   syncToServer: async (prefs: Record<string, unknown>) => {
+    // 延迟导入避免循环依赖
+    const { useAuthStore } = await import("@/stores/auth-store");
     const token = useAuthStore.getState().token;
     if (!token) return;
     try {

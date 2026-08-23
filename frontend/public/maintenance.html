@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>笔润智谈 · 系统维护中</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #0f0f12;
+      color: #e4e4e7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 480px;
+      text-align: center;
+    }
+    .logo {
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 2rem;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .logo svg {
+      width: 100%;
+      height: 100%;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      background: linear-gradient(135deg, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      font-size: 1rem;
+      color: #a1a1aa;
+      margin-bottom: 1.5rem;
+      line-height: 1.6;
+    }
+    .eta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(129, 140, 248, 0.1);
+      border: 1px solid rgba(129, 140, 248, 0.2);
+      border-radius: 0.5rem;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      color: #a5b4fc;
+      margin-bottom: 2rem;
+    }
+    .eta-icon {
+      width: 16px;
+      height: 16px;
+      animation: spin 2s linear infinite;
+    }
+    .refresh-hint {
+      font-size: 0.8125rem;
+      color: #71717a;
+      margin-top: 2rem;
+    }
+    .refresh-hint a {
+      color: #818cf8;
+      text-decoration: none;
+    }
+    .refresh-hint a:hover {
+      text-decoration: underline;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.8; transform: scale(0.95); }
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="36" cy="36" r="34" stroke="url(#grad)" stroke-width="2" opacity="0.3"/>
+        <circle cx="36" cy="36" r="28" stroke="url(#grad)" stroke-width="2" opacity="0.5"/>
+        <circle cx="36" cy="36" r="22" stroke="url(#grad)" stroke-width="2" opacity="0.7"/>
+        <circle cx="36" cy="36" r="16" fill="url(#grad)" opacity="0.15"/>
+        <path d="M28 30 L36 22 L44 30 M28 42 L36 50 L44 42" stroke="url(#grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="36" cy="36" r="4" fill="url(#grad)"/>
+        <defs>
+          <linearGradient id="grad" x1="0" y1="0" x2="72" y2="72">
+            <stop offset="0" stop-color="#818cf8"/>
+            <stop offset="1" stop-color="#c084fc"/>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+    <h1>笔润智谈正在维护中</h1>
+    <p class="subtitle">
+      我们正在进行系统升级，以提供更好的写作体验。<br>
+      预计 2-4 小时内恢复，请耐心等待。
+    </p>
+    <div class="eta">
+      <svg class="eta-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+        <path d="M12 6v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>预计 2-4 小时恢复</span>
+    </div>
+    <p class="refresh-hint">
+      服务恢复后请<a href="javascript:location.reload()">刷新页面</a>重试
+    </p>
+  </div>
+  <script>
+    // 每 30 秒自动检测服务是否恢复
+    setInterval(function() {
+      fetch('/health', { method: 'GET' })
+        .then(function(r) { if (r.ok) location.reload(); })
+        .catch(function() {});
+    }, 30000);
+  </script>
+</body>
+</html>
