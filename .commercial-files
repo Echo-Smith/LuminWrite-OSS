@@ -26,6 +26,10 @@ backend/internal/server/handlers_admin_billing*
 backend/internal/server/handlers_sessions_mgmt*
 backend/internal/server/handlers_material_folders*
 
+# ── 后端：邮箱验证 ──
+backend/internal/server/email_service*
+backend/internal/server/handlers_email*
+
 # ── 后端：商业迁移文件（068-079 为商业版保留段）──
 backend/internal/database/migrations/068_*
 backend/internal/database/migrations/069_*
