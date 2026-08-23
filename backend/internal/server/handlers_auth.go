@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"bytes"
+	"io"
 	"golang.org/x/crypto/bcrypt"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -324,12 +326,32 @@ func (s *Server) handleGuestLogin(w http.ResponseWriter, r *http.Request) {
 // (keeping the same user_id, preserving traces and feedback).
 // Otherwise, a new user record is created.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// Peek at the body to determine if this is an email-based registration
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "failed to read request body")
+		return
+	}
+
+	var peek struct {
+		Email string `json:"email"`
+	}
+	_ = json.Unmarshal(rawBody, &peek)
+
+	if peek.Email != "" {
+		// Email-based registration: delegate to email handler
+		r.Body = io.NopCloser(bytes.NewReader(rawBody))
+		s.handleRegisterWithEmail(w, r)
+		return
+	}
+
+	// Original username/password registration flow
 	var req struct {
 		Username   string `json:"username"`
 		Password   string `json:"password"`
 		GuestToken string `json:"guest_token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
 		return
 	}

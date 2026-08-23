@@ -6,10 +6,27 @@
  *
  * 目前管理：
  * - agentMode: "harness" | "pipeline" | "editorial" — 编排模式选择
+ *
+ * 注意：本 store 不 import auth-store，避免循环依赖。
+ * token 从 localStorage 直接读取（与 auth-store 的 STORAGE_KEY 一致）。
  */
 import { create } from "zustand";
 
 export type AgentMode = "harness" | "pipeline" | "editorial";
+
+const AUTH_STORAGE_KEY = "luminbuddy_auth";
+
+/** 从 localStorage 读取 token（不依赖 auth-store） */
+function getToken(): string | null {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const stored = JSON.parse(raw);
+    return stored.token ?? null;
+  } catch {
+    return null;
+  }
+}
 
 interface SettingsState {
   agentMode: AgentMode;
@@ -31,9 +48,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   loadFromServer: async () => {
     if (get().loaded) return;
-    // 延迟导入避免循环依赖 (auth-store → settings-store → auth-store)
-    const { useAuthStore } = await import("@/stores/auth-store");
-    const token = useAuthStore.getState().token;
+    const token = getToken();
     try {
       const res = await fetch("/api/v2/preferences", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -54,9 +69,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   // Internal: push preferences to server
   syncToServer: async (prefs: Record<string, unknown>) => {
-    // 延迟导入避免循环依赖
-    const { useAuthStore } = await import("@/stores/auth-store");
-    const token = useAuthStore.getState().token;
+    const token = getToken();
     if (!token) return;
     try {
       await fetch("/api/v2/preferences", {

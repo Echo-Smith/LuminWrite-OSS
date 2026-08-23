@@ -17,13 +17,10 @@ RUN npm config set registry https://registry.npmmirror.com && \
 COPY --link . .
 RUN npm run build
 
-# ── Stage 2: Runtime (Nginx Unprivileged) ─────────────
-# nginxinc/nginx-unprivileged runs as non-root (UID 101) for better security.
-# Listens on port 8080 by default (not 80).
-FROM nginxinc/nginx-unprivileged:alpine
-
-# Switch to root to remove default files and copy new ones
-USER root
+# ── Stage 2: Runtime (Nginx) ──────────────────────────
+# 使用标准 nginx:alpine 镜像
+# PID 放在 /var/run/（root 可写），监听 8080 非特权端口
+FROM nginx:alpine
 
 # Remove default nginx static assets and config
 RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
@@ -31,14 +28,17 @@ RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 # Copy built assets from builder (root-path deployment)
 COPY --link --from=builder /build/dist /usr/share/nginx/html
 
-# Copy custom nginx config (must listen on 8080 for unprivileged image)
+# Copy custom nginx main config (replaces default, sets PID to /var/run/)
+COPY --link nginx-main.conf /etc/nginx/nginx.conf
+
+# Copy custom server config (must listen on 8080)
 COPY --link nginx.conf /etc/nginx/conf.d/default.conf
 
-# Ensure non-root user owns the files
-RUN chown -R 101:101 /usr/share/nginx/html /etc/nginx/conf.d/default.conf
+# Ensure nginx owns the static files
+RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx
 
-# Switch back to non-root user (UID 101)
-USER 101
+# Validate nginx config syntax at build time (fail fast)
+RUN nginx -t
 
 # OCI labels
 LABEL org.opencontainers.image.title="luminbuddy-v2-frontend" \

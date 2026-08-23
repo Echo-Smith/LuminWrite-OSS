@@ -102,6 +102,10 @@ type Server struct {
 	// Billing
 	billingRepo *database.BillingRepo
 	pointCalc    *services.PointCalculator
+
+	// Email verification (commercial feature)
+	emailSvc     *EmailService
+	redisClient  *RedisClient
 }
 
 // New creates a new Server.
@@ -657,16 +661,27 @@ func New(cfg *config.Config) (*Server, error) {
 	// Set instance ID
 	s.instanceID = instanceID
 
-	// ── Redis session adapter (optional, for multi-instance) ──
+	// ── Redis + Email Service (commercial feature) ──
 	if cfg.Redis.Enabled {
-		// Redis adapter will be initialized when go-redis is added to go.mod.
-		// For now, we log that it's configured but not yet connected.
-		slog.Info("Redis session adapter configured (multi-instance mode)", "instance_id", instanceID)
-		// When Redis client is available:
-		// s.sessionAdapter = NewRedisSessionAdapter(redisClient, instanceID, 30*time.Second)
-		// go s.sessionAdapter.StartHeartbeat(context.Background(), &s.sessions)
+		s.redisClient = NewRedisClient(cfg.Redis.URL)
+		if s.redisClient != nil {
+			slog.Info("Redis client initialized for verification codes", "instance_id", instanceID)
+			// Also wire session adapter
+			s.sessionAdapter = NewRedisSessionAdapter(s.redisClient, instanceID, 30*time.Second)
+			go s.sessionAdapter.StartHeartbeat(context.Background(), &s.sessions)
+		}
 	} else {
 		slog.Info("Single-instance mode (Redis not enabled)", "instance_id", instanceID)
+	}
+
+	// ── Email Service ──
+	s.emailSvc = NewEmailService(cfg.SMTP)
+	if s.emailSvc != nil {
+		slog.Info("email service initialized",
+			"smtp_host", cfg.SMTP.Host,
+			"smtp_port", cfg.SMTP.Port,
+			"from", cfg.SMTP.Username,
+		)
 	}
 
 	return s, nil
@@ -897,10 +912,18 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/article", s.handleUpdateSessionArticle)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions", s.handleListArticleVersions)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions/{versionId}", s.handleGetArticleVersion)
-		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
-		r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
-		r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
-		r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions)
+r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
+r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
+r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
+r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions)
+
+		// Email verification (commercial feature)
+		r.Post("/auth/send-code", s.handleSendVerificationCode)
+		r.Post("/auth/forgot-password", s.handleForgotPassword)
+		r.Post("/auth/reset-password", s.handleResetPassword)
+		r.With(s.jwtAuthMiddleware).Post("/auth/bind-email", s.handleBindEmail)
+		r.With(s.jwtAuthMiddleware).Post("/auth/unbind-email", s.handleUnbindEmail)
+		r.With(s.jwtAuthMiddleware).Get("/auth/my-email", s.handleGetEmail)
 
 		// Admin (protected by admin token + fine-grained RBAC permissions)
 		r.Route("/admin", func(r chi.Router) {

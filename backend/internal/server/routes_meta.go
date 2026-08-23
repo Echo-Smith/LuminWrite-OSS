@@ -183,7 +183,12 @@ func (s *Server) registerRoutesFromChi(r chi.Router) {
 			strings.Contains(route, "/memories/global") ||
 			strings.Contains(route, "/auth/verify") ||
 			strings.Contains(route, "/auth/passkey/list") ||
-			strings.Contains(route, "/auth/change-password") {
+			strings.Contains(route, "/auth/change-password") ||
+			strings.Contains(route, "/auth/bind-email") ||
+			strings.Contains(route, "/auth/unbind-email") ||
+			strings.Contains(route, "/auth/my-email") ||
+			strings.Contains(route, "/auth/update-profile") ||
+			strings.Contains(route, "/auth/deactivate") {
 			auth = "jwt"
 		}
 

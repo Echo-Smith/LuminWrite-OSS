@@ -33,6 +33,7 @@ type Config struct {
 	AnySearch  AnySearchConfig
 	WebAuthn  WebAuthnConfig
 	Jiaozhen  JiaozhenConfig
+	SMTP      SMTPConfig
 	Log       LogConfig
 	HotTopics HotTopicsConfig
 	Agent     AgentConfig
@@ -76,6 +77,16 @@ type EvaluationConfig struct {
 type RedisConfig struct {
 	URL     string
 	Enabled bool
+}
+
+// SMTPConfig holds email server configuration for verification code sending.
+type SMTPConfig struct {
+	Host       string // SMTP server host (e.g. smtp.qiye.aliyun.com)
+	Port       int    // SMTP server port (e.g. 465 for SSL)
+	Username   string // Sender email address
+	Password   string // Email password or authorization code
+	FromName   string // Display name for outgoing emails
+	Enabled    bool   // Whether email verification is enabled
 }
 
 type JWTConfig struct {
@@ -346,6 +357,14 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			ConfirmTimeout:      getEnvDuration("AGENT_CONFIRM_TIMEOUT", 5*time.Minute),
 			CircuitBreakerFails: getEnvInt("AGENT_CIRCUIT_BREAKER_FAILS", 3),
 			PausedSessionTTL:    getEnvDuration("AGENT_PAUSED_SESSION_TTL", 2*time.Minute),
+		},
+		SMTP: SMTPConfig{
+			Host:     getEnv("SMTP_HOST", "smtp.qiye.aliyun.com"),
+			Port:     getEnvInt("SMTP_PORT", 465),
+			Username: getEnv("SMTP_USERNAME", ""),
+			Password: getEnv("SMTP_PASSWORD", ""),
+			FromName: getEnv("SMTP_FROM_NAME", "笔润智谈"),
+			Enabled:  getEnvBool("SMTP_ENABLED", false),
 		},
 		MCPServers: loadMCPServers(),
 		MCPServer: InProcessMCPServerConfig{

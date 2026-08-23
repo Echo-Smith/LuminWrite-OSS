@@ -35,6 +35,21 @@ services:
           memory: 1G
     restart: unless-stopped
 
+  # ── Redis (for verification codes + session sharing) ──
+  # 仅内部网络访问（backend → redis:6379），不暴露端口到宿主机避免冲突
+  redis:
+    image: redis:7-alpine
+    platform: linux/amd64
+    container_name: luminbuddy-v2-redis
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped
+
   # ── Docreader (document parsing sidecar, TCP port 50051) ──
   # Lightweight document parsing. Called by backend via TCP protocol.
   # Replaces the 5.53GB wechatopenai/weknora-docreader with a ~150MB slim image.
@@ -72,6 +87,9 @@ services:
       # Docreader TCP address (slim sidecar for document parsing)
       DOCREADER_ADDR: docreader:50051
       DOCREADER_TRANSPORT: tcp
+      # Redis (for verification codes + session sharing)
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     networks:
@@ -81,6 +99,8 @@ services:
       postgres:
         condition: service_healthy
       docreader:
+        condition: service_started
+      redis:
         condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	redislib "github.com/redis/go-redis/v9"
 )
 
 // ─── Horizontal Scaling: Session State Externalization ───
@@ -47,19 +49,110 @@ type RedisSessionAdapter struct {
 	ttl        time.Duration
 }
 
-// RedisClient is a minimal Redis client interface.
-// Uses github.com/redis/go-redis/v9 when Redis is enabled.
+// RedisClient wraps a real go-redis client for session tracking,
+// verification code storage, and rate limiting.
 type RedisClient struct {
-	// In production, this wraps *redis.Client.
-	// For now, we use a simplified interface that can be implemented
-	// with any Redis-compatible client.
 	client RedisCmdable
+}
+
+// NewRedisClient creates a real Redis connection from a URL string.
+// Returns nil and logs a warning if connection fails.
+func NewRedisClient(redisURL string) *RedisClient {
+	opts, err := redislib.ParseURL(redisURL)
+	if err != nil {
+		slog.Error("failed to parse Redis URL", "error", err, "url", redisURL)
+		return nil
+	}
+
+	client := redislib.NewClient(opts)
+
+	// Ping to verify connection
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		slog.Error("failed to connect to Redis", "error", err, "url", redisURL)
+		return nil
+	}
+
+	slog.Info("Redis connected successfully", "addr", opts.Addr)
+	return &RedisClient{client: &redisCmdableAdapter{client: client}}
+}
+
+// Close closes the underlying Redis connection.
+func (rc *RedisClient) Close() error {
+	if rc == nil {
+		return nil
+	}
+	// Type assert to *redislib.Client to access Close()
+	if closer, ok := rc.client.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+// ─── Verification Code Storage ────────────────────────────
+
+// CodeRateLimitKey returns the Redis key for rate limiting verification code sends.
+const codeRateLimitPrefix = "luminbuddy:code:ratelimit:"
+const codeStoragePrefix = "luminbuddy:code:"
+
+// StoreVerificationCode stores a verification code in Redis, bound to the email address.
+// The code expires after 5 minutes. Returns an error if the email has been rate-limited.
+func (rc *RedisClient) StoreVerificationCode(ctx context.Context, email, code string) error {
+	if rc == nil {
+		return errors.New("redis not available")
+	}
+
+	// Rate limit: 60 seconds between code sends for the same email
+	rateLimitKey := codeRateLimitPrefix + email
+	set, err := rc.client.SetNX(ctx, rateLimitKey, "1", 60*time.Second)
+	if err != nil {
+		return fmt.Errorf("rate limit check failed: %w", err)
+	}
+	if !set {
+		return errors.New("rate_limited")
+	}
+
+	// Store the code with 5-minute TTL
+	codeKey := codeStoragePrefix + email
+	return rc.client.Set(ctx, codeKey, code, 5*time.Minute)
+}
+
+// VerifyCode checks if the provided code matches the stored code for the email.
+// If verified, the code is deleted (single-use). Returns false if code doesn't match or expired.
+func (rc *RedisClient) VerifyCode(ctx context.Context, email, code string) (bool, error) {
+	if rc == nil {
+		return false, errors.New("redis not available")
+	}
+
+	codeKey := codeStoragePrefix + email
+	storedCode, err := rc.client.Get(ctx, codeKey)
+	if err != nil {
+		return false, nil // code not found or expired
+	}
+
+	if storedCode != code {
+		return false, nil
+	}
+
+	// Delete the code after successful verification (single-use)
+	_, _ = rc.client.Del(ctx, codeKey)
+	return true, nil
+}
+
+// DeleteVerificationCode removes a verification code from Redis (e.g., after registration).
+func (rc *RedisClient) DeleteVerificationCode(ctx context.Context, email string) {
+	if rc == nil {
+		return
+	}
+	_, _ = rc.client.Del(ctx, codeStoragePrefix+email, codeRateLimitPrefix+email)
 }
 
 // RedisCmdable defines the minimal Redis command set we need.
 type RedisCmdable interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
+	SetNX(ctx context.Context, key string, value string, ttl time.Duration) (bool, error)
 	Del(ctx context.Context, keys ...string) (int64, error)
 	Keys(ctx context.Context, pattern string) ([]string, error)
 	HSet(ctx context.Context, key, field, value string) error
@@ -67,6 +160,61 @@ type RedisCmdable interface {
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
 	HDel(ctx context.Context, key string, fields ...string) (int64, error)
 	Expire(ctx context.Context, key string, ttl time.Duration) error
+}
+
+// redisCmdableAdapter wraps *redis.Client to conform to RedisCmdable.
+// go-redis methods return *redis.StringCmd, *redis.BoolCmd, etc. —
+// this adapter converts them to plain Go types.
+type redisCmdableAdapter struct {
+	client *redislib.Client
+}
+
+func (a *redisCmdableAdapter) Get(ctx context.Context, key string) (string, error) {
+	val, err := a.client.Get(ctx, key).Result()
+	if err == redislib.Nil {
+		return "", nil
+	}
+	return val, err
+}
+
+func (a *redisCmdableAdapter) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
+	return a.client.Set(ctx, key, value, ttl).Err()
+}
+
+func (a *redisCmdableAdapter) SetNX(ctx context.Context, key string, value string, ttl time.Duration) (bool, error) {
+	return a.client.SetNX(ctx, key, value, ttl).Result()
+}
+
+func (a *redisCmdableAdapter) Del(ctx context.Context, keys ...string) (int64, error) {
+	return a.client.Del(ctx, keys...).Result()
+}
+
+func (a *redisCmdableAdapter) Keys(ctx context.Context, pattern string) ([]string, error) {
+	return a.client.Keys(ctx, pattern).Result()
+}
+
+func (a *redisCmdableAdapter) HSet(ctx context.Context, key, field, value string) error {
+	return a.client.HSet(ctx, key, field, value).Err()
+}
+
+func (a *redisCmdableAdapter) HGet(ctx context.Context, key, field string) (string, error) {
+	val, err := a.client.HGet(ctx, key, field).Result()
+	if err == redislib.Nil {
+		return "", nil
+	}
+	return val, err
+}
+
+func (a *redisCmdableAdapter) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return a.client.HGetAll(ctx, key).Result()
+}
+
+func (a *redisCmdableAdapter) HDel(ctx context.Context, key string, fields ...string) (int64, error) {
+	return a.client.HDel(ctx, key, fields...).Result()
+}
+
+func (a *redisCmdableAdapter) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	return a.client.Expire(ctx, key, ttl).Err()
 }
 
 // NewRedisSessionAdapter creates a new adapter. If redis is nil, all methods are no-ops.
