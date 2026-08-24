@@ -1162,7 +1162,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		AddStyleConstraints(s.profile, taskMode, hasOutlineTitle, execCtx.WordLimit).
 		AddUserMaterials(execCtx.UserMaterials).
 		AddMemory(execCtx).
-		AddOutputFormat(s.profile, taskMode, outlineTitle, articleSeparator)
+		AddOutputFormat(s.profile, taskMode, outlineTitle, ArticleSeparator)
 
 	// Stream the article
 	messages := []tools.LLMMessage{
@@ -1258,12 +1258,12 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			buf := titleBuf.String()
 
 			// Try to find the separator
-			sepIdx := strings.Index(buf, articleSeparator)
+			sepIdx := strings.Index(buf, ArticleSeparator)
 			if sepIdx >= 0 {
 				// Separator found — parse JSON title from everything before it
 				jsonPart := strings.TrimSpace(buf[:sepIdx])
 				var title string
-				if t, ok := parseTitleJSON(jsonPart); ok {
+				if t, ok := ParseTitleJSON(jsonPart); ok {
 					title = t
 				} else {
 					// JSON parse failed — try regex fallback on the prefix
@@ -1275,9 +1275,9 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 				}
 
 				// Content after separator becomes the start of the streamed body
-				after := strings.TrimLeft(buf[sepIdx+len(articleSeparator):], "\n\r ")
+				after := strings.TrimLeft(buf[sepIdx+len(ArticleSeparator):], "\n\r ")
 				// Strip duplicate ## title heading if LLM repeated it
-				after = stripLeadingTitleHeading(after, title)
+				after = StripLeadingTitleHeading(after, title)
 				if after != "" {
 					streamBody(after)
 				}
@@ -1287,7 +1287,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			}
 
 			// No separator found yet — check character limit for fallback
-			if titleCharCount > titleCollectCharLimit {
+			if titleCharCount > TitleCollectCharLimit {
 				// LLM didn't follow the format — switch to fallback mode
 				// Try to extract title from what we've collected
 				title := ExtractTitleFromMarkdown(buf)
@@ -1296,8 +1296,8 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 					emitter.ArticleTitle(title)
 				}
 				// Output collected content as body (filter out JSON lines)
-				bodyPart := filterJSONLines(buf)
-				bodyPart = stripLeadingTitleHeading(bodyPart, title)
+				bodyPart := FilterJSONLines(buf)
+				bodyPart = StripLeadingTitleHeading(bodyPart, title)
 				if bodyPart != "" {
 					streamBody(bodyPart)
 				}
@@ -1366,7 +1366,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		}
 		// If still not resolved, the body is the filtered fullText
 		if articleBody == "" {
-			articleBody = filterJSONLines(fullText)
+			articleBody = FilterJSONLines(fullText)
 		}
 	}
 
@@ -2095,9 +2095,9 @@ func (s *AutoFixStep) fixBody(ctx context.Context, execCtx *engine.ExecutionCont
 	}
 
 	// Strip any leading title heading from the fixed article (title is stored separately)
-	fixedArticle := stripLeadingTitleHeading(resp, execCtx.ArticleTitle)
+	fixedArticle := StripLeadingTitleHeading(resp, execCtx.ArticleTitle)
 	// Also filter out any JSON prefix lines that might have been included
-	fixedArticle = filterJSONLines(fixedArticle)
+	fixedArticle = FilterJSONLines(fixedArticle)
 	fixedArticle = strings.TrimSpace(fixedArticle)
 
 	return fixedArticle, nil

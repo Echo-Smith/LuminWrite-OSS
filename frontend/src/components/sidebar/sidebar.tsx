@@ -10,6 +10,7 @@ import {
   Settings, Sun, Moon, LogOut, UserPlus,
   PanelLeftClose, PanelLeftOpen,
   ChevronRight, User, AlertTriangle, Newspaper,
+  CreditCard,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ import {
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { useTheme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
@@ -63,6 +65,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const openAuth = useAuthModal((s) => s.openAuth);
+
+  // 实验功能偏好
+  const enableEditorial = useSettingsStore((s) => s.enableEditorial);
 
   // 主题
   const { theme, toggle: toggleTheme } = useTheme();
@@ -111,13 +116,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Compass className="h-4 w-4" />
         </button>
 
-        <button
-          onClick={() => navigate("/editorial")}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-          title="编辑部"
-        >
-          <Newspaper className="h-4 w-4" />
-        </button>
+        {enableEditorial && (
+          <button
+            onClick={() => navigate("/editorial")}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
+            title="编辑部"
+          >
+            <Newspaper className="h-4 w-4" />
+          </button>
+        )}
 
         {/* 占位 */}
         <div className="flex-1" />
@@ -197,6 +204,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Compass className="h-4 w-4" />
           选题与素材
         </Button>
+        {enableEditorial && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-muted-foreground"
+            onClick={() => navigate("/editorial")}
+          >
+            <Newspaper className="h-4 w-4" />
+            编辑部
+          </Button>
+        )}
       </div>
 
       <Separator />
@@ -400,6 +418,13 @@ function UserMenuContent({
         icon={User}
         label="个人中心"
         onClick={() => onNavigate("/profile")}
+      />
+
+      {/* 套餐定价 */}
+      <MenuRow
+        icon={CreditCard}
+        label="套餐定价"
+        onClick={() => onNavigate("/pricing")}
       />
 
       {/* 管理后台（仅管理员） */}

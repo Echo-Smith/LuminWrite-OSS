@@ -8,7 +8,7 @@
  * 集成全局键盘快捷键
  */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { PanelRightOpen, Menu, X, RefreshCw, Play, XCircle, FileText, Network } from "lucide-react";
+import { PanelRightOpen, Menu, RefreshCw, Play, XCircle, FileText, Network } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -52,6 +52,10 @@ export function WritingWorkspace() {
   const agents = useWorkflowStore((s) => s.agents);
   const workflowUserInput = useWorkflowStore((s) => s.userInput);
 
+  // 编辑部模式仅在有活跃 workflow（plan 存在或状态非 idle）时接管中央区域，
+  // 否则回退到普通 Thread，这样切换到其他写作会话时不会被编辑部页面覆盖。
+  const isEditorialActive = isEditorial && (workflowPlan != null || workflowStatus !== "idle");
+
   // 从数据库加载历史会话列表
   useEffect(() => {
     loadSessions();
@@ -68,15 +72,15 @@ export function WritingWorkspace() {
 
   // 编辑部模式：有 plan 或正在 planning 时自动展开右侧面板
   useEffect(() => {
-    if (isEditorial && (workflowPlan || workflowStatus === "planning" || workflowStatus === "running")) {
+    if (isEditorialActive && (workflowPlan || workflowStatus === "planning" || workflowStatus === "running")) {
       setShowDetail(true);
     }
-  }, [isEditorial, workflowPlan, workflowStatus]);
+  }, [isEditorialActive, workflowPlan, workflowStatus]);
 
-  // 非 editorial 模式时原有逻辑
+  // 非活跃 editorial 模式时原有逻辑
   useEffect(() => {
-    if (!isEditorial && isWriting) setShowDetail(true);
-  }, [isWriting, isEditorial]);
+    if (!isEditorialActive && isWriting) setShowDetail(true);
+  }, [isWriting, isEditorialActive]);
 
   // 离开 editorial 模式时重置 workflow 状态
   useEffect(() => {
@@ -84,6 +88,19 @@ export function WritingWorkspace() {
       workflowReset();
     }
   }, [isEditorial, workflowReset]);
+
+  // 切换会话时重置已完成的 workflow 状态（避免之前完成的编辑部工作流覆盖新会话的 Thread）
+  // 仅当 workflow 不是正在规划/运行时才重置，避免中断活跃工作流
+  useEffect(() => {
+    if (workflowStatus === "completed" || workflowStatus === "failed" || workflowStatus === "idle") {
+      // 如果当前会话有消息（普通写作会话），重置 workflow 以显示 Thread
+      const currentSession = sessions.find((s) => s.id === activeSessionId);
+      if (currentSession && currentSession.messages.length > 0) {
+        workflowReset();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId]);
 
   // WS 断线通知 — 降级处理：只在连续重连失败 3 次后才弹 toast，
   // 避免瞬断（Nginx proxy_read_timeout 等）造成的频繁打扰。
@@ -163,7 +180,7 @@ export function WritingWorkspace() {
             </button>
 
             <h2 className="text-sm font-medium truncate">
-              {isEditorial
+              {isEditorialActive
                 ? (workflowUserInput
                   ? workflowUserInput.length > 30
                     ? workflowUserInput.slice(0, 30) + "…"
@@ -175,13 +192,13 @@ export function WritingWorkspace() {
                    workflowPlan ? "编辑部模式" : "写作工作台")
                 : (session?.title ?? "写作工作台")}
             </h2>
-            {!isEditorial && session && (
+            {!isEditorialActive && session && (
               <span className="hidden sm:inline text-xs text-muted-foreground font-mono-sm">
                 · {session.style} · {session.mode === "auto" ? "自动" : session.mode}
                 · {new Date(session.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
               </span>
             )}
-            {isEditorial && workflowPlan && (
+            {isEditorialActive && workflowPlan && (
               <span className="hidden sm:inline text-xs text-muted-foreground font-mono-sm">
                 · {agents.length} Agents · {workflowPlan.workflow.nodes.length} nodes
               </span>
@@ -211,13 +228,13 @@ export function WritingWorkspace() {
                 <RefreshCw className="h-3 w-3 sm:hidden" />
               </button>
             )}
-            {connected && isEditorial && (workflowStatus === "planning" || workflowStatus === "created" || workflowStatus === "running") && (
+            {connected && isEditorialActive && (workflowStatus === "planning" || workflowStatus === "created" || workflowStatus === "running") && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground anim-fade-in">
                 <PulseIndicator status="running" size="sm" />
                 <span className="font-mono-sm hidden sm:inline">{workflowStatus === "planning" ? "planning" : workflowStatus === "created" ? "待确认" : "live"}</span>
               </span>
             )}
-            {connected && !isEditorial && session && isWriting && (
+            {connected && !isEditorialActive && session && isWriting && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground anim-fade-in">
                 <PulseIndicator status="running" size="sm" />
                 <span className="font-mono-sm hidden sm:inline">live</span>
@@ -239,8 +256,10 @@ export function WritingWorkspace() {
         </header>
 
         {/* 消息流 / 编辑部工作流区域 */}
+        {/* 编辑部模式仅在有活跃 workflow（plan 存在或状态非 idle）时接管中央区域， */}
+        {/* 否则回退到普通 Thread，这样切换到其他写作会话时不会被编辑部页面覆盖。 */}
         <div className="flex-1 overflow-hidden">
-          {isEditorial ? (
+          {isEditorialActive ? (
             <EditorialContent
               plan={workflowPlan}
               runStatus={workflowStatus}
@@ -251,24 +270,16 @@ export function WritingWorkspace() {
           )}
         </div>
 
-        {/* 输入区 */}
-        <WritingComposer ref={composerRef} />
+        {/* 输入区 — 浮在消息流上方，顶部渐变遮罩实现过渡 */}
+        <div className="shrink-0">
+          <WritingComposer ref={composerRef} />
+        </div>
       </div>
 
-      {/* 右侧详情面板 — 桌面端固定，移动端全屏覆盖 */}
+      {/* 右侧详情面板 — 桌面/平板端侧栏，手机端全屏覆盖 */}
       {showDetail && (
-        <div className={cn(
-          "z-40 md:relative",
-          "max-md:fixed max-md:inset-0 max-md:bg-background"
-        )}>
-          {/* 移动端关闭按钮 */}
-          <button
-            onClick={() => setShowDetail(false)}
-            className="md:hidden absolute top-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent transition-ui"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          {isEditorial ? (
+        <div className="z-40 max-sm:fixed max-sm:inset-0 sm:relative">
+          {isEditorialActive ? (
             <WorkflowDetailPanel onClose={() => setShowDetail(false)} />
           ) : (
             <DetailPanel onClose={() => setShowDetail(false)} />
@@ -444,7 +455,7 @@ function WorkflowDetailPanel({ onClose }: { onClose: () => void }) {
   const totalNodes = plan?.workflow.nodes.length ?? 0;
 
   return (
-    <div className="flex h-full w-80 flex-col border-l bg-surface anim-slide-left">
+    <div className="flex h-full w-full sm:w-80 flex-col sm:border-l bg-surface anim-slide-left">
       {/* 头部 */}
       <div className="flex h-12 shrink-0 items-center justify-between px-4">
         <h3 className="text-sm font-medium">编辑部工作流</h3>

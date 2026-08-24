@@ -134,6 +134,29 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 		return nil
 	}
 
+	// ── Archive old article version before overwriting ──
+	// If the trace already has an article (e.g. harness multi-round writing,
+	// or pipeline re-generation), save it to article_versions for rollback.
+	var oldArticle *string
+	var oldTitle *string
+	var traceUserID *string
+	_ = r.db.QueryRowContext(ctx, `
+		SELECT article, article_title, user_id::text
+		FROM agent_traces WHERE trace_id = $1
+	`, execCtx.TraceID).Scan(&oldArticle, &oldTitle, &traceUserID)
+
+	if oldArticle != nil && *oldArticle != "" && *oldArticle != execCtx.Article {
+		var userIDArg interface{}
+		if traceUserID != nil && isLikelyUUID(*traceUserID) {
+			userIDArg = *traceUserID
+		}
+		note := "AI 生成前自动保存"
+		_, _ = r.db.ExecContext(ctx, `
+			INSERT INTO article_versions (trace_id, user_id, article, article_title, version_note)
+			VALUES ($1, $2, $3, $4, $5)
+		`, execCtx.TraceID, userIDArg, *oldArticle, oldTitle, note)
+	}
+
 	var reviewJSON []byte
 	if execCtx.ReviewResult != nil {
 		reviewJSON, _ = json.Marshal(execCtx.ReviewResult)

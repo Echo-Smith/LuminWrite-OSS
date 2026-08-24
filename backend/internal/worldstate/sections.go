@@ -268,7 +268,7 @@ func (s *TaskInstructionsSection) RenderDiff(previous interface{}) *ContextFragm
 			sb.WriteString("\n   - search_knowledge：写作风格规范、历史范文、栏目调性、内部观点")
 			sb.WriteString("\n   - 两者可同时调用（并行），结果统一通过 read_source 读取详情")
 			sb.WriteString("\n2. 调用 generate_outline 生成提纲，等待用户确认")
-			sb.WriteString("\n3. 用户确认提纲后，调用 write_article 开始写作，然后在下一轮回复中直接输出文章（Markdown格式，##开头作为标题）")
+			sb.WriteString("\n3. 用户确认提纲后，调用 write_article 开始写作，然后在下一轮回复中按以下格式输出文章：\n   先输出标题 JSON（一行），例如：{\"title\":\"文章标题\"}\n   然后换行输出分隔符 ---ARTICLE---\n   再换行输出正文 Markdown（不要重复标题，直接从第一段开始）")
 			sb.WriteString("\n4. 文章写完后调用 review_article 评审质量")
 			sb.WriteString("\n5. 如果评审发现问题，调用 revise_section 修正")
 		} else {
@@ -278,7 +278,7 @@ func (s *TaskInstructionsSection) RenderDiff(previous interface{}) *ContextFragm
 			sb.WriteString("\n   - search_knowledge：写作风格规范、历史范文、栏目调性、内部观点")
 			sb.WriteString("\n   - 两者可同时调用（并行），结果统一通过 read_source 读取详情")
 			sb.WriteString("\n2. 用 read_source 读取重要素材的详细内容")
-			sb.WriteString("\n3. 调用 write_article 开始写作，然后在下一轮回复中直接输出文章（Markdown格式，##开头作为标题）")
+			sb.WriteString("\n3. 调用 write_article 开始写作，然后在下一轮回复中按以下格式输出文章：\n   先输出标题 JSON（一行），例如：{\"title\":\"文章标题\"}\n   然后换行输出分隔符 ---ARTICLE---\n   再换行输出正文 Markdown（不要重复标题，直接从第一段开始）")
 			sb.WriteString("\n4. 文章写完后调用 review_article 评审质量")
 			sb.WriteString("\n5. 如果评审发现问题，调用 revise_section 修正")
 		}

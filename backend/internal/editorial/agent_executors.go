@@ -21,19 +21,19 @@ import (
 
 // ResearchAgentExecutor 研究 Agent 执行器
 type ResearchAgentExecutor struct {
-	llm          *tools.LLMClient
-	search       *tools.SearchClient
-	embedding    *tools.EmbeddingClient
-	kbSearcher   tools.KnowledgeSearcher
-	store        *Store
-	toolRegistry *EditorialToolRegistry
+	llmResolver  LLMResolver
+	search        *tools.SearchClient
+	embedding     *tools.EmbeddingClient
+	kbSearcher    tools.KnowledgeSearcher
+	store          *Store
+	toolRegistry  *EditorialToolRegistry
 	*emitterHolder
 }
 
 // NewResearchAgentExecutor 创建研究 Agent 执行器
-func NewResearchAgentExecutor(llm *tools.LLMClient, search *tools.SearchClient, embedding *tools.EmbeddingClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ResearchAgentExecutor {
+func NewResearchAgentExecutor(llmResolver LLMResolver, search *tools.SearchClient, embedding *tools.EmbeddingClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ResearchAgentExecutor {
 	return &ResearchAgentExecutor{
-		llm: llm, search: search, embedding: embedding, store: store, kbSearcher: kbSearcher,
+		llmResolver: llmResolver, search: search, embedding: embedding, store: store, kbSearcher: kbSearcher,
 		toolRegistry:  toolRegistry,
 		emitterHolder: newEmitterHolder(),
 	}
@@ -58,7 +58,8 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 	agentCfg := getAgentConfig(ac, "researcher")
 
 	// ── 启动 RoleAgentRunner ──
-	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, nil, e.currentOrNoop(), e.toolRegistry)
+	llmClient := e.llmResolver.GetClient(ctx, "")
+	runner := NewRoleAgentRunner(llmClient, e.search, e.kbSearcher, nil, e.currentOrNoop(), e.toolRegistry)
 	result, err := runner.Run(ctx, RoleRunConfig{
 		AgentConfig:      agentCfg,
 		Task:             task,
@@ -239,18 +240,18 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 
 // WritingAgentExecutor 写作 Agent 执行器
 type WritingAgentExecutor struct {
-	llm           *tools.LLMClient
+	llmResolver   LLMResolver
 	profileLoader *profile.Loader
 	search        *tools.SearchClient
 	kbSearcher    tools.KnowledgeSearcher
-	store         *Store
+	store          *Store
 	toolRegistry  *EditorialToolRegistry
 	*emitterHolder
 }
 
 // NewWritingAgentExecutor 创建写作 Agent 执行器（动态加载 Profile）
-func NewWritingAgentExecutor(llm *tools.LLMClient, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
-	return &WritingAgentExecutor{llm: llm, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
+func NewWritingAgentExecutor(llmResolver LLMResolver, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
+	return &WritingAgentExecutor{llmResolver: llmResolver, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *WritingAgentExecutor) Role() AgentRole { return RoleWriting }
@@ -331,7 +332,8 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	}
 
 	// ── 启动 RoleAgentRunner ──
-	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, styleProfile, e.currentOrNoop(), e.toolRegistry)
+	llmClient := e.llmResolver.GetClient(ctx, "")
+	runner := NewRoleAgentRunner(llmClient, e.search, e.kbSearcher, styleProfile, e.currentOrNoop(), e.toolRegistry)
 	result, err := runner.Run(ctx, RoleRunConfig{
 		AgentConfig:          agentCfg,
 		Task:                 task,
@@ -415,18 +417,18 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 
 // ReviewAgentExecutor 审校 Agent 执行器
 type ReviewAgentExecutor struct {
-	llm           *tools.LLMClient
+	llmResolver   LLMResolver
 	profileLoader *profile.Loader
 	search        *tools.SearchClient
 	kbSearcher    tools.KnowledgeSearcher
-	store         *Store
+	store          *Store
 	toolRegistry  *EditorialToolRegistry
 	*emitterHolder
 }
 
 // NewReviewAgentExecutor 创建审校 Agent 执行器（动态加载 Profile）
-func NewReviewAgentExecutor(llm *tools.LLMClient, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
-	return &ReviewAgentExecutor{llm: llm, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
+func NewReviewAgentExecutor(llmResolver LLMResolver, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
+	return &ReviewAgentExecutor{llmResolver: llmResolver, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *ReviewAgentExecutor) Role() AgentRole { return RoleReview }
@@ -493,7 +495,8 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 	}
 
 	// ── 启动 RoleAgentRunner ──
-	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, styleProfile, e.currentOrNoop(), e.toolRegistry)
+	llmClient := e.llmResolver.GetClient(ctx, "")
+	runner := NewRoleAgentRunner(llmClient, e.search, e.kbSearcher, styleProfile, e.currentOrNoop(), e.toolRegistry)
 	result, err := runner.Run(ctx, RoleRunConfig{
 		AgentConfig:          agentCfg,
 		Task:                 task,

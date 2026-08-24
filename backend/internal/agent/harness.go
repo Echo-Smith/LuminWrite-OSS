@@ -157,6 +157,21 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 
 	disconnected := false
 
+	// 标题收集缓冲区：用于 JSON 标题 + 分隔符模式（writing 意图）
+	var titleBuf strings.Builder
+	titleCharCount := 0
+
+	// streamBody 是一个辅助函数：同时写入 bodyBuf 和转发给前端
+	streamBody := func(text string) {
+		bodyBuf.WriteString(text)
+		if h.emitter != nil {
+			h.emitter.StreamDelta(text)
+		}
+	}
+
+	// useJSONTitle: writing 意图使用 JSON 标题 + 分隔符模式
+	useJSONTitle := intent == IntentWriting
+
 	onDelta := func(delta string) {
 		// 检查客户端是否已断开
 		if !disconnected && execCtx.IsDisconnected() {
@@ -172,12 +187,74 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			return // 已断开，丢弃后续 delta
 		}
 
-		bodyBuf.WriteString(delta)
-		if h.emitter != nil {
-			h.emitter.StreamDelta(delta)
+		// JSON 标题模式：先收集 JSON 标题前缀，找到分隔符后再输出正文
+		if !titleResolved && useJSONTitle {
+			titleBuf.WriteString(delta)
+			titleCharCount += len([]rune(delta))
+			buf := titleBuf.String()
+
+			// 尝试找到分隔符
+			sepIdx := strings.Index(buf, steps.ArticleSeparator)
+			if sepIdx >= 0 {
+				// 找到分隔符 — 从分隔符之前的内容中解析 JSON 标题
+				jsonPart := strings.TrimSpace(buf[:sepIdx])
+				var title string
+				if t, ok := steps.ParseTitleJSON(jsonPart); ok {
+					title = t
+				} else {
+					// JSON 解析失败 — 尝试从 Markdown 中提取
+					title = steps.ExtractTitleFromMarkdown(jsonPart)
+				}
+				if title != "" {
+					articleTitle = title
+					titleResolved = true
+					execCtx.ArticleTitle = title
+					if h.emitter != nil {
+						h.emitter.ArticleTitle(title)
+					}
+				}
+
+				// 分隔符之后的内容作为正文开头
+				after := strings.TrimLeft(buf[sepIdx+len(steps.ArticleSeparator):], "\n\r ")
+				// 去除 LLM 可能重复输出的 ## 标题行
+				after = steps.StripLeadingTitleHeading(after, title)
+				if after != "" {
+					streamBody(after)
+				}
+				titleBuf.Reset()
+				return
+			}
+
+			// 还没找到分隔符 — 检查字符上限，超过则切换为 fallback
+			if titleCharCount > steps.TitleCollectCharLimit {
+				// LLM 没有按格式输出 — 尝试从已收集内容中提取标题
+				title := steps.ExtractTitleFromMarkdown(buf)
+				if title != "" {
+					articleTitle = title
+					titleResolved = true
+					execCtx.ArticleTitle = title
+					if h.emitter != nil {
+						h.emitter.ArticleTitle(title)
+					}
+				}
+				// 过滤掉 JSON 行后输出为正文
+				bodyPart := steps.FilterJSONLines(buf)
+				bodyPart = steps.StripLeadingTitleHeading(bodyPart, title)
+				if bodyPart != "" {
+					streamBody(bodyPart)
+				}
+				titleBuf.Reset()
+				return
+			}
+			// 仍在收集标题前缀，不转发给前端
+			return
 		}
-		// 在流式输出中提取标题
-		if !titleResolved && (intent == IntentWriting || intent == IntentPolish || intent == IntentShorten || intent == IntentExpand) {
+
+		// 普通流式输出（标题已解析或非 writing 模式）
+		streamBody(delta)
+
+		// 对于 polish/shorten/expand 模式，从流中提取 Markdown 标题
+		if !titleResolved && !useJSONTitle && (intent == IntentPolish || intent == IntentShorten || intent == IntentExpand) {
 			buf := bodyBuf.String()
 			if title := steps.ExtractTitleFromMarkdown(buf); title != "" {
 				articleTitle = title
@@ -208,6 +285,11 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			)
 		}
 		bodyBuf.Reset()
+		// 重置标题收集状态，下一轮流式输出会重新提取标题
+		titleBuf.Reset()
+		titleCharCount = 0
+		titleResolved = false
+		articleTitle = ""
 		// StreamReset 清空前端所有 streaming text parts。
 		// 不发 StreamDone，避免中间版本的正文被标记为 streaming:false 留在消息中。
 		// 最终的 StreamDone 在 Run 收尾时发送一次，确保前端只有一篇最终文章。
@@ -286,6 +368,20 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	}
 	if articleBody == "" {
 		articleBody = fullText
+	}
+
+	// JSON 标题模式后处理：如果标题仍未解析，尝试从 fullText 中 fallback
+	if useJSONTitle && !titleResolved {
+		if title := steps.ExtractTitleFromMarkdown(fullText); title != "" {
+			articleTitle = title
+			titleResolved = true
+			execCtx.ArticleTitle = title
+			if h.emitter != nil {
+				h.emitter.ArticleTitle(title)
+			}
+		}
+		// 过滤掉 fullText 中残留的 JSON 标题行
+		articleBody = steps.FilterJSONLines(articleBody)
 	}
 
 	// 写作/修改意图：更新文章

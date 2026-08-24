@@ -28,12 +28,12 @@ func (r *harnessAgentRunner) Run(ctx context.Context, execCtx *engine.ExecutionC
 
 // ExperimentRunner 对照实验运行器
 type ExperimentRunner struct {
-	store     *Store
-	llm       *tools.LLMClient
-	search    *tools.SearchClient
-	embedding *tools.EmbeddingClient
-	profiles  *profile.Loader
-	emitter   EventEmitter // 用于推送实验进度事件到 WebSocket
+	store        *Store
+	llmResolver  LLMResolver
+	search        *tools.SearchClient
+	embedding    *tools.EmbeddingClient
+	profiles      *profile.Loader
+	emitter       EventEmitter // 用于推送实验进度事件到 WebSocket
 
 	// 运行中的实验 cancel 函数集合，支持外部取消
 	activeRuns   map[string]context.CancelFunc
@@ -43,14 +43,14 @@ type ExperimentRunner struct {
 // NewExperimentRunner 创建实验运行器
 func NewExperimentRunner(
 	store *Store,
-	llm *tools.LLMClient,
+	llmResolver LLMResolver,
 	search *tools.SearchClient,
 	embedding *tools.EmbeddingClient,
 	profiles *profile.Loader,
 	emitter EventEmitter,
 ) *ExperimentRunner {
 	return &ExperimentRunner{
-		store: store, llm: llm, search: search, embedding: embedding,
+		store: store, llmResolver: llmResolver, search: search, embedding: embedding,
 		profiles: profiles,
 		emitter:   emitter,
 		activeRuns: make(map[string]context.CancelFunc),
@@ -185,9 +185,11 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 	}
 
 	// ── 4.2: 独立盲评 — 三组完成后用 LLM 盲评打分 ──
-	if runCtx.Err() == nil && r.llm != nil {
-		slog.Info("experiment: starting blind judge", "id", exp.ID)
-		judgeScores := r.blindJudge(context.Background(), results)
+	if runCtx.Err() == nil {
+		llmClient := r.llmResolver.GetClient(context.Background(), "")
+		if llmClient != nil {
+			slog.Info("experiment: starting blind judge", "id", exp.ID)
+			judgeScores := r.blindJudge(context.Background(), results, llmClient)
 		for mode, scores := range judgeScores {
 			if m, ok := results[mode]; ok {
 				m.JudgeScores = scores
@@ -200,7 +202,8 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 				}
 			}
 		}
-		slog.Info("experiment: blind judge completed", "id", exp.ID, "scored_modes", len(judgeScores))
+			slog.Info("experiment: blind judge completed", "id", exp.ID, "scored_modes", len(judgeScores))
+		}
 	}
 
 	// 生成汇总
@@ -266,12 +269,13 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 	emitter := &noopEmitter{}
 
 	// 构建 Pipeline steps（含审校+修正，与生产 Pipeline 一致）
+	llmClient := r.llmResolver.GetClient(ctx, "")
 	var pipelineSteps []engine.Step
 	pipelineSteps = append(pipelineSteps,
-		steps.NewQueryPlanStep(r.llm),
-		steps.NewSearchStep(r.llm, r.search),
+		steps.NewQueryPlanStep(llmClient),
+		steps.NewSearchStep(llmClient, r.search),
 		steps.NewRelevanceStepWithEmbedding(r.embedding),
-		steps.NewCompressStep(r.llm),
+		steps.NewCompressStep(llmClient),
 	)
 	var styleProfile *profile.StyleProfile
 	if r.profiles != nil {
@@ -279,16 +283,16 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 	}
 	if styleProfile != nil {
 		pipelineSteps = append(pipelineSteps,
-			steps.NewOutlineStepWithProfile(r.llm, styleProfile),
-			steps.NewWriteStepWithSearch(r.llm, styleProfile, r.search),
-			steps.NewPostReviewStepWithProfile(r.llm, nil, styleProfile),
-			steps.NewAutoFixStepWithProfile(r.llm, styleProfile),
-			steps.NewPostReviewStepWithProfile(r.llm, nil, styleProfile), // re-review after fix
+			steps.NewOutlineStepWithProfile(llmClient, styleProfile),
+			steps.NewWriteStepWithSearch(llmClient, styleProfile, r.search),
+			steps.NewPostReviewStepWithProfile(llmClient, nil, styleProfile),
+			steps.NewAutoFixStepWithProfile(llmClient, styleProfile),
+			steps.NewPostReviewStepWithProfile(llmClient, nil, styleProfile), // re-review after fix
 		)
 	} else {
 		pipelineSteps = append(pipelineSteps,
-			steps.NewOutlineStep(r.llm),
-			steps.NewWriteStepWithSearch(r.llm, nil, r.search),
+			steps.NewOutlineStep(llmClient),
+			steps.NewWriteStepWithSearch(llmClient, nil, r.search),
 		)
 	}
 
@@ -373,7 +377,7 @@ func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug 
 		}
 	}
 
-	harness := agent.NewHarness(r.llm, r.search, nil, styleProfile, nil, emitter)
+	harness := agent.NewHarness(r.llmResolver.GetClient(ctx, ""), r.search, nil, styleProfile, nil, emitter)
 	harnessRunner := &harnessAgentRunner{harness: harness, session: session}
 
 	execCtx.ConfirmTimeout = 1 * time.Second
@@ -659,8 +663,8 @@ done:
 
 // blindJudge 使用 LLM 对三组文章进行独立盲评
 // 文章被打乱顺序后用同一 prompt 评分，消除模式偏见
-func (r *ExperimentRunner) blindJudge(ctx context.Context, results map[string]ExperimentMetrics) map[string]*BlindJudgeScores {
-	if r.llm == nil {
+func (r *ExperimentRunner) blindJudge(ctx context.Context, results map[string]ExperimentMetrics, llmClient *tools.LLMClient) map[string]*BlindJudgeScores {
+	if llmClient == nil {
 		slog.Warn("blind judge: LLM not available, skipping")
 		return nil
 	}
@@ -684,7 +688,7 @@ func (r *ExperimentRunner) blindJudge(ctx context.Context, results map[string]Ex
 
 	scores := make(map[string]*BlindJudgeScores)
 	for _, e := range entries {
-		score, err := r.judgeSingleArticle(ctx, e.article)
+		score, err := r.judgeSingleArticle(ctx, e.article, llmClient)
 		if err != nil {
 			slog.Warn("blind judge: failed to evaluate article", "mode", e.mode, "error", err)
 			continue
@@ -697,7 +701,7 @@ func (r *ExperimentRunner) blindJudge(ctx context.Context, results map[string]Ex
 }
 
 // judgeSingleArticle 用 LLM 评估单篇文章（盲评，不暴露来源模式）
-func (r *ExperimentRunner) judgeSingleArticle(ctx context.Context, article string) (*BlindJudgeScores, error) {
+func (r *ExperimentRunner) judgeSingleArticle(ctx context.Context, article string, llmClient *tools.LLMClient) (*BlindJudgeScores, error) {
 	prompt := fmt.Sprintf(`你是一位资深中文媒体编辑和写作评委。请对以下文章进行独立评分。
 
 评分维度（每项 0.0-1.0，保留两位小数）：
@@ -720,7 +724,7 @@ func (r *ExperimentRunner) judgeSingleArticle(ctx context.Context, article strin
 %s
 ---`, article)
 
-	resp, _, err := r.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := llmClient.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: prompt},
 	}, tools.WithTemperature(0.2), tools.WithThinking(false))
 	if err != nil {

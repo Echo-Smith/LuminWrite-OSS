@@ -6,6 +6,7 @@
  * 右侧：任务详情面板（交付物内容 + 审批操作 + 决策记录 + Agent 活动）
  */
 import { useEffect, useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   useEditorialStore,
   type EditorialTask,
@@ -60,6 +61,7 @@ import {
   Send,
   Eye,
   Network,
+  ArrowLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -168,12 +170,21 @@ export function EditorialBoard() {
     (t) => t.status === "research" || t.status === "writing" || t.status === "review"
   ).length;
 
+  const navigate = useNavigate();
+
   return (
     <div className="flex h-[calc(100vh-3.5rem)]">
-      <div className="flex-1 overflow-x-auto">
-        {/* 顶部栏 */}
-        <div className="flex items-center justify-between border-b px-6 py-3">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* 顶部栏 — 固定，不随内容滚动 */}
+        <div className="flex items-center justify-between border-b px-6 py-3 bg-surface shrink-0 z-20">
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate("/write")}
+              className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-accent transition-ui text-muted-foreground hover:text-foreground"
+              title="返回写作"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
             <FileText className="h-5 w-5 text-primary" />
             <h1 className="text-lg font-semibold">编辑部</h1>
             <div className="flex items-center gap-1 ml-2">
@@ -244,7 +255,7 @@ export function EditorialBoard() {
 
         {/* 决策台视图 */}
         {view === "dashboard" && (
-          <div className="p-6 space-y-4 overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4">
             {/* 四个统计卡片 */}
             <div className="grid grid-cols-5 gap-4">
               <DashboardCard
@@ -332,7 +343,7 @@ export function EditorialBoard() {
 
         {/* 洞察视图 */}
         {view === "insights" && (
-          <div className="p-6 space-y-6 overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-6">
             {/* Agent 信誉 */}
             <div>
               <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
@@ -394,18 +405,20 @@ export function EditorialBoard() {
 
         {/* 实验视图 */}
         {view === "experiments" && (
-          <ExperimentsView
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <ExperimentsView
             experiments={experiments}
             loading={loading}
             onCreate={createExperiment}
             onRun={runExperiment}
             onCancel={cancelExperiment}
           />
+          </div>
         )}
 
         {/* 看板视图 */}
         {view === "kanban" && (
-          <div className="flex gap-4 p-4 min-w-max">
+          <div className="flex-1 min-h-0 h-full flex gap-4 p-4 min-w-max overflow-x-auto overflow-y-auto">
             {STATUS_COLUMNS.map((col) => {
               const colTasks = tasks.filter((t) => t.status === col.status);
               return (

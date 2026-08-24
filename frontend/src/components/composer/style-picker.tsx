@@ -54,15 +54,15 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
-            className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+            className="flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
           >
             <span key={`style-icon-${value}`} className="flex items-center anim-fade-scale">
               <Palette className="h-3.5 w-3.5 text-purple-500" />
             </span>
-            <span key={`style-label-${selected?.slug ?? 'none'}`} className="anim-fade-scale">
+            <span key={`style-label-${selected?.slug ?? 'none'}`} className="hidden sm:inline anim-fade-scale">
               {selected?.name ?? "选择风格"}
             </span>
-            <ChevronDown className="h-3 w-3 opacity-50" />
+            <ChevronDown className="h-3 w-3 opacity-50 hidden sm:block" />
           </button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-80 max-h-[400px] overflow-y-auto">

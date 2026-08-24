@@ -141,25 +141,17 @@
       box-shadow var(--anim-duration-fast) var(--anim-ease-smooth);
   }
 
-  /* ── Composer 容器：大圆角 + 聚焦阴影 ── */
+  /* ── Composer 容器：圆角矩形 + 聚焦阴影（无边框，参考豆包） ── */
   .composer-shell {
-    border: 1px solid hsl(var(--border) / 0.6);
-    border-radius: var(--composer-radius);
+    border: none;
+    border-radius: var(--radius);
     background: hsl(var(--card));
     box-shadow: var(--shadow-composer);
     transition:
-      border-color var(--anim-duration-fast) var(--anim-ease-smooth),
       box-shadow var(--anim-duration-fast) var(--anim-ease-smooth);
   }
   .composer-shell:focus-within {
-    border-color: hsl(var(--border));
     box-shadow: var(--shadow-composer-focus);
-  }
-  .dark .composer-shell {
-    border-color: hsl(var(--muted-foreground) / 0.15);
-  }
-  .dark .composer-shell:focus-within {
-    border-color: hsl(var(--muted-foreground) / 0.3);
   }
 
   /* ── 背景纹理 ── */

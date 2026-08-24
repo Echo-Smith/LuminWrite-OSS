@@ -5,16 +5,16 @@ import (
 	"strings"
 )
 
-// articleSeparator is the marker that separates the JSON title prefix from the article body.
-const articleSeparator = "---ARTICLE---"
+// ArticleSeparator is the marker that separates the JSON title prefix from the article body.
+const ArticleSeparator = "---ARTICLE---"
 
-// titleCollectCharLimit is the maximum number of runes to collect before giving up
+// TitleCollectCharLimit is the maximum number of runes to collect before giving up
 // on finding the separator and falling back to regex extraction.
-const titleCollectCharLimit = 300
+const TitleCollectCharLimit = 300
 
-// parseTitleJSON attempts to extract a "title" field from a JSON string.
+// ParseTitleJSON attempts to extract a "title" field from a JSON string.
 // It tolerates surrounding text (e.g. "好的，这是标题：{...}").
-func parseTitleJSON(s string) (string, bool) {
+func ParseTitleJSON(s string) (string, bool) {
 	s = strings.TrimSpace(s)
 
 	// Fast path: direct parse
@@ -84,9 +84,9 @@ func cleanMarkdownTitle(s string) string {
 	return s
 }
 
-// filterJSONLines removes lines that look like a JSON title prefix from body text.
+// FilterJSONLines removes lines that look like a JSON title prefix from body text.
 // Used in fallback mode when the LLM didn't output the separator but did output JSON.
-func filterJSONLines(text string) string {
+func FilterJSONLines(text string) string {
 	var lines []string
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -95,7 +95,7 @@ func filterJSONLines(text string) string {
 			continue
 		}
 		// Skip the separator marker if present
-		if trimmed == articleSeparator {
+		if trimmed == ArticleSeparator {
 			continue
 		}
 		lines = append(lines, line)
@@ -103,9 +103,9 @@ func filterJSONLines(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-// stripLeadingTitleHeading removes a leading "## title" line from body text
+// StripLeadingTitleHeading removes a leading "## title" line from body text
 // if it matches the resolved title (to avoid duplicate titles).
-func stripLeadingTitleHeading(body, title string) string {
+func StripLeadingTitleHeading(body, title string) string {
 	if title == "" {
 		return body
 	}

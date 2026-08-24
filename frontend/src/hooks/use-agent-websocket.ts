@@ -4,7 +4,7 @@
  * 职责：
  *  - 认证就绪后自动连接 WS
  *  - 组件卸载时断开（但保留 store 中的 WS 供其他组件使用）
- *  - 暴露连接状态与写作控制方法（暂停/恢复/取消/确认提纲）
+ *  - 暴露连接状态与写作控制方法（取消/确认提纲）
  *  - 断线自动重连（指数退避）
  */
 import { useEffect, useRef, useCallback } from "react";
@@ -20,8 +20,6 @@ export function useAgentWebSocket() {
   const connectWS = useAgentStore((s) => s.connectWS);
   const sendWS = useAgentStore((s) => s.sendWS);
   const startWriting = useAgentStore((s) => s.startWriting);
-  const pauseWriting = useAgentStore((s) => s.pauseWriting);
-  const resumeWriting = useAgentStore((s) => s.resumeWriting);
   const cancelWriting = useAgentStore((s) => s.cancelWriting);
   const confirmOutline = useAgentStore((s) => s.confirmOutline);
   const regenerateOutline = useAgentStore((s) => s.regenerateOutline);
@@ -97,8 +95,6 @@ export function useAgentWebSocket() {
     [startWriting]
   );
 
-  const pause = useCallback(() => pauseWriting(), [pauseWriting]);
-  const resume = useCallback(() => resumeWriting(), [resumeWriting]);
   const cancel = useCallback(() => cancelWriting(), [cancelWriting]);
   const confirm = useCallback(
     (data: OutlineData | null) => confirmOutline(data),
@@ -110,8 +106,6 @@ export function useAgentWebSocket() {
     connected: wsConnected,
     reconnectAttempt: reconnectAttempt.current,
     start,
-    pause,
-    resume,
     cancel,
     confirm,
     regenerate,

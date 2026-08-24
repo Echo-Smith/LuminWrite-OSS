@@ -127,7 +127,7 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   const injectedMaterials = session?.injectedMaterials ?? [];
 
   return (
-    <div className="flex h-full w-80 flex-col border-l bg-surface anim-slide-left">
+    <div className="flex h-full w-full sm:w-80 flex-col sm:border-l bg-surface anim-slide-left">
       {/* 头部 — 高度与主 header 一致，无分割线 */}
       <div className="flex h-12 shrink-0 items-center justify-between px-4">
         <h3 className="text-sm font-medium">详情面板</h3>
@@ -344,18 +344,23 @@ function SourcesList({
       {/* 选题素材 */}
       {injectedMaterials.length > 0 && (
         <div className="space-y-2">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
             <FileText className="h-3.5 w-3.5" />
             选题素材
             <span className="font-mono-sm">{injectedMaterials.length} 条</span>
           </div>
-          {injectedMaterials.map((mat, i) => (
-            <StaggerItem key={i} index={i} interval={40} animation="fade-up">
-              <div className="rounded-lg border border-amber-200/50 dark:border-amber-900/30 bg-amber-50/30 dark:bg-amber-950/10 p-2.5 hover:bg-amber-50/50 dark:hover:bg-amber-950/20 transition-ui">
-                <p className="text-xs text-muted-foreground line-clamp-4">{mat}</p>
-              </div>
-            </StaggerItem>
-          ))}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {injectedMaterials.map((mat, i) => (
+              <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+                <span
+                  className="flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200/40 dark:border-emerald-900/40 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400 max-w-[200px] truncate"
+                  title={mat}
+                >
+                  {mat.startsWith("📎 ") ? mat.slice(3) : mat}
+                </span>
+              </StaggerItem>
+            ))}
+          </div>
         </div>
       )}
 

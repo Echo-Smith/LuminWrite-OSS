@@ -1,16 +1,17 @@
 /**
- * 增强写作 Composer — 风格/模式/素材 + 输入框 + 发送/暂停/取消
+ * 增强写作 Composer — 风格/模式/素材 + 输入框 + 发送/取消
  *
- * 设计参考 assistant-ui / Claude Artifacts：
- *   - 大圆角药丸形容器（--composer-radius: 24px）
+ * 设计参考豆包：
+ *   - 圆角矩形容器（--radius）
  *   - 聚焦时微妙阴影上浮
  *   - 极简边框（border/60 透明度）
  *   - 控件行与输入框整合在同一个容器内
+ *   - 小屏幕下 Picker 仅显示图标
  *   - 支持错误 Toast 通知
  *   - 基于 Tiptap/ProseMirror 的富文本编辑器
  */
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
-import { Pause, Play, Square, Plus, X, PenLine, Paperclip, Loader2, Database, BookOpen, FolderSearch } from "lucide-react";
+import { Square, Plus, X, PenLine, Paperclip, Loader2, Database, BookOpen, FolderSearch } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
@@ -32,9 +33,6 @@ export interface WritingComposerHandle {
   /** 在光标处插入文本 */
   insertText: (text: string) => void;
 }
-
-// 稳定的空数组引用，避免 Zustand selector 每次返回新 [] 导致无限重渲染
-const EMPTY_MATERIALS: string[] = [];
 
 export const WritingComposer = forwardRef<WritingComposerHandle>(function WritingComposer(_, ref) {
   const [message, setMessage] = useState("");
@@ -66,15 +64,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   const editorRef = useRef<TiptapEditorHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 从 session 读取选题注入的素材标签
-  const injectedMaterials = useAgentStore((s) => {
-    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.injectedMaterials ?? EMPTY_MATERIALS;
-  });
+  // 选题注入的素材现在统一在右侧详情面板的「素材」Tab 中管理，输入框上方不再单独展示
 
   const startWriting = useAgentStore((s) => s.startWriting);
-  const pauseWriting = useAgentStore((s) => s.pauseWriting);
-  const resumeWriting = useAgentStore((s) => s.resumeWriting);
   const cancelWriting = useAgentStore((s) => s.cancelWriting);
   const sendWS = useAgentStore((s) => s.sendWS);
   const agentMode = useSettingsStore((s) => s.agentMode);
@@ -246,36 +238,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   }, []);
 
   return (
-    <div className="px-4 pb-4 pt-2">
-      {/* 从选题注入的素材标签（只读展示） */}
-      {injectedMaterials.length > 0 && !isRunning && !isPaused && (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5 anim-fade-in">
-          <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium shrink-0">
-            <Database className="h-3 w-3" />
-            选题素材
-          </span>
-          {injectedMaterials.map((mat, i) => (
-            <span
-              key={i}
-              className="flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200/40 dark:border-emerald-900/40 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400 max-w-[200px] truncate"
-              title={mat}
-            >
-              {mat.startsWith("📎 ") ? mat.slice(3) : mat}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* 暂停状态提示栏 */}
-      {isPaused && (
-        <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/60 px-3 py-1.5 anim-fade-in">
-          <Pause className="h-3.5 w-3.5 text-amber-600" />
-          <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">写作已暂停</span>
-          <span className="text-xs text-amber-500">— 点击播放按钮继续</span>
-        </div>
-      )}
-
-      {/* ── Composer 药丸容器 ── */}
+    <div className="relative">
+      {/* 顶部渐变遮罩 — 从透明过渡到背景色，实现悬浮效果 */}
+      <div className="pointer-events-none absolute -top-8 left-0 right-0 h-8 bg-gradient-to-t from-surface to-transparent z-10" />
+      <div className="relative z-20 px-4 pb-4 pt-2">
+      {/* ── Composer 圆角矩形容器 ── */}
       <div
         key={`composer-${shakeKey}`}
         className={cn("composer-shell overflow-hidden", shakeKey > 0 && "anim-shake")}
@@ -474,30 +441,6 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
 
           {/* 右侧：发送/暂停/取消按钮 — 笔头像黑色圆 */}
           <div className="flex items-center gap-1.5">
-            {isRunning && agentMode !== "editorial" && (
-              <button
-                onClick={pauseWriting}
-                className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
-                title="暂停"
-              >
-                <span key="pause-icon" className="anim-fade-scale flex items-center justify-center">
-                  <Pause className="h-4 w-4" />
-                </span>
-              </button>
-            )}
-
-            {isPaused && (
-              <button
-                onClick={resumeWriting}
-                className="flex items-center justify-center h-8 w-8 rounded-full bg-foreground text-background transition-transform-precise hover:scale-105 active:scale-95"
-                title="继续"
-              >
-                <span key="play-icon" className="anim-fade-scale flex items-center justify-center">
-                  <Play className="h-4 w-4" />
-                </span>
-              </button>
-            )}
-
             {(isRunning || isPaused) && (
               <button
                 onClick={() => {
@@ -541,6 +484,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

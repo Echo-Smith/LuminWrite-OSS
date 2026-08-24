@@ -6,6 +6,7 @@
  *
  * 目前管理：
  * - agentMode: "harness" | "pipeline" | "editorial" — 编排模式选择
+ * - enableEditorial: boolean — 是否在侧栏显示编辑部入口（实验功能）
  *
  * 注意：本 store 不 import auth-store，避免循环依赖。
  * token 从 localStorage 直接读取（与 auth-store 的 STORAGE_KEY 一致）。
@@ -30,20 +31,28 @@ function getToken(): string | null {
 
 interface SettingsState {
   agentMode: AgentMode;
+  enableEditorial: boolean;  // 是否显示编辑部入口（实验功能）
   loaded: boolean;          // 是否已从后端加载
   setAgentMode: (mode: AgentMode) => void;
+  setEnableEditorial: (enabled: boolean) => void;
   loadFromServer: () => Promise<void>;
   syncToServer: (prefs: Record<string, unknown>) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentMode: "harness",
+  enableEditorial: false,
   loaded: false,
 
   setAgentMode: (mode) => {
     set({ agentMode: mode });
     // Fire-and-forget sync to server
     get().syncToServer({ agent_mode: mode });
+  },
+
+  setEnableEditorial: (enabled) => {
+    set({ enableEditorial: enabled });
+    get().syncToServer({ enable_editorial: enabled });
   },
 
   loadFromServer: async () => {
@@ -58,6 +67,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const mode = json.data.agent_mode as AgentMode | undefined;
         if (mode === "harness" || mode === "pipeline" || mode === "editorial") {
           set({ agentMode: mode });
+        }
+        const enableEditorial = json.data.enable_editorial;
+        if (typeof enableEditorial === "boolean") {
+          set({ enableEditorial });
         }
       }
     } catch {

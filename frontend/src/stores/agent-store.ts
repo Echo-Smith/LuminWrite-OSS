@@ -298,6 +298,7 @@ article_title?: string;
 task_name?: string;
 step_history?: Array<{ step: string; status: string; startedAt?: string; completedAt?: string; durationMs?: number; result?: unknown; error?: string }>;
 review?: unknown;
+token_usage?: unknown;
 reasoning_content?: string;
 created_at: string;
 completed_at?: string;
@@ -350,7 +351,13 @@ has_feedback?: boolean;
       // 评价结果
       if (d.review) {
         assistantParts.push({ type: "data", dataType: "review", data: d.review });
-        assistantParts.push({ type: "data", dataType: "feedback", data: { article: d.article, has_feedback: d.has_feedback } });
+      }
+      // 文章评价入口 — 有文章且非 chat 对话时显示，不依赖质量评审
+      // chat 模式无 article_title，写作模式会提取标题（即使 fallback）
+      const dIntent = (d.token_usage as { intent?: string })?.intent;
+      const isArticle = d.article && dIntent !== "chat" && (d.article_title || dIntent);
+      if (isArticle) {
+        assistantParts.push({ type: "data", dataType: "feedback", data: { article: d.article!, has_feedback: d.has_feedback } });
       }
 
       // 错误信息
@@ -840,11 +847,13 @@ case "agent.paused": {
           // 添加 review data part（仅写作模式有评分）
           if (review) {
             parts.push({ type: "data", dataType: "review" as const, data: result.review });
-            // 添加 feedback data part（触发 FeedbackBar 渲染）
-            // 仅当有评分时才显示文章评价，chat 模式不显示
-            if (article) {
-              parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
-            }
+          }
+          // 添加 feedback data part（触发 FeedbackBar 渲染）
+          // 只要生成了文章且不是 chat 对话就显示评价入口，不依赖质量评审是否完成
+          // chat 模式的 article 字段是对话回复文本，不是文章，不应显示评价
+          const intent = (tokenUsage as { intent?: string })?.intent;
+          if (article && intent !== "chat") {
+            parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
           }
           return { ...m, parts, status: "complete" as const, articleTitle: articleTitle || m.articleTitle, pointsUsed };
         });
@@ -1054,6 +1063,12 @@ case "agent.paused": {
         // Restore review result
         if (review) {
           assistantParts.push({ type: "data", dataType: "review" as const, data: review });
+        }
+
+        // Restore feedback entry — 有文章且非 chat 对话时显示
+        // session.resumed 无 intent 字段，用 article_title 区分：chat 模式不设标题
+        if (article && (articleTitle || taskName)) {
+          assistantParts.push({ type: "data", dataType: "feedback" as const, data: { article } });
         }
 
         // Replace assistant message parts with the rebuilt set

@@ -8,7 +8,7 @@
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { Pause, Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType, Save, Loader2 } from "lucide-react";
+import { Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType, Save, Loader2 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, CompactionPart } from "@/stores/agent-store";
@@ -31,12 +31,6 @@ interface AssistantMessageProps {
 }
 
 export function AssistantMessage({ message, traceId, version = 1, totalVersions = 1 }: AssistantMessageProps) {
-  // 获取当前会话状态（用于判断是否暂停）
-  const sessionStatus = useAgentStore((s) => {
-    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.status ?? "idle";
-  });
-  const isPaused = sessionStatus === "paused";
 
   // 分离 tool-call parts 和其他 parts
   const toolCallParts = message.parts.filter(
@@ -112,19 +106,11 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             {textParts.map((part, i) => (
               <div key={i}>
                 <MarkdownContent content={part.text} />
-                {part.streaming && !isPaused && (
+                {part.streaming && (
                   <StreamingCursor active className="ml-0.5" />
                 )}
               </div>
             ))}
-            {/* 暂停状态提示 */}
-            {isPaused && isRunning && (
-              <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 px-3 py-2 anim-fade-in">
-                <Pause className="h-4 w-4 text-amber-600" />
-                <span className="text-sm text-amber-700 dark:text-amber-400 font-medium">已暂停</span>
-                <span className="text-xs text-amber-600 dark:text-amber-500">— 点击下方播放按钮继续</span>
-              </div>
-            )}
             {/* 流式字数进度条 */}
             {isRunning && textParts.some((p) => p.streaming) && (
               <WordCountProgress text={textParts.map((t) => t.text).join("")} />

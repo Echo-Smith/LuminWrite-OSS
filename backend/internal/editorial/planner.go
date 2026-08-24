@@ -24,12 +24,12 @@ import (
 
 // Planner 策划 Agent
 type Planner struct {
-	llm *tools.LLMClient
+	llmResolver LLMResolver
 }
 
 // NewPlanner 创建 Planner
-func NewPlanner(llm *tools.LLMClient) *Planner {
-	return &Planner{llm: llm}
+func NewPlanner(llmResolver LLMResolver) *Planner {
+	return &Planner{llmResolver: llmResolver}
 }
 
 // PlanResult Planner 输出
@@ -117,7 +117,8 @@ func (p *Planner) Plan(ctx context.Context, input PlanInput, taskID, userID stri
 	// Planner 是结构化输出任务，禁用 thinking 模式以确保 JSON 输出格式稳定。
 	// thinking 模式下模型可能输出 reasoning_content 前缀或改变 JSON 结构。
 	// 同时使用较低 temperature + JSON mode + 足够大的 max_tokens。
-	content, _, err := p.llm.Chat(ctx, messages,
+	llmClient := p.llmResolver.GetClient(ctx, "")
+	content, _, err := llmClient.Chat(ctx, messages,
 		tools.WithThinking(false),
 		tools.WithTemperature(0.3),
 		tools.WithJSONResponse(),
@@ -145,7 +146,7 @@ func (p *Planner) Plan(ctx context.Context, input PlanInput, taskID, userID stri
 			"raw_content_len", len(content),
 			"raw_content_preview", truncateForLog(content, 500))
 
-		retryContent, _, retryErr := p.llm.Chat(ctx, messages,
+		retryContent, _, retryErr := llmClient.Chat(ctx, messages,
 			tools.WithThinking(false),
 			tools.WithTemperature(0.1),
 			tools.WithJSONResponse(),

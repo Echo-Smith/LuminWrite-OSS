@@ -282,7 +282,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 清理选题缓存，避免下一个用户看到上一个用户的数据
     useTopicCacheStore.getState().clearCache();
     // 重置偏好设置状态
-    useSettingsStore.setState({ agentMode: "harness", loaded: false });
+    useSettingsStore.setState({ agentMode: "harness", enableEditorial: false, loaded: false });
   },
 
   refreshToken: async () => {
