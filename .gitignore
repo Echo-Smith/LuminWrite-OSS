@@ -1,6 +1,7 @@
 # ─── 环境变量 / 密钥 ──────────────────────────────────
 .env
 .env.*
+env.docker
 !.env.example
 !.env.docker.example
 
