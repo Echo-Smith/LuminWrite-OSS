@@ -79,6 +79,15 @@ if [ ! -f "$PROJECT_DIR/docker-compose.yml" ]; then
     error "未找到 docker-compose.yml，请确保在项目根目录运行"
 fi
 
+# 迁移文件 PostgreSQL 兼容性检查（防止 MySQL 函数导致迁移链卡住）
+if [ -f "$PROJECT_DIR/scripts/check-migrations.sh" ]; then
+    info "检查迁移文件 PostgreSQL 兼容性..."
+    if ! bash "$PROJECT_DIR/scripts/check-migrations.sh" >/dev/null 2>&1; then
+        error "迁移文件检查未通过，请先运行 ./scripts/check-migrations.sh 查看详情"
+    fi
+    info "迁移文件检查通过"
+fi
+
 # 确保输出目录存在
 mkdir -p "$OUTPUT_DIR"
 
