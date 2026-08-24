@@ -34,6 +34,7 @@ type Config struct {
 	WebAuthn  WebAuthnConfig
 	Jiaozhen  JiaozhenConfig
 	SMTP      SMTPConfig
+	Alipay    AlipayConfig
 	Log       LogConfig
 	HotTopics HotTopicsConfig
 	Agent     AgentConfig
@@ -87,6 +88,19 @@ type SMTPConfig struct {
 	Password   string // Email password or authorization code
 	FromName   string // Display name for outgoing emails
 	Enabled    bool   // Whether email verification is enabled
+}
+
+type AlipayConfig struct {
+	Enabled        bool   // Whether alipay payment is enabled
+	AppID          string // 支付宝应用ID
+	PrivateKey     string // 应用私钥
+	PublicKey      string // 支付宝公钥
+	CertPath       string // 应用证书路径 (appCertPublicKey.crt)
+	RootCertPath   string // 支付宝根证书路径 (alipayRootCert.crt)
+	AlipayCertPath string // 支付宝公钥证书路径 (alipayCertPublicKey.crt)
+	NotifyURL      string // 异步回调URL
+	ReturnURL      string // 同步跳转URL
+	Sandbox        bool   // 是否沙箱环境
 }
 
 type JWTConfig struct {
@@ -272,7 +286,7 @@ BaseURL:           getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), // �
 APIKey:            getEnv("AI_API_KEY", ""),
 DefaultModel:      getEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-v4-flash"),
 Timeout:           getEnvDuration("DEEPSEEK_TIMEOUT", 120*time.Second),
-MaxTokens:         getEnvInt("DEEPSEEK_MAX_TOKENS", 16384),
+MaxTokens:         getEnvInt("DEEPSEEK_MAX_TOKENS", 131072), // 128K, 模型支持384K输出，按需可调高
 Temperature:       getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 },
@@ -365,6 +379,18 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			Password: getEnv("SMTP_PASSWORD", ""),
 			FromName: getEnv("SMTP_FROM_NAME", "笔润智谈"),
 			Enabled:  getEnvBool("SMTP_ENABLED", false),
+		},
+		Alipay: AlipayConfig{
+			Enabled:        getEnvBool("ALIPAY_ENABLED", false),
+			AppID:          getEnv("ALIPAY_APP_ID", ""),
+			PrivateKey:     getEnv("ALIPAY_PRIVATE_KEY", ""),
+			PublicKey:      getEnv("ALIPAY_PUBLIC_KEY", ""),
+			CertPath:       getEnv("ALIPAY_CERT_PATH", ""),
+			RootCertPath:   getEnv("ALIPAY_ROOT_CERT_PATH", ""),
+			AlipayCertPath: getEnv("ALIPAY_ALIPAY_CERT_PATH", ""),
+			NotifyURL:      getEnv("ALIPAY_NOTIFY_URL", ""),
+			ReturnURL:      getEnv("ALIPAY_RETURN_URL", ""),
+			Sandbox:        getEnvBool("ALIPAY_SANDBOX", false),
 		},
 		MCPServers: loadMCPServers(),
 		MCPServer: InProcessMCPServerConfig{

@@ -5,31 +5,98 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
+// ─── 编排辅助函数（原 Orchestrator 中的逻辑，现已内联到 Service）──
+
+// transitionDecision 返回状态转换对应的 DecisionType 和默认 decidedByType
+func transitionDecision(from, to TaskStatus) (DecisionType, DecidedByType) {
+	switch {
+	case from == StatusDraft && to == StatusPendingApproval:
+		return DecisionApproveTopic, DecidedByHuman
+	case from == StatusPendingApproval && to == StatusResearch:
+		return DecisionApproveTopic, DecidedByHuman
+	case from == StatusPendingApproval && to == StatusDraft:
+		return DecisionApproveTopic, DecidedByHuman
+	case from == StatusResearch && to == StatusWriting:
+		return DecisionResearchComplete, DecidedBySystem
+	case from == StatusWriting && to == StatusReview:
+		return DecisionDraftComplete, DecidedBySystem
+	case from == StatusReview && to == StatusPendingPublish:
+		return DecisionAcceptReview, DecidedByReviewAgent
+	case from == StatusReview && to == StatusWriting:
+		return DecisionAcceptReview, DecidedByReviewAgent
+	case from == StatusReview && to == StatusPendingApproval:
+		return DecisionEscalate, DecidedByReviewAgent
+	case from == StatusPendingPublish && to == StatusPublished:
+		return DecisionPublish, DecidedByHuman
+	case from == StatusPendingPublish && to == StatusReview:
+		return DecisionPublish, DecidedByHuman
+	default:
+		return DecisionEscalate, DecidedBySystem
+	}
+}
+
+// decisionStatusForTransition 根据转换方向判断 Decision 是 approved 还是 rejected
+func decisionStatusForTransition(from, to TaskStatus) DecisionStatus {
+	switch {
+	case to == StatusDraft:
+		return DecisionStatusRejected
+	case from == StatusReview && to == StatusWriting:
+		return DecisionStatusRejected
+	case from == StatusPendingPublish && to == StatusReview:
+		return DecisionStatusRejected
+	default:
+		return DecisionStatusApproved
+	}
+}
+
+// humanActionMessage 返回需要人工操作时的提示消息
+func humanActionMessage(status TaskStatus) string {
+	switch status {
+	case StatusPendingPublish:
+		return "稿件审查通过，等待发布确认"
+	case StatusPendingApproval:
+		return "审校发现严重问题，需人工裁决"
+	default:
+		return "需要人工介入"
+	}
+}
+
 // Service 编辑部服务 — 对外暴露的统一接口
+//
+// 线性 Orchestrator 已废弃，编辑部统一走 DAG 工作流。
+// Service 保留为编辑部 API 层，处理 Task/Artifact/Decision 的 CRUD 和事件发射。
 type Service struct {
-	store         *Store
-	orchestrator  *Orchestrator
+	store   *Store
+	emitter EventEmitter
 }
 
 // NewService 创建编辑部服务
 func NewService(store *Store, emitter EventEmitter) *Service {
-	orch := NewOrchestrator(store, emitter)
 	return &Service{
-		store:        store,
-		orchestrator: orch,
+		store:   store,
+		emitter: emitter,
 	}
 }
 
-// Orchestrator 返回编排器（用于注册 Agent 执行器）
-func (s *Service) Orchestrator() *Orchestrator {
-	return s.orchestrator
+// Emitter 返回事件发射器（供外部组件如 ExperimentRunner 使用）
+func (s *Service) Emitter() EventEmitter {
+	return s.emitter
 }
 
 // Store 返回存储（用于直接 DB 操作）
 func (s *Service) Store() *Store {
 	return s.store
+}
+
+// emit 发射编排事件到 WebSocket Hub
+func (s *Service) emit(evt OrchestratorEvent) {
+	if s.emitter != nil {
+		evt.Timestamp = time.Now()
+		s.emitter.Emit(evt)
+	}
 }
 
 // ─── 授权检查 ─────────────────────────────────────────────
@@ -141,9 +208,83 @@ func (s *Service) ListTasks(ctx context.Context, status string, ownerID string, 
 	return s.store.ListTasks(ctx, status, ownerID, limit, offset)
 }
 
-// AdvanceTask 推进任务
+// AdvanceTask 推进任务到下一阶段 — 人类决策驱动的状态转换
+//
+// 核心编排逻辑（DAG 模式下仅用于人类审批流程）：
+//   - pending_approval → research: 批准立项（DAG 通过 workflow.start 启动）
+//   - pending_publish → published: 人类编辑发布
+//
+// Agent 自动推进由 DAGExecutor 内部处理，不经过此方法。
 func (s *Service) AdvanceTask(ctx context.Context, taskID string, input AdvanceTaskInput) error {
-	return s.orchestrator.AdvanceTask(ctx, taskID, input)
+	task, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("get task: %w", err)
+	}
+
+	if !task.Status.CanTransitionTo(input.TargetStatus) {
+		return fmt.Errorf("%w: %s → %s", ErrInvalidTransition, task.Status, input.TargetStatus)
+	}
+
+	decType, decByType := transitionDecision(task.Status, input.TargetStatus)
+	decStatus := decisionStatusForTransition(task.Status, input.TargetStatus)
+
+	actor := Actor{Type: ActorSystem, Label: "system"}
+	if decByType == DecidedByHuman {
+		actor = NewHumanActor(input.DecidedBy, input.DecidedBy)
+	} else if decByType == DecidedByResearchAgent || decByType == DecidedByWritingAgent || decByType == DecidedByReviewAgent {
+		actor = Actor{Type: ActorAgent, Role: string(decByType), Label: string(decByType)}
+	}
+
+	approveTarget := input.TargetStatus
+	rejectTarget := task.Status
+	if decStatus == DecisionStatusRejected {
+		approveTarget = task.Status
+		rejectTarget = input.TargetStatus
+	}
+
+	decision, err := s.store.AdvanceTaskTx(ctx, AdvanceTaskTxParams{
+		TaskID:          taskID,
+		TargetStatus:    input.TargetStatus,
+		Actor:           actor,
+		DecisionType:    decType,
+		DecisionStatus:  decStatus,
+		DecidedBy:        input.DecidedBy,
+		DecidedByType:   decByType,
+		Rationale:       input.Rationale,
+		ApproveTarget:   approveTarget,
+		RejectTarget:    rejectTarget,
+	})
+	if err != nil {
+		return fmt.Errorf("advance task tx: %w", err)
+	}
+
+	s.emit(OrchestratorEvent{
+		Type:   "decision.created",
+		TaskID: taskID,
+		Payload: map[string]interface{}{
+			"decision_id": decision.ID,
+			"type":       decType,
+			"status":     decStatus,
+			"by":         decByType,
+		},
+	})
+
+	s.emit(OrchestratorEvent{
+		Type:    "task.status_changed",
+		TaskID:  taskID,
+		Payload: map[string]interface{}{"from": task.Status, "to": input.TargetStatus},
+	})
+
+	// 对于需要人类审批的状态，发射 decision.required 事件
+	if input.TargetStatus == StatusPendingPublish || input.TargetStatus == StatusPendingApproval {
+		s.emit(OrchestratorEvent{
+			Type:    "decision.required",
+			TaskID:  taskID,
+			Payload: map[string]interface{}{"type": decType, "message": humanActionMessage(input.TargetStatus)},
+		})
+	}
+
+	return nil
 }
 
 // TransitionTask 事务化状态转换（单一入口）
@@ -163,6 +304,19 @@ func (s *Service) SubmitArtifact(ctx context.Context, taskID string, input Submi
 	}
 	slog.Info("editorial: artifact submitted",
 		"task_id", taskID, "type", input.Type, "version", art.Version)
+
+	// 发射交付物产出事件，推送前端实时更新
+	s.emit(OrchestratorEvent{
+		Type:   "artifact.produced",
+		TaskID: taskID,
+		Payload: map[string]interface{}{
+			"artifact_id": art.ID,
+			"type":        input.Type,
+			"version":     art.Version,
+			"produced_by": input.ProducedBy,
+		},
+	})
+
 	return art, nil
 }
 
@@ -184,6 +338,19 @@ func (s *Service) ReviewArtifact(ctx context.Context, id string, input ReviewArt
 	}
 	slog.Info("editorial: artifact reviewed",
 		"artifact_id", id, "status", input.Status)
+
+	// 发射交付物审批事件，推送前端实时更新
+	s.emit(OrchestratorEvent{
+		Type:   "artifact.reviewed",
+		TaskID: art.TaskID,
+		Payload: map[string]interface{}{
+			"artifact_id":  id,
+			"status":       input.Status,
+			"review_note":  input.ReviewNote,
+			"reviewed_by":  input.ReviewerID,
+		},
+	})
+
 	return art, nil
 }
 
@@ -215,7 +382,7 @@ func (s *Service) ListPendingDecisions(ctx context.Context, ownerID string, limi
 // 不再依赖全局 switch 猜测去向。
 // Agent 执行在事务提交后异步触发。
 func (s *Service) ResolveDecision(ctx context.Context, decisionID string, input ResolveDecisionInput, userID string) (*Decision, error) {
-	resolved, nextStatus, err := s.store.ResolveDecisionTx(ctx, ResolveDecisionTxParams{
+ resolved, nextStatus, err := s.store.ResolveDecisionTx(ctx, ResolveDecisionTxParams{
 		DecisionID: decisionID,
 		Status:     input.Status,
 		Rationale:  input.Rationale,
@@ -231,16 +398,33 @@ func (s *Service) ResolveDecision(ctx context.Context, decisionID string, input 
 		if err == nil {
 			task.Status = nextStatus
 			task.AssigneeType = defaultAssignee(nextStatus)
-			switch nextStatus {
-			case StatusResearch:
-				s.orchestrator.RunResearchAgent(ctx, task)
-			case StatusWriting:
-				s.orchestrator.RunWritingAgent(ctx, task)
-			case StatusReview:
-				s.orchestrator.RunReviewAgent(ctx, task)
-			}
+		// DAG 模式下，Agent 执行由 DAGExecutor 通过 workflow.start 触发。
+		// ResolveDecision 只负责状态转换和决策记录，不直接启动 Agent。
+
+			// 发射状态变更事件，推送前端实时更新
+			s.emit(OrchestratorEvent{
+				Type:   "task.status_changed",
+				TaskID: resolved.TaskID,
+				Payload: map[string]interface{}{
+					"from":          task.Status,
+					"to":            nextStatus,
+					"decision_id":   decisionID,
+					"resolved_by":   userID,
+				},
+			})
 		}
 	}
+
+	// 发射决策解决事件
+	s.emit(OrchestratorEvent{
+		Type:   "decision.resolved",
+		TaskID: resolved.TaskID,
+		Payload: map[string]interface{}{
+			"decision_id": decisionID,
+			"status":      input.Status,
+			"resolved_by": userID,
+		},
+	})
 
 	slog.Info("editorial: decision resolved",
 		"decision_id", decisionID, "status", input.Status, "by", userID, "next_status", nextStatus)

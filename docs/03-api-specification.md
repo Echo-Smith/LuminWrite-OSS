@@ -77,7 +77,7 @@ GET /api/v2/agent/traces?page=1&page_size=20&status=completed
     {
       "slug": "yinyue",
       "name": "预设评论风格",
-      "description": "植根于杭州时评专栏的深度评论风格",
+      "description": "[style description removed]",
       "version": 3,
       "word_range": [1000, 1500],
       "tags": ["政论", "民生", "深度评论"]

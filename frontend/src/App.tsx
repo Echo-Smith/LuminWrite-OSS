@@ -16,6 +16,8 @@ import { EditorialBoard } from "@/pages/editorial/editorial-board";
 import { MyStylesPage } from "@/pages/my-styles";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
+import PricingPage from "@/pages/pricing";
+import BillingResultPage from "@/pages/billing-result";
 import { ToastContainer } from "@/components/ui/toast";
 import { useSSENotifications } from "@/hooks/use-sse-notifications";
 import { PageTransition } from "@/components/animation";
@@ -124,6 +126,12 @@ export function App() {
           {/* 法律页面 — 公开访问，无需登录 */}
           <Route path="/terms" element={<PageTransition><TermsPage /></PageTransition>} />
           <Route path="/privacy" element={<PageTransition><PrivacyPage /></PageTransition>} />
+
+          {/* 定价页 — 公开访问 */}
+          <Route path="/pricing" element={<PageTransition><PricingPage /></PageTransition>} />
+
+          {/* 支付结果页 — 支付宝 return_url 回跳 */}
+          <Route path="/billing/result" element={<BillingResultPage />} />
 
           {/* 默认重定向 */}
           <Route path="/" element={<Navigate to="/write" replace />} />

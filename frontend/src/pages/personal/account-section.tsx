@@ -73,9 +73,13 @@ export function AccountSection() {
 
     setChanging(true);
     try {
+      const token = useAuthStore.getState().token;
       const res = await fetch("/api/v2/auth/change-password", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
       });
       const json = await res.json();

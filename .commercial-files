@@ -20,9 +20,13 @@ backend/internal/tools/search_test*
 # ── 后端：计费系统 ──
 backend/internal/database/billing*
 backend/internal/services/point_calculator*
+backend/internal/services/billing_cron*
 backend/internal/server/billing*
 backend/internal/server/handlers_billing*
 backend/internal/server/handlers_admin_billing*
+backend/internal/server/handlers_payment*
+backend/internal/server/payment_alipay*
+backend/internal/server/alipay_crypto*
 backend/internal/server/handlers_sessions_mgmt*
 backend/internal/server/handlers_material_folders*
 
@@ -30,7 +34,13 @@ backend/internal/server/handlers_material_folders*
 backend/internal/server/email_service*
 backend/internal/server/handlers_email*
 
-# ── 后端：商业迁移文件（068-079 为商业版保留段）──
+# ── 后端：知识库 seed 与工具脚本（预设评论风格专属）──
+backend/internal/database/migrations/047_*
+backend/internal/database/migrations/062_*
+backend/scripts/scrape_yinyue*
+scripts/import-kb*
+
+# ── 后端：商业迁移文件（068-085 为商业版保留段）──
 backend/internal/database/migrations/068_*
 backend/internal/database/migrations/069_*
 backend/internal/database/migrations/070_*
@@ -43,13 +53,24 @@ backend/internal/database/migrations/076_*
 backend/internal/database/migrations/077_*
 backend/internal/database/migrations/078_*
 backend/internal/database/migrations/079_*
+backend/internal/database/migrations/083_*
+backend/internal/database/migrations/084_*
+backend/internal/database/migrations/085_*
 
 # ── 前端：计费相关 ──
 frontend/src/stores/billing-store*
 frontend/src/pages/admin/billing*
 frontend/src/pages/personal/wallet*
 frontend/src/pages/personal/devices*
+frontend/src/pages/pricing*
+frontend/src/pages/billing-result*
 
 # ── Skills（商业 CLI 工具）──
 skills/tencent-news/**
 skills/jiaozhen-factcheck/**
+
+# ── 共享文件（开源+商业同步修改，不属于商业独有功能）──
+# 这些文件在 sync-commercial.sh 的 SHARED_FILES 数组中维护
+# --commit 时同时推送到 origin 和 commercial
+# --restore 时不删除（开源版也需要）
+# 如需新增共享文件，编辑 scripts/sync-commercial.sh 的 SHARED_FILES 数组

@@ -111,7 +111,7 @@ type ReviewResult struct {
 // OutlineItem is a single point in the outline.
 type OutlineItem struct {
 	Point string `json:"point"`
-	Type  string `json:"type"` // opening | argument | conclusion
+	Type  string `json:"type"` // 开放类型，由风格配置或LLM动态生成
 }
 
 // OutlineData holds the outline for guided mode.
@@ -131,6 +131,7 @@ type ExecutionContext struct {
 	NormalizedInput string       `json:"normalized_input"`
 	UserMaterials []string       `json:"user_materials"`
 	WordLimit     int            `json:"word_limit"`
+	TaskName      string         `json:"task_name,omitempty"` // extracted topic name for session display
 
 	// TopicURL is the original hot topic URL (if writing from a hot topic).
 	// Used by SearchStep to fetch the topic's full article as background context.

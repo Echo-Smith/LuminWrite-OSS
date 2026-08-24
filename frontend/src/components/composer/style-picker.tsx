@@ -33,7 +33,7 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
       })
       .catch(() => {
         setStyles([
-          { slug: "yinyue", name: "预设评论风格", description: "植根于杭州时评专栏的深度评论风格", version: 3, word_range: [1800, 2800], tags: ["政论", "民生", "深度评论"] },
+          { slug: "yinyue", name: "预设评论风格", description: "[style description removed]", version: 3, word_range: [1800, 2800], tags: ["政论", "民生", "深度评论"] },
           { slug: "shenlun", name: "应用文风格", description: "[style description removed]", version: 1, word_range: [800, 1200], tags: ["申论", "公考"] },
           { slug: "xiaohongshu", name: "小红书风格", description: "轻松种草风格", version: 1, word_range: [300, 800], tags: ["社交媒体", "种草"] },
         ]);

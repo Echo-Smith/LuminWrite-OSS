@@ -7,12 +7,14 @@
  *   - 极简边框（border/60 透明度）
  *   - 控件行与输入框整合在同一个容器内
  *   - 支持错误 Toast 通知
+ *   - 基于 Tiptap/ProseMirror 的富文本编辑器
  */
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { Pause, Play, Square, Plus, X, PenLine, Paperclip, Loader2, Database, BookOpen, FolderSearch } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
+import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
@@ -23,6 +25,12 @@ import { listMaterials, getMaterialContent, type UserMaterial } from "@/lib/mate
 
 export interface WritingComposerHandle {
   focusTextarea: () => void;
+  /** 获取当前编辑器文本 */
+  getText: () => string;
+  /** 清空编辑器 */
+  clear: () => void;
+  /** 在光标处插入文本 */
+  insertText: (text: string) => void;
 }
 
 // 稳定的空数组引用，避免 Zustand selector 每次返回新 [] 导致无限重渲染
@@ -40,7 +48,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   const [kbMaterials, setKbMaterials] = useState<UserMaterial[]>([]);
   const [kbMaterialsLoading, setKbMaterialsLoading] = useState(false);
   const [kbSearchQuery, setKbSearchQuery] = useState("");
-  // 知识库开关状态（从 session 读取，默认 true）
+  // 自动检索开关状态（从 session 读取，默认 true）
+  // 开启后 LLM 写作时自动从素材库检索相关内容；关闭则仅使用手动选择的素材
   const kbEnabled = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.kbEnabled ?? true;
@@ -54,7 +63,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   }, []);
   // Composer 抖动状态（空消息发送时触发）
   const [shakeKey, setShakeKey] = useState(0);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<TiptapEditorHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 从 session 读取选题注入的素材标签
@@ -125,24 +134,19 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   const isRunning = (sessionStatus === "running" && !isAwaitingInput) || isWorkflowBusy;
   const isPaused = sessionStatus === "paused";
 
-  // 自动调整 textarea 高度
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
-    }
-  }, [message]);
-
-  // 暴露 focusTextarea 方法给父组件（用于 Cmd+K 快捷键）
+  // 暴露编辑器方法给父组件（用于 Cmd+K 快捷键 + 外部调用）
   useImperativeHandle(ref, () => ({
-    focusTextarea: () => {
-      textareaRef.current?.focus();
-    },
+    focusTextarea: () => editorRef.current?.focus(),
+    getText: () => editorRef.current?.getText() ?? "",
+    clear: () => editorRef.current?.clear(),
+    insertText: (text: string) => editorRef.current?.insertText(text),
   }), []);
 
+  // handleSend 读取编辑器实时文本（避免 message 状态闭包延迟）
   const handleSend = useCallback(() => {
     if (isRunning) return;
-    if (!message.trim()) {
+    const currentText = editorRef.current?.getText() ?? "";
+    if (!currentText.trim()) {
       // 空消息发送 → 触发 Composer 抖动
       setShakeKey((k) => k + 1);
       return;
@@ -151,15 +155,16 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     if (agentMode === "editorial") {
       // 编辑部模式：发送 workflow.start 触发 Planner + DAG 执行
       const { setUserInput, setRunStatus } = useWorkflowStore.getState();
-      setUserInput(message.trim());
+      setUserInput(currentText.trim());
       setRunStatus("planning");
-      sendWS("workflow.start", { user_input: message.trim(), kb_enabled: kbEnabled });
+      sendWS("workflow.start", { user_input: currentText.trim(), kb_enabled: kbEnabled });
+      editorRef.current?.clear();
       setMessage("");
       return;
     }
 
     startWriting({
-      message: message.trim(),
+      message: currentText.trim(),
       style,
       mode,
       model,
@@ -168,20 +173,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       kb_enabled: kbEnabled,
     });
 
+    editorRef.current?.clear();
     setMessage("");
-  }, [message, style, mode, model, materials, isRunning, startWriting, agentMode, sendWS, kbEnabled]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      handleSend();
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+  }, [isRunning, style, mode, model, materials, startWriting, agentMode, sendWS, kbEnabled]);
 
   const handleAddMaterial = () => {
     if (materialInput.trim()) {
@@ -358,7 +352,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 <FolderSearch className="h-3.5 w-3.5" />
                 素材库
               </button>
-              {/* 知识库开关 — 控制是否启用 search_knowledge 工具 */}
+              {/* 自动检索开关 — 控制是否启用素材库自动检索 */}
               <button
                 onClick={handleToggleKB}
                 className={cn(
@@ -367,10 +361,10 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                     ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
                     : "border-border/60 bg-card text-muted-foreground hover:bg-accent"
                 )}
-                title={kbEnabled ? "知识库搜索已开启（点击关闭）" : "知识库搜索已关闭（点击开启）"}
+                title={kbEnabled ? "自动检索已开启（点击关闭）" : "自动检索已关闭（点击开启）"}
               >
                 <BookOpen className="h-3.5 w-3.5" />
-                {kbEnabled ? "知识库 ON" : "知识库 OFF"}
+                {kbEnabled ? "自动检索 ON" : "自动检索 OFF"}
               </button>
             </div>
           </div>
@@ -436,18 +430,14 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
           </div>
         )}
 
-        {/* 主输入区 */}
-        <div className="flex items-end gap-2 px-4 pt-3">
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={isRunning ? (agentMode === "editorial" ? "工作流执行中…" : "写作进行中… 可先编辑下一条需求，完成后发送") : "输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"}
-            className="flex-1 min-h-[40px] max-h-[200px] resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-            rows={1}
-          />
-        </div>
+        {/* 主输入区 — Tiptap 富文本编辑器 */}
+        <TiptapEditor
+          ref={editorRef}
+          placeholder={isRunning ? (agentMode === "editorial" ? "工作流执行中…" : "写作进行中… 可先编辑下一条需求，完成后发送") : "输入写作要求，例如：基于热搜写一篇关于外卖骑手闯红灯的评论"}
+          onChange={setMessage}
+          onSend={handleSend}
+          editable={!isRunning}
+        />
 
         {/* 底部控件行 — 无分割线 */}
         <div className="flex items-center gap-2 px-4 py-2.5">
@@ -536,7 +526,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                     ? "bg-foreground text-background hover:scale-105 active:scale-95"
                     : "bg-muted text-muted-foreground cursor-not-allowed"
                 )}
-                title="发送"
+                title="发送 (Enter)"
               >
                 <span key="send-icon" className="anim-fade-scale flex items-center justify-center">
                   <PenLine className="h-4 w-4" />

@@ -51,7 +51,7 @@ func NewSearchWebTool() *SearchWebTool {
 		description: "搜索互联网获取信息。返回结构化搜索结果。",
 		category:    "retrieval",
 		roles:       []string{"researcher"},
-		maxCalls:    5,
+		maxCalls:    10,
 		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -72,10 +72,10 @@ type SearchKnowledgeTool struct{ baseTool }
 func NewSearchKnowledgeTool() *SearchKnowledgeTool {
 	return &SearchKnowledgeTool{baseTool{
 		name:        "search_knowledge",
-		description: "搜索内部知识库。返回精确到段落的检索结果。",
+		description: "搜索个人素材库。返回精确到段落的检索结果。",
 		category:    "retrieval",
 		roles:       []string{"researcher", "writer", "reviewer"},
-		maxCalls:    3,
+		maxCalls:    5,
 		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -404,17 +404,41 @@ func executeGenerateOutline(arguments string, cfg *ToolRunContext) (string, erro
 	}
 
 	systemMsg := "你是资深撰稿人。根据主题生成文章提纲。只返回 JSON。"
-	userMsg := fmt.Sprintf(`主题：%s
+
+	// 注入风格配置的结构骨架（如果有）
+	structureSkeleton := ""
+	if cfg.Profile != nil {
+		structureSkeleton = cfg.Profile.RenderStructureSkeleton()
+	}
+
+	var userMsg string
+	if structureSkeleton != "" {
+		userMsg = fmt.Sprintf(`主题：%s
+
+%s
+
+请生成文章提纲，提纲的每个要点的 type 应与上述结构骨架对应。格式如下：
+{
+  "title": "文章标题",
+  "outline": [
+    {"type": "section_type", "point": "要点描述"}
+  ]
+}
+
+type 字段说明：用于标注该要点的段落角色，由你根据文章体裁自由决定。常见值包括但不限于：opening、argument、conclusion、intro、method、experiment、discussion、abstract 等，也可使用自定义标签。}`, args.Topic, structureSkeleton)
+	} else {
+		userMsg = fmt.Sprintf(`主题：%s
 
 请生成文章提纲，格式如下：
 {
   "title": "文章标题",
   "outline": [
-    {"type": "opening", "point": "开头要点"},
-    {"type": "argument", "point": "分论点"},
-    {"type": "conclusion", "point": "结尾要点"}
+    {"type": "section_type", "point": "要点描述"}
   ]
-}`, args.Topic)
+}
+
+type 字段说明：用于标注该要点的段落角色，由你根据文章体裁自由决定。常见值包括但不限于：opening、argument、conclusion、intro、method、experiment、discussion、abstract 等，也可使用自定义标签。}`, args.Topic)
+	}
 
 	resp, _, err := cfg.LLM.Chat(context.Background(), []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
@@ -433,7 +457,7 @@ func executeGenerateOutline(arguments string, cfg *ToolRunContext) (string, erro
 			}
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("标题：%s\n", outline.Title))
-			typeLabels := map[string]string{"opening": "开头", "argument": "分论点", "conclusion": "结尾"}
+			typeLabels := map[string]string{"opening": "开头", "argument": "分论点", "conclusion": "结尾", "intro": "引言", "method": "方法", "experiment": "实验", "discussion": "讨论", "abstract": "摘要"}
 			for i, item := range outline.Outline {
 				label := typeLabels[item.Type]
 				if label == "" {

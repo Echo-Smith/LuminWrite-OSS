@@ -38,6 +38,9 @@ type Harness struct {
 	emitter       engine.EventEmitter
 	maxIterations int
 
+	// 计费回调：工具执行成功后按名称扣费（商业版注入，nil = 不扣费）
+	toolSettleFunc ToolSettleFunc
+
 	// WorldState 管理（借鉴 Codex ContextManager + WorldState）
 	// 跨轮保留 section 基线，实现增量 diff 推送
 	worldState     *worldstate.WorldState
@@ -62,6 +65,12 @@ func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, kb tools.Knowl
 		tokenBudget:   &worldstate.TokenBudget{ContextWindowID: ""},
 		autoCompact:   worldstate.NewAutoCompactFallback(),
 	}
+}
+
+// SetToolSettleFunc 注入工具扣费回调（商业版使用）。
+// 必须在 Run 之前调用。
+func (h *Harness) SetToolSettleFunc(fn ToolSettleFunc) {
+	h.toolSettleFunc = fn
 }
 
 // Run 执行单次写作/对话请求。
@@ -124,6 +133,7 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		Profile:    h.profile,
 		LLM:        h.llm,
 		MaxCalls:   defaultMaxCalls(intent),
+		SettleFunc: h.toolSettleFunc,
 	}
 	executor := BuildToolExecutor(executorCfg)
 
@@ -523,10 +533,16 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 	if session.Outline != nil && session.Outline.Title != "" {
 		sb.WriteString(fmt.Sprintf("\n【标题（必须原样使用，不得修改）】：%s\n", session.Outline.Title))
 		sb.WriteString("【写作提纲（必须严格按照以下提纲展开，每个要点对应一个段落，不得增删或更改要点顺序）】：\n")
+		// 开放类型标签：已知类型翻译为中文，未知类型原样展示
 		typeLabels := map[string]string{
 			"opening":    "开头",
 			"argument":   "分论点",
 			"conclusion": "结尾",
+			"intro":      "引言",
+			"method":     "方法",
+			"experiment": "实验",
+			"discussion": "讨论",
+			"abstract":   "摘要",
 		}
 		for i, item := range session.Outline.Outline {
 			label := typeLabels[item.Type]
@@ -557,6 +573,9 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 }
 
 // buildLLMOptions 构建 LLM 调用选项。
+// reasoning_effort 不再硬编码——由 LLMClient 的 client 级别默认值决定，
+// 该默认值从数据库 model_configs.reasoning_effort 读取。
+// 如果需要按意图动态调整，可以在这里覆盖。
 func (h *Harness) buildLLMOptions(intent Intent, session *WritingSession) []tools.ChatOption {
 	opts := []tools.ChatOption{}
 
@@ -564,12 +583,10 @@ func (h *Harness) buildLLMOptions(intent Intent, session *WritingSession) []tool
 	case IntentWriting:
 		opts = append(opts,
 			tools.WithThinking(true),
-			tools.WithReasoningEffort("high"),
 		)
 	case IntentPolish, IntentShorten, IntentExpand:
 		opts = append(opts,
 			tools.WithThinking(true),
-			tools.WithReasoningEffort("high"),
 		)
 	case IntentChat:
 		opts = append(opts, tools.WithThinking(false))

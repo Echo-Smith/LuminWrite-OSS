@@ -763,11 +763,17 @@ export const useEditorialStore = create<EditorialState>((set, get) => ({
       }
     }
 
-    // 新决策创建 → 刷新 decisions
-    if (evt.type === "decision.created" || evt.type === "decision.required") {
+    // 新决策创建或解决 → 刷新 decisions + 待处理决策
+    if (evt.type === "decision.created" || evt.type === "decision.required" || evt.type === "decision.resolved") {
+      state.fetchPendingDecisions();
       if (state.currentTask?.id === evt.task_id) {
         state.fetchDecisions(evt.task_id);
       }
+    }
+
+    // 实验进度事件 → 刷新实验列表
+    if (evt.type === "experiment.started" || evt.type === "experiment.mode_done" || evt.type === "experiment.completed") {
+      state.fetchExperiments();
     }
   },
 

@@ -75,6 +75,49 @@ func (p *StyleProfile) RenderWritingConstraints(taskMode string, hasOutlineTitle
 	return result.String()
 }
 
+// RenderStructureSkeleton renders the structure skeleton for outline generation.
+// This is used by OutlineStep to guide the LLM in generating outlines that
+// conform to the profile's structure type.
+//
+// For custom type with Sections, returns the section names as a guide.
+// For three_part / free_form, returns the Opening/Body/Conclusion if set.
+// Returns empty string if no structure is configured.
+func (p *StyleProfile) RenderStructureSkeleton() string {
+	if p == nil || p.Structure.Type == "" {
+		return ""
+	}
+
+	// custom 类型：使用 Sections 数组
+	if p.Structure.Type == "custom" && len(p.Structure.Sections) > 0 {
+		var parts []string
+		for _, s := range p.Structure.Sections {
+			if s.Description != "" {
+				parts = append(parts, fmt.Sprintf("%s（%s）", s.Name, s.Description))
+			} else {
+				parts = append(parts, s.Name)
+			}
+		}
+		return "结构骨架：" + strings.Join(parts, " → ")
+	}
+
+	// 非 custom 类型：使用 Opening/Body/Conclusion
+	var parts []string
+	if p.Structure.Opening != "" {
+		parts = append(parts, p.Structure.Opening)
+	}
+	if p.Structure.Body != "" {
+		parts = append(parts, p.Structure.Body)
+	}
+	if p.Structure.Conclusion != "" {
+		parts = append(parts, p.Structure.Conclusion)
+	}
+	if len(parts) > 0 {
+		return "结构骨架：" + strings.Join(parts, " → ")
+	}
+
+	return ""
+}
+
 // RenderReviewCriteria renders style constraints for the PostReviewStep
 // review prompt. This is a separate rendering path because:
 //  1. Rhetoric is listed as category names only (not full descriptions)
@@ -202,14 +245,39 @@ func (p *StyleProfile) appendStructure(b *strings.Builder) {
 	if p.Structure.Type == "" {
 		return
 	}
-	b.WriteString(fmt.Sprintf("结构要求：%s", p.Structure.Opening))
+
+	// custom 类型优先使用 Sections 数组渲染结构骨架
+	if p.Structure.Type == "custom" && len(p.Structure.Sections) > 0 {
+		var parts []string
+		for _, s := range p.Structure.Sections {
+			if s.Description != "" {
+				parts = append(parts, fmt.Sprintf("%s（%s）", s.Name, s.Description))
+			} else {
+				parts = append(parts, s.Name)
+			}
+		}
+		b.WriteString(fmt.Sprintf("结构要求（自定义骨架）：%s\n", strings.Join(parts, " → ")))
+		// custom 类型不追加 argument_pattern/variations（这些属于三段式特有概念）
+		if p.Structure.ArgumentInstruction != "" {
+			b.WriteString(fmt.Sprintf("论述要求：%s\n", p.Structure.ArgumentInstruction))
+		}
+		return
+	}
+
+	// 非 custom 类型：动态拼接结构段，收集所有非空的部分，用 → 连接
+	var parts []string
+	if p.Structure.Opening != "" {
+		parts = append(parts, p.Structure.Opening)
+	}
 	if p.Structure.Body != "" {
-		b.WriteString(fmt.Sprintf(" → %s", p.Structure.Body))
+		parts = append(parts, p.Structure.Body)
 	}
 	if p.Structure.Conclusion != "" {
-		b.WriteString(fmt.Sprintf(" → %s", p.Structure.Conclusion))
+		parts = append(parts, p.Structure.Conclusion)
 	}
-	b.WriteString("\n")
+	if len(parts) > 0 {
+		b.WriteString(fmt.Sprintf("结构要求：%s\n", strings.Join(parts, " → ")))
+	}
 	if p.Structure.ArgumentPattern != "" {
 		b.WriteString(fmt.Sprintf("论证模式：%s\n", p.Structure.ArgumentPattern))
 	}
@@ -226,8 +294,35 @@ func (p *StyleProfile) appendStructureSummary(b *strings.Builder) {
 	if p.Structure.Type == "" {
 		return
 	}
-	b.WriteString(fmt.Sprintf("结构类型：%s（%s → %s → %s）\n",
-		p.Structure.Type, p.Structure.Opening, p.Structure.Body, p.Structure.Conclusion))
+
+	// custom 类型优先使用 Sections 数组
+	if p.Structure.Type == "custom" && len(p.Structure.Sections) > 0 {
+		var parts []string
+		for _, s := range p.Structure.Sections {
+			parts = append(parts, s.Name)
+		}
+		b.WriteString(fmt.Sprintf("结构类型：%s（%s）\n",
+			p.Structure.Type, strings.Join(parts, " → ")))
+		return
+	}
+
+	// 非 custom 类型：动态拼接结构摘要
+	var parts []string
+	if p.Structure.Opening != "" {
+		parts = append(parts, p.Structure.Opening)
+	}
+	if p.Structure.Body != "" {
+		parts = append(parts, p.Structure.Body)
+	}
+	if p.Structure.Conclusion != "" {
+		parts = append(parts, p.Structure.Conclusion)
+	}
+	if len(parts) > 0 {
+		b.WriteString(fmt.Sprintf("结构类型：%s（%s）\n",
+			p.Structure.Type, strings.Join(parts, " → ")))
+	} else {
+		b.WriteString(fmt.Sprintf("结构类型：%s\n", p.Structure.Type))
+	}
 }
 
 func (p *StyleProfile) appendRhetoric(b *strings.Builder, detailed bool) {

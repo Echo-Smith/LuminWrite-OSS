@@ -57,6 +57,9 @@ import {
   FlaskConical,
   Play,
   Timer,
+  Send,
+  Eye,
+  Network,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -156,6 +159,7 @@ export function EditorialBoard() {
   const highRiskCount = tasks.filter(
     (t) => t.status === "pending_approval" || t.status === "review"
   ).length;
+  const pendingPublishCount = tasks.filter((t) => t.status === "pending_publish").length;
   const budgetWarningCount = tasks.filter((t) => {
     if (t.token_budget <= 0) return false;
     return t.token_used / t.token_budget > 0.8;
@@ -242,7 +246,7 @@ export function EditorialBoard() {
         {view === "dashboard" && (
           <div className="p-6 space-y-4 overflow-y-auto">
             {/* 四个统计卡片 */}
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-5 gap-4">
               <DashboardCard
                 icon={<Gavel className="h-4 w-4" />}
                 label="待我决定"
@@ -263,6 +267,13 @@ export function EditorialBoard() {
                 count={budgetWarningCount}
                 color="orange"
                 onClick={() => setView("kanban")}
+              />
+              <DashboardCard
+                icon={<Send className="h-4 w-4" />}
+                label="待发布"
+                count={pendingPublishCount}
+                color="cyan"
+                onClick={() => pendingPublishCount > 0 && setView("kanban")}
               />
               <DashboardCard
                 icon={<Zap className="h-4 w-4" />}
@@ -450,7 +461,7 @@ function DashboardCard({
   icon: React.ReactNode;
   label: string;
   count: number;
-  color: "amber" | "red" | "orange" | "blue";
+  color: "amber" | "red" | "orange" | "blue" | "cyan";
   onClick?: () => void;
 }) {
   const colorMap = {
@@ -458,6 +469,7 @@ function DashboardCard({
     red: "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300",
     orange: "bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800 text-orange-700 dark:text-orange-300",
     blue: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300",
+    cyan: "bg-cyan-50 dark:bg-cyan-950/30 border-cyan-200 dark:border-cyan-800 text-cyan-700 dark:text-cyan-300",
   };
   return (
     <div
@@ -814,6 +826,8 @@ function TaskCard({
 
   const isAgentWorking = ["research", "writing", "review"].includes(task.status);
   const isBudgetWarning = tokenPct > 80;
+  const isPendingPublish = task.status === "pending_publish";
+  const isPublished = task.status === "published";
 
   return (
     <div
@@ -822,12 +836,19 @@ function TaskCard({
         "rounded-lg border bg-card p-3 cursor-pointer transition-all hover:shadow-md",
         selected && "ring-2 ring-primary",
         isAgentWorking && "border-blue-300 dark:border-blue-700",
-        isBudgetWarning && "border-orange-300 dark:border-orange-700"
+        isBudgetWarning && "border-orange-300 dark:border-orange-700",
+        isPendingPublish && "border-cyan-300 dark:border-cyan-700",
+        isPublished && "border-green-300 dark:border-green-700"
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-sm font-medium line-clamp-2">{task.title}</h3>
-        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="flex items-center gap-1 shrink-0">
+          {isPendingPublish && <Eye className="h-3.5 w-3.5 text-cyan-500" />}
+          {isPublished && <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />}
+          {isAgentWorking && <Network className="h-3.5 w-3.5 text-blue-500" />}
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </div>
       </div>
 
       {task.description && (
@@ -839,6 +860,9 @@ function TaskCard({
           {isAgentWorking ? <Bot className="h-3 w-3 text-blue-500" /> : <User className="h-3 w-3" />}
           {ASSIGNEE_LABELS[task.assignee_type] || task.assignee_type}
         </span>
+        {task.style_slug && (
+          <Badge variant="outline" className="text-xs py-0 px-1.5">{task.style_slug}</Badge>
+        )}
         {task.deadline && (
           <span className="flex items-center gap-1">
             <Clock className="h-3 w-3" />
@@ -848,7 +872,13 @@ function TaskCard({
         {isAgentWorking && (
           <span className="flex items-center gap-1 text-blue-500">
             <Loader2 className="h-3 w-3 animate-spin" />
-            执行中
+            DAG 执行中
+          </span>
+        )}
+        {isPendingPublish && (
+          <span className="flex items-center gap-1 text-cyan-500">
+            <Send className="h-3 w-3" />
+            待发布
           </span>
         )}
         {isBudgetWarning && (
@@ -914,11 +944,19 @@ function AdvanceButton({ task, onAdvance }: { task: EditorialTask; onAdvance: (t
     published: "发布",
   };
 
+  const isPublish = next === "published";
+
   return (
     <button
       onClick={(e) => { e.stopPropagation(); onAdvance(next); }}
-      className="mt-2 w-full rounded-md bg-primary/10 hover:bg-primary/20 text-primary text-xs font-medium py-1.5 transition-colors"
+      className={cn(
+        "mt-2 w-full rounded-md text-xs font-medium py-1.5 transition-colors",
+        isPublish
+          ? "bg-cyan-500 hover:bg-cyan-600 text-white"
+          : "bg-primary/10 hover:bg-primary/20 text-primary"
+      )}
     >
+      {isPublish && <Send className="h-3 w-3 inline mr-1" />}
       {labels[next] || "推进"}
     </button>
   );
@@ -938,7 +976,12 @@ function TaskDetailPanel({ taskId, onClose }: { taskId: string; onClose: () => v
     expandedArtifactIds,
     toggleArtifactExpand,
     reviewArtifact,
+    advanceTask,
   } = useEditorialStore();
+
+  const [publishing, setPublishing] = useState(false);
+  const [publishRationale, setPublishRationale] = useState("");
+  const [showPublishConfirm, setShowPublishConfirm] = useState(false);
 
   useEffect(() => {
     fetchTask(taskId);
@@ -955,6 +998,24 @@ function TaskDetailPanel({ taskId, onClose }: { taskId: string; onClose: () => v
   }
 
   const taskEvents = events.filter((e) => e.task_id === taskId);
+  const isPendingPublish = currentTask.status === "pending_publish";
+  const isPublished = currentTask.status === "published";
+
+  // 获取最终稿件 (draft 或 revised_draft) 用于预览
+  const draftArtifact = artifacts.find(
+    (a) => (a.type === "revised_draft" || a.type === "draft") && (a.status === "approved" || a.status === "submitted")
+  );
+  const reviewReport = artifacts.find((a) => a.type === "review_report");
+
+  const handlePublish = async () => {
+    setPublishing(true);
+    const ok = await advanceTask(taskId, "published");
+    setPublishing(false);
+    if (ok) {
+      setShowPublishConfirm(false);
+      setPublishRationale("");
+    }
+  };
 
   return (
     <div className="p-4 space-y-4">
@@ -975,6 +1036,100 @@ function TaskDetailPanel({ taskId, onClose }: { taskId: string; onClose: () => v
           )}
         </div>
       </div>
+
+      {/* 发布流程区域 */}
+      {isPendingPublish && (
+        <div className="rounded-lg border border-cyan-200 dark:border-cyan-800 bg-cyan-50 dark:bg-cyan-950/30 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Send className="h-4 w-4 text-cyan-500" />
+            <h3 className="text-sm font-semibold text-cyan-700 dark:text-cyan-300">文章待发布</h3>
+          </div>
+          <p className="text-xs text-cyan-600 dark:text-cyan-400">
+            DAG 工作流已完成，文章通过审校。确认无误后可发布。
+          </p>
+
+          {/* 最终稿件预览 */}
+          {draftArtifact && (
+            <div className="rounded-md bg-white dark:bg-card border p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium">最终稿件预览</span>
+                <Badge variant="outline" className="text-xs">{ARTIFACT_LABELS[draftArtifact.type] || draftArtifact.type} v{draftArtifact.version}</Badge>
+              </div>
+              <div className="max-h-48 overflow-y-auto">
+                <ArticlePreview content={draftArtifact.content} />
+              </div>
+            </div>
+          )}
+
+          {/* 审校结果摘要 */}
+          {reviewReport && (
+            <div className="rounded-md bg-white dark:bg-card border p-2">
+              <span className="text-xs font-medium flex items-center gap-1">
+                <Shield className="h-3 w-3" /> 审校报告
+              </span>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {(() => {
+                  try {
+                    const report = JSON.parse(reviewReport.content);
+                    return report.passed ? "✅ 审校通过" : "⚠️ 审校有条件通过";
+                  } catch { return "审校报告已生成"; }
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* 发布确认区 */}
+          {!showPublishConfirm ? (
+            <Button
+              className="w-full bg-cyan-500 hover:bg-cyan-600 text-white"
+              onClick={() => setShowPublishConfirm(true)}
+            >
+              <Send className="h-4 w-4 mr-1" />
+              确认发布
+            </Button>
+          ) : (
+            <div className="space-y-3">
+              <Textarea
+                value={publishRationale}
+                onChange={(e) => setPublishRationale(e.target.value)}
+                placeholder="发布备注（可选）..."
+                rows={2}
+                className="text-xs"
+              />
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1 bg-cyan-500 hover:bg-cyan-600 text-white"
+                  onClick={handlePublish}
+                  disabled={publishing}
+                >
+                  {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-1" />}
+                  确认发布
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => { setShowPublishConfirm(false); setPublishRationale(""); }}
+                  disabled={publishing}
+                >
+                  取消
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 已发布状态 */}
+      {isPublished && (
+        <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 p-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <h3 className="text-sm font-semibold text-green-700 dark:text-green-300">已发布</h3>
+          </div>
+          <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+            文章已成功发布。
+          </p>
+        </div>
+      )}
 
       {/* 验收标准 */}
       {currentTask.accept_criteria && (
@@ -1271,6 +1426,41 @@ function ArtifactContent({ content, type }: { content: string; type: string }) {
   );
 }
 
+// ─── 文章预览（用于发布流程中的最终稿件展示）────────
+
+function ArticlePreview({ content }: { content: string }) {
+  let title = "";
+  let body = "";
+  let wordCount = 0;
+
+  try {
+    const parsed = JSON.parse(content);
+    title = parsed.title || "";
+    body = parsed.content || parsed.body || "";
+    wordCount = parsed.word_count || 0;
+  } catch {
+    body = content;
+  }
+
+  const preview = body.slice(0, 500);
+  const hasMore = body.length > 500;
+
+  return (
+    <div className="space-y-2">
+      {title && <h4 className="text-sm font-semibold">{title}</h4>}
+      <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+        {preview}
+        {hasMore && <span className="text-cyan-500">... (点击交付物查看全文)</span>}
+      </div>
+      {wordCount > 0 && (
+        <div className="text-xs text-muted-foreground">
+          字数：{wordCount}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── 决策卡片 ─────────────────────────────────────────────
 
 function DecisionCard({ decision }: { decision: Decision }) {
@@ -1412,6 +1602,34 @@ function formatEventMessage(type: string, payload: Record<string, unknown>): str
       const msg = payload.message as string;
       return `🔔 需要人工决策: ${msg}`;
     }
+    // DAG 工作流事件
+    case "workflow.started": {
+      const nodeCount = payload.node_count as number;
+      return `🔄 DAG 工作流启动 (${nodeCount} 个节点)`;
+    }
+    case "workflow.completed": {
+      const nodeCount = payload.node_count as number;
+      const totalTokens = payload.total_tokens as number;
+      return `✅ DAG 工作流完成 (${nodeCount} 节点, ${(totalTokens / 1000).toFixed(0)}k tokens)`;
+    }
+    case "workflow.failed": {
+      return `❌ DAG 工作流失败`;
+    }
+    case "node.started": {
+      const nodeName = payload.agent_name as string || payload.node_id as string;
+      return `▶ 节点启动: ${nodeName}`;
+    }
+    case "node.completed": {
+      const nodeName = payload.agent_name as string || payload.node_id as string;
+      const artifactType = payload.artifact_type as string;
+      const durationMs = payload.duration_ms as number;
+      return `✓ 节点完成: ${nodeName}${artifactType ? ` → ${ARTIFACT_LABELS[artifactType] || artifactType}` : ""} (${(durationMs / 1000).toFixed(1)}s)`;
+    }
+    case "node.failed": {
+      const nodeName = payload.node_id as string;
+      const error = payload.error as string;
+      return `✗ 节点失败: ${nodeName} - ${error}`;
+    }
     default:
       return null;
   }
@@ -1426,6 +1644,13 @@ function getEventIcon(type: string) {
     case "decision.required": return <AlertTriangle className="h-3 w-3 text-amber-500" />;
     case "decision.created": return <CheckCircle2 className="h-3 w-3 text-purple-500" />;
     case "task.status_changed": return <ChevronRight className="h-3 w-3 text-muted-foreground" />;
+    // DAG 事件图标
+    case "workflow.started": return <Network className="h-3 w-3 text-blue-500" />;
+    case "workflow.completed": return <CheckCircle2 className="h-3 w-3 text-green-500" />;
+    case "workflow.failed": return <XCircle className="h-3 w-3 text-red-500" />;
+    case "node.started": return <Play className="h-3 w-3 text-blue-400" />;
+    case "node.completed": return <CheckCircle2 className="h-3 w-3 text-green-400" />;
+    case "node.failed": return <XCircle className="h-3 w-3 text-red-400" />;
     default: return <Activity className="h-3 w-3 text-muted-foreground" />;
   }
 }

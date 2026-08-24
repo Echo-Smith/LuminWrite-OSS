@@ -92,6 +92,13 @@ services:
       REDIS_URL: redis://redis:6379/0
     ports:
       - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      # 支付宝证书目录（只读挂载，宿主机 ./certs/alipay → 容器 /app/certs）
+      # 证书文件需放在宿主机 certs/alipay/ 目录下：
+      #   - appCertPublicKey.crt    应用公钥证书
+      #   - alipayCertPublicKey.crt 支付宝公钥证书
+      #   - alipayRootCert.crt      支付宝根证书
+      - ./certs/alipay:/app/certs:ro
     networks:
       - internal
       - frontend

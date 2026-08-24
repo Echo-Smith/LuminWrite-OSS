@@ -336,6 +336,7 @@ func (c *LLMClient) doResponsesRequest(ctx context.Context, req *responsesReques
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.applyCustomHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -377,6 +378,7 @@ func (c *LLMClient) doResponsesStreamRequest(ctx context.Context, req *responses
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
+	c.applyCustomHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

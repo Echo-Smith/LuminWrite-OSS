@@ -105,7 +105,7 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
   // Pipeline 模式的 result 中 results 是搜索结果数组
   const webResults = Array.isArray(searchResults?.items) ? searchResults!.items! : (Array.isArray(searchResults?.results) ? searchResults!.results as Array<Record<string, unknown>> : []);
 
-  // 从 search_knowledge step 提取知识库检索结果
+  // 从 search_knowledge step 提取素材库检索结果
   const kbSearchStep = toolCallParts.find((p) => p.toolName === "search_knowledge");
   const kbSearchResults = kbSearchStep?.result as { results?: Array<Record<string, unknown>> | number; items?: Array<Record<string, unknown>> } | undefined;
   const kbResults = Array.isArray(kbSearchResults?.items) ? kbSearchResults!.items! : (Array.isArray(kbSearchResults?.results) ? kbSearchResults!.results as Array<Record<string, unknown>> : []);
@@ -303,7 +303,7 @@ function AgentCollaborationFlow({ parts }: { parts: ToolCallPart[] }) {
 }
 
 /**
- * 检索素材列表 — 按来源分类展示：选题素材 / 检索计划 / 记忆系统 / 网络搜索 / 知识库检索
+ * 检索素材列表 — 按来源分类展示：选题素材 / 检索计划 / 记忆系统 / 网络搜索 / 素材库检索
  */
 function SourcesList({
   webResults,
@@ -459,12 +459,12 @@ function SourcesList({
         </div>
       )}
 
-      {/* 知识库检索结果 */}
+      {/* 素材库检索结果 */}
       {kbResults.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <BookOpen className="h-3.5 w-3.5" />
-            知识库检索
+            素材库检索
             <span className="font-mono-sm">{kbResults.length} 条</span>
           </div>
           {kbResults.map((r, i) => (

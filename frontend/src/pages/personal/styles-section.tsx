@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Palette, Pencil, Loader2, Trash2, Check, ChevronRight,
-  AlertCircle, Clock, Plus, Undo2, Upload, type LucideIcon,
+  AlertCircle, Clock, Plus, Undo2, Upload, X, type LucideIcon,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,7 @@ interface StyleConfig {
     conclusion: string;
     argument_pattern: string;
     argument_count: { min: number; max: number };
+    sections?: { name: string; description?: string }[];
   };
   rhetoric: {
     required_metaphor: boolean;
@@ -70,6 +71,7 @@ interface StyleConfig {
     use_markdown: boolean;
     title_prefix: string;
   };
+  kb_id?: string;
 }
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -93,6 +95,7 @@ function defaultStyleConfig(slug: string, name: string, description: string): St
       conclusion: "",
       argument_pattern: "",
       argument_count: { min: 1, max: 3 },
+      sections: [],
     },
     rhetoric: {
       required_metaphor: false,
@@ -117,6 +120,7 @@ function defaultStyleConfig(slug: string, name: string, description: string): St
       use_markdown: true,
       title_prefix: "## ",
     },
+    kb_id: "",
   };
 }
 
@@ -524,8 +528,27 @@ function StyleEditDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<"basic" | "structure" | "prompt">("basic");
+  const [kbOptions, setKbOptions] = useState<{ id: string; name: string; description: string }[]>([]);
 
   const update = (patch: Partial<StyleConfig>) => setConfig({ ...config, ...patch });
+
+  // Load knowledge base list for KB binding selector
+  useEffect(() => {
+    fetch("/api/v2/kb/kbs", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && json.data?.knowledge_bases) {
+          setKbOptions(json.data.knowledge_bases.map((kb: any) => ({
+            id: kb.id,
+            name: kb.name,
+            description: kb.description ?? "",
+          })));
+        }
+      })
+      .catch(() => {});
+  }, [token]);
 
   const handleSave = async () => {
     if (!config.system_prompt.trim()) {
@@ -707,6 +730,28 @@ function StyleEditDialog({
                   placeholder="如 判断式或设问式"
                 />
               </div>
+              <div>
+                <Label>绑定素材库</Label>
+                <Select
+                  value={config.kb_id ?? "__none__"}
+                  onValueChange={(v) => update({ kb_id: v === "__none__" ? "" : v })}
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue placeholder="不绑定（搜索全部素材库）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">不绑定（搜索全部素材库）</SelectItem>
+                    {kbOptions.map((kb) => (
+                      <SelectItem key={kb.id} value={kb.id}>
+                        {kb.name}{kb.description ? ` — ${kb.description}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  绑定后，写作时自动检索将仅在此素材库中查找
+                </p>
+              </div>
             </>
           )}
 
@@ -730,41 +775,98 @@ function StyleEditDialog({
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <Label>开头</Label>
-                  <Input
-                    className="mt-1.5"
-                    value={config.structure.opening}
-                    onChange={(e) =>
-                      update({ structure: { ...config.structure, opening: e.target.value } })
-                    }
-                    placeholder="如 现象点题"
-                  />
+              {config.structure.type === "custom" ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-semibold">结构段定义</Label>
+                    <button
+                      type="button"
+                      onClick={() => update({
+                        structure: {
+                          ...config.structure,
+                          sections: [...(config.structure.sections ?? []), { name: "", description: "" }],
+                        },
+                      })}
+                      className="flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <Plus className="h-3 w-3" /> 添加段
+                    </button>
+                  </div>
+                  {(config.structure.sections ?? []).map((sec, idx) => (
+                    <div key={idx} className="flex gap-2 items-start">
+                      <Input
+                        className="flex-1"
+                        value={sec.name}
+                        onChange={(e) => {
+                          const sections = [...(config.structure.sections ?? [])];
+                          sections[idx] = { ...sections[idx], name: e.target.value };
+                          update({ structure: { ...config.structure, sections } });
+                        }}
+                        placeholder="段名称（如 引言）"
+                      />
+                      <Input
+                        className="flex-1"
+                        value={sec.description ?? ""}
+                        onChange={(e) => {
+                          const sections = [...(config.structure.sections ?? [])];
+                          sections[idx] = { ...sections[idx], description: e.target.value };
+                          update({ structure: { ...config.structure, sections } });
+                        }}
+                        placeholder="写作指引（可选，如 概述研究背景与问题）"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const sections = (config.structure.sections ?? []).filter((_, i) => i !== idx);
+                          update({ structure: { ...config.structure, sections } });
+                        }}
+                        className="mt-2 text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                  {(config.structure.sections ?? []).length === 0 && (
+                    <p className="text-xs text-muted-foreground">点击「添加段」创建自定义结构骨架（如：引言→方法→实验→讨论→结论）</p>
+                  )}
                 </div>
-                <div>
-                  <Label>正文</Label>
-                  <Input
-                    className="mt-1.5"
-                    value={config.structure.body}
-                    onChange={(e) =>
-                      update({ structure: { ...config.structure, body: e.target.value } })
-                    }
-                    placeholder="如 分层论述"
-                  />
+              ) : (
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <Label>开头</Label>
+                    <Input
+                      className="mt-1.5"
+                      value={config.structure.opening}
+                      onChange={(e) =>
+                        update({ structure: { ...config.structure, opening: e.target.value } })
+                      }
+                      placeholder="如 现象点题"
+                    />
+                  </div>
+                  <div>
+                    <Label>正文</Label>
+                    <Input
+                      className="mt-1.5"
+                      value={config.structure.body}
+                      onChange={(e) =>
+                        update({ structure: { ...config.structure, body: e.target.value } })
+                      }
+                      placeholder="如 分层论述"
+                    />
+                  </div>
+                  <div>
+                    <Label>结尾</Label>
+                    <Input
+                      className="mt-1.5"
+                      value={config.structure.conclusion}
+                      onChange={(e) =>
+                        update({ structure: { ...config.structure, conclusion: e.target.value } })
+                      }
+                      placeholder="如 总结升华"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <Label>结尾</Label>
-                  <Input
-                    className="mt-1.5"
-                    value={config.structure.conclusion}
-                    onChange={(e) =>
-                      update({ structure: { ...config.structure, conclusion: e.target.value } })
-                    }
-                    placeholder="如 总结升华"
-                  />
-                </div>
-              </div>
+              )}
               <div>
                 <Label>论证模式</Label>
                 <Input

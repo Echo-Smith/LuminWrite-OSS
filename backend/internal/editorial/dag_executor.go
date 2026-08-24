@@ -18,6 +18,22 @@ import (
 // 按拓扑序执行就绪节点，节点完成后更新下游节点。
 // 借鉴 LangGraph 的 StateGraph 执行模式和 Codex 的多 Agent 编排。
 
+// taskRun 持有单个 task 的运行时状态，实现 taskID 级别隔离
+type taskRun struct {
+	mu        sync.Mutex
+	status    WorkflowStatus
+	results   map[string]*NodeResult // nodeID → result
+	finalized atomic.Bool            // 防止 finalize 被多次调用
+	cancel    context.CancelFunc     // 用于 cancel 操作
+}
+
+func newTaskRun() *taskRun {
+	return &taskRun{
+		status:  WorkflowStatusCreated,
+		results: make(map[string]*NodeResult),
+	}
+}
+
 // DAGExecutor DAG 执行器
 type DAGExecutor struct {
 	registry    *DynamicAgentRegistry
@@ -26,10 +42,9 @@ type DAGExecutor struct {
 	executors   map[string]AgentExecutorAdapter // agentID → executor
 	tokenBudget *DAGTokenBudget
 
-	mu           sync.Mutex
-	status       WorkflowStatus
-	results      map[string]*NodeResult // nodeID → result
-	finalized    atomic.Bool            // 防止 finalize 被多次调用
+	// 按 taskID 隔离的运行时状态
+	runsMu sync.Mutex
+	runs   map[string]*taskRun // taskID → run state
 
 	// plan 缓存: taskID → PlanResult
 	planCache map[string]*PlanResult
@@ -42,17 +57,40 @@ func NewDAGExecutor(registry *DynamicAgentRegistry, store *Store, emitter EventE
 		store:       store,
 		emitter:     emitter,
 		executors:   make(map[string]AgentExecutorAdapter),
-		results:     make(map[string]*NodeResult),
-		status:      WorkflowStatusCreated,
 		tokenBudget: NewDAGTokenBudget(0), // 默认无限制
+		runs:        make(map[string]*taskRun),
 		planCache:   make(map[string]*PlanResult),
 	}
 }
 
+// getOrCreateRun 获取或创建 task 的运行时状态
+func (e *DAGExecutor) getOrCreateRun(taskID string) *taskRun {
+	e.runsMu.Lock()
+	defer e.runsMu.Unlock()
+	run, ok := e.runs[taskID]
+	if !ok {
+		run = newTaskRun()
+		e.runs[taskID] = run
+	}
+	return run
+}
+
+// getRun 获取 task 的运行时状态（不存在返回 nil）
+func (e *DAGExecutor) getRun(taskID string) *taskRun {
+	e.runsMu.Lock()
+	defer e.runsMu.Unlock()
+	return e.runs[taskID]
+}
+
+// deleteRun 清理 task 的运行时状态
+func (e *DAGExecutor) deleteRun(taskID string) {
+	e.runsMu.Lock()
+	defer e.runsMu.Unlock()
+	delete(e.runs, taskID)
+}
+
 // RegisterExecutor 注册 Agent 执行器
 func (e *DAGExecutor) RegisterExecutor(agentID string, exec AgentExecutorAdapter) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.executors[agentID] = exec
 	slog.Info("dag executor: executor registered", "agent_id", agentID)
 }
@@ -69,8 +107,8 @@ type EmitterHolder interface {
 
 // CachePlan 缓存 Planner 输出，并注册生成的 Agent 到 registry。
 func (e *DAGExecutor) CachePlan(taskID string, plan *PlanResult) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.runsMu.Lock()
+	defer e.runsMu.Unlock()
 	e.planCache[taskID] = plan
 	// 注册生成的 Agent 到 registry
 	configs := make([]*AgentConfig, len(plan.Agents))
@@ -83,8 +121,8 @@ func (e *DAGExecutor) CachePlan(taskID string, plan *PlanResult) {
 
 // GetPlan 获取缓存的 Planner 输出
 func (e *DAGExecutor) GetPlan(taskID string) (*PlanResult, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.runsMu.Lock()
+	defer e.runsMu.Unlock()
 	plan, ok := e.planCache[taskID]
 	return plan, ok
 }
@@ -94,6 +132,24 @@ func (e *DAGExecutor) GetRegistry() *DynamicAgentRegistry {
 	return e.registry
 }
 
+// Cancel 取消指定 task 的 DAG 执行
+func (e *DAGExecutor) Cancel(taskID string) bool {
+	e.runsMu.Lock()
+	run, ok := e.runs[taskID]
+	e.runsMu.Unlock()
+	if !ok || run == nil {
+		return false
+	}
+	run.mu.Lock()
+	if run.cancel != nil {
+		run.cancel()
+	}
+	run.status = WorkflowStatusFailed
+	run.mu.Unlock()
+	slog.Info("dag executor: task cancelled", "task_id", taskID)
+	return true
+}
+
 // Execute 遍历 DAG，按拓扑序执行就绪节点
 func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Task) error {
 	// 校验 DAG
@@ -101,10 +157,19 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 		return fmt.Errorf("dag validation: %w", err)
 	}
 
-	e.mu.Lock()
-	e.status = WorkflowStatusRunning
-	e.finalized.Store(false) // 重置 finalize 标志
-	e.mu.Unlock()
+	// 获取或创建此 task 的隔离运行状态
+	run := e.getOrCreateRun(task.ID)
+
+	run.mu.Lock()
+	run.status = WorkflowStatusRunning
+	run.finalized.Store(false) // 重置 finalize 标志
+	run.mu.Unlock()
+
+	// 创建可取消的 context，存储 cancel 函数
+	execCtx, cancel := context.WithCancel(ctx)
+	run.mu.Lock()
+	run.cancel = cancel
+	run.mu.Unlock()
 
 	e.emit(OrchestratorEvent{
 		Type:    "workflow.started",
@@ -144,9 +209,6 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 	var hasFailed atomic.Bool
 
 	// done channel: 当所有节点完成时，通知主循环退出
-	// Bug fix: 原实现在最后一个节点完成后，主循环阻塞在 select 的 readyQueue 上，
-	// 因为最后一个节点没有下游，不会向 readyQueue 发送新数据。
-	// 导致 Execute 方法一直阻塞到 10 分钟超时才返回。
 	done := make(chan struct{})
 
 	// 启动 worker goroutine 池
@@ -155,13 +217,21 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-execCtx.Done():
 			wg.Wait()
-			return ctx.Err()
+			// 清理 cancel 函数
+			run.mu.Lock()
+			run.cancel = nil
+			run.mu.Unlock()
+			return execCtx.Err()
 
 		case <-done:
 			// 所有节点已完成，等待 goroutine 退出
 			wg.Wait()
+			// 清理 cancel 函数
+			run.mu.Lock()
+			run.cancel = nil
+			run.mu.Unlock()
 			if hasFailed.Load() {
 				return fmt.Errorf("DAG execution failed: one or more nodes failed")
 			}
@@ -174,17 +244,17 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 			}
 			if hasFailed.Load() {
 				// 标记剩余节点为 skipped
-				e.mu.Lock()
-				if _, exists := e.results[nodeID]; !exists {
-					e.results[nodeID] = &NodeResult{
+				run.mu.Lock()
+				if _, exists := run.results[nodeID]; !exists {
+					run.results[nodeID] = &NodeResult{
 						NodeID: nodeID,
 						Status: NodeStatusSkipped,
 						Error:  "upstream dependency failed",
 					}
 				}
-				e.mu.Unlock()
+				run.mu.Unlock()
 				if completedCount.Add(1) == totalNodes {
-					e.finalize(ctx, task, spec, false)
+					e.finalize(execCtx, task, spec, false, run)
 					close(done)
 				}
 				continue
@@ -192,21 +262,21 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 
 			node := nodeMap[nodeID]
 
-			// 检查是否有依赖失败（加锁防止与 worker goroutine 的写入竞态）
-			e.mu.Lock()
-			failed := e.hasFailedDependency(node, e.results)
+			// 检查是否有依赖失败
+			run.mu.Lock()
+			failed := e.hasFailedDependency(node, run.results)
 			if failed {
-				e.results[nodeID] = &NodeResult{
+				run.results[nodeID] = &NodeResult{
 					NodeID: nodeID,
 					Status: NodeStatusSkipped,
 					Error:  "upstream dependency failed",
 				}
 			}
-			e.mu.Unlock()
+			run.mu.Unlock()
 
 			if failed {
 				if completedCount.Add(1) == totalNodes {
-					e.finalize(ctx, task, spec, false)
+					e.finalize(execCtx, task, spec, false, run)
 					close(done)
 				}
 				continue
@@ -219,12 +289,12 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 				defer wg.Done()
 				defer func() { <-sem }() // 释放信号量
 
-				err := e.executeNode(ctx, n, nodeMap, task)
+				err := e.executeNode(execCtx, n, nodeMap, task, run)
 
-				e.mu.Lock()
+				run.mu.Lock()
 				result := &NodeResult{
-					NodeID:     n.ID,
-					StartedAt:  ptrTime(time.Now()),
+					NodeID:    n.ID,
+					StartedAt: ptrTime(time.Now()),
 				}
 				if err != nil {
 					result.Status = NodeStatusFailed
@@ -234,26 +304,26 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 					result.Status = NodeStatusCompleted
 				}
 				result.FinishedAt = ptrTime(time.Now())
-				e.results[n.ID] = result
-				e.mu.Unlock()
+				run.results[n.ID] = result
+				run.mu.Unlock()
 
 				if err == nil {
-					// 更新下游节点的依赖计数（需要加锁防止并发 map 写入）
-					e.mu.Lock()
+					// 更新下游节点的依赖计数
+					run.mu.Lock()
 					for _, ds := range downstream[n.ID] {
 						remainingDeps[ds]--
 						if remainingDeps[ds] == 0 {
 							readyQueue <- ds
 						}
 					}
-					e.mu.Unlock()
+					run.mu.Unlock()
 				}
 
 				if completedCount.Add(1) == totalNodes {
 					if !hasFailed.Load() {
-						e.finalize(ctx, task, spec, true)
+						e.finalize(execCtx, task, spec, true, run)
 					} else {
-						e.finalize(ctx, task, spec, false)
+						e.finalize(execCtx, task, spec, false, run)
 					}
 					close(done)
 				}
@@ -263,7 +333,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 }
 
 // executeNode 执行单个 DAG 节点
-func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap map[string]NodeSpec, task *Task) error {
+func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap map[string]NodeSpec, task *Task, run *taskRun) error {
 	// 获取 Agent 配置
 	agentCfg, ok := e.registry.Get(node.AgentID)
 	if !ok {
@@ -283,12 +353,6 @@ func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap ma
 	}
 
 	// ── 注入 NodeEmitter 到执行器，实现流式事件桥接 ──
-	// DAG 模式下，每个节点创建一个 NodeEmitter，将 LLM 的 StreamDelta /
-	// ReasoningDelta 等事件通过 DAGExecutor 的 emit() 转发到 WebSocket。
-	//
-	// 注意：执行器实例在 executors map 中是共享的（按 BaseRole 注册），
-	// 不能用 SetEmitter 直接写共享实例，否则并行同角色节点会产生数据竞态。
-	// 解决方案：用 emitterHolder 包装，为每次 Execute 调用创建独立的 emitter 上下文。
 	nodeEmitter := NewNodeEmitter(task.ID, node.ID, node.AgentID, e.emitter)
 	if holder, ok := exec.(EmitterHolder); ok {
 		holder.SetCurrentEmitter(nodeEmitter)
@@ -305,7 +369,6 @@ func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap ma
 	}
 
 	// 根据上下文传递模式构建 Agent 上下文
-	// 根据 AgentConfig.BaseRole 映射到对应的 AgentRole
 	agentRole := baseRoleToAgentRole(agentCfg.BaseRole)
 	ac := ForkContext(
 		node.ContextFork,
@@ -318,12 +381,7 @@ func (e *DAGExecutor) executeNode(ctx context.Context, node NodeSpec, nodeMap ma
 	)
 
 	// ── 关键：注入 Planner 生成的 AgentConfig 到 AgentContext ──
-	// 这样执行器内部的 getAgentConfig 能获取到 Planner 生成的 Persona，
-	// 而不是 fallback 到 BuiltinRoles。
 	ac.AgentConfig = agentCfg
-
-	// 注入组织知识（如果有）
-	// ac.LocalMemory = orgKnowledge // 可选
 
 	// 发射 node.started 事件
 	e.emit(OrchestratorEvent{
@@ -399,19 +457,29 @@ func (e *DAGExecutor) hasFailedDependency(node NodeSpec, results map[string]*Nod
 }
 
 // finalize 完成 DAG 执行
-func (e *DAGExecutor) finalize(ctx context.Context, task *Task, spec *WorkflowSpec, success bool) {
+func (e *DAGExecutor) finalize(ctx context.Context, task *Task, spec *WorkflowSpec, success bool, run *taskRun) {
 	// 防止多个 goroutine 同时完成时重复调用 finalize
-	if !e.finalized.CompareAndSwap(false, true) {
+	if !run.finalized.CompareAndSwap(false, true) {
 		return
 	}
 
-	e.mu.Lock()
+	run.mu.Lock()
 	if success {
-		e.status = WorkflowStatusCompleted
+		run.status = WorkflowStatusCompleted
 	} else {
-		e.status = WorkflowStatusFailed
+		run.status = WorkflowStatusFailed
 	}
-	e.mu.Unlock()
+	run.mu.Unlock()
+
+	// 成功完成时更新 Task 状态为 pending_publish（等待人类发布）
+	if success && e.store != nil {
+		if err := e.store.UpdateTaskStatus(ctx, task.ID, StatusPendingPublish, AssigneeHuman); err != nil {
+			slog.Error("dag: failed to update task status to pending_publish",
+				"task_id", task.ID, "error", err)
+		} else {
+			slog.Info("dag: task status updated to pending_publish", "task_id", task.ID)
+		}
+	}
 
 	eventType := "workflow.completed"
 	if !success {
@@ -432,27 +500,34 @@ func (e *DAGExecutor) finalize(ctx context.Context, task *Task, spec *WorkflowSp
 		e.registry.CleanupGeneratedAgents(task.ID)
 	}
 
-	// 清理 plan 缓存，防止内存泄漏
-	e.mu.Lock()
+	// 清理 plan 缓存和运行状态，防止内存泄漏
+	e.runsMu.Lock()
 	delete(e.planCache, task.ID)
-	// 清理 results，为下一次执行准备干净状态
-	e.results = make(map[string]*NodeResult)
-	e.mu.Unlock()
+	delete(e.runs, task.ID)
+	e.runsMu.Unlock()
 }
 
 // GetStatus 获取工作流状态
-func (e *DAGExecutor) GetStatus() WorkflowStatus {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.status
+func (e *DAGExecutor) GetStatus(taskID string) WorkflowStatus {
+	run := e.getRun(taskID)
+	if run == nil {
+		return WorkflowStatusCreated
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return run.status
 }
 
 // GetResults 获取所有节点结果
-func (e *DAGExecutor) GetResults() map[string]*NodeResult {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	result := make(map[string]*NodeResult, len(e.results))
-	for k, v := range e.results {
+func (e *DAGExecutor) GetResults(taskID string) map[string]*NodeResult {
+	run := e.getRun(taskID)
+	if run == nil {
+		return map[string]*NodeResult{}
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	result := make(map[string]*NodeResult, len(run.results))
+	for k, v := range run.results {
 		result[k] = v
 	}
 	return result

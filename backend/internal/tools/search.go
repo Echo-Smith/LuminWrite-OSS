@@ -22,6 +22,9 @@ import (
 // (user_id IS NULL). When empty, all documents are searched (admin/global scope).
 type KnowledgeSearcher interface {
 	SearchKB(ctx context.Context, userID, query string, limit int) ([]engine.SearchResult, error)
+	// SearchKBInKB searches within a specific knowledge base identified by kbID.
+	// When kbID is empty, behaves identically to SearchKB (searches all KBs).
+	SearchKBInKB(ctx context.Context, userID, kbID, query string, limit int) ([]engine.SearchResult, error)
 }
 
 // SearchClient manages multi-source search with concurrent execution.

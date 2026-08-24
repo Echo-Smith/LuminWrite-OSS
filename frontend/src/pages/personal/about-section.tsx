@@ -52,7 +52,7 @@ const CHANGELOG: ChangelogEntry[] = [
     date: "2026-08-22",
     highlights: [
       "笔润智谈正式上线，支持智能会话、流水线和编辑部三种写作模式",
-      "内置知识库检索，写作时可引用预设评论风格等 160+ 篇精选文章",
+      "内置素材库自动检索，写作时可引用精选文章",
       "支持自定义写作风格，可保存并复用个人风格偏好",
       "编辑部模式提供选题、研究、写作、审校多角色协作",
       "事实核查守护内容准确性，自动标注存疑信息",
@@ -92,7 +92,7 @@ export function AboutSection() {
           {[
             { icon: Sparkles, title: "智能写作", desc: "从选题到成稿，AI 全程辅助" },
             { icon: Palette, title: "风格定制", desc: "学习并复用你的写作风格" },
-            { icon: BookOpen, title: "知识库引用", desc: "160+ 篇精选文章随时引用" },
+            { icon: BookOpen, title: "素材库引用", desc: "精选文章随时引用" },
             { icon: Shield, title: "事实核查", desc: "自动校验关键信息，确保准确" },
             { icon: Brain, title: "创作记忆", desc: "记住你的偏好，越用越懂你" },
             { icon: Zap, title: "多种模式", desc: "会话、流水线、编辑部灵活切换" },

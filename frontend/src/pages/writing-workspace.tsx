@@ -8,11 +8,11 @@
  * 集成全局键盘快捷键
  */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { PanelRightOpen, Menu, X, RefreshCw, Play, XCircle } from "lucide-react";
+import { PanelRightOpen, Menu, X, RefreshCw, Play, XCircle, FileText, Network } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
-import { WritingComposer } from "@/components/composer/writing-composer";
+import { WritingComposer, type WritingComposerHandle } from "@/components/composer/writing-composer";
 import { Button } from "@/components/ui/button";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -41,7 +41,7 @@ export function WritingWorkspace() {
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
   const loadSessions = useAgentStore((s) => s.loadSessions);
   const connectWS = useAgentStore((s) => s.connectWS);
-  const composerRef = useRef<{ focusTextarea: () => void } | null>(null);
+  const composerRef = useRef<WritingComposerHandle | null>(null);
 
   // 编辑部模式状态
   const agentMode = useSettingsStore((s) => s.agentMode);
@@ -177,7 +177,7 @@ export function WritingWorkspace() {
             </h2>
             {!isEditorial && session && (
               <span className="hidden sm:inline text-xs text-muted-foreground font-mono-sm">
-                · {session.style} · {session.mode}
+                · {session.style} · {session.mode === "auto" ? "自动" : session.mode}
                 · {new Date(session.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
               </span>
             )}
@@ -290,6 +290,100 @@ function EditorialContent({
   runStatus: import("@/stores/workflow-store").WorkflowRunStatus;
   wsConnected: boolean;
 }) {
+  const finalArticle = useWorkflowStore((s) => s.finalArticle);
+  const finalArticleLoading = useWorkflowStore((s) => s.finalArticleLoading);
+
+  // 视图切换：completed 状态下在「文章」和「DAG 图」之间切换
+  const [completedView, setCompletedView] = useState<"article" | "dag">("article");
+
+  // DAG 完成但文章还在加载
+  if (runStatus === "completed" && finalArticleLoading) {
+    return (
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        <div className="text-center">
+          <div className="mb-3 text-4xl animate-pulse">📝</div>
+          <p className="text-sm">正在加载最终文章...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // DAG 完成但未找到文章 → 直接显示 DAG 图
+  if (runStatus === "completed" && !finalArticle && !finalArticleLoading) {
+    if (plan) {
+      return <WorkflowCanvas />;
+    }
+    return (
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        <div className="text-center max-w-md px-6">
+          <div className="mb-3 text-5xl">✅</div>
+          <p className="text-sm font-medium">写作完成</p>
+          <p className="mt-2 text-xs text-muted-foreground/60">
+            文章已生成，但未找到可展示的稿件。请在右侧面板查看详情。
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // DAG 完成 — 文章/DAG 图切换视图
+  if (runStatus === "completed" && finalArticle) {
+    return (
+      <div className="flex h-full flex-col">
+        {/* 视图切换工具栏 */}
+        <div className="flex shrink-0 items-center gap-1 border-b px-3 py-1.5">
+          <button
+            onClick={() => setCompletedView("article")}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-ui",
+              completedView === "article"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            文章
+          </button>
+          <button
+            onClick={() => setCompletedView("dag")}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-ui",
+              completedView === "dag"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            <Network className="h-3.5 w-3.5" />
+            DAG 图
+          </button>
+        </div>
+
+        {/* 视图内容 */}
+        {completedView === "article" ? (
+          <div className="flex-1 overflow-y-auto px-6 py-8">
+            <article className="prose prose-sm prose-zh max-w-2xl mx-auto">
+              {finalArticle.title && (
+                <h1 className="text-xl font-bold mb-4">{finalArticle.title}</h1>
+              )}
+              <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                {finalArticle.content}
+              </div>
+              {finalArticle.word_count > 0 && (
+                <p className="mt-6 text-xs text-muted-foreground/60">
+                  {finalArticle.word_count} 字
+                </p>
+              )}
+            </article>
+          </div>
+        ) : (
+          <div className="flex-1 min-h-0">
+            <WorkflowCanvas />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (plan) {
     return <WorkflowCanvas />;
   }

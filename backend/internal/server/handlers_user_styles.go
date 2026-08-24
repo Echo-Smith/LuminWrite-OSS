@@ -1,14 +1,20 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
@@ -345,16 +351,59 @@ func (s *Server) handleSendBuilderMessage(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
-		return
+
+	// Support both JSON and multipart (file upload) requests
+	contentType := r.Header.Get("Content-Type")
+	var uploadedFiles []services.UploadedFile
+
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		// Parse multipart form (50 MB max)
+		if err := r.ParseMultipartForm(50 << 20); err != nil {
+			response.Err(w, http.StatusBadRequest, "bad_request", "failed to parse form: "+err.Error())
+			return
+		}
+		req.Message = r.FormValue("message")
+
+		// Read uploaded files
+		for _, fhs := range r.MultipartForm.File {
+			for _, fh := range fhs {
+				f, err := fh.Open()
+				if err != nil {
+					continue
+				}
+				content, err := io.ReadAll(f)
+				f.Close()
+				if err != nil {
+					continue
+				}
+				// Only accept text-like files and ZIP archives
+					ext := strings.ToLower(filepath.Ext(fh.Filename))
+					if ext == ".zip" {
+						// Unzip and extract text files
+						extracted := extractTextFilesFromZip(content, fh.Filename)
+						uploadedFiles = append(uploadedFiles, extracted...)
+					} else if ext == ".md" || ext == ".txt" || ext == ".markdown" || ext == ".json" || ext == ".csv" || ext == ".yaml" || ext == ".yml" || ext == ".html" || ext == ".htm" {
+						uploadedFiles = append(uploadedFiles, services.UploadedFile{
+							Name:    fh.Filename,
+							Content: string(content),
+						})
+					}
+			}
+		}
+	} else {
+		// JSON request (no files)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+			return
+		}
 	}
+
 	if req.Message == "" {
 		response.Err(w, http.StatusBadRequest, "bad_request", "message is required")
 		return
 	}
 
-	resp, err := s.styleBuilder.SendMessage(r.Context(), sessionID, req.Message)
+	resp, err := s.styleBuilder.SendMessage(r.Context(), sessionID, req.Message, uploadedFiles)
 	if err != nil {
 		slog.Error("style builder message failed", "error", err, "session_id", sessionID)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "AI style builder failed")
@@ -523,4 +572,85 @@ func (s *Server) handleListStylesWithUserStyles(w http.ResponseWriter, r *http.R
 	}
 
 	response.OK(w, map[string]any{"styles": styles})
+}
+
+// extractTextFilesFromZip reads a ZIP archive and extracts text-like files
+// (md, txt, json, csv, yaml, html) as UploadedFile entries.
+// Files in nested directories are flattened using "zipname/dir/file" naming.
+// Non-text files and hidden files (starting with .) are skipped.
+// Each file's content is capped at 500KB to prevent oversized context.
+func extractTextFilesFromZip(zipData []byte, zipName string) []services.UploadedFile {
+	var results []services.UploadedFile
+
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		slog.Warn("failed to open zip archive", "zip", zipName, "error", err)
+		return nil
+	}
+
+	// Supported text extensions
+	textExts := map[string]bool{
+		".md": true, ".markdown": true, ".txt": true,
+		".json": true, ".csv": true,
+		".yaml": true, ".yml": true,
+		".html": true, ".htm": true,
+	}
+
+	const maxFileSize = 500 * 1024 // 500KB per file
+
+	for _, f := range reader.File {
+		// Skip directories
+		if f.FileInfo().IsDir() {
+			continue
+		}
+
+		// Skip hidden files (macOS ._ files, .DS_Store, etc.)
+		base := filepath.Base(f.Name)
+		if strings.HasPrefix(base, ".") {
+			continue
+		}
+
+		// Check extension
+		ext := strings.ToLower(filepath.Ext(f.Name))
+		if !textExts[ext] {
+			continue
+		}
+
+		// Open and read file content
+		rc, err := f.Open()
+		if err != nil {
+			slog.Warn("failed to open file in zip", "file", f.Name, "error", err)
+			continue
+		}
+
+		// Limit read size
+		limited := io.LimitReader(rc, maxFileSize+1)
+		content, err := io.ReadAll(limited)
+		rc.Close()
+		if err != nil {
+			slog.Warn("failed to read file in zip", "file", f.Name, "error", err)
+			continue
+		}
+
+		// Truncate if over limit
+		contentStr := string(content)
+		if len(content) > maxFileSize {
+			contentStr = contentStr[:maxFileSize] + "\n\n[... 文件已截断，仅显示前 500KB ...]"
+		}
+
+		// Use "zipName/path/to/file" as the display name
+		displayName := zipName + "/" + f.Name
+
+		results = append(results, services.UploadedFile{
+			Name:    displayName,
+			Content: contentStr,
+		})
+	}
+
+	slog.Info("zip extracted for style builder",
+		"zip", zipName,
+		"files_extracted", len(results),
+	)
+
+	return results
 }

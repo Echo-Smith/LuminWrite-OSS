@@ -124,7 +124,7 @@ func (s *LLMService) GetClient(ctx context.Context, modelName string) *tools.LLM
 		baseURL = defaultBaseURLForProvider(cfg.Provider)
 	}
 
-	client := tools.NewLLMClient(
+		client := tools.NewLLMClient(
 		baseURL,
 		apiKey,
 		cfg.ModelName,
@@ -132,6 +132,14 @@ func (s *LLMService) GetClient(ctx context.Context, modelName string) *tools.LLM
 		cfg.Temperature,
 		s.timeout,
 	)
+	// Apply reasoning effort from model config (can be overridden by ChatOption)
+	if cfg.ReasoningEffort != "" {
+		client.SetReasoningEffort(cfg.ReasoningEffort)
+	}
+	// Apply custom HTTP headers from model config (e.g. X-API-Key, X-Request-Source)
+	if len(cfg.CustomHeaders) > 0 {
+		client.SetCustomHeaders(cfg.CustomHeaders)
+	}
 
 	// Cache the client
 	s.mu.Lock()

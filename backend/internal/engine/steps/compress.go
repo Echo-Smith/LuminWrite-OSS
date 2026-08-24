@@ -19,8 +19,8 @@ import (
 const minResultsToCompress = 4
 
 // maxSnippetCharsToInject caps the total raw text sent to the compression LLM.
-// 20 results × ~200 chars each = ~4000 chars, well within limits.
-const maxSnippetCharsToInject = 6000
+// Long-form (万字论文/报告) may have 30+ results × ~300 chars = ~9000 chars.
+const maxSnippetCharsToInject = 12000
 
 // CompressStep takes the deduplicated, scored search results from RelevanceStep
 // and compresses them into a structured "research brief" using a single LLM call.
@@ -126,7 +126,7 @@ func (s *CompressStep) Execute(ctx context.Context, execCtx *engine.ExecutionCon
 3. 提取关键数据（数字、比例、时间等）
 4. 删除重复信息、广告内容、无关细节
 5. 每条信息尽量简短（一行以内）
-6. 总字数控制在 300-500 字
+6. 总字数控制在 800-1500 字
 
 输出格式：
 ## 核心事实

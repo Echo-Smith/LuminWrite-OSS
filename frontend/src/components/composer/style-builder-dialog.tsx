@@ -2,7 +2,7 @@
  * AI 风格创建对话框 — 多轮对话生成自定义写作风格
  */
 import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
-import { Sparkles, Send, Loader2, Check, ChevronRight, Code2 } from "lucide-react";
+import { Sparkles, Send, Loader2, Check, ChevronRight, Code2, Paperclip, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -174,6 +174,8 @@ export function StyleBuilderDialog({ open, onOpenChange, onCreated }: StyleBuild
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const token = useAuthStore((s) => s.token);
 
@@ -219,22 +221,38 @@ export function StyleBuilderDialog({ open, onOpenChange, onCreated }: StyleBuild
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || !sessionId || loading) return;
+    if ((!input.trim() && pendingFiles.length === 0) || !sessionId || loading) return;
 
-    const userMsg = input.trim();
+    const userMsg = input.trim() || (pendingFiles.length > 0 ? `上传了 ${pendingFiles.length} 个文件` : "");
+    const filesToSend = [...pendingFiles];
+    setPendingFiles([]);
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    setMessages((prev) => [...prev, { role: "user", content: userMsg + (filesToSend.length > 0 ? ` \n📎 ${filesToSend.map(f => f.name).join(", ")}` : "") }]);
     setLoading(true);
 
     try {
-      const res = await fetch(`/api/v2/style-builder/sessions/${sessionId}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ message: userMsg }),
-      });
+      let res: Response;
+      if (filesToSend.length > 0) {
+        // Multipart form with files
+        const fd = new FormData();
+        fd.append("message", userMsg);
+        filesToSend.forEach((f) => fd.append("files", f));
+        res = await fetch(`/api/v2/style-builder/sessions/${sessionId}/messages`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: fd,
+        });
+      } else {
+        // JSON request (no files)
+        res = await fetch(`/api/v2/style-builder/sessions/${sessionId}/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ message: userMsg }),
+        });
+      }
       const json = await res.json();
       if (json.success) {
         setMessages((prev) => [...prev, { role: "assistant", content: json.data.message }]);
@@ -321,7 +339,48 @@ export function StyleBuilderDialog({ open, onOpenChange, onCreated }: StyleBuild
           )}
         </div>
 
+        {/* Pending files display */}
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-1 pb-2">
+            {pendingFiles.map((f, i) => (
+              <div key={i} className="flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs">
+                <Paperclip className="h-3 w-3" />
+                <span className="max-w-[150px] truncate">{f.name}</span>
+                <button
+                  onClick={() => setPendingFiles(pendingFiles.filter((_, idx) => idx !== i))}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex gap-2 pt-2 border-t">
+          {/* File upload button */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            multiple
+            accept=".md,.txt,.markdown,.json,.csv,.yaml,.yml,.html,.htm,.zip"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) {
+                setPendingFiles((prev) => [...prev, ...files]);
+              }
+              if (fileInputRef.current) fileInputRef.current.value = "";
+            }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading || ready}
+            className="flex items-center justify-center h-9 w-9 rounded-md border border-input text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            title="上传参考文章或 skill 文件"
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
           <textarea
             value={input}
             onChange={(e) => {
@@ -365,7 +424,7 @@ export function StyleBuilderDialog({ open, onOpenChange, onCreated }: StyleBuild
               保存风格
             </Button>
           ) : (
-            <Button onClick={sendMessage} disabled={loading || !input.trim()} size="icon">
+            <Button onClick={sendMessage} disabled={loading || (!input.trim() && pendingFiles.length === 0)} size="icon">
               <Send className="h-4 w-4" />
             </Button>
           )}

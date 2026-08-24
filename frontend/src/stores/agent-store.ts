@@ -19,6 +19,7 @@ import type {
 import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { useEditorialStore } from "@/stores/editorial-store";
+import { useBillingStore } from "@/stores/billing-store";
 import { useMemoryStore, type MemoryEntry } from "@/stores/memory-store";
 import { useWorkflowStore, type AgentConfig as WFAgentConfig, type WorkflowSpec as WFWorkflowSpec } from "@/stores/workflow-store";
 import { resolveConversationId } from "@/lib/conversation-session";
@@ -101,7 +102,7 @@ export interface WritingSession {
   injectedMaterials?: string[]; // 从选题关联注入的素材标签
   articleTitle?: string | null; // AI 生成的文章标题（完成后才有）
   artifacts?: WritingArtifact[]; // 写作流程交付物（加载详情时获取）
-  kbEnabled: boolean; // 是否启用知识库搜索（默认 true）
+  kbEnabled: boolean; // 是否启用素材库自动检索（默认 true）
 }
 
 // ─── Store 定义 ──────────────────────────────────────────
@@ -235,13 +236,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         completed_at?: string;
         duration_ms?: number;
         article_title?: string;
+        task_name?: string;
       }>;
 
       // 将 DB 记录转换为 WritingSession（仅列表摘要，不加载完整消息）
-      // 标题优先级：article_title > user_input 截断 > "历史会话"
+      // 标题优先级：article_title > task_name > user_input 截断 > "历史会话"
       const dbSessionsMapped: WritingSession[] = dbSessions.map((t) => ({
         id: t.trace_id,
-        title: t.article_title || t.user_input?.slice(0, 30) || "历史会话",
+        title: t.article_title || t.task_name || t.user_input?.slice(0, 30) || "历史会话",
         articleTitle: t.article_title || null,
         messages: [], // 延迟加载，点击时通过 loadSessionDetail 获取
         traceId: t.trace_id,
@@ -293,6 +295,7 @@ style_slug?: string;
 mode: string;
 article?: string;
 article_title?: string;
+task_name?: string;
 step_history?: Array<{ step: string; status: string; startedAt?: string; completedAt?: string; durationMs?: number; result?: unknown; error?: string }>;
 review?: unknown;
 reasoning_content?: string;
@@ -372,6 +375,8 @@ articleTitle: d.article_title,
           s.traceId === traceId
             ? {
                 ...s,
+                // 标题优先级：article_title > task_name > user_input 截断 > 原标题
+                title: d.article_title || d.task_name || d.user_input?.slice(0, 30) || s.title,
                 messages,
                 status: (d.status === "completed" ? "completed" :
                         d.status === "failed" ? "error" :
@@ -496,6 +501,7 @@ articleTitle: d.article_title,
     };
 
     // 更新会话
+    // 标题先用用户输入截取作为临时值，后端 LLM 异步提取 task_name 后会通过 loadSessions 更新
     set((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === sessionId
@@ -850,6 +856,11 @@ case "agent.paused": {
           title: articleTitle || s.title,
           articleTitle: articleTitle || s.articleTitle,
         }));
+
+        // 写作完成后刷新积分余额（后端已扣费，前端实时同步）
+        if (pointsUsed && pointsUsed > 0) {
+          useBillingStore.getState().loadBalance();
+        }
         break;
       }
 
@@ -941,11 +952,29 @@ case "agent.paused": {
         break;
       }
 
+      case "task_name.updated": {
+        const traceId = p.trace_id as string;
+        const taskName = p.task_name as string;
+        if (!traceId || !taskName) break;
+
+        // Only update title if article_title hasn't been set yet
+        // (article_title > task_name > user_input truncated)
+        set((state) => ({
+          sessions: state.sessions.map((s) => {
+            if (s.traceId !== traceId) return s;
+            if (s.articleTitle) return s; // article_title already set, don't override
+            return { ...s, title: taskName };
+          }),
+        }));
+        break;
+      }
+
       case "session.resumed": {
         const traceId = p.trace_id as string;
         const status = p.status as string;
         const article = p.article as string | undefined;
         const articleTitle = p.article_title as string | undefined;
+        const taskName = p.task_name as string | undefined;
         const outline = p.outline;
         const review = p.review;
         const stepHistory = p.step_history as Array<Record<string, unknown>> | undefined;
@@ -983,6 +1012,8 @@ case "agent.paused": {
           style: style || s.style,
           mode: mode || s.mode,
           articleTitle: articleTitle || s.articleTitle,
+          // 标题优先级：article_title > task_name > 原标题（不覆盖已有好标题）
+          title: articleTitle || taskName || s.title,
         }));
 
         // Rebuild assistant message parts from step_history + reasoning + article + outline + review

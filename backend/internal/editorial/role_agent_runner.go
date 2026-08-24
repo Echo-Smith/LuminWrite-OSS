@@ -241,15 +241,27 @@ func (r *RoleAgentRunner) buildSystemPrompt(cfg RoleRunConfig, hasSearch, hasKB 
 		}
 	}
 
-	// [5. 风格 Profile]
+	// [5. 风格 Profile — 复用统一渲染层]
 	if r.profile != nil {
 		sb.WriteString("\n--- 写作风格 Profile ---\n")
-		sb.WriteString(fmt.Sprintf("风格名称：%s\n", r.profile.Name))
-		if r.profile.Description != "" {
-			sb.WriteString(fmt.Sprintf("风格描述：%s\n", r.profile.Description))
+		if r.profile.SystemPrompt != "" {
+			sb.WriteString(r.profile.SystemPrompt)
+			sb.WriteString("\n\n")
 		}
-		if r.profile.WordRange.Max > 0 {
-			sb.WriteString(fmt.Sprintf("目标字数：%d-%d\n", r.profile.WordRange.Min, r.profile.WordRange.Max))
+		// 复用 RenderWritingConstraints，确保 FactGuard + Structure + Rhetoric + WordRange
+		// 与 Pipeline/Harness 三引擎一致注入，避免风格漂移
+		// hasOutlineTitle: 当 ExecutionContext 中已有提纲标题时跳过结构/标题约束
+		hasOutlineTitle := false
+		if cfg.ExecutionContext != nil && cfg.ExecutionContext.Outline != nil && cfg.ExecutionContext.Outline.Title != "" {
+			hasOutlineTitle = true
+		}
+		wordLimit := 0
+		if cfg.ExecutionContext != nil {
+			wordLimit = cfg.ExecutionContext.WordLimit
+		}
+		constraints := r.profile.RenderWritingConstraints("writing", hasOutlineTitle, wordLimit)
+		if constraints != "" {
+			sb.WriteString(constraints)
 		}
 	}
 

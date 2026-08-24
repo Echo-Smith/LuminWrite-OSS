@@ -56,6 +56,12 @@ scripts/sync-commercial.sh
 .commercial-mode
 .commercial-files
 
+# ─── 商业版知识库专属文件（由 sync-commercial.sh 管理）──
+backend/internal/database/migrations/047_yinyue_kb_seed.*
+backend/internal/database/migrations/062_yinyue_kb_max_pages.*
+backend/scripts/scrape_yinyue.mjs
+scripts/import-kb.sh
+
 # ─── A/B 测试结果 ─────────────────────────────────────
 ab-test-results-*.json
 ab-test-report.html

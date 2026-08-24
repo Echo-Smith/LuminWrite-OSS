@@ -239,18 +239,18 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 
 // WritingAgentExecutor 写作 Agent 执行器
 type WritingAgentExecutor struct {
-	llm          *tools.LLMClient
-	profile      *profile.StyleProfile
-	search       *tools.SearchClient
-	kbSearcher   tools.KnowledgeSearcher
-	store        *Store
-	toolRegistry *EditorialToolRegistry
+	llm           *tools.LLMClient
+	profileLoader *profile.Loader
+	search        *tools.SearchClient
+	kbSearcher    tools.KnowledgeSearcher
+	store         *Store
+	toolRegistry  *EditorialToolRegistry
 	*emitterHolder
 }
 
-// NewWritingAgentExecutor 创建写作 Agent 执行器
-func NewWritingAgentExecutor(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
-	return &WritingAgentExecutor{llm: llm, profile: p, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
+// NewWritingAgentExecutor 创建写作 Agent 执行器（动态加载 Profile）
+func NewWritingAgentExecutor(llm *tools.LLMClient, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
+	return &WritingAgentExecutor{llm: llm, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *WritingAgentExecutor) Role() AgentRole { return RoleWriting }
@@ -322,8 +322,16 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	// ── 获取角色配置 ──
 	agentCfg := getAgentConfig(ac, "writer")
 
+	// 动态加载写作风格 Profile
+	var styleProfile *profile.StyleProfile
+	if e.profileLoader != nil && task.StyleSlug != "" {
+		if p, ok := e.profileLoader.Get(task.StyleSlug); ok {
+			styleProfile = p
+		}
+	}
+
 	// ── 启动 RoleAgentRunner ──
-	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, e.profile, e.currentOrNoop(), e.toolRegistry)
+	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, styleProfile, e.currentOrNoop(), e.toolRegistry)
 	result, err := runner.Run(ctx, RoleRunConfig{
 		AgentConfig:          agentCfg,
 		Task:                 task,
@@ -407,18 +415,18 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 
 // ReviewAgentExecutor 审校 Agent 执行器
 type ReviewAgentExecutor struct {
-	llm          *tools.LLMClient
-	profile      *profile.StyleProfile
-	search       *tools.SearchClient
-	kbSearcher   tools.KnowledgeSearcher
-	store        *Store
-	toolRegistry *EditorialToolRegistry
+	llm           *tools.LLMClient
+	profileLoader *profile.Loader
+	search        *tools.SearchClient
+	kbSearcher    tools.KnowledgeSearcher
+	store         *Store
+	toolRegistry  *EditorialToolRegistry
 	*emitterHolder
 }
 
-// NewReviewAgentExecutor 创建审校 Agent 执行器
-func NewReviewAgentExecutor(llm *tools.LLMClient, p *profile.StyleProfile, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
-	return &ReviewAgentExecutor{llm: llm, profile: p, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
+// NewReviewAgentExecutor 创建审校 Agent 执行器（动态加载 Profile）
+func NewReviewAgentExecutor(llm *tools.LLMClient, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
+	return &ReviewAgentExecutor{llm: llm, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *ReviewAgentExecutor) Role() AgentRole { return RoleReview }
@@ -476,8 +484,16 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 	// ── 获取角色配置 ──
 	agentCfg := getAgentConfig(ac, "reviewer")
 
+	// 动态加载写作风格 Profile
+	var styleProfile *profile.StyleProfile
+	if e.profileLoader != nil && task.StyleSlug != "" {
+		if p, ok := e.profileLoader.Get(task.StyleSlug); ok {
+			styleProfile = p
+		}
+	}
+
 	// ── 启动 RoleAgentRunner ──
-	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, e.profile, e.currentOrNoop(), e.toolRegistry)
+	runner := NewRoleAgentRunner(e.llm, e.search, e.kbSearcher, styleProfile, e.currentOrNoop(), e.toolRegistry)
 	result, err := runner.Run(ctx, RoleRunConfig{
 		AgentConfig:          agentCfg,
 		Task:                 task,

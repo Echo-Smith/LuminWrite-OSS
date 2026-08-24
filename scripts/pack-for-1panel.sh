@@ -165,6 +165,9 @@ EXCLUDE_PATTERNS=(
     "e2e_"
     "scrape_"
     ".mjs"
+    "import-kb"
+    "047_yinyue"
+    "062_yinyue"
 )
 
 while IFS= read -r f; do

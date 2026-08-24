@@ -81,9 +81,11 @@ func WritingTools(hasKnowledge bool) []tools.ToolDef {
 // WritingToolExecutor creates a ToolExecutor for the writing agent loop.
 // It closes over the search client and current search results so the model
 // can autonomously fetch more context during writing.
+// kbID scopes knowledge base searches to a specific KB (empty = search all).
 func WritingToolExecutor(
 	search *tools.SearchClient,
 	kbSearcher tools.KnowledgeSearcher,
+	kbID string,
 	userID string,
 	searchResults []engine.SearchResult,
 ) tools.ToolExecutor {
@@ -125,7 +127,13 @@ func WritingToolExecutor(
 			if kbSearcher == nil {
 				return "Error: knowledge base not available", nil
 			}
-			results, err := kbSearcher.SearchKB(context.Background(), userID, args.Query, 5)
+			var results []engine.SearchResult
+			var err error
+			if kbID != "" {
+				results, err = kbSearcher.SearchKBInKB(context.Background(), userID, kbID, args.Query, 5)
+			} else {
+				results, err = kbSearcher.SearchKB(context.Background(), userID, args.Query, 5)
+			}
 			if err != nil {
 				return fmt.Sprintf("KB search error: %v", err), nil
 			}

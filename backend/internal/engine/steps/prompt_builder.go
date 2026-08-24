@@ -191,10 +191,16 @@ func (pb *PromptBuilder) AddOutline(taskMode string, execCtx *engine.ExecutionCo
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("【标题（必须原样使用，不得修改）】：%s\n", execCtx.Outline.Title))
 	b.WriteString("【写作提纲（必须严格按照以下提纲展开，每个要点对应一个段落，不得增删或更改要点顺序）】：\n")
+	// 开放类型标签：已知类型翻译为中文，未知类型原样展示
 	typeLabels := map[string]string{
 		"opening":    "开头",
 		"argument":   "分论点",
 		"conclusion": "结尾",
+		"intro":      "引言",
+		"method":     "方法",
+		"experiment": "实验",
+		"discussion": "讨论",
+		"abstract":   "摘要",
 	}
 	for i, item := range execCtx.Outline.Outline {
 		label := typeLabels[item.Type]

@@ -30,10 +30,12 @@ type LLMClient struct {
 	model             string
 	maxTokens         int
 	temperature       float64
+	reasoningEffort   string             // default reasoning effort: low | medium | high | max (thinking mode only)
 	httpClient        *http.Client
-	responsesAPIRatio float64    // 0.0~1.0, proportion of traffic routed to Responses API
-	abMetrics         *ABMetrics // A/B test metrics collector (nil if A/B disabled)
+	responsesAPIRatio float64           // 0.0~1.0, proportion of traffic routed to Responses API
+	abMetrics         *ABMetrics        // A/B test metrics collector (nil if A/B disabled)
 	metrics           LLMMetricsRecorder
+	customHeaders     map[string]string // custom HTTP headers added to every request
 }
 
 // LLMMessage represents a single message in the conversation.
@@ -151,12 +153,38 @@ type StreamChunk struct {
 // NewLLMClient creates a new LLM client.
 func NewLLMClient(baseURL, apiKey, model string, maxTokens int, temperature float64, timeout time.Duration) *LLMClient {
 	return &LLMClient{
-		baseURL:     baseURL,
-		apiKey:      apiKey,
-		model:       model,
-		maxTokens:   maxTokens,
-		temperature: temperature,
-		httpClient:  &http.Client{Timeout: timeout},
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		model:           model,
+		maxTokens:       maxTokens,
+		temperature:     temperature,
+		reasoningEffort: "high", // default, can be overridden via SetReasoningEffort or ChatOption
+		httpClient:      &http.Client{Timeout: timeout},
+		customHeaders:   nil,
+	}
+}
+
+// SetReasoningEffort sets the default reasoning effort for this client.
+// Valid values: "low", "medium", "high", "max".
+// Used when thinking mode is enabled and no explicit WithReasoningEffort option is provided.
+func (c *LLMClient) SetReasoningEffort(effort string) {
+	c.reasoningEffort = effort
+}
+
+// SetCustomHeaders sets custom HTTP headers that will be added to every request.
+func (c *LLMClient) SetCustomHeaders(headers map[string]string) {
+	c.customHeaders = headers
+}
+
+// applyCustomHeaders adds custom headers to the given HTTP request.
+// Called after the standard Content-Type and Authorization headers are set,
+// so custom headers can override defaults if needed.
+func (c *LLMClient) applyCustomHeaders(req *http.Request) {
+	if c.customHeaders == nil {
+		return
+	}
+	for k, v := range c.customHeaders {
+		req.Header.Set(k, v)
 	}
 }
 
@@ -241,12 +269,32 @@ func (c *LLMClient) ChatStreamWithReasoning(ctx context.Context, messages []LLMM
 	}
 
 	start := time.Now()
-	text, tokens, err := c.chatCompletionsStream(ctx, req, onDelta, onReasoning)
+	text, tokens, finishReason, err := c.chatCompletionsStream(ctx, req, onDelta, onReasoning)
 	if c.abMetrics != nil {
 		c.abMetrics.RecordChatCompletionsStream(tokens, time.Since(start))
 	}
 	c.recordMetrics(req.Model, "stream", time.Since(start), err)
-	return text, tokens, err
+	if err != nil {
+		return text, tokens, err
+	}
+
+	// Truncation detection: if finish_reason is "length", the output was cut
+	// off by max_tokens. Auto-continue by appending the partial response and
+	// sending a "continue" message to the model.
+	if finishReason == "length" {
+		partialMsg := LLMMessage{Role: "assistant", Content: text}
+		continueTokens, err := c.autoContinue(ctx, messages, partialMsg, onDelta, opts...)
+		if err != nil {
+			slog.Warn("auto-continue failed, returning partial content",
+				"error", err,
+				"partial_length", len([]rune(text)),
+			)
+		} else {
+			tokens += continueTokens
+		}
+	}
+
+	return text, tokens, nil
 }
 
 // ChatOption configures a chat request.
@@ -358,7 +406,7 @@ func (c *LLMClient) ChatWithTools(
 		// reasoning_content is streamed via onReasoning in real-time.
 		// content is streamed via onDelta in real-time (optimistic).
 		// If tool_calls appear after content, onReset is called to roll back.
-		assistantMsg, tokens, cacheHit, err := c.chatStreamRound(ctx, conversation, onDelta, onReasoning, onReset, toolOpts...)
+		assistantMsg, tokens, cacheHit, finishReason, err := c.chatStreamRound(ctx, conversation, onDelta, onReasoning, onReset, toolOpts...)
 		if err != nil {
 			return "", totalTokens, fmt.Errorf("agent loop iteration %d failed: %w", iter, err)
 		}
@@ -368,10 +416,28 @@ func (c *LLMClient) ChatWithTools(
 		if len(assistantMsg.ToolCalls) == 0 {
 			// No tool calls — this is the final answer.
 			// Content was already streamed in real-time via onDelta.
+			//
+			// Truncation detection: if finish_reason is "length", the output
+			// was cut off by max_tokens. We auto-continue by appending the
+			// partial response and sending a "continue" message to the model.
+			// The continuation content is streamed via onDelta in real-time.
+			if finishReason == "length" {
+				continueTokens, err := c.autoContinue(ctx, conversation, assistantMsg, onDelta, opts...)
+				if err != nil {
+					slog.Warn("auto-continue failed, returning partial content",
+						"error", err,
+						"partial_length", len([]rune(assistantMsg.Content)),
+					)
+				} else {
+					totalTokens += continueTokens
+				}
+			}
+
 			slog.Info("ChatWithTools completed",
 				"iterations", iter+1,
 				"total_tokens", totalTokens,
 				"cache_hit_tokens", totalCacheHitTokens,
+				"finish_reason", finishReason,
 			)
 			return assistantMsg.Content, totalTokens, nil
 		}
@@ -437,12 +503,12 @@ func (c *LLMClient) chatStreamRound(
 	onReasoning func(string),
 	onReset func(),
 	opts ...ChatOption,
-) (LLMMessage, int, int, error) {
+) (LLMMessage, int, int, string, error) {
 	req := c.buildRequest(messages, true, opts...)
 
 	resp, err := c.doStreamRequest(ctx, req)
 	if err != nil {
-		return LLMMessage{}, 0, 0, err
+		return LLMMessage{}, 0, 0, "", err
 	}
 	defer resp.Close()
 
@@ -450,6 +516,7 @@ func (c *LLMClient) chatStreamRound(
 	var reasoningBuf strings.Builder
 	totalTokens := 0
 	cacheHitTokens := 0 // prompt cache 命中 token 数
+	finishReason := ""   // 追踪本轮的 finish_reason
 
 	// Accumulate tool calls by index (OpenAI streams them as fragments)
 	toolCallMap := make(map[int]*ToolCall)
@@ -488,51 +555,55 @@ func (c *LLMClient) chatStreamRound(
 					continue
 				}
 
-				for _, choice := range chunk.Choices {
-					// Stream reasoning_content in real-time
-					if choice.Delta.ReasoningContent != "" {
-						reasoningBuf.WriteString(choice.Delta.ReasoningContent)
-						if onReasoning != nil {
-							onReasoning(choice.Delta.ReasoningContent)
+			for _, choice := range chunk.Choices {
+				// 追踪 finish_reason（检测 length 截断）
+				if choice.FinishReason != "" {
+					finishReason = choice.FinishReason
+				}
+				// Stream reasoning_content in real-time
+				if choice.Delta.ReasoningContent != "" {
+					reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+					if onReasoning != nil {
+						onReasoning(choice.Delta.ReasoningContent)
+					}
+				}
+				// Stream content in real-time AND buffer it for the returned message.
+				// Optimistic: push to onDelta immediately. If tool_calls arrive
+				// later in this same round, onReset will be called to roll back.
+				if choice.Delta.Content != "" {
+					contentBuf.WriteString(choice.Delta.Content)
+					if onDelta != nil && !toolCallStarted && !resetCalled {
+						onDelta(choice.Delta.Content)
+						contentStreamed = true
+					}
+				}
+				// Accumulate tool call deltas by index
+				for _, tcDelta := range choice.Delta.ToolCalls {
+					if !toolCallStarted {
+						toolCallStarted = true
+						// If content was already streamed, this is an intermediate
+						// round — invoke rollback so the caller can discard it.
+						if contentStreamed && onReset != nil && !resetCalled {
+							onReset()
+							resetCalled = true
 						}
 					}
-					// Stream content in real-time AND buffer it for the returned message.
-					// Optimistic: push to onDelta immediately. If tool_calls arrive
-					// later in this same round, onReset will be called to roll back.
-					if choice.Delta.Content != "" {
-						contentBuf.WriteString(choice.Delta.Content)
-						if onDelta != nil && !toolCallStarted && !resetCalled {
-							onDelta(choice.Delta.Content)
-							contentStreamed = true
-						}
+					tc, exists := toolCallMap[tcDelta.Index]
+					if !exists {
+						tc = &ToolCall{}
+						toolCallMap[tcDelta.Index] = tc
 					}
-					// Accumulate tool call deltas by index
-					for _, tcDelta := range choice.Delta.ToolCalls {
-						if !toolCallStarted {
-							toolCallStarted = true
-							// If content was already streamed, this is an intermediate
-							// round — invoke rollback so the caller can discard it.
-							if contentStreamed && onReset != nil && !resetCalled {
-								onReset()
-								resetCalled = true
-							}
-						}
-						tc, exists := toolCallMap[tcDelta.Index]
-						if !exists {
-							tc = &ToolCall{}
-							toolCallMap[tcDelta.Index] = tc
-						}
-						if tcDelta.ID != "" {
-							tc.ID = tcDelta.ID
-						}
-						if tcDelta.Type != "" {
-							tc.Type = tcDelta.Type
-						}
-						if tcDelta.Function.Name != "" {
-							tc.Function.Name = tcDelta.Function.Name
-						}
-						tc.Function.Arguments += tcDelta.Function.Arguments
+					if tcDelta.ID != "" {
+						tc.ID = tcDelta.ID
 					}
+					if tcDelta.Type != "" {
+						tc.Type = tcDelta.Type
+					}
+					if tcDelta.Function.Name != "" {
+						tc.Function.Name = tcDelta.Function.Name
+					}
+					tc.Function.Arguments += tcDelta.Function.Arguments
+				}
 				}
 
 			if chunk.Usage != nil {
@@ -568,6 +639,7 @@ done:
 		"reset_called", resetCalled,
 		"total_tokens", totalTokens,
 		"cache_hit_tokens", cacheHitTokens,
+		"finish_reason", finishReason,
 	)
 
 	return LLMMessage{
@@ -575,7 +647,7 @@ done:
 		Content:          contentBuf.String(),
 		ReasoningContent: reasoningBuf.String(),
 		ToolCalls:        toolCalls,
-	}, totalTokens, cacheHitTokens, nil
+	}, totalTokens, cacheHitTokens, finishReason, nil
 }
 
 // flushChunked sends content to the callback in rune-sized chunks,
@@ -618,11 +690,12 @@ func (c *LLMClient) recordMetrics(model, callType string, duration time.Duration
 
 func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...ChatOption) *LLMRequest {
 	req := &LLMRequest{
-		Model:       c.model,
-		Messages:    messages,
-		Stream:      stream,
-		Temperature: c.temperature,
-		MaxTokens:   c.maxTokens,
+		Model:           c.model,
+		Messages:        messages,
+		Stream:          stream,
+		Temperature:     c.temperature,
+		MaxTokens:       c.maxTokens,
+		ReasoningEffort: c.reasoningEffort, // use client-level default
 	}
 	for _, opt := range opts {
 		opt(req)
@@ -665,6 +738,7 @@ func (c *LLMClient) doRequest(ctx context.Context, req *LLMRequest) ([]byte, err
 
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		c.applyCustomHeaders(httpReq)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -736,13 +810,14 @@ func (c *LLMClient) doStreamRequest(ctx context.Context, req *LLMRequest) (io.Re
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
+httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
+	c.applyCustomHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("LLM API stream request failed: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("LLM API stream request failed: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -815,4 +890,84 @@ func ExtractJSONArray(text string) string {
 	}
 
 	return raw[start : end+1]
+}
+
+// autoContinue continues a truncated response when finish_reason is "length".
+//
+// It appends the partial assistant message and a "continue" user message to
+// the conversation, then streams the continuation via onDelta. The returned
+// tokens are the additional tokens consumed by the continuation(s).
+//
+// Up to maxAutoContinue rounds are attempted (each round may also be truncated).
+// The continuation text is streamed directly to the client via onDelta.
+//
+// NOTE: This function does NOT modify assistantMsg.Content — it only streams
+// the continuation via onDelta. The caller is responsible for assembling the
+// final text (the onDelta callback already appends to the caller's buffer).
+func (c *LLMClient) autoContinue(
+	ctx context.Context,
+	originalMessages []LLMMessage,
+	partialMsg LLMMessage,
+	onDelta func(string),
+	opts ...ChatOption,
+) (int, error) {
+	const maxAutoContinue = 3 // 最多续写 3 轮（防止无限续写）
+	totalTokens := 0
+
+	// Build conversation: original messages + partial assistant response.
+	// Clean tool-related messages (Role="tool", ToolCalls, ToolCallID) to
+	// avoid API errors when continuing without tools defined.
+	cleaned := make([]LLMMessage, 0, len(originalMessages)+1)
+	for _, msg := range originalMessages {
+		if msg.Role == "tool" {
+			continue // skip tool result messages
+		}
+		// Strip tool calls from assistant messages
+		msg.ToolCalls = nil
+		msg.ToolCallID = ""
+		cleaned = append(cleaned, msg)
+	}
+	cleaned = append(cleaned, partialMsg)
+
+	conversation := cleaned
+
+	for round := 0; round < maxAutoContinue; round++ {
+		// Append a "continue" user message asking the model to resume from where it stopped
+		conversation = append(conversation, LLMMessage{
+			Role:    "user",
+			Content: "请继续输出，从你刚才中断的地方接着写，不要重复已输出的内容。",
+		})
+
+		slog.Info("auto-continue: requesting continuation",
+			"round", round+1,
+			"conversation_length", len(conversation),
+		)
+
+		req := c.buildRequest(conversation, true, opts...)
+		text, tokens, finishReason, err := c.chatCompletionsStream(ctx, req, onDelta, nil)
+		if err != nil {
+			return totalTokens, fmt.Errorf("auto-continue round %d failed: %w", round+1, err)
+		}
+		totalTokens += tokens
+
+		// Append the continuation as an assistant message for potential next round
+		conversation = append(conversation, LLMMessage{
+			Role:    "assistant",
+			Content: text,
+		})
+
+		slog.Info("auto-continue: continuation received",
+			"round", round+1,
+			"continuation_chars", len([]rune(text)),
+			"finish_reason", finishReason,
+			"total_tokens", totalTokens,
+		)
+
+		// If the model finished normally (not "length"), we're done
+		if finishReason != "length" {
+			break
+		}
+	}
+
+	return totalTokens, nil
 }

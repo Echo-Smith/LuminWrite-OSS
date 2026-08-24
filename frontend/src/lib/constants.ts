@@ -6,7 +6,7 @@ import type { AgentStepName } from "./types";
 export const STEP_LABELS: Record<AgentStepName, string> = {
   // ── Harness 模式（架构 C）──
   search_web: "联网搜索",
-  search_knowledge: "知识库检索",
+  search_knowledge: "素材库检索",
   read_source: "读取全文",
   write_article: "文章生成",
   review_article: "质量评审",
@@ -34,7 +34,7 @@ export const STEP_LABELS: Record<AgentStepName, string> = {
 export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   // ── Harness 模式（架构 C）──
   search_web: "搜索网络获取写作素材或回答问题",
-  search_knowledge: "检索内部知识库获取写作风格规范、历史范文参考",
+  search_knowledge: "检索个人素材库获取参考内容、历史范文",
   read_source: "读取搜索结果的完整内容",
   write_article: "LLM 自主写作，流式输出文章",
   review_article: "多维度质量评审：事实/结构/风格/修辞/安全",
@@ -47,7 +47,7 @@ export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   // ── 旧 pipeline/unified 模式（兼容历史会话）──
   intent: "分析用户意图，确定写作任务类型",
   query_plan: "规划检索策略，生成搜索关键词",
-  search: "并发检索知乎、IMA知识库、全网等多个信源",
+  search: "并发检索知乎、IMA、全网等多个信源",
   relevance: "对检索素材打分过滤，语义去重",
   outline: "生成文章提纲，等待用户确认或修改",
   write: "按风格Profile生成文章，流式输出",

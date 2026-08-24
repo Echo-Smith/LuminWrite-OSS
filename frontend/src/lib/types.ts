@@ -80,6 +80,7 @@ export type WSServerMessageType =
   | "memory.used"
   | "memory.dismiss"
   | "agent.compaction"
+  | "task_name.updated"
   | "editorial.event"
   // Beta: DAG 工作流消息
   | "workflow.created"
@@ -124,7 +125,7 @@ export interface AgentStartPayload {
   word_limit?: number;
   /** 热搜选题原始链接（用于后端抓取事件背景增强写作叙事） */
   topic_url?: string;
-  /** 是否启用知识库搜索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
+  /** 是否启用素材库自动检索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
   kb_enabled?: boolean;
 }
 

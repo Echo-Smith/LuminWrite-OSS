@@ -468,25 +468,43 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 			queries = []string{execCtx.UserInput}
 		}
 
-		// Distribute maxTotal across queries; ensure at least 5 per query
-		maxPerQuery := 20 / len(queries)
-		if maxPerQuery < 5 {
-			maxPerQuery = 5
+		// Distribute maxTotal across queries; ensure at least 8 per query
+		// Long-form (万字论文/报告) needs broader per-query coverage
+		maxPerQuery := 30 / len(queries)
+		if maxPerQuery < 8 {
+			maxPerQuery = 8
 		}
 
+		// ── Concurrent multi-query search ──
+		// Each query runs in its own goroutine; results are deduplicated
+		// by URL under a mutex. This reduces search latency from O(N×latency)
+		// to O(max_latency) when N queries are issued.
+		var (
+			mu sync.Mutex
+			wg sync.WaitGroup
+		)
 		for _, q := range queries {
-			results := s.search.Search(ctx, q, maxPerQuery)
-			for _, r := range results {
-				if r.URL != "" {
-					if seenURLs[r.URL] {
-						continue
+			wg.Add(1)
+			go func(query string) {
+				defer wg.Done()
+				results := s.search.Search(ctx, query, maxPerQuery)
+
+				mu.Lock()
+				for _, r := range results {
+					if r.URL != "" {
+						if seenURLs[r.URL] {
+							continue
+						}
+						seenURLs[r.URL] = true
 					}
-					seenURLs[r.URL] = true
+					allResults = append(allResults, r)
 				}
-				allResults = append(allResults, r)
-			}
-			slog.Info("search completed", "query", q, "results", len(results), "cumulative", len(allResults))
+				mu.Unlock()
+
+				slog.Info("search completed", "query", query, "results", len(results), "cumulative", len(allResults))
+			}(q)
 		}
+		wg.Wait()
 		// Sanitize all search results before storing to prevent prompt injection
 		execCtx.SearchResults = engine.SanitizeSearchResults(allResults)
 		return nil
@@ -873,11 +891,20 @@ func cosineSimilarity(a, b []float64) float64 {
 // ─── OutlineStep (guided mode) ───────────────────────────
 
 type OutlineStep struct {
-	llm *tools.LLMClient
+	llm     *tools.LLMClient
+	profile *profile.StyleProfile
 }
 
 func NewOutlineStep(llm *tools.LLMClient) *OutlineStep {
 	return &OutlineStep{llm: llm}
+}
+
+// NewOutlineStepWithProfile creates an OutlineStep with a style profile.
+// When a profile is provided, the outline generation will be guided by
+// the profile's structure skeleton (Sections for custom type, or
+// Opening/Body/Conclusion for three_part type).
+func NewOutlineStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *OutlineStep {
+	return &OutlineStep{llm: llm, profile: p}
 }
 
 func (s *OutlineStep) Name() engine.StepName { return engine.StepOutline }
@@ -976,7 +1003,33 @@ func (s *OutlineStep) Execute(ctx context.Context, execCtx *engine.ExecutionCont
 // generateOutline calls the LLM to produce an outline for the current topic.
 func (s *OutlineStep) generateOutline(ctx context.Context, execCtx *engine.ExecutionContext, temperature float64) (*engine.OutlineData, error) {
 	systemMsg := "你是写作提纲生成器。根据话题和素材生成文章提纲。只返回 JSON。"
-	userMsg := fmt.Sprintf(`话题：%s
+
+	// 注入风格配置的结构骨架（如果有）
+	structureSkeleton := ""
+	if s.profile != nil {
+		structureSkeleton = s.profile.RenderStructureSkeleton()
+	}
+
+	var userMsg string
+	if structureSkeleton != "" {
+		userMsg = fmt.Sprintf(`话题：%s
+
+%s
+
+请生成提纲，包含标题和3-5个要点。提纲的每个要点的 type 应与上述结构骨架对应。
+
+返回格式：
+{
+  "title": "文章标题",
+  "outline": [
+    {"point": "要点内容", "type": "section_type"}
+  ]
+}
+
+type 字段说明：用于标注该要点的段落角色，由你根据文章体裁自由决定。常见值包括但不限于：opening、argument、conclusion、intro、method、experiment、discussion、abstract 等，也可使用自定义标签
+}`, execCtx.WritingTask.Topic, structureSkeleton)
+	} else {
+		userMsg = fmt.Sprintf(`话题：%s
 
 请生成提纲，包含标题和3-5个要点。
 
@@ -984,11 +1037,13 @@ func (s *OutlineStep) generateOutline(ctx context.Context, execCtx *engine.Execu
 {
   "title": "文章标题",
   "outline": [
-    {"point": "要点内容", "type": "opening"},
-    {"point": "要点内容", "type": "argument"},
-    {"point": "要点内容", "type": "conclusion"}
+    {"point": "要点内容", "type": "section_type"}
   ]
+}
+
+type 字段说明：用于标注该要点的段落角色，由你根据文章体裁自由决定。常见值包括但不限于：opening、argument、conclusion、intro、method、experiment、discussion、abstract 等，也可使用自定义标签
 }`, execCtx.WritingTask.Topic)
+	}
 
 	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
@@ -1276,7 +1331,11 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			"trace_id", execCtx.TraceID,
 			"search_results", len(execCtx.SearchResults))
 
-		toolExecutor := WritingToolExecutor(s.search, s.kbSearcher, execCtx.UserID, execCtx.SearchResults)
+		kbID := ""
+		if s.profile != nil {
+			kbID = s.profile.KbID
+		}
+		toolExecutor := WritingToolExecutor(s.search, s.kbSearcher, kbID, execCtx.UserID, execCtx.SearchResults)
 		fullText, tokens, err = s.llm.ChatWithTools(
 			ctx, messages, streamCallback, onReasoning, onStreamReset,
 			WritingTools(s.kbSearcher != nil), toolExecutor, streamOpts...,
@@ -2140,14 +2199,14 @@ issue type 约定：title_length（字数不合规）、title_generic（过于�
 // "not yet published" for policies/documents that have actually been released.
 //
 // Strategy:
-//  1. Ask LLM to extract 2-4 key verifiable claims (policies, data, events)
+//  1. Ask LLM to extract 4-8 key verifiable claims (policies, data, events)
 //  2. Search the web for each claim concurrently
 //  3. If Jiaozhen client is available, also run rumor fact-checking on candidate claims
 //  4. Format results as structured context
 func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.ExecutionContext) string {
 	// Step 1: Extract verifiable claims via LLM
 	extractSys := "你是事实核查助手。从文章中提取可验证的关键事实声明（如政策名称、数据统计、事件时间等）。只返回 JSON。"
-	extractUser := fmt.Sprintf(`从以下文章中提取 2-4 个最关键的可验证事实声明（如政策/文件名称及发布状态、关键数据、重要事件等）。
+	extractUser := fmt.Sprintf(`从以下文章中提取 4-8 个最关键的可验证事实声明（如政策/文件名称及发布状态、关键数据、重要事件等）。
 
 文章：
 %s

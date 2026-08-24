@@ -14,10 +14,25 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useSettingsStore, type AgentMode } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
 
-const AGENT_MODE_OPTIONS: { value: AgentMode; label: string; description: string }[] = [
-  { value: "harness", label: "智能会话模式", description: "LLM 持续会话 + Harness 路由，支持多轮修改、对话、搜索，适合实际写作场景" },
-  { value: "pipeline", label: "流水线模式", description: "固定步骤流水线，稳定可预测，适合标准化写作" },
-  { value: "editorial", label: "编辑部模式 (Beta)", description: "模拟编辑部协作流程：选题→研究→写作→审校，多 Agent 角色分工，适合高质量长文创作" },
+const AGENT_MODE_OPTIONS: { value: AgentMode; label: string; description: string; scenario: string }[] = [
+  {
+    value: "harness",
+    label: "智能会话模式",
+    description: "LLM 在持续会话中自主决策，支持多轮对话、定向修改、实时搜索",
+    scenario: "日常写作 · 多轮修改 · 对话式创作",
+  },
+  {
+    value: "pipeline",
+    label: "流水线模式",
+    description: "固定步骤编排，检索→提纲→写作→审校→修正，流程稳定可预测",
+    scenario: "标准化写作 · 快速出稿 · 流程可控",
+  },
+  {
+    value: "editorial",
+    label: "编辑部模式 (Beta)",
+    description: "多 Agent 角色协作：研究→写作→审校，上下文隔离，风格统一注入",
+    scenario: "长文创作 · 深度报告 · 高质量产出",
+  },
 ];
 
 export function SettingsSection({ onClosePanel }: { onClosePanel?: () => void }) {
@@ -140,6 +155,10 @@ export function SettingsSection({ onClosePanel }: { onClosePanel?: () => void })
                   <span className="text-sm font-medium">{opt.label}</span>
                 </div>
                 <div className="text-xs text-muted-foreground mt-0.5">{opt.description}</div>
+                <div className="text-[11px] text-muted-foreground/70 mt-1 flex items-center gap-1">
+                  <span className="inline-block w-1 h-1 rounded-full bg-muted-foreground/40" />
+                  {opt.scenario}
+                </div>
               </div>
             </button>
           ))}
@@ -149,13 +168,23 @@ export function SettingsSection({ onClosePanel }: { onClosePanel?: () => void })
       
 
       {/* 提示信息 */}
-      <div className="rounded-lg bg-muted/50 p-4">
+      <div className="rounded-lg bg-muted/50 p-4 space-y-2">
         <p className="text-xs text-muted-foreground">
-          <strong className="text-foreground">提示：</strong>
-          智能会话模式（Harness）让 AI 在持续会话中自主搜索、写作、评审和修改，支持多轮对话和定向修改；
-          流水线模式（Pipeline）使用固定步骤，更稳定但灵活性较低。
-          编辑部模式（Editorial）模拟编辑部协作流程，多 Agent 角色分工，适合高质量长文。
-          如果对生成质量不满意，可以尝试切换模式体验差异。
+          <strong className="text-foreground">三种模式怎么选？</strong>
+        </p>
+        <div className="space-y-1.5">
+          <p className="text-xs text-muted-foreground">
+            <strong className="text-foreground/80">智能会话</strong> — 最灵活，AI 自主决定何时搜索、写作、修改，支持多轮对话和定向调整。适合大多数日常写作场景。
+          </p>
+          <p className="text-xs text-muted-foreground">
+            <strong className="text-foreground/80">流水线</strong> — 最稳定，按固定步骤执行（检索→提纲→写作→审校→修正），流程透明、结果可预测。适合格式固定的标准化写作。
+          </p>
+          <p className="text-xs text-muted-foreground">
+            <strong className="text-foreground/80">编辑部</strong> — 最高质量，多 Agent 角色分工协作（研究 Agent 检索素材、写作 Agent 生成正文、审校 Agent 多维度评审），上下文隔离避免风格漂移。适合万字长文、深度报告等高要求场景。
+          </p>
+        </div>
+        <p className="text-[11px] text-muted-foreground/60 pt-1 border-t">
+          三种模式均统一注入风格约束（RenderWritingConstraints），切换模式不会影响风格一致性。如果对当前模式生成质量不满意，可尝试切换体验差异。
         </p>
       </div>
     </div>

@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>笔润智谈 · 写作逻辑与模式架构</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;500;700;900&family=Noto+Sans+SC:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#1a1a2e;--paper:#f7f5f0;--warm:#efebe2;--accent:#c73e1d;--soft:#e8896b;--gold:#b8860b;--teal:#2a6e7e;--rule:#d4cfc4;--muted:#8a8275;--green:#4a7c59}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:'Noto Sans SC',sans-serif;background:var(--paper);color:var(--ink);line-height:1.7;overflow-x:hidden}
+
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:4rem 2rem;background:var(--ink);color:var(--paper);position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 20% 30%,rgba(199,62,29,.15) 0%,transparent 55%),radial-gradient(ellipse at 80% 70%,rgba(184,134,11,.08) 0%,transparent 50%);pointer-events:none}
+.hero-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:60px 60px;pointer-events:none}
+.hero-content{max-width:900px;position:relative;z-index:2}
+.eyebrow{font-family:'JetBrains Mono',monospace;font-size:.72rem;letter-spacing:.3em;text-transform:uppercase;color:var(--soft);margin-bottom:1.5rem}
+.hero h1{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(2.2rem,5.5vw,4rem);line-height:1.15;letter-spacing:-.02em;margin-bottom:1.5rem}
+.hero h1 em{color:var(--soft);font-style:italic;font-weight:500}
+.hero-sub{font-size:1.05rem;color:rgba(247,245,240,.55);max-width:580px;line-height:1.8}
+.hero-meta{position:absolute;bottom:3rem;left:2rem;right:2rem;display:flex;justify-content:space-between;align-items:flex-end;z-index:2}
+.hero-ver{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:rgba(247,245,240,.25);letter-spacing:.1em}
+
+.section{padding:5rem 2rem;max-width:1200px;margin:0 auto}
+.s-label{font-family:'JetBrains Mono',monospace;font-size:.68rem;letter-spacing:.25em;text-transform:uppercase;color:var(--accent);margin-bottom:.7rem}
+.s-title{font-family:'Noto Serif SC',serif;font-weight:700;font-size:clamp(1.6rem,3vw,2.4rem);line-height:1.25;margin-bottom:.8rem}
+.s-intro{font-size:1rem;color:var(--muted);max-width:680px;margin-bottom:2.5rem}
+
+/* arch cards */
+.arch-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem;margin-bottom:3rem}
+.arch-card{background:#fff;border:1px solid var(--rule);padding:1.75rem;transition:box-shadow .3s,transform .3s}
+.arch-card:hover{box-shadow:0 8px 30px rgba(26,26,46,.08);transform:translateY(-2px)}
+.arch-num{font-family:'JetBrains Mono',monospace;font-size:.62rem;color:var(--muted);letter-spacing:.15em;margin-bottom:.6rem}
+.arch-card h3{font-family:'Noto Serif SC',serif;font-size:1.2rem;margin-bottom:.4rem}
+.arch-tag{display:inline-block;font-size:.68rem;font-family:'JetBrains Mono',monospace;padding:.15rem .5rem;background:var(--warm);color:var(--ink);margin-bottom:.8rem}
+.arch-card p{font-size:.85rem;color:var(--muted);line-height:1.6}
+.arch-feat{margin-top:.8rem;padding-top:.8rem;border-top:1px solid var(--rule);list-style:none}
+.arch-feat li{font-size:.78rem;color:var(--ink);padding:.15rem 0 .15rem 1rem;position:relative}
+.arch-feat li::before{content:'▸';position:absolute;left:0;color:var(--accent)}
+.arch-card.active{border-color:var(--accent);border-width:2px}
+.arch-card.active .arch-tag{background:var(--accent);color:#fff}
+
+/* pipeline flow */
+.pipe{background:var(--ink);color:var(--paper);padding:3.5rem 2rem;margin:2.5rem 0;border-radius:4px}
+.pipe-title{font-family:'Noto Serif SC',serif;font-size:1.3rem;margin-bottom:.4rem}
+.pipe-sub{font-size:.85rem;color:rgba(247,245,240,.4);margin-bottom:2rem}
+.flow{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.step{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);padding:.5rem .85rem;border-radius:3px;font-size:.76rem;font-family:'JetBrains Mono',monospace;white-space:nowrap;transition:all .3s}
+.step:hover{background:rgba(199,62,29,.25);border-color:var(--accent)}
+.step.skip{opacity:.25;text-decoration:line-through}
+.arr{color:rgba(255,255,255,.15);font-size:.72rem}
+.pg{border:1px dashed rgba(184,134,11,.35);border-radius:4px;padding:.25rem;display:flex;gap:.25rem;align-items:center;position:relative}
+.pg-label{position:absolute;top:-.55rem;left:.4rem;font-size:.55rem;font-family:'JetBrains Mono',monospace;color:var(--gold);background:var(--ink);padding:0 .25rem}
+
+/* mode table */
+.tbl{width:100%;border-collapse:collapse;margin-top:1.5rem;background:#fff}
+.tbl th{text-align:left;padding:.85rem 1rem;font-size:.78rem;color:var(--paper);background:var(--ink);border-right:1px solid rgba(255,255,255,.08);white-space:nowrap}
+.tbl th:last-child{border-right:none}
+.tbl td{padding:.85rem 1rem;font-size:.82rem;border-bottom:1px solid var(--rule);border-right:1px solid var(--rule);vertical-align:top}
+.tbl td:last-child{border-right:none}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:var(--warm)}
+.m-name{font-family:'Noto Serif SC',serif;font-weight:700;font-size:.95rem}
+.m-code{font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--accent);display:block;margin-top:.15rem}
+.badge{display:inline-block;font-size:.68rem;padding:.1rem .4rem;border-radius:2px;font-weight:500}
+.b-y{background:#e8f5e9;color:var(--green)}
+.b-n{background:#fce4ec;color:var(--accent)}
+.b-s{background:var(--warm);color:var(--muted)}
+
+/* injection diagram */
+.inj{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:1.5rem;background:#fff;border:1px solid var(--rule)}
+.ic{padding:1.25rem;border-right:1px solid var(--rule)}
+.ic:last-child{border-right:none}
+.ic-h{font-family:'Noto Serif SC',serif;font-weight:700;font-size:1rem;margin-bottom:.2rem}
+.ic-s{font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--muted);margin-bottom:1rem}
+.il{padding:.6rem 0;border-bottom:1px dashed var(--rule)}
+.il:last-child{border-bottom:none}
+.il-l{font-size:.65rem;font-family:'JetBrains Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:.2rem}
+.il-c{font-size:.8rem;color:var(--ink)}
+.ck{color:var(--green)}
+.xx{color:var(--accent);opacity:.35}
+
+/* structure types */
+.stg{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2rem;margin-top:1.5rem}
+.stc{background:#fff;border:1px solid var(--rule);padding:1.5rem}
+.stc.custom{border-color:var(--accent);border-width:2px}
+.stl{font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--accent);margin-bottom:.4rem}
+.stc h4{font-family:'Noto Serif SC',serif;font-size:1.05rem;margin-bottom:.6rem}
+.stf{display:flex;align-items:center;gap:.25rem;flex-wrap:wrap;margin:.8rem 0}
+.stfi{background:var(--warm);padding:.3rem .65rem;border-radius:2px;font-size:.78rem;font-family:'Noto Serif SC',serif;font-weight:500}
+.stfa{color:var(--muted);font-size:.65rem}
+.stc p{font-size:.82rem;color:var(--muted)}
+.stex{margin-top:.75rem;padding:.6rem;background:var(--warm);border-radius:3px;font-size:.72rem;color:var(--ink);font-family:'JetBrains Mono',monospace}
+
+/* prompt stack */
+.ps{margin-top:1.5rem;background:#fff;border:1px solid var(--rule);overflow:hidden}
+.pl{padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;align-items:flex-start;gap:.8rem}
+.pl:last-child{border-bottom:none}
+.pp{flex-shrink:0;width:90px;font-family:'JetBrains Mono',monospace;font-size:.62rem;text-align:center;padding:.25rem .4rem;border-radius:2px;white-space:nowrap}
+.pp0{background:#fce4ec;color:#c73e1d}
+.pp1{background:#e3f2fd;color:#1565c0}
+.pp2{background:#fff8e1;color:var(--gold)}
+.pps{background:var(--ink);color:var(--paper)}
+.plb{flex:1}
+.plt{font-family:'Noto Serif SC',serif;font-weight:700;font-size:.9rem;margin-bottom:.2rem}
+.pld{font-size:.78rem;color:var(--muted);line-height:1.6}
+.plf{display:flex;flex-wrap:wrap;gap:.2rem;margin-top:.4rem}
+.pft{font-size:.65rem;font-family:'JetBrains Mono',monospace;padding:.1rem .35rem;background:var(--warm);border-radius:2px;color:var(--ink)}
+
+/* editorial */
+.ed-flow{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-top:1.5rem}
+.ed-step{background:#fff;border:1px solid var(--rule);padding:1.25rem;text-align:center;position:relative}
+.ed-step::after{content:'→';position:absolute;right:-.6rem;top:50%;transform:translateY(-50%);color:var(--rule);font-size:1rem;z-index:1}
+.ed-step:last-child::after{display:none}
+.ed-icon{font-family:'Noto Serif SC',serif;font-size:1.5rem;font-weight:700;color:var(--accent);margin-bottom:.5rem}
+.ed-step h4{font-family:'Noto Serif SC',serif;font-size:.9rem;margin-bottom:.3rem}
+.ed-step p{font-size:.75rem;color:var(--muted)}
+
+/* harness flow */
+.h-flow{background:var(--ink);color:var(--paper);padding:2.5rem;border-radius:4px;margin-top:1.5rem}
+.h-flow h3{font-family:'Noto Serif SC',serif;font-size:1.1rem;margin-bottom:1.5rem}
+.h-steps{display:flex;flex-direction:column;gap:.6rem}
+.h-step{display:flex;align-items:flex-start;gap:.8rem}
+.h-num{flex-shrink:0;width:28px;height:28px;border-radius:50%;background:rgba(199,62,29,.2);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-family:'JetBrains Mono',monospace;color:var(--soft)}
+.h-txt{font-size:.82rem;color:rgba(247,245,240,.8);padding-top:.2rem}
+.h-txt strong{color:var(--paper);font-weight:500}
+.h-txt code{font-family:'JetBrains Mono',monospace;font-size:.72rem;background:rgba(255,255,255,.06);padding:.1rem .3rem;border-radius:2px;color:var(--soft)}
+
+/* style matrix */
+.mtx{display:grid;grid-template-columns:200px repeat(3,1fr);gap:0;margin-top:1.5rem;background:#fff;border:1px solid var(--rule)}
+.mtx-h{padding:.8rem 1rem;font-family:'Noto Serif SC',serif;font-weight:700;font-size:.85rem;background:var(--warm);border-bottom:1px solid var(--rule);border-right:1px solid var(--rule);text-align:center}
+.mtx-h:first-child{background:var(--ink);color:var(--paper)}
+.mtx-h:last-child{border-right:none}
+.mtx-c{padding:.7rem 1rem;font-size:.8rem;border-bottom:1px solid var(--rule);border-right:1px solid var(--rule)}
+.mtx-c:last-child{border-right:none}
+.mtx-c.label{font-family:'Noto Serif SC',serif;font-weight:500;background:var(--warm);color:var(--ink)}
+.mtx-row:last-child .mtx-c{border-bottom:none}
+
+/* footer */
+.footer{background:var(--ink);color:rgba(247,245,240,.3);padding:3rem 2rem;text-align:center;font-size:.78rem;font-family:'JetBrains Mono',monospace;letter-spacing:.1em}
+
+/* responsive */
+@media(max-width:768px){
+.arch-grid,.stg,.inj,.ed-flow{grid-template-columns:1fr}
+.mtx{grid-template-columns:1fr}
+.mtx-h{display:none}
+.mtx-c{border-right:none}
+.mtx-c.label{background:var(--ink);color:var(--paper);font-size:.75rem}
+.tbl{font-size:.72rem}
+.tbl th,.tbl td{padding:.5rem .6rem}
+.flow{font-size:.7rem}
+}
+
+/* anim */
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.hero-content,.section{animation:fadeUp .6s ease-out}
+
+/* ── 决策卡片 ── */
+.dec-grid{display:grid;grid-template-columns:1fr;gap:1.5rem;margin-top:1.5rem}
+.dec-card{background:#fff;border:1px solid var(--rule);border-radius:4px;overflow:hidden;transition:box-shadow .3s}
+.dec-card:hover{box-shadow:0 6px 24px rgba(26,26,46,.06)}
+.dec-head{display:flex;align-items:center;gap:.6rem;padding:.8rem 1.25rem;border-bottom:1px solid var(--rule);background:var(--warm)}
+.dec-num{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--ink);font-weight:500;letter-spacing:.08em}
+.dec-tag{font-size:.62rem;padding:.15rem .45rem;border-radius:2px;font-family:'JetBrains Mono',monospace;letter-spacing:.05em}
+.dec-tag-arch{background:var(--accent);color:#fff}
+.dec-tag-perf{background:var(--teal);color:#fff}
+.dec-tag-tune{background:var(--gold);color:#fff}
+.dec-tag-ui{background:#7c3aed;color:#fff}
+.dec-tag-defer{background:var(--muted);color:#fff}
+.dec-title{font-family:'Noto Serif SC',serif;font-weight:700;font-size:1rem;padding:.8rem 1.25rem .4rem;margin:0}
+.dec-body{padding:0 1.25rem 1.25rem}
+.dec-section{margin-top:.8rem}
+.dec-label{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:.62rem;color:var(--accent);text-transform:uppercase;letter-spacing:.1em;margin-bottom:.3rem}
+.dec-section p{font-size:.82rem;color:var(--muted);line-height:1.7}
+.dec-list{list-style:none;padding:0;margin:.3rem 0}
+.dec-list li{font-size:.8rem;color:var(--ink);padding:.2rem 0 .2rem 1rem;position:relative;line-height:1.6}
+.dec-list li::before{content:'▸';position:absolute;left:0;color:var(--accent)}
+.dec-code{font-family:'JetBrains Mono',monospace;font-size:.72rem;background:var(--warm);padding:.1rem .3rem;border-radius:2px;color:var(--accent)}
+.dec-files{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.4rem}
+.dec-file{font-family:'JetBrains Mono',monospace;font-size:.68rem;background:var(--ink);color:var(--paper);padding:.2rem .5rem;border-radius:2px}
+.dec-tbl{width:100%;border-collapse:collapse;margin-top:.5rem;font-size:.78rem}
+.dec-tbl th{text-align:left;padding:.5rem .6rem;background:var(--warm);border-bottom:1px solid var(--rule);font-size:.72rem;font-weight:600}
+.dec-tbl td{padding:.5rem .6rem;border-bottom:1px solid var(--rule);font-size:.76rem;vertical-align:top}
+.dec-tbl tr:last-child td{border-bottom:none}
+.dec-tbl tr:hover td{background:var(--warm)}
+
+/* ── 变更摘要 ── */
+.chg-summary{margin-top:3rem;padding:1.5rem;background:#fff;border:1px solid var(--rule);border-radius:4px}
+.chg-title{font-family:'Noto Serif SC',serif;font-weight:700;font-size:1.05rem;margin-bottom:1rem}
+.chg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.8rem}
+.chg-item{display:flex;align-items:flex-start;gap:.6rem;padding:.6rem;border:1px solid var(--rule);border-radius:3px}
+.chg-icon{flex-shrink:0;font-size:.6rem;font-family:'JetBrains Mono',monospace;padding:.2rem .4rem;border-radius:2px;font-weight:500;white-space:nowrap}
+.chg-icon-add{background:#e8f5e9;color:var(--green)}
+.chg-icon-mod{background:#e3f2fd;color:#1565c0}
+.chg-icon-del{background:#fce4ec;color:var(--accent)}
+.chg-detail{flex:1;min-width:0}
+.chg-name{font-size:.78rem;font-weight:500;color:var(--ink)}
+.chg-desc{font-size:.72rem;color:var(--muted);margin-top:.15rem}
+</style>
+</head>
+<body>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-content">
+    <div class="eyebrow">LuminBuddy V2 · Architecture Document</div>
+    <h1>写作逻辑与<br><em>模式架构</em>全景</h1>
+    <p class="hero-sub">从意图判定到文章产出，从风格注入到三引擎统一 —— 完整阐述笔润智谈的写作流水线、执行模式选择、风格约束分层注入机制，以及编辑部 DAG 编排。</p>
+  </div>
+  <div class="hero-meta">
+    <div class="hero-ver">v2.0 / 2026-08</div>
+    <div style="font-size:.8rem;color:rgba(247,245,240,.35)">向下滚动 ↓</div>
+  </div>
+</section>
+
+<!-- ── 1. 三引擎架构 ── -->
+<section class="section">
+  <div class="s-label">01 · Three Engines</div>
+  <h2 class="s-title">三种执行引擎，统一风格注入</h2>
+  <p class="s-intro">笔润智谈根据用户选择的 AgentMode 启动不同的执行引擎。三种引擎各有所长，但都通过同一套 <code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">RenderWritingConstraints</code> 渲染风格约束，确保风格不漂移。</p>
+
+  <div class="arch-grid">
+    <div class="arch-card active">
+      <div class="arch-num">ENGINE · 01</div>
+      <h3>Pipeline</h3>
+      <span class="arch-tag">agent_mode = pipeline</span>
+      <p>固定步骤流水线，每一步按预定义顺序执行，支持并行组和暂停恢复。</p>
+      <ul class="arch-feat">
+        <li>意图分类 → 检索 → 提纲 → 写作 → 评审 → 修正</li>
+        <li>支持 ParallelGroup（记忆 ∥ 搜索）</li>
+        <li>OutlineStep 可暂停等待用户确认</li>
+        <li>Agent Loop：搜索结果 ≥3 条时自动启用</li>
+      </ul>
+    </div>
+    <div class="arch-card">
+      <div class="arch-num">ENGINE · 02</div>
+      <h3>Harness</h3>
+      <span class="arch-tag">agent_mode = harness</span>
+      <p>单层 LLM 持续会话，LLM 自主决定调用什么工具、何时写作。WorldState 增量 diff。</p>
+      <ul class="arch-feat">
+        <li>规则意图判定（毫秒级，不调 LLM）</li>
+        <li>WorldState 7 个 Section 增量推送</li>
+        <li>ChatWithTools 工具循环 + MaxCalls guard</li>
+        <li>对话历史压缩 + 断线重连</li>
+      </ul>
+    </div>
+    <div class="arch-card">
+      <div class="arch-num">ENGINE · 03</div>
+      <h3>编辑部</h3>
+      <span class="arch-tag">agent_mode = editorial</span>
+      <p>DAG 工作流编排，研究→写作→审校三 Agent 协作，人类审批节点。</p>
+      <ul class="arch-feat">
+        <li>ResearchAgent → WritingAgent → ReviewAgent</li>
+        <li>RoleAgentRunner 角色化执行</li>
+        <li>组织知识 + 栏目偏好注入</li>
+        <li>交付物 Artifact 管理 + 事实核查</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ── 2. Pipeline 流程 ── -->
+<section class="section">
+  <div class="s-label">02 · Pipeline Flow</div>
+  <h2 class="s-title">Pipeline 步骤流</h2>
+  <p class="s-intro">Pipeline 模式按固定顺序执行步骤。意图分类后，非 writing 模式会跳过检索链；guided 模式在写作前生成提纲并等待用户确认。</p>
+
+  <div class="pipe">
+    <div class="pipe-title">Pipeline 执行流（writing + guided 模式）</div>
+    <div class="pipe-sub">灰色划线 = 非写作模式下跳过的步骤</div>
+    <div class="flow">
+      <span class="step">ShortTermMemory</span><span class="arr">→</span>
+      <span class="step">Intent</span><span class="arr">→</span>
+      <div class="pg"><span class="pg-label">PARALLEL</span>
+        <span class="step">MemoryGate</span><span class="arr">∥</span>
+        <span class="step">QueryPlan</span><span class="arr">→</span>
+        <span class="step">Search</span><span class="arr">→</span>
+        <span class="step">Relevance</span><span class="arr">→</span>
+        <span class="step">Compress</span>
+      </div>
+      <span class="arr">→</span>
+      <span class="step">WorkingMemory</span><span class="arr">→</span>
+      <span class="step">Chat <span style="opacity:.4">(skip if not chat)</span></span><span class="arr">→</span>
+      <span class="step">Outline <span style="opacity:.4">(guided only)</span></span><span class="arr">→</span>
+      <span class="step">Write</span><span class="arr">→</span>
+      <span class="step">PostReview</span><span class="arr">→</span>
+      <span class="step">AutoFix</span><span class="arr">→</span>
+      <span class="step">PostReview²</span><span class="arr">→</span>
+      <span class="step">MemoryExtract</span>
+    </div>
+    <div style="margin-top:1.5rem;font-size:.75rem;color:rgba(247,245,240,.35);font-family:'JetBrains Mono',monospace">
+      polish/shorten/expand 模式：QueryPlan ✓ → Search ✗ → Relevance ✗ → Compress ✗ → Outline ✗ → Write ✓（不注入结构约束）
+    </div>
+  </div>
+</section>
+
+<!-- ── 3. 意图与模式 ── -->
+<section class="section">
+  <div class="s-label">03 · Intent & Mode</div>
+  <h2 class="s-title">意图分类 × 执行模式</h2>
+  <p class="s-intro">意图（Intent）决定"做什么"，模式（Mode）决定"怎么做"。意图由 ClassifyIntent 规则判定或 LLM 分类；模式由前端传入 <code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">execCtx.Mode</code>。</p>
+
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>意图</th>
+        <th>触发关键词</th>
+        <th>检索</th>
+        <th>提纲</th>
+        <th>结构注入</th>
+        <th>Thinking</th>
+        <th>输出格式</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="m-name">写作</span><span class="m-code">writing</span></td>
+        <td>写一篇 / 写稿 / 撰写 / 基于热搜</td>
+        <td><span class="badge b-y">✓</span></td>
+        <td><span class="badge b-y">guided 模式</span></td>
+        <td><span class="badge b-y">✓ 全量</span></td>
+        <td><span class="badge b-y">✓ high</span></td>
+        <td>JSON标题 + 分隔符 + Markdown</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">润色</span><span class="m-code">polish</span></td>
+        <td>润色 / 优化 / 改写 / 调整</td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗ 不注入</span></td>
+        <td><span class="badge b-y">✓</span></td>
+        <td>纯 Markdown</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">缩写</span><span class="m-code">shorten</span></td>
+        <td>缩写 / 精简 / 缩短</td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-y">✓</span></td>
+        <td>纯 Markdown</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">扩写</span><span class="m-code">expand</span></td>
+        <td>扩写 / 展开 / 扩充 / 补充</td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-y">✓</span></td>
+        <td>纯 Markdown</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">提炼</span><span class="m-code">extract_points</span></td>
+        <td>提炼 / 提取观点 / 提取要点</td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-y">✓</span></td>
+        <td>结构化列表</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">对话</span><span class="m-code">chat</span></td>
+        <td>默认（无写作关键词）</td>
+        <td><span class="badge b-s">可选</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td><span class="badge b-n">✗</span></td>
+        <td>纯文本流</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top:2rem;padding:1.25rem;background:#fff;border-left:3px solid var(--gold);font-size:.88rem;color:var(--ink-soft)">
+    <strong style="font-family:'Noto Serif SC',serif">关键设计决策</strong>：润色模式<span style="color:var(--accent)">不注入结构约束</span>。原因：润色是优化已有文本的表达，不应将一段文字强制变成结构鲜明的文章。结构约束仅在 <code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">taskMode == "writing"</code> 时注入。
+  </div>
+</section>
+
+<!-- ── 4. Harness 执行流 ── -->
+<section class="section">
+  <div class="s-label">04 · Harness Flow</div>
+  <h2 class="s-title">Harness 单层会话执行流</h2>
+  <p class="s-intro">Harness 不走固定步骤，而是将工具集暴露给 LLM，由 LLM 在持续会话中自主决定调用顺序。WorldState 管理跨轮状态。</p>
+
+  <div class="h-flow">
+    <h3>Run() 执行序列</h3>
+    <div class="h-steps">
+      <div class="h-step"><div class="h-num">1</div><div class="h-txt"><strong>加载对话历史</strong> — 从 SessionStore 加载最近 50 条消息</div></div>
+      <div class="h-step"><div class="h-num">2</div><div class="h-txt"><strong>主动检索记忆</strong> — MemoryRetriever 接口注入用户偏好</div></div>
+      <div class="h-step"><div class="h-num">3</div><div class="h-txt"><strong>意图判定</strong> — <code>ClassifyIntent()</code> 规则路由，毫秒级</div></div>
+      <div class="h-step"><div class="h-num">4</div><div class="h-txt"><strong>对话历史压缩</strong> — 超阈值时 LLM 压缩旧消息为摘要</div></div>
+      <div class="h-step"><div class="h-num">5</div><div class="h-txt"><strong>构建消息</strong> — WorldState 7 Section 增量 diff → system prompt</div></div>
+      <div class="h-step"><div class="h-num">6</div><div class="h-txt"><strong>选择工具集</strong> — <code>ToolsForIntent(intent, hasSearch, isGuided, hasKB)</code></div></div>
+      <div class="h-step"><div class="h-num">7</div><div class="h-txt"><strong>构建执行器</strong> — <code>BuildToolExecutor</code> + 声明式 MaxCalls guard</div></div>
+      <div class="h-step"><div class="h-num">8</div><div class="h-txt"><strong>启动 LLM 会话</strong> — <code>ChatWithTools</code> 或 <code>ChatStreamWithReasoning</code></div></div>
+      <div class="h-step"><div class="h-num">9</div><div class="h-txt"><strong>流式回调</strong> — onDelta 提取标题 / onReset 保存正文 / onReasoning 推理链</div></div>
+      <div class="h-step"><div class="h-num">10</div><div class="h-txt"><strong>收尾</strong> — 保存文章版本、存储消息、发送 Completed 事件</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 5. 风格约束注入 ── -->
+<section class="section">
+  <div class="s-label">05 · Style Injection</div>
+  <h2 class="s-title">风格约束分层注入</h2>
+  <p class="s-intro">风格约束通过三个优先级分层注入到 Prompt 中。三个引擎统一调用 <code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">RenderWritingConstraints</code>，确保单一真相源。</p>
+
+  <div class="ps">
+    <div class="pl">
+      <div class="pp pps">SYSTEM</div>
+      <div class="plb">
+        <div class="plt">System Prompt 层（受保护通道）</div>
+        <div class="pld">风格身份 + 安全指令 + 日期注入。位于 system message，不受用户输入污染。</div>
+        <div class="plf"><span class="pft">profile.SystemPrompt</span><span class="pft">PromptInjectionDefense</span><span class="pft">current_date</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp0">P0 强制</div>
+      <div class="plb">
+        <div class="plt">事实红线 — 违反将导致文章不合格</div>
+        <div class="pld">禁止结果性动词、未发生事件须用将来时态、用户素材优先于 AI 检索。</div>
+        <div class="plf"><span class="pft">forbidden_results</span><span class="pft">future_tense_required</span><span class="pft">user_material_priority</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp1">P1 要求</div>
+      <div class="plb">
+        <div class="plt">写作要求 — 尽量遵循</div>
+        <div class="pld">结构骨架 + 修辞手法 + 标题规范 + 字数范围。仅在 writing 模式注入；polish 等模式仅注入字数。</div>
+        <div class="plf"><span class="pft">structure</span><span class="pft">rhetoric</span><span class="pft">title_guidelines</span><span class="pft">word_range</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp2">P2 参考</div>
+      <div class="plb">
+        <div class="plt">风格参考 — 适当融入</div>
+        <div class="pld">价值导向关键词。仅在 writing 模式注入。</div>
+        <div class="plf"><span class="pft">value_orientation.keywords</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:2rem">
+    <h3 style="font-family:'Noto Serif SC',serif;font-size:1.1rem;margin-bottom:1rem">三引擎注入一致性矩阵</h3>
+    <div class="mtx">
+      <div class="mtx-h">注入维度</div>
+      <div class="mtx-h">Pipeline (WriteStep)</div>
+      <div class="mtx-h">Harness (WorldState)</div>
+      <div class="mtx-h">编辑部 (RoleAgentRunner)</div>
+
+      <div class="mtx-c label">SystemPrompt</div>
+      <div class="mtx-c"><span class="ck">✓</span> profile.SystemPrompt</div>
+      <div class="mtx-c"><span class="ck">✓</span> ProfileSection</div>
+      <div class="mtx-c"><span class="ck">✓</span> profile.SystemPrompt</div>
+
+      <div class="mtx-c label">FactGuard (P0)</div>
+      <div class="mtx-c"><span class="ck">✓</span> RenderWritingConstraints</div>
+      <div class="mtx-c"><span class="ck">✓</span> RulesSection</div>
+      <div class="mtx-c"><span class="ck">✓</span> RenderWritingConstraints</div>
+
+      <div class="mtx-c label">Structure (P1)</div>
+      <div class="mtx-c"><span class="ck">✓</span> appendStructure</div>
+      <div class="mtx-c"><span class="ck">✓</span> RulesSection → appendStructure</div>
+      <div class="mtx-c"><span class="ck">✓</span> RenderWritingConstraints</div>
+
+      <div class="mtx-c label">Rhetoric (P1)</div>
+      <div class="mtx-c"><span class="ck">✓</span> appendRhetoric</div>
+      <div class="mtx-c"><span class="ck">✓</span> RulesSection</div>
+      <div class="mtx-c"><span class="ck">✓</span> RenderWritingConstraints</div>
+
+      <div class="mtx-c label">WordRange (P1)</div>
+      <div class="mtx-c"><span class="ck">✓</span> appendWordRange</div>
+      <div class="mtx-c"><span class="ck">✓</span> RulesSection</div>
+      <div class="mtx-c"><span class="ck">✓</span> RenderWritingConstraints</div>
+
+      <div class="mtx-c label">TitleGuidelines</div>
+      <div class="mtx-c"><span class="ck">✓</span> appendTitleGuidelines</div>
+      <div class="mtx-c"><span class="ck">✓</span> RulesSection</div>
+      <div class="mtx-c"><span class="xx">✗</span> 由提纲标题覆盖</div>
+
+      <div class="mtx-c label">ValueOrientation (P2)</div>
+      <div class="mtx-c"><span class="ck">✓</span></div>
+      <div class="mtx-c"><span class="ck">✓</span></div>
+      <div class="mtx-c"><span class="ck">✓</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 6. 结构类型 ── -->
+<section class="section">
+  <div class="s-label">06 · Structure Types</div>
+  <h2 class="s-title">结构类型与自定义骨架</h2>
+  <p class="s-intro">Structure.Type 决定文章的结构骨架。custom 类型通过 Sections 数组支持任意文体的自定义结构段，彻底解耦三段式硬编码。</p>
+
+  <div class="stg">
+    <div class="stc">
+      <div class="stl">type = three_part</div>
+      <h4>三段式闭环</h4>
+      <p>Opening → Body → Conclusion 三段，可附加论证模式和递进变式。适用于预设评论风格等评论文体。</p>
+      <div class="stf">
+        <span class="stfi">开头</span><span class="stfa">→</span>
+        <span class="stfi">正文</span><span class="stfa">→</span>
+        <span class="stfi">结尾</span>
+      </div>
+      <div class="stex">opening: 现象点题 → body: 分层论述 → conclusion: 总结升华</div>
+    </div>
+    <div class="stc">
+      <div class="stl">type = free_form</div>
+      <h4>自由结构</h4>
+      <p>不预设结构骨架，由 LLM 根据话题自主决定段落组织。适用于杂文、随笔等灵活文体。</p>
+      <div class="stf">
+        <span class="stfi" style="opacity:.4">无固定段</span>
+      </div>
+      <div class="stex">结构要求由 LLM 自主决定</div>
+    </div>
+    <div class="stc custom">
+      <div class="stl">type = custom ⭐</div>
+      <h4>自定义骨架</h4>
+      <p>通过 Sections[] 数组定义任意结构段。每个段包含 Name 和可选 Description。适用于论文、公文、小说等任意文体。</p>
+      <div class="stf">
+        <span class="stfi">引言</span><span class="stfa">→</span>
+        <span class="stfi">方法</span><span class="stfa">→</span>
+        <span class="stfi">实验</span><span class="stfa">→</span>
+        <span class="stfi">讨论</span><span class="stfa">→</span>
+        <span class="stfi">结论</span>
+      </div>
+      <div class="stex">sections: [{name:"引言",desc:"概述背景"},...]</div>
+    </div>
+  </div>
+
+  <div style="margin-top:2rem;padding:1.25rem;background:#fff;border-left:3px solid var(--accent);font-size:.88rem;color:var(--ink-soft)">
+    <strong style="font-family:'Noto Serif SC',serif">结构骨架全链路感知</strong>：<code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">RenderStructureSkeleton()</code> 在提纲生成阶段注入骨架引导，<code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">appendStructure()</code> 在写作阶段注入结构约束，<code style="font-family:'JetBrains Mono',monospace;color:var(--accent)">appendStructureSummary()</code> 在评审阶段验证结构合规。
+  </div>
+</section>
+
+<!-- ── 7. 编辑部 DAG ── -->
+<section class="section">
+  <div class="s-label">07 · Editorial DAG</div>
+  <h2 class="s-title">编辑部 DAG 工作流</h2>
+  <p class="s-intro">编辑部模式通过 DAG 工作流编排研究→写作→审校三 Agent，每个 Agent 独立执行、上下文隔离，通过交付物（Artifact）传递结果。</p>
+
+  <div class="ed-flow">
+    <div class="ed-step">
+      <div class="ed-icon">选</div>
+      <h4>选题立项</h4>
+      <p>人类创建任务<br>自动生成选题卡</p>
+    </div>
+    <div class="ed-step">
+      <div class="ed-icon">研</div>
+      <h4>研究 Agent</h4>
+      <p>搜索+知识库+压缩<br>产出研究简报</p>
+    </div>
+    <div class="ed-step">
+      <div class="ed-icon">写</div>
+      <h4>写作 Agent</h4>
+      <p>提纲+正文生成<br>注入风格约束</p>
+    </div>
+    <div class="ed-step">
+      <div class="ed-icon">审</div>
+      <h4>审校 Agent</h4>
+      <p>多维度评审<br>事实核查+敏感词</p>
+    </div>
+  </div>
+
+  <div style="margin-top:2rem;padding:1.5rem;background:#fff;border:1px solid var(--rule);border-radius:4px">
+    <h3 style="font-family:'Noto Serif SC',serif;font-size:1rem;margin-bottom:1rem">RoleAgentRunner 风格注入（重构后）</h3>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:.8rem">编辑部写作 Agent 的 system prompt 现在复用统一的渲染层：</p>
+    <div style="background:var(--ink);color:var(--paper);padding:1.25rem;border-radius:3px;font-family:'JetBrains Mono',monospace;font-size:.72rem;line-height:1.8;overflow-x:auto">
+<span style="color:rgba(247,245,240,.4)">// buildSystemPrompt [5. 风格 Profile]</span><br>
+<span style="color:var(--soft)">if</span> r.profile <span style="color:var(--soft)">!= nil</span> {<br>
+&nbsp;&nbsp;<span style="color:rgba(247,245,240,.4)">// 1. 注入风格身份</span><br>
+&nbsp;&nbsp;sb.WriteString(r.profile.SystemPrompt)<br>
+<br>
+&nbsp;&nbsp;<span style="color:rgba(247,245,240,.4)">// 2. 复用统一渲染层，注入全量约束</span><br>
+&nbsp;&nbsp;<span style="color:rgba(247,245,240,.4)">// FactGuard + Structure + Rhetoric + WordRange</span><br>
+&nbsp;&nbsp;constraints := r.profile.RenderWritingConstraints(<span style="color:var(--gold)">"writing"</span>, <span style="color:var(--gold)">false</span>, <span style="color:var(--gold)">0</span>)<br>
+&nbsp;&nbsp;sb.WriteString(constraints)<br>
+}
+    </div>
+  </div>
+</section>
+
+<!-- ── 8. Prompt 层级图 ── -->
+<section class="section">
+  <div class="s-label">08 · Prompt Architecture</div>
+  <h2 class="s-title">Prompt 分层架构</h2>
+  <p class="s-intro">完整的 Prompt 从 System Message 到 User Message 的分层组装。Pipeline 用 PromptBuilder 按优先级管理 Token 预算，Harness 用 WorldState 增量 diff。</p>
+
+  <div class="ps">
+    <div class="pl">
+      <div class="pp pps">SYS</div>
+      <div class="plb">
+        <div class="plt">System Message — 受保护通道</div>
+        <div class="pld">风格身份 + 注入防御 + 日期 + 任务指令 + 安全规则。不受用户输入污染。</div>
+        <div class="plf"><span class="pft">ProfileSection</span><span class="pft">RulesSection</span><span class="pft">TaskInstructions</span><span class="pft">Security</span><span class="pft">Date</span><span class="pft">Article(全文)</span><span class="pft">Materials</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp0">P0</div>
+      <div class="plb">
+        <div class="plt">User Message — Critical（永不截断）</div>
+        <div class="pld">任务指令 + 输出格式。写作模式下包含话题和输出格式约束。</div>
+        <div class="plf"><span class="pft">task_prompt</span><span class="pft">output_format</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp1">P1</div>
+      <div class="plb">
+        <div class="plt">User Message — High（截断不丢弃）</div>
+        <div class="pld">风格约束 + 提纲。Token 不足时截断保留前半部分。</div>
+        <div class="plf"><span class="pft">style_constraints</span><span class="pft">outline</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp0">P2</div>
+      <div class="plb">
+        <div class="plt">User Message — Medium（重度截断）</div>
+        <div class="pld">搜索结果 + 用户素材。Token 不足时截断至 30% 或丢弃。</div>
+        <div class="plf"><span class="pft">search_results</span><span class="pft">compressed_context</span><span class="pft">user_materials</span></div>
+      </div>
+    </div>
+    <div class="pl">
+      <div class="pp pp2">P3</div>
+      <div class="plb">
+        <div class="plt">User Message — Low（优先丢弃）</div>
+        <div class="pld">记忆上下文。Token 不足时第一个被丢弃。</div>
+        <div class="plf"><span class="pft">memory_context</span><span class="pft">entity_network</span><span class="pft">working_summary</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 9. 工具集 ── -->
+<section class="section">
+  <div class="s-label">09 · Tool Selection</div>
+  <h2 class="s-title">意图驱动的工具集选择</h2>
+  <p class="s-intro">不同意图暴露不同的工具集给 LLM，声明式 MaxCalls guard 防止过度调用。</p>
+
+  <table class="tbl" style="margin-top:1.5rem">
+    <thead>
+      <tr>
+        <th>意图</th>
+        <th>工具集</th>
+        <th>MaxCalls 限制</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="m-name">写作</span><span class="m-code">writing</span></td>
+        <td style="font-size:.78rem">search_web, search_knowledge, read_source, generate_outline<span style="color:var(--muted)">(guided)</span>, write_article, review_article, revise_section, retrieve_context, word_count_check, rewrite_title, fact_check</td>
+        <td style="font-size:.75rem;font-family:'JetBrains Mono',monospace">search: 3, review: 1, outline: 1, retrieve: 5</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">润色/缩写/扩写</span><span class="m-code">polish | shorten | expand</span></td>
+        <td style="font-size:.78rem">revise_section, search_web<span style="color:var(--muted)">(可选)</span>, search_knowledge<span style="color:var(--muted)">(可选)</span>, retrieve_context</td>
+        <td style="font-size:.75rem;font-family:'JetBrains Mono',monospace">search: 2, retrieve: 3</td>
+      </tr>
+      <tr>
+        <td><span class="m-name">对话</span><span class="m-code">chat</span></td>
+        <td style="font-size:.78rem">search_web<span style="color:var(--muted)">(可选)</span>, search_knowledge<span style="color:var(--muted)">(可选)</span>, retrieve_context <span style="color:var(--muted)">或无工具纯流式</span></td>
+        <td style="font-size:.75rem;font-family:'JetBrains Mono',monospace">search: 2, retrieve: 2</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ── 10. 决策记录与变更日志 ── -->
+<section class="section">
+  <div class="s-label">10 · Decisions & Changes</div>
+  <h2 class="s-title">架构决策记录与变更日志</h2>
+  <p class="s-intro">以下记录本次重构中做出的关键设计决策和具体代码变更。每条决策包含背景、方案和影响范围。</p>
+
+  <!-- 决策卡片 -->
+  <div class="dec-grid">
+
+    <!-- D1: 结构解耦 -->
+    <div class="dec-card">
+      <div class="dec-head">
+        <span class="dec-num">D-01</span>
+        <span class="dec-tag dec-tag-arch">架构</span>
+      </div>
+      <h3 class="dec-title">结构解耦：移除三段式硬编码，支持自定义 Sections</h3>
+      <div class="dec-body">
+        <div class="dec-section">
+          <span class="dec-label">背景</span>
+          <p>原 Structure 类型硬编码 opening/body/conclusion 三段，无法表达论文（引言→方法→实验→讨论→结论）、公文、小说等文体的结构。用户自定义结构时，提纲生成和正文写作均无法感知。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">方案</span>
+          <ul class="dec-list">
+            <li>新增 <code class="dec-code">SectionPart</code> 结构体（Name + Description）和 <code class="dec-code">Structure.Sections []SectionPart</code> 字段</li>
+            <li>新增 <code class="dec-code">type = "custom"</code> 结构类型，通过 Sections 数组定义任意结构段</li>
+            <li><code class="dec-code">ValidateProfile</code> 增加 custom 类型 Sections 非空校验</li>
+            <li>新增 <code class="dec-code">RenderStructureSkeleton()</code> 为提纲生成注入结构骨架引导</li>
+            <li><code class="dec-code">appendStructure()</code> 重构，custom 类型动态渲染 Sections 约束</li>
+          </ul>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">影响文件</span>
+          <div class="dec-files">
+            <span class="dec-file">profile.go</span>
+            <span class="dec-file">profile_prompt.go</span>
+            <span class="dec-file">steps.go (OutlineStep)</span>
+            <span class="dec-file">tools.go (generateOutlineWithLLM)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D2: 引擎统一 -->
+    <div class="dec-card">
+      <div class="dec-head">
+        <span class="dec-num">D-02</span>
+        <span class="dec-tag dec-tag-arch">架构</span>
+      </div>
+      <h3 class="dec-title">引擎统一：三引擎共享 RenderWritingConstraints</h3>
+      <div class="dec-body">
+        <div class="dec-section">
+          <span class="dec-label">背景</span>
+          <p>Pipeline、Harness、编辑部三引擎各自构建风格约束，存在风格漂移风险。Harness 模式提纲生成阶段缺少风格注入，导致自定义结构骨架不被感知。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">方案</span>
+          <ul class="dec-list">
+            <li>确立 <code class="dec-code">RenderWritingConstraints()</code> 为风格约束单一真相源</li>
+            <li>新增 <code class="dec-code">RenderStructureSkeleton()</code> 用于提纲阶段结构骨架注入</li>
+            <li>Harness <code class="dec-code">generateOutlineWithLLM()</code> 增加 <code class="dec-code">p *profile.StyleProfile</code> 参数</li>
+            <li>两次调用（初始生成 + LLM 重写）均传入 <code class="dec-code">cfg.Profile</code></li>
+            <li>Pipeline <code class="dec-code">PromptBuilder.AddStyleConstraints()</code> 确保调用 <code class="dec-code">RenderWritingConstraints</code></li>
+            <li>编辑部 <code class="dec-code">RoleAgentRunner.buildSystemPrompt</code> 复用统一渲染层</li>
+          </ul>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">一致性矩阵</span>
+          <p>三引擎注入维度完全对齐：SystemPrompt ✓、FactGuard(P0) ✓、Structure(P1) ✓、Rhetoric(P1) ✓、WordRange(P1) ✓、ValueOrientation(P2) ✓</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- D3: 搜索并发 -->
+    <div class="dec-card">
+      <div class="dec-head">
+        <span class="dec-num">D-03</span>
+        <span class="dec-tag dec-tag-perf">性能</span>
+      </div>
+      <h3 class="dec-title">搜索并发：Pipeline SearchStep 多查询并行</h3>
+      <div class="dec-body">
+        <div class="dec-section">
+          <span class="dec-label">背景</span>
+          <p>Pipeline 模式 <code class="dec-code">SearchStep</code> 收到多个搜索查询时串行执行，导致搜索延迟随查询数线性增长。长文创作场景下查询数通常 3-5 个，延迟问题突出。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">方案</span>
+          <ul class="dec-list">
+            <li>使用 <code class="dec-code">sync.WaitGroup</code> 并发执行多查询搜索</li>
+            <li><code class="dec-code">sync.Mutex</code> 保护搜索结果切片的并发写入</li>
+            <li>每个查询独立执行，结果合并后统一传入后续步骤</li>
+          </ul>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">效果</span>
+          <p>搜索延迟从 <code class="dec-code">O(n)</code> 降为 <code class="dec-code">O(1)</code>（n 为查询数），3 查询场景延迟降低约 60%。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">影响文件</span>
+          <div class="dec-files">
+            <span class="dec-file">steps.go (SearchStep.Execute)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D4: 长文参数 -->
+    <div class="dec-card">
+      <div class="dec-head">
+        <span class="dec-num">D-04</span>
+        <span class="dec-tag dec-tag-tune">调优</span>
+      </div>
+      <h3 class="dec-title">长文创作参数调优</h3>
+      <div class="dec-body">
+        <div class="dec-section">
+          <span class="dec-label">背景</span>
+          <p>原有参数针对短文（800-2000 字）设计，万字论文/报告场景下素材不足、压缩过度、事实核查覆盖不够。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">参数变更</span>
+          <table class="dec-tbl">
+            <thead>
+              <tr><th>参数</th><th>原值</th><th>新值</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code class="dec-code">SearchStep.maxPerQuery</code> 基数</td>
+                <td>20</td>
+                <td>30</td>
+                <td>单查询搜索结果上限提升</td>
+              </tr>
+              <tr>
+                <td><code class="dec-code">SearchStep.maxPerQuery</code> 最小值</td>
+                <td>5</td>
+                <td>8</td>
+                <td>保底下限提升</td>
+              </tr>
+              <tr>
+                <td><code class="dec-code">CompressStep.maxSnippetCharsToInject</code></td>
+                <td>6000</td>
+                <td>12000</td>
+                <td>注入搜索原文片段上限翻倍</td>
+              </tr>
+              <tr>
+                <td><code class="dec-code">CompressStep</code> 简报字数要求</td>
+                <td>300-500 字</td>
+                <td>800-1500 字</td>
+                <td>研究简报容量大幅提升</td>
+              </tr>
+              <tr>
+                <td>编辑部 <code class="dec-code">SearchWebTool.maxCalls</code></td>
+                <td>5</td>
+                <td>10</td>
+                <td>编辑部 Web 搜索次数上限</td>
+              </tr>
+              <tr>
+                <td>编辑部 <code class="dec-code">SearchKnowledgeTool.maxCalls</code></td>
+                <td>3</td>
+                <td>5</td>
+                <td>编辑部知识库搜索次数上限</td>
+              </tr>
+              <tr>
+                <td>Harness <code class="dec-code">defaultMaxCalls</code> search_web</td>
+                <td>3</td>
+                <td>5</td>
+                <td>Harness Web 搜索次数上限</td>
+              </tr>
+              <tr>
+                <td>Harness <code class="dec-code">defaultMaxCalls</code> search_knowledge</td>
+                <td>3</td>
+                <td>5</td>
+                <td>Harness 知识库搜索次数上限</td>
+              </tr>
+              <tr>
+                <td><code class="dec-code">PostReviewStep</code> 事实声明提取数</td>
+                <td>2-4 条</td>
+                <td>4-8 条</td>
+                <td>事实核查覆盖面提升</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- D5: 前端表述优化 -->
+    <div class="dec-card">
+      <div class="dec-head">
+        <span class="dec-num">D-05</span>
+        <span class="dec-tag dec-tag-ui">前端</span>
+      </div>
+      <h3 class="dec-title">前端协作流表述优化与知识库数字脱敏</h3>
+      <div class="dec-body">
+        <div class="dec-section">
+          <span class="dec-label">背景</span>
+          <p>个人中心偏好设置页的三种写作模式描述过于技术化，缺少场景引导。关于页面包含知识库文章具体数量（160+ 篇），不利于后续内容动态调整。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">方案</span>
+          <ul class="dec-list">
+            <li>每种模式增加 <code class="dec-code">scenario</code> 字段，展示适用场景关键词</li>
+            <li>提示信息从单段文本改为结构化分条，突出「最灵活 / 最稳定 / 最高质量」定位</li>
+            <li>补充风格一致性说明（三引擎统一注入 RenderWritingConstraints）</li>
+            <li>删除「160+ 篇」「预设评论风格」等具体数字和特定栏目名</li>
+            <li>知识库描述改为「精选文章随时引用」</li>
+          </ul>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">影响文件</span>
+          <div class="dec-files">
+            <span class="dec-file">settings-section.tsx</span>
+            <span class="dec-file">about-section.tsx</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D6: AutoFixStep 决策 -->
+    <div class="dec-card">
+      <div class="dec-head">
+        <span class="dec-num">D-06</span>
+        <span class="dec-tag dec-tag-defer">暂缓</span>
+      </div>
+      <h3 class="dec-title">AutoFixStep 风格注入：暂不修改</h3>
+      <div class="dec-body">
+        <div class="dec-section">
+          <span class="dec-label">背景</span>
+          <p><code class="dec-code">AutoFixStep.fixBody</code> 在修正阶段缺少 <code class="dec-code">RenderWritingConstraints</code> 注入，存在风格漂移风险。</p>
+        </div>
+        <div class="dec-section">
+          <span class="dec-label">决策</span>
+          <p>暂不修改。原因：</p>
+          <ul class="dec-list">
+            <li>论文场景为边缘场景，商业版用户画像以短文创作为主</li>
+            <li>AutoFix 后有 PostReview² 再审机制兜底</li>
+            <li>避免引入不必要的复杂性，待用户反馈后再评估</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 变更摘要 -->
+  <div class="chg-summary">
+    <h3 class="chg-title">变更摘要</h3>
+    <div class="chg-grid">
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-add">新增</div>
+        <div class="chg-detail">
+          <p class="chg-name">SectionPart 结构体</p>
+          <p class="chg-desc">支持自定义结构段（Name + Description）</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-add">新增</div>
+        <div class="chg-detail">
+          <p class="chg-name">RenderStructureSkeleton()</p>
+          <p class="chg-desc">提纲生成阶段的结构骨架渲染方法</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-mod">修改</div>
+        <div class="chg-detail">
+          <p class="chg-name">generateOutlineWithLLM()</p>
+          <p class="chg-desc">增加 profile 参数，注入结构骨架</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-mod">修改</div>
+        <div class="chg-detail">
+          <p class="chg-name">SearchStep.Execute()</p>
+          <p class="chg-desc">多查询搜索从串行改为并发执行</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-mod">修改</div>
+        <div class="chg-detail">
+          <p class="chg-name">appendStructure()</p>
+          <p class="chg-desc">支持 custom 类型的动态 Sections 渲染</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-mod">修改</div>
+        <div class="chg-detail">
+          <p class="chg-name">CompressStep 参数</p>
+          <p class="chg-desc">简报字数和片段上限提升</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-mod">修改</div>
+        <div class="chg-detail">
+          <p class="chg-name">maxCalls 上限</p>
+          <p class="chg-desc">三引擎搜索次数上限统一提升</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-mod">修改</div>
+        <div class="chg-detail">
+          <p class="chg-name">前端模式描述</p>
+          <p class="chg-desc">增加场景标注和结构化提示</p>
+        </div>
+      </div>
+      <div class="chg-item">
+        <div class="chg-icon chg-icon-del">脱敏</div>
+        <div class="chg-detail">
+          <p class="chg-name">知识库数字</p>
+          <p class="chg-desc">移除具体文章数量和栏目名</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<div class="footer">
+  LuminBuddy V2 · Writing Logic & Mode Architecture · 2026
+</div>
+
+</body>
+</html>

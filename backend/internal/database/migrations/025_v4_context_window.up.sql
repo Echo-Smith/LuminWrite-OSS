@@ -3,12 +3,12 @@
 -- We increase max_tokens to leverage this for long-form writing and full-text material injection.
 
 UPDATE model_configs
-SET max_tokens = 16384,
+SET max_tokens = 65536,
     capabilities = '{"stream": true, "thinking": true, "vision": false, "context_window": 1048576, "max_output": 384000}'
 WHERE provider = 'deepseek' AND model_name = 'deepseek-v4-flash';
 
 UPDATE model_configs
-SET max_tokens = 32768,
+SET max_tokens = 131072,
     capabilities = '{"stream": true, "thinking": true, "vision": false, "context_window": 1048576, "max_output": 384000}'
 WHERE provider = 'deepseek' AND model_name = 'deepseek-v4-pro';
 

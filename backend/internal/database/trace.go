@@ -168,6 +168,26 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 	return err
 }
 
+// UpdateTaskName sets the task_name column for a trace.
+// task_name is a short title extracted from the user's input by an LLM,
+// used as the display title in the session list (priority: article_title > task_name > user_input truncated).
+func (r *TraceRepo) UpdateTaskName(ctx context.Context, traceID, taskName string) error {
+	if r.db == nil {
+		return nil
+	}
+	// Truncate to 128 chars (column width) to avoid DB error
+	if len([]rune(taskName)) > 128 {
+		taskName = string([]rune(taskName)[:128])
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE agent_traces SET task_name = $1 WHERE trace_id = $2
+	`, taskName, traceID)
+	if err != nil {
+		slog.Warn("failed to update task_name", "error", err, "trace_id", traceID)
+	}
+	return err
+}
+
 // LinkEditorialTask associates an editorial task with a trace.
 func (r *TraceRepo) LinkEditorialTask(ctx context.Context, traceID, taskID string) error {
 	if r.db == nil {
@@ -242,18 +262,19 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		editorialTaskID  *string
 	)
 
+	var taskName *string
 	err := r.db.QueryRowContext(ctx, `
 		SELECT status, current_step, user_input, style_slug, mode,
 		       article, article_title, step_history, review_result, token_usage,
 		       duration_ms, error, created_at, completed_at, reasoning_content,
-		       COALESCE(editorial_task_id::text, '')
+		       COALESCE(editorial_task_id::text, ''), task_name
 		FROM agent_traces
 		WHERE trace_id = $1
 	`, traceID).Scan(
 		&status, &currentStep, &userInput, &styleSlug, &mode,
 		&article, &articleTitle, &stepHistory, &reviewJSON, &tokenJSON,
 		&durationMs, &errorMsg, &createdAt, &completedAt, &reasoningContent,
-		&editorialTaskID,
+		&editorialTaskID, &taskName,
 	)
 	if err != nil {
 		return nil, err
@@ -307,6 +328,9 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	if reasoningContent != nil && *reasoningContent != "" {
 		result["reasoning_content"] = *reasoningContent
 	}
+	if taskName != nil && *taskName != "" {
+		result["task_name"] = *taskName
+	}
 
 	// Check if user feedback has been submitted for this trace
 	var feedbackCount int
@@ -340,7 +364,7 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 
 	if userID != "" && userID != "anonymous" && isLikelyUUID(userID) {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title
+			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title, task_name
 			FROM agent_traces
 			WHERE user_id = $1 AND user_deleted = FALSE
 			ORDER BY created_at DESC
@@ -350,7 +374,7 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		countArgs = []interface{}{userID}
 	} else {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title
+			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title, task_name
 			FROM agent_traces
 			WHERE user_deleted = FALSE
 			ORDER BY created_at DESC
@@ -377,9 +401,10 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 			completedAt   *time.Time
 			durationMs    *int64
 			articleTitle  *string
+			taskName      *string
 		)
 
-		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode, &createdAt, &completedAt, &durationMs, &articleTitle); err != nil {
+		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode, &createdAt, &completedAt, &durationMs, &articleTitle, &taskName); err != nil {
 			continue
 		}
 
@@ -402,6 +427,9 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		}
 		if articleTitle != nil && *articleTitle != "" {
 			trace["article_title"] = *articleTitle
+		}
+		if taskName != nil && *taskName != "" {
+			trace["task_name"] = *taskName
 		}
 
 		traces = append(traces, trace)

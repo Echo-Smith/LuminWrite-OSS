@@ -92,6 +92,10 @@ interface WorkflowState {
   userInput: string;
   taskId: string;
 
+  // 最终文章（DAG 完成后加载）
+  finalArticle: { title: string; content: string; word_count: number } | null;
+  finalArticleLoading: boolean;
+
   // Actions
   setPlan: (plan: PlanResult) => void;
   setRunStatus: (status: WorkflowRunStatus) => void;
@@ -109,6 +113,7 @@ interface WorkflowState {
   // 工作流完成
   setWorkflowCompleted: (totalTokens: number) => void;
   setWorkflowFailed: (error: string) => void;
+  loadFinalArticle: (taskId: string) => Promise<void>;
 
   // 获取 React Flow 节点和边
   getFlowNodes: () => Node[];
@@ -212,6 +217,10 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   userInput: "",
   taskId: "",
 
+  // 最终文章
+  finalArticle: null,
+  finalArticleLoading: false,
+
   setPlan: (plan) => {
     const positions = plan.workflow.nodes.length > 0
       ? autoLayout(plan.workflow.nodes)
@@ -302,7 +311,52 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   setWorkflowCompleted: (totalTokens) => {
+    const taskId = get().taskId;
     set({ runStatus: "completed", totalTokensUsed: totalTokens });
+    // 自动加载最终文章
+    if (taskId) {
+      get().loadFinalArticle(taskId);
+    }
+  },
+
+  loadFinalArticle: async (taskId) => {
+    set({ finalArticleLoading: true });
+    try {
+      const token = localStorage.getItem("auth_token") || "";
+      const res = await fetch(`/api/v2/editorial/tasks/${taskId}/artifacts`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Failed to fetch artifacts");
+      const json = await res.json();
+      const artifacts = json.data?.artifacts ?? json.artifacts ?? [];
+      // 优先加载 revised_draft，其次 draft
+      const draft = artifacts.find(
+        (a: { type: string; status: string }) =>
+          a.type === "revised_draft" && a.status === "approved",
+      ) || artifacts.find(
+        (a: { type: string; status: string }) =>
+          a.type === "draft" && a.status === "approved",
+      ) || artifacts.find((a: { type: string }) => a.type === "revised_draft") || artifacts.find((a: { type: string }) => a.type === "draft");
+      if (draft) {
+        try {
+          const data = JSON.parse(draft.content);
+          set({
+            finalArticle: {
+              title: data.title || "",
+              content: data.content || data.body || "",
+              word_count: data.word_count || 0,
+            },
+            finalArticleLoading: false,
+          });
+        } catch {
+          set({ finalArticle: { title: "", content: draft.content, word_count: 0 }, finalArticleLoading: false });
+        }
+      } else {
+        set({ finalArticleLoading: false });
+      }
+    } catch {
+      set({ finalArticleLoading: false });
+    }
   },
 
   setWorkflowFailed: (error) => {
@@ -365,6 +419,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       errorMessage: null,
       userInput: "",
       taskId: "",
+      finalArticle: null,
+      finalArticleLoading: false,
     });
   },
 }));

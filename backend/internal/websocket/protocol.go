@@ -42,6 +42,7 @@ const (
 	MsgMemoryUsed        = "memory.used"
 	MsgMemoryDismiss     = "memory.dismiss"
 	MsgAgentCompaction   = "agent.compaction"
+	MsgTaskNameUpdated   = "task_name.updated" // LLM 异步提取的 task_name 就绪，推送前端实时更新
 
 	// Beta: 编辑部模式 DAG 工作流消息（server → client）
 	MsgWorkflowCreated   = "workflow.created"    // Planner 返回角色集 + DAG
@@ -54,6 +55,7 @@ const (
 	MsgWorkflowFailed    = "workflow.failed"      // 整个 DAG 失败
 	MsgWorkflowPaused    = "workflow.paused"      // DAG 已暂停
 	MsgWorkflowResumed   = "workflow.resumed"      // DAG 已恢复
+	MsgWorkflowCancelled = "workflow.cancelled"   // DAG 已取消
 )
 
 // ClientMessage is a message from the client.
@@ -236,6 +238,7 @@ type SessionResumedPayload struct {
 	Step             string      `json:"step,omitempty"`                // current running step
 	Article          string      `json:"article,omitempty"`             // partial article text
 	ArticleTitle     string      `json:"article_title,omitempty"`       // extracted article title
+	TaskName         string      `json:"task_name,omitempty"`           // LLM-extracted short title for session list
 	Style            string      `json:"style,omitempty"`
 	Mode             string      `json:"mode,omitempty"`
 	Outline          interface{} `json:"outline,omitempty"`             // current outline if awaiting input

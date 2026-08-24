@@ -46,6 +46,7 @@ interface StyleDetail {
     conclusion: string;
     argument_pattern: string;
     argument_count: { min: number; max: number };
+    sections?: { name: string; description?: string }[];
   };
   rhetoric: {
     required_metaphor: boolean;
@@ -68,6 +69,7 @@ interface StyleDetail {
     use_markdown: boolean;
     title_prefix: string;
   };
+  kb_id?: string;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -339,6 +341,22 @@ function StyleEditDialog({
   saving: boolean;
 }) {
   const update = (patch: Partial<StyleDetail>) => onChange({ ...detail, ...patch });
+  const [kbOptions, setKbOptions] = useState<{ id: string; name: string; description: string }[]>([]);
+
+  // Load knowledge base list for KB binding selector
+  useEffect(() => {
+    adminFetch<{ knowledge_bases: any[] }>("/api/v2/kb/kbs", { silent: true })
+      .then(({ success, data }) => {
+        if (success && data?.knowledge_bases) {
+          setKbOptions(data.knowledge_bases.map((kb) => ({
+            id: kb.id,
+            name: kb.name,
+            description: kb.description ?? "",
+          })));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -440,6 +458,62 @@ function StyleEditDialog({
                 />
               </div>
             </div>
+            {detail.structure.type === "custom" && (
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-semibold">结构段定义</Label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => update({
+                      structure: {
+                        ...detail.structure,
+                        sections: [...(detail.structure.sections ?? []), { name: "", description: "" }],
+                      },
+                    })}
+                  >
+                    <Plus className="h-3 w-3 mr-1" /> 添加段
+                  </Button>
+                </div>
+                {(detail.structure.sections ?? []).map((sec, idx) => (
+                  <div key={idx} className="flex gap-2 items-start">
+                    <Input
+                      className="flex-1"
+                      value={sec.name}
+                      onChange={(e) => {
+                        const sections = [...(detail.structure.sections ?? [])];
+                        sections[idx] = { ...sections[idx], name: e.target.value };
+                        update({ structure: { ...detail.structure, sections } });
+                      }}
+                      placeholder="段名称"
+                    />
+                    <Input
+                      className="flex-1"
+                      value={sec.description ?? ""}
+                      onChange={(e) => {
+                        const sections = [...(detail.structure.sections ?? [])];
+                        sections[idx] = { ...sections[idx], description: e.target.value };
+                        update({ structure: { ...detail.structure, sections } });
+                      }}
+                      placeholder="写作指引（可选）"
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        const sections = (detail.structure.sections ?? []).filter((_, i) => i !== idx);
+                        update({ structure: { ...detail.structure, sections } });
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+                {(detail.structure.sections ?? []).length === 0 && (
+                  <p className="text-xs text-muted-foreground">点击「添加段」创建自定义结构骨架</p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* System Prompt */}
@@ -507,6 +581,33 @@ function StyleEditDialog({
               />
             </div>
           </div>
+
+{/* Knowledge Base Binding */}
+<div className="border-t pt-4">
+<h4 className="text-sm font-medium mb-3">素材库绑定</h4>
+<div>
+<Label>绑定素材库</Label>
+<Select
+value={detail.kb_id ?? "__none__"}
+onValueChange={(v) => update({ kb_id: v === "__none__" ? "" : v })}
+>
+<SelectTrigger>
+<SelectValue placeholder="不绑定（搜索全部素材库）" />
+</SelectTrigger>
+<SelectContent>
+<SelectItem value="__none__">不绑定（搜索全部素材库）</SelectItem>
+{kbOptions.map((kb) => (
+<SelectItem key={kb.id} value={kb.id}>
+{kb.name}{kb.description ? ` — ${kb.description}` : ""}
+</SelectItem>
+))}
+</SelectContent>
+</Select>
+<p className="text-xs text-muted-foreground mt-1">
+绑定后，该风格在使用自动检索时将仅在指定素材库中查找
+</p>
+</div>
+</div>
 
           {/* Fact Guard */}
           <div className="border-t pt-4">
@@ -626,6 +727,7 @@ function StyleCreateDialog({
           note_label: "",
         },
         length_profiles: {},
+        kb_id: "",
       }),
       successTitle: "风格已创建",
       successDesc: form.name,

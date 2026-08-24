@@ -54,6 +54,9 @@ func (s *Server) handleAdminCreateModelConfig(w http.ResponseWriter, r *http.Req
 	if req.Temperature == 0 {
 		req.Temperature = 0.7
 	}
+	if req.ReasoningEffort == "" {
+		req.ReasoningEffort = "high"
+	}
 
 	if s.adminRepo == nil {
 		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
@@ -123,12 +126,13 @@ func (s *Server) handleAdminDeleteModelConfig(w http.ResponseWriter, r *http.Req
 }
 
 // handleAdminDiscoverModels fetches available models from a provider's API.
-// Request: { "base_url": "https://api.deepseek.com", "api_key": "sk-..." }
+// Request: { "base_url": "https://api.deepseek.com", "api_key": "sk-...", "custom_headers": {"X-API-Key": "xxx"} }
 // Response: { "models": [{"id": "deepseek-v4-flash", "owned_by": "deepseek"}, ...] }
 func (s *Server) handleAdminDiscoverModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
+		BaseURL       string            `json:"base_url"`
+		APIKey        string            `json:"api_key"`
+		CustomHeaders map[string]string `json:"custom_headers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
@@ -153,6 +157,10 @@ func (s *Server) handleAdminDiscoverModels(w http.ResponseWriter, r *http.Reques
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	httpReq.Header.Set("Accept", "application/json")
+	// Apply custom headers from request
+	for k, v := range req.CustomHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(httpReq)

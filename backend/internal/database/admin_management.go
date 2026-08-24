@@ -30,10 +30,12 @@ type ModelConfig struct {
 	HasAPIKey       bool                   `json:"has_api_key"`           // read-only: true if api_key_encrypted is non-empty
 	MaxTokens       int                    `json:"max_tokens"`
 	Temperature     float64                `json:"temperature"`
+	ReasoningEffort string                 `json:"reasoning_effort"`       // low | medium | high | max (thinking mode only)
 	IsDefault       bool                   `json:"is_default"`
 	IsActive        bool                   `json:"is_active"`
 	Capabilities    map[string]interface{} `json:"capabilities"`
 	Metadata        map[string]interface{} `json:"metadata"`
+	CustomHeaders   map[string]string      `json:"custom_headers"`        // custom HTTP headers for API requests
 	CreatedAt       time.Time              `json:"created_at"`
 	UpdatedAt       time.Time              `json:"updated_at"`
 }
@@ -44,13 +46,13 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 		return []*ModelConfig{}, nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-		       capabilities, metadata, created_at, updated_at
-		FROM model_configs
-		ORDER BY provider, is_default DESC, model_name
-	`)
+rows, err := r.db.QueryContext(ctx, `
+	SELECT id::text, provider, model_name, display_name, base_url,
+	       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+	       capabilities, metadata, custom_headers, created_at, updated_at
+	FROM model_configs
+	ORDER BY provider, is_default DESC, model_name
+`)
 	if err != nil {
 		return nil, err
 	}
@@ -59,10 +61,10 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 	var configs []*ModelConfig
 	for rows.Next() {
 		var c ModelConfig
-		var capJSON, metaJSON []byte
+		var capJSON, metaJSON, hdrJSON []byte
 		if err := rows.Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-			&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
-			&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+			&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			continue
 		}
 		c.HasAPIKey = c.APIKeyEncrypted != ""
@@ -72,6 +74,9 @@ func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error
 		}
 		if len(metaJSON) > 0 {
 			json.Unmarshal(metaJSON, &c.Metadata)
+		}
+		if len(hdrJSON) > 0 {
+			json.Unmarshal(hdrJSON, &c.CustomHeaders)
 		}
 		configs = append(configs, &c)
 	}
@@ -85,15 +90,15 @@ func (r *AdminRepo) GetModelConfig(ctx context.Context, id string) (*ModelConfig
 	}
 
 	var c ModelConfig
-	var capJSON, metaJSON []byte
+	var capJSON, metaJSON, hdrJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-		       capabilities, metadata, created_at, updated_at
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		       capabilities, metadata, custom_headers, created_at, updated_at
 		FROM model_configs WHERE id = $1
 	`, id).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
-		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+		&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +109,9 @@ func (r *AdminRepo) GetModelConfig(ctx context.Context, id string) (*ModelConfig
 	}
 	if len(metaJSON) > 0 {
 		json.Unmarshal(metaJSON, &c.Metadata)
+	}
+	if len(hdrJSON) > 0 {
+		json.Unmarshal(hdrJSON, &c.CustomHeaders)
 	}
 	return &c, nil
 }
@@ -122,6 +130,10 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 	metaJSON, _ := json.Marshal(c.Metadata)
 	if c.Metadata == nil {
 		metaJSON = []byte("{}")
+	}
+	hdrJSON, _ := json.Marshal(c.CustomHeaders)
+	if c.CustomHeaders == nil {
+		hdrJSON = []byte("{}")
 	}
 
 	// Encrypt API key if provided
@@ -144,7 +156,7 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 	}
 
 	var result ModelConfig
-	var rCapJSON, rMetaJSON []byte
+	var rCapJSON, rMetaJSON, rHdrJSON []byte
 	var apiKeyID interface{}
 	if c.APIKeyID != nil && *c.APIKeyID != "" {
 		apiKeyID = *c.APIKeyID
@@ -152,16 +164,16 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_id, api_key_encrypted,
-			max_tokens, temperature, is_default, is_active, capabilities, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			max_tokens, temperature, reasoning_effort, is_default, is_active, capabilities, metadata, custom_headers)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id::text, provider, model_name, display_name, base_url,
-		          api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-		          capabilities, metadata, created_at, updated_at
+		          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		          capabilities, metadata, custom_headers, created_at, updated_at
 	`, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, storedAPIKey,
-		c.MaxTokens, c.Temperature, c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)).Scan(
+		c.MaxTokens, c.Temperature, c.ReasoningEffort, c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
-		&rCapJSON, &rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
+		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.ReasoningEffort, &result.IsDefault, &result.IsActive,
+		&rCapJSON, &rMetaJSON, &rHdrJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +185,9 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 	}
 	if len(rMetaJSON) > 0 {
 		json.Unmarshal(rMetaJSON, &result.Metadata)
+	}
+	if len(rHdrJSON) > 0 {
+		json.Unmarshal(rHdrJSON, &result.CustomHeaders)
 	}
 	return &result, nil
 }
@@ -192,13 +207,17 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 	if c.Metadata == nil {
 		metaJSON = []byte("{}")
 	}
+	hdrJSON, _ := json.Marshal(c.CustomHeaders)
+	if c.CustomHeaders == nil {
+		hdrJSON = []byte("{}")
+	}
 
 	if c.IsDefault {
 		r.db.ExecContext(ctx, `UPDATE model_configs SET is_default = FALSE WHERE provider = $1 AND id != $2`, c.Provider, id)
 	}
 
 	var result ModelConfig
-	var rCapJSON, rMetaJSON []byte
+	var rCapJSON, rMetaJSON, rHdrJSON []byte
 	var apiKeyID interface{}
 	if c.APIKeyID != nil && *c.APIKeyID != "" {
 		apiKeyID = *c.APIKeyID
@@ -221,36 +240,36 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 			UPDATE model_configs SET
 				provider = $2, model_name = $3, display_name = $4, base_url = $5,
 				api_key_id = $6, api_key_encrypted = $7, max_tokens = $8, temperature = $9,
-				is_default = $10, is_active = $11, capabilities = $12, metadata = $13, updated_at = NOW()
+				reasoning_effort = $10, is_default = $11, is_active = $12, capabilities = $13, metadata = $14, custom_headers = $15, updated_at = NOW()
 			WHERE id = $1
 			RETURNING id::text, provider, model_name, display_name, base_url,
-			          api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-			          capabilities, metadata, created_at, updated_at
+			          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+			          capabilities, metadata, custom_headers, created_at, updated_at
 		`
 		args = []interface{}{id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL,
-			apiKeyID, storedAPIKey, c.MaxTokens, c.Temperature,
-			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)}
+			apiKeyID, storedAPIKey, c.MaxTokens, c.Temperature, c.ReasoningEffort,
+			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)}
 	} else {
 		// Keep existing api_key_encrypted
 		query = `
 			UPDATE model_configs SET
 				provider = $2, model_name = $3, display_name = $4, base_url = $5,
 				api_key_id = $6, max_tokens = $7, temperature = $8,
-				is_default = $9, is_active = $10, capabilities = $11, metadata = $12, updated_at = NOW()
+				reasoning_effort = $9, is_default = $10, is_active = $11, capabilities = $12, metadata = $13, custom_headers = $14, updated_at = NOW()
 			WHERE id = $1
 			RETURNING id::text, provider, model_name, display_name, base_url,
-			          api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-			          capabilities, metadata, created_at, updated_at
+			          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+			          capabilities, metadata, custom_headers, created_at, updated_at
 		`
 		args = []interface{}{id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL,
-			apiKeyID, c.MaxTokens, c.Temperature,
-			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON)}
+			apiKeyID, c.MaxTokens, c.Temperature, c.ReasoningEffort,
+			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)}
 	}
 
 	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.IsDefault, &result.IsActive,
-		&rCapJSON, &rMetaJSON, &result.CreatedAt, &result.UpdatedAt)
+		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.ReasoningEffort, &result.IsDefault, &result.IsActive,
+		&rCapJSON, &rMetaJSON, &rHdrJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -262,6 +281,9 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 	}
 	if len(rMetaJSON) > 0 {
 		json.Unmarshal(rMetaJSON, &result.Metadata)
+	}
+	if len(rHdrJSON) > 0 {
+		json.Unmarshal(rHdrJSON, &result.CustomHeaders)
 	}
 	return &result, nil
 }
@@ -282,18 +304,18 @@ func (r *AdminRepo) GetDefaultModelConfig(ctx context.Context) (*ModelConfig, er
 	}
 
 	var c ModelConfig
-	var capJSON, metaJSON []byte
+	var capJSON, metaJSON, hdrJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-		       capabilities, metadata, created_at, updated_at
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		       capabilities, metadata, custom_headers, created_at, updated_at
 		FROM model_configs
 		WHERE is_default = TRUE AND is_active = TRUE
 		ORDER BY updated_at DESC
 		LIMIT 1
 	`).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
-		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+		&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +325,9 @@ func (r *AdminRepo) GetDefaultModelConfig(ctx context.Context) (*ModelConfig, er
 	}
 	if len(metaJSON) > 0 {
 		json.Unmarshal(metaJSON, &c.Metadata)
+	}
+	if len(hdrJSON) > 0 {
+		json.Unmarshal(hdrJSON, &c.CustomHeaders)
 	}
 	return &c, nil
 }
@@ -314,17 +339,17 @@ func (r *AdminRepo) GetModelConfigByName(ctx context.Context, modelName string) 
 	}
 
 	var c ModelConfig
-	var capJSON, metaJSON []byte
+	var capJSON, metaJSON, hdrJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, is_default, is_active,
-		       capabilities, metadata, created_at, updated_at
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		       capabilities, metadata, custom_headers, created_at, updated_at
 		FROM model_configs
 		WHERE model_name = $1 AND is_active = TRUE
 		LIMIT 1
 	`, modelName).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.IsDefault, &c.IsActive,
-		&capJSON, &metaJSON, &c.CreatedAt, &c.UpdatedAt)
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+		&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -334,6 +359,9 @@ func (r *AdminRepo) GetModelConfigByName(ctx context.Context, modelName string) 
 	}
 	if len(metaJSON) > 0 {
 		json.Unmarshal(metaJSON, &c.Metadata)
+	}
+	if len(hdrJSON) > 0 {
+		json.Unmarshal(hdrJSON, &c.CustomHeaders)
 	}
 	return &c, nil
 }

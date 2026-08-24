@@ -39,16 +39,19 @@ func (c *LLMClient) chatCompletions(ctx context.Context, req *LLMRequest) (strin
 
 // chatCompletionsStream is the original streaming implementation,
 // extracted from ChatStreamWithReasoning() to allow A/B routing.
-func (c *LLMClient) chatCompletionsStream(ctx context.Context, req *LLMRequest, onDelta func(string), onReasoning func(string)) (string, int, error) {
+// Returns (text, totalTokens, finishReason, error).
+// finishReason is non-empty when the model signals completion (e.g. "stop", "length").
+func (c *LLMClient) chatCompletionsStream(ctx context.Context, req *LLMRequest, onDelta func(string), onReasoning func(string)) (string, int, string, error) {
 	resp, err := c.doStreamRequest(ctx, req)
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	defer resp.Close()
 
 	var fullText strings.Builder
 	var reasoningText strings.Builder
 	totalTokens := 0
+	finishReason := ""
 
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
@@ -80,6 +83,10 @@ func (c *LLMClient) chatCompletionsStream(ctx context.Context, req *LLMRequest, 
 				}
 
 				for _, choice := range chunk.Choices {
+					// 追踪 finish_reason（检测 length 截断）
+					if choice.FinishReason != "" {
+						finishReason = choice.FinishReason
+					}
 					if choice.Delta.ReasoningContent != "" {
 						reasoningText.WriteString(choice.Delta.ReasoningContent)
 						if onReasoning != nil {
@@ -114,7 +121,8 @@ done:
 		"content_length", fullText.Len(),
 		"reasoning_length", reasoningText.Len(),
 		"total_tokens", totalTokens,
+		"finish_reason", finishReason,
 	)
 
-	return fullText.String(), totalTokens, nil
+	return fullText.String(), totalTokens, finishReason, nil
 }

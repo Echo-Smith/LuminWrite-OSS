@@ -82,7 +82,7 @@ func WritingToolDefs() []tools.ToolDef {
 			Type: "function",
 			Function: tools.ToolDefFunction{
 				Name:        "search_knowledge",
-				Description: "搜索内部知识库（预设评论风格文章库等）。适用于：写作风格规范、历史文章参考、内部观点、栏目调性、已发布的优质范文。返回精确到段落的检索结果。",
+				Description: "搜索个人素材库（用户上传的参考素材、历史文章等）。适用于：参考素材检索、历史范文参考、内部观点。返回精确到段落的检索结果。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -427,6 +427,11 @@ func filterTools(defs []tools.ToolDef, keep func(string) bool) []tools.ToolDef {
 
 // ─── 工具执行器 ─────────────────────────────────────────────
 
+// ToolSettleFunc 是工具调用后的扣费回调。
+// toolType: search | fact_check | url_fetch
+// 返回扣减的积分数量和错误（错误不阻塞工具执行，仅记录日志）。
+type ToolSettleFunc func(ctx context.Context, userID, traceID, toolType string) (float64, error)
+
 // ToolExecutorConfig 配置工具执行器。
 type ToolExecutorConfig struct {
 	Search     *tools.SearchClient     // 网络搜索（Tavily/Bing/腾讯等）
@@ -444,6 +449,10 @@ type ToolExecutorConfig struct {
 	// 当工具调用次数达到上限时，返回礼貌消息而非执行。
 	MaxCalls   map[string]int
 	callCounts map[string]int // 运行时计数器（非导出，由 BuildToolExecutor 初始化）
+
+	// 计费回调：工具执行成功后按名称扣费
+	// 由 Server 创建 Harness 时注入，nil = 不扣费（开源版无此回调）
+	SettleFunc ToolSettleFunc
 }
 
 // BuildToolExecutor 构建一个 ToolExecutor，用于在 ChatWithTools 中执行 LLM 的工具调用。
@@ -483,6 +492,24 @@ func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 
 		result, err := executeToolByName(name, cfg, arguments)
 		durationMs := time.Since(startTime).Milliseconds()
+
+		// ── 计费：工具执行成功后按名称扣费 ──
+		if err == nil && cfg.SettleFunc != nil {
+			if toolType := toolNameToBillingType(name); toolType != "" {
+				userID := cfg.ExecCtx.UserID
+				traceID := cfg.ExecCtx.TraceID
+				if userID != "" && userID != "anonymous" {
+					points, settleErr := cfg.SettleFunc(context.Background(), userID, traceID, toolType)
+					if settleErr != nil {
+						slog.Warn("billing: settle tool points failed",
+							"tool", name, "error", settleErr, "trace_id", traceID)
+					} else if points > 0 {
+						slog.Info("billing: tool points settled",
+							"tool", name, "points", points, "trace_id", traceID)
+					}
+				}
+			}
+		}
 
 		// ── Update step record with result ──
 		if len(cfg.ExecCtx.StepHistory) > 0 {
@@ -533,6 +560,21 @@ func executeToolByName(name string, cfg ToolExecutorConfig, arguments string) (s
 		return executeRetrieveContext(cfg, arguments)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+}
+
+// toolNameToBillingType 将工具名映射为计费类型。
+// 返回空字符串表示该工具不需要扣费。
+func toolNameToBillingType(toolName string) string {
+	switch toolName {
+	case "search_web", "search_knowledge":
+		return "search"
+	case "fact_check":
+		return "fact_check"
+	case "read_source":
+		return "url_fetch"
+	default:
+		return ""
 	}
 }
 
@@ -607,7 +649,19 @@ func executeSearchKnowledge(cfg ToolExecutorConfig, arguments string) (string, e
 		cfg.Emitter.StepStart("search_knowledge", 0)
 	}
 
-	results, err := cfg.KBSearcher.SearchKB(context.Background(), cfg.Session.UserID, args.Query, 5)
+	// When the style profile binds to a specific KB (KbID), scope the search
+	// to that KB only; otherwise search all KBs.
+	var results []engine.SearchResult
+	var err error
+	kbID := ""
+	if cfg.Profile != nil {
+		kbID = cfg.Profile.KbID
+	}
+	if kbID != "" {
+		results, err = cfg.KBSearcher.SearchKBInKB(context.Background(), cfg.Session.UserID, kbID, args.Query, 5)
+	} else {
+		results, err = cfg.KBSearcher.SearchKB(context.Background(), cfg.Session.UserID, args.Query, 5)
+	}
 	if err != nil {
 		slog.Warn("search_knowledge: search failed",
 			"error", err,
@@ -1400,7 +1454,7 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 		cfg.Emitter.StepStart("generate_outline", 0)
 	}
 
-	outline, err := generateOutlineWithLLM(context.Background(), cfg.LLM, args.Topic, 0.3)
+	outline, err := generateOutlineWithLLM(context.Background(), cfg.LLM, args.Topic, 0.3, cfg.Profile)
 	if err != nil {
 		return fmt.Sprintf("提纲生成失败: %v", err), nil
 	}
@@ -1427,7 +1481,7 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 
 	if confirmedData != nil {
 		if action, ok := confirmedData["action"].(string); ok && action == "regenerate" {
-			outline, err = generateOutlineWithLLM(context.Background(), cfg.LLM, args.Topic, 0.6)
+			outline, err = generateOutlineWithLLM(context.Background(), cfg.LLM, args.Topic, 0.6, cfg.Profile)
 			if err != nil {
 				return fmt.Sprintf("提纲重新生成失败: %v", err), nil
 			}
@@ -1464,13 +1518,42 @@ func executeGenerateOutline(cfg ToolExecutorConfig, arguments string) (string, e
 }
 
 // generateOutlineWithLLM 调用 LLM 生成文章提纲。
-func generateOutlineWithLLM(ctx context.Context, llm *tools.LLMClient, topic string, temperature float64) (*engine.OutlineData, error) {
+// 当 profile 非空时，注入结构骨架（RenderStructureSkeleton），
+// 确保提纲的 type 字段与风格配置的 Sections 对应，
+// 与 Pipeline 的 OutlineStep 和编辑部的 executeGenerateOutline 三引擎一致。
+func generateOutlineWithLLM(ctx context.Context, llm *tools.LLMClient, topic string, temperature float64, p *profile.StyleProfile) (*engine.OutlineData, error) {
 	if llm == nil {
 		return nil, fmt.Errorf("LLM client not available")
 	}
 
 	systemMsg := "你是写作提纲生成器。根据话题生成文章提纲。只返回 JSON。"
-	userMsg := fmt.Sprintf(`话题：%s
+
+	// 注入风格配置的结构骨架（如果有）
+	structureSkeleton := ""
+	if p != nil {
+		structureSkeleton = p.RenderStructureSkeleton()
+	}
+
+	var userMsg string
+	if structureSkeleton != "" {
+		userMsg = fmt.Sprintf(`话题：%s
+
+%s
+
+请生成提纲，包含标题和3-5个要点。提纲的每个要点的 type 应与上述结构骨架对应。
+
+返回格式：
+{
+  "title": "文章标题",
+  "outline": [
+    {"point": "要点内容", "type": "section_type"}
+  ]
+}
+
+type 字段说明：用于标注该要点的段落角色，由你根据文章体裁自由决定。常见值包括但不限于：opening、argument、conclusion、intro、method、experiment、discussion、abstract 等，也可使用自定义标签
+}`, topic, structureSkeleton)
+	} else {
+		userMsg = fmt.Sprintf(`话题：%s
 
 请生成提纲，包含标题和3-5个要点。
 
@@ -1478,11 +1561,13 @@ func generateOutlineWithLLM(ctx context.Context, llm *tools.LLMClient, topic str
 {
   "title": "文章标题",
   "outline": [
-    {"point": "要点内容", "type": "opening"},
-    {"point": "要点内容", "type": "argument"},
-    {"point": "要点内容", "type": "conclusion"}
+    {"point": "要点内容", "type": "section_type"}
   ]
+}
+
+type 字段说明：用于标注该要点的段落角色，由你根据文章体裁自由决定。常见值包括但不限于：opening、argument、conclusion、intro、method、experiment、discussion、abstract 等，也可使用自定义标签
 }`, topic)
+	}
 
 	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
@@ -1774,10 +1859,10 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 func defaultMaxCalls(intent Intent) map[string]int {
 	switch intent {
 	case IntentWriting:
-		// 写作意图：搜索 3 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 5 次
+		// 写作意图：搜索 5 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 5 次
 		return map[string]int{
-			"search_web":       3,
-			"search_knowledge": 3,
+			"search_web":       5,
+			"search_knowledge": 5,
 			"review_article":   1,
 			"generate_outline": 1,
 			"word_count_check": 1,

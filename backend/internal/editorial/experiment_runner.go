@@ -33,7 +33,7 @@ type ExperimentRunner struct {
 	search    *tools.SearchClient
 	embedding *tools.EmbeddingClient
 	profiles  *profile.Loader
-	orch      *Orchestrator
+	emitter   EventEmitter // 用于推送实验进度事件到 WebSocket
 
 	// 运行中的实验 cancel 函数集合，支持外部取消
 	activeRuns   map[string]context.CancelFunc
@@ -47,11 +47,12 @@ func NewExperimentRunner(
 	search *tools.SearchClient,
 	embedding *tools.EmbeddingClient,
 	profiles *profile.Loader,
-	orch *Orchestrator,
+	emitter EventEmitter,
 ) *ExperimentRunner {
 	return &ExperimentRunner{
 		store: store, llm: llm, search: search, embedding: embedding,
-		profiles: profiles, orch: orch,
+		profiles: profiles,
+		emitter:   emitter,
 		activeRuns: make(map[string]context.CancelFunc),
 	}
 }
@@ -92,6 +93,11 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 	if err := r.store.UpdateExperimentStatus(runCtx, exp.ID, "running", nil); err != nil {
 		slog.Error("failed to update experiment status", "id", exp.ID, "error", err)
 	}
+
+	// 发射实验开始事件，推送前端实时更新
+	r.emitExperimentEvent(exp.ID, "experiment.started", map[string]interface{}{
+		"title": exp.Title,
+	})
 
 	topic := exp.Title
 	if exp.Description != "" {
@@ -151,6 +157,13 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 			if err := r.store.UpdateExperimentResult(runCtx, exp.ID, m.name, resultJSON); err != nil {
 				slog.Error("failed to update experiment result", "id", exp.ID, "mode", m.name, "error", err)
 			}
+			// 发射单组完成事件，推送前端实时更新
+			r.emitExperimentEvent(exp.ID, "experiment.mode_done", map[string]interface{}{
+				"mode":        m.name,
+				"tokens":      metrics.TokenCost,
+				"duration_ms": metrics.DurationMs,
+				"error":       metrics.Error,
+			})
 			slog.Info("experiment mode done", "id", exp.ID, "mode", m.name, "tokens", metrics.TokenCost, "duration_ms", metrics.DurationMs)
 		}()
 	}
@@ -205,8 +218,26 @@ func (r *ExperimentRunner) RunExperiment(ctx context.Context, exp *Experiment) e
 		slog.Error("failed to update experiment final status", "id", exp.ID, "error", err)
 	}
 
+	// 发射实验完成事件，推送前端实时更新
+	r.emitExperimentEvent(exp.ID, "experiment.completed", map[string]interface{}{
+		"status":  finalStatus,
+		"summary": summary,
+	})
+
 	slog.Info("experiment finished", "id", exp.ID, "status", finalStatus, "summary", string(summaryJSON))
 	return nil
+}
+
+// emitExperimentEvent 发射实验事件到 WebSocket
+func (r *ExperimentRunner) emitExperimentEvent(experimentID string, eventType string, payload map[string]interface{}) {
+	if r.emitter == nil {
+		return
+	}
+	r.emitter.Emit(OrchestratorEvent{
+		Type:    eventType,
+		TaskID:  experimentID, // 复用 TaskID 字段传递 experiment ID
+		Payload: payload,
+	})
 }
 
 // runPipelineMode 运行 Pipeline 模式
@@ -248,7 +279,7 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 	}
 	if styleProfile != nil {
 		pipelineSteps = append(pipelineSteps,
-			steps.NewOutlineStep(r.llm),
+			steps.NewOutlineStepWithProfile(r.llm, styleProfile),
 			steps.NewWriteStepWithSearch(r.llm, styleProfile, r.search),
 			steps.NewPostReviewStepWithProfile(r.llm, nil, styleProfile),
 			steps.NewAutoFixStepWithProfile(r.llm, styleProfile),
@@ -400,8 +431,8 @@ func (r *ExperimentRunner) runEditorialMode(ctx context.Context, topic, styleSlu
 		}
 	}()
 
-	if r.orch == nil {
-		return ExperimentMetrics{Mode: "editorial", Error: "orchestrator not available"}
+	if r.store == nil {
+		return ExperimentMetrics{Mode: "editorial", Error: "store not available"}
 	}
 
 	// 创建编辑部任务
@@ -436,17 +467,21 @@ func (r *ExperimentRunner) runEditorialMode(ctx context.Context, topic, styleSlu
 		ReviewNote: "实验自动批准",
 	})
 
-	// 推进状态链：draft → pending_approval → research
-	if err := r.orch.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
+	// 推进状态链：draft → pending_approval → research（直接用 Store 事务，不经过 Orchestrator）
+	if _, err := r.store.TransitionTask(ctx, TransitionCommand{
+		TaskID:       task.ID,
 		TargetStatus: StatusPendingApproval,
-		DecidedBy:    "experiment",
+		ExpectedStatus: StatusDraft,
+		Actor:        NewHumanActor("experiment", "experiment"),
 		Rationale:    "实验自动提交审批",
 	}); err != nil {
 		return ExperimentMetrics{Mode: "editorial", Error: fmt.Sprintf("advance to pending_approval: %v", err)}
 	}
-	if err := r.orch.AdvanceTask(ctx, task.ID, AdvanceTaskInput{
+	if _, err := r.store.TransitionTask(ctx, TransitionCommand{
+		TaskID:       task.ID,
 		TargetStatus: StatusResearch,
-		DecidedBy:    "experiment",
+		ExpectedStatus: StatusPendingApproval,
+		Actor:        NewHumanActor("experiment", "experiment"),
 		Rationale:    "实验自动批准立项",
 	}); err != nil {
 		return ExperimentMetrics{Mode: "editorial", Error: fmt.Sprintf("advance to research: %v", err)}
@@ -514,17 +549,12 @@ func (r *ExperimentRunner) runEditorialMode(ctx context.Context, topic, styleSlu
 			})
 		}
 
-		// 直接推进到写作阶段，跳过研究 Agent
+		// 直接推进到写作阶段，跳过研究 Agent（实验场景：冻结信源快照直接写入）
 		r.store.TransitionTask(context.Background(), TransitionCommand{
 			TaskID:         task.ID,
 			TargetStatus:   StatusWriting,
 			ExpectedStatus: StatusResearch,
 		})
-		// 触发写作 Agent
-		updatedTask, _ := r.store.GetTask(ctx, task.ID)
-		if updatedTask != nil {
-			r.orch.RunWritingAgent(context.Background(), updatedTask)
-		}
 		slog.Info("experiment: editorial mode using frozen snapshot", "id", task.ID, "sources", len(frozen))
 	}
 

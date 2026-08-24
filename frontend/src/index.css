@@ -339,3 +339,77 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ════════════════════════════════════════════════════════════
+ * Tiptap / ProseMirror 编辑器样式
+ * ════════════════════════════════════════════════════════════ */
+
+/* ── 基础编辑区 ── */
+.tiptap-content {
+  min-height: 40px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.tiptap-content :focus {
+  outline: none;
+}
+/* 段落间距 */
+.tiptap-content .tiptap-p {
+  margin: 0;
+  line-height: 1.6;
+}
+/* 首段无上边距 */
+.tiptap-content .tiptap-p:first-child {
+  margin-top: 0;
+}
+
+/* ── Placeholder 空状态 ── */
+.tiptap-content.is-editor-empty::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground) / 0.6);
+  pointer-events: none;
+  position: absolute;
+  cursor: text;
+}
+
+/* ── 加粗 ── */
+.tiptap-content strong {
+  font-weight: 700;
+}
+/* ── 斜体 ── */
+.tiptap-content em {
+  font-style: italic;
+}
+/* ── 无序列表 ── */
+.tiptap-content ul {
+  list-style: disc;
+  padding-left: 1.5rem;
+  margin: 4px 0;
+}
+.tiptap-content ul li {
+  margin: 2px 0;
+}
+/* ── 有序列表 ── */
+.tiptap-content ol {
+  list-style: decimal;
+  padding-left: 1.5rem;
+  margin: 4px 0;
+}
+.tiptap-content ol li {
+  margin: 2px 0;
+}
+/* ── 引用块 ── */
+.tiptap-content blockquote {
+  border-left: 3px solid hsl(var(--border));
+  padding-left: 12px;
+  margin: 4px 0;
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+/* ── 列表嵌套 ── */
+.tiptap-content ul ul,
+.tiptap-content ol ol,
+.tiptap-content ul ol,
+.tiptap-content ol ul {
+  margin: 2px 0;
+}

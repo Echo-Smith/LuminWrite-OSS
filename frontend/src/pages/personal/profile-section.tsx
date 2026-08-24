@@ -41,7 +41,9 @@ export function ProfileSection() {
 
   const fetchEmail = async () => {
     try {
-      const res = await fetch("/api/v2/auth/my-email");
+      const res = await fetch("/api/v2/auth/my-email", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const json = await res.json();
       if (json.success && json.data?.email) {
         setBoundEmail(json.data.email);
@@ -99,7 +101,10 @@ export function ProfileSection() {
     try {
       const res = await fetch("/api/v2/auth/bind-email", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ email: emailInput.trim(), code: emailCode.trim() }),
       });
       const json = await res.json();

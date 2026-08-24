@@ -33,6 +33,12 @@ type StyleProfile struct {
 	FactGuard        FactGuard       `json:"fact_guard"`
 	OutputFormat     OutputFormat    `json:"output_format"`
 	LengthProfiles   map[string]WordRange `json:"length_profiles"`
+
+	// KbID binds this style to a specific knowledge base.
+	// When non-empty, the search_knowledge tool will scope its search
+	// to this KB (via HybridSearchInKB). When empty, searches all KBs.
+	// Example: "default" for the built-in 预设评论风格 article library.
+	KbID             string          `json:"kb_id,omitempty"`
 }
 
 type WordRange struct {
@@ -50,6 +56,18 @@ type Structure struct {
 	ArgumentVariations []string `json:"argument_variations"`
 	ArgumentInstruction string  `json:"argument_instruction"`
 	ArgumentCount  CountRange  `json:"argument_count"`
+	// Sections 是自定义结构段列表，用于 custom 类型。
+	// 当 Type == "custom" 时，Sections 优先于 Opening/Body/Conclusion。
+	// 每个 SectionPart 代表一个结构骨架节点（如：引言→方法→实验→讨论→结论）。
+	Sections       []SectionPart `json:"sections,omitempty"`
+}
+
+// SectionPart 表示一个自定义结构段。
+// Name 是段的显示名称（如"引言""方法""实验""讨论""结论"）。
+// Description 是可选的写作指引（如"概述研究背景与问题"）。
+type SectionPart struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 type CountRange struct {
@@ -437,6 +455,14 @@ func ValidateProfile(p *StyleProfile) error {
 	validStructures := map[string]bool{"three_part": true, "free_form": true, "custom": true, "": true}
 	if !validStructures[p.Structure.Type] {
 		return fmt.Errorf("structure.type '%s' is not valid (must be three_part, free_form, or custom)", p.Structure.Type)
+	}
+	// Rule 4b: custom type should have at least one section in Sections
+	if p.Structure.Type == "custom" && len(p.Structure.Sections) > 0 {
+		for i, s := range p.Structure.Sections {
+			if s.Name == "" {
+				return fmt.Errorf("structure.sections[%d].name must not be empty", i)
+			}
+		}
 	}
 	return nil
 }
