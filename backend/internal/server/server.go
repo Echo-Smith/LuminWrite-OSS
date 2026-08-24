@@ -630,8 +630,9 @@ func New(cfg *config.Config) (*Server, error) {
 		slog.Info("source credibility lookup wired into search client")
 
 		// 初始化对照实验运行器（不再依赖 Orchestrator）
+		// 传入 LLMResolver 而非静态 LLMClient，使 admin 面板模型配置变更即时生效
 		expRunner := editorial.NewExperimentRunner(
-			edStore, defaultLLM, searchClient, embeddingClient,
+			edStore, s.llmSvc, searchClient, embeddingClient,
 			profileLoader, edEmitter,
 		)
 		editorial.SetExperimentRunner(expRunner)
@@ -641,8 +642,9 @@ func New(cfg *config.Config) (*Server, error) {
 		slog.Info("editorial system initialized")
 
 		// Beta: 编辑部模式 DAG 工作流初始化
-		if llm != nil {
-			s.planner = editorial.NewPlanner(defaultLLM)
+		// 传入 LLMResolver 而非静态 LLMClient，使 admin 面板模型配置变更即时生效
+		if s.llmSvc != nil {
+			s.planner = editorial.NewPlanner(s.llmSvc)
 			s.dagExecutor = editorial.NewDAGExecutor(
 				editorial.NewDynamicAgentRegistry(), edStore, edEmitter,
 			)
@@ -653,10 +655,10 @@ func New(cfg *config.Config) (*Server, error) {
 			dagToolRegistry := editorial.NewEditorialToolRegistry()
 			editorial.RegisterBuiltinTools(dagToolRegistry)
 
-			researchExec := editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
+			researchExec := editorial.NewResearchAgentExecutor(s.llmSvc, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("researcher", researchExec)
-			writingExec := editorial.NewWritingAgentExecutor(defaultLLM, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
-			reviewExec := editorial.NewReviewAgentExecutor(defaultLLM, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
+			writingExec := editorial.NewWritingAgentExecutor(s.llmSvc, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
+			reviewExec := editorial.NewReviewAgentExecutor(s.llmSvc, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("writer", writingExec)
 			s.dagExecutor.RegisterExecutor("reviewer", reviewExec)
 			slog.Info("DAG workflow system initialized (planner + executor)")

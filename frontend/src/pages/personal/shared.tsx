@@ -6,14 +6,14 @@
 import { type ReactNode } from "react";
 import {
   Brain, User, KeyRound, Palette, Settings, Wallet,
-  Bell, Monitor, Info, type LucideIcon,
+  Bell, Monitor, Info, FlaskConical, type LucideIcon,
   X, Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "profile" | "styles" | "memory" | "settings" | "notifications" | "account" | "devices" | "wallet" | "about";
+export type MenuKey = "profile" | "styles" | "memory" | "settings" | "notifications" | "account" | "devices" | "wallet" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -30,6 +30,7 @@ export const MENU_ITEMS: MenuItem[] = [
   { key: "notifications", label: "通知设置", icon: Bell },
   { key: "account", label: "账号管理", icon: KeyRound },
   { key: "devices", label: "设备管理", icon: Monitor },
+  { key: "labs", label: "实验室", icon: FlaskConical },
   { key: "about", label: "关于笔润智谈", icon: Info },
 ];
 
@@ -42,6 +43,7 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   notifications: { title: "通知设置", subtitle: "管理在线通知偏好" },
   account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },
   devices: { title: "设备管理", subtitle: "查看在线设备和管理会话" },
+  labs: { title: "实验室", subtitle: "体验正在测试中的实验性功能" },
   about: { title: "关于笔润智谈", subtitle: "版本信息与产品介绍" },
 };
 
@@ -89,12 +91,12 @@ export function SimpleModal({
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
       <div
         className={cn(
-          "relative z-10 w-[92vw] rounded-xl border bg-background shadow-lg max-h-[85vh] overflow-y-auto animate-in fade-in-0 zoom-in-95 duration-150",
+          "relative z-10 w-[92vw] rounded-xl border bg-background shadow-lg max-h-[85vh] flex flex-col animate-in fade-in-0 zoom-in-95 duration-150",
           maxWidth
         )}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b px-5 py-3.5 sticky top-0 bg-background z-10">
+        <div className="flex items-center justify-between border-b px-5 py-3.5 shrink-0">
           <h3 className="text-base font-semibold">{title}</h3>
           <button
             onClick={onClose}
@@ -103,7 +105,7 @@ export function SimpleModal({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="p-5">
+        <div className="p-5 overflow-y-auto">
           {children}
         </div>
       </div>

@@ -22,6 +22,7 @@ import { WalletSection } from "@/pages/personal/wallet-section";
 import { NotificationsSection } from "@/pages/personal/notifications-section";
 import { AccountSection } from "@/pages/personal/account-section";
 import { DevicesSection } from "@/pages/personal/devices-section";
+import { LabsSection } from "@/pages/personal/labs-section";
 import { AboutSection } from "@/pages/personal/about-section";
 
 export function PersonalCenter() {
@@ -93,9 +94,9 @@ export function PersonalCenter() {
           </div>
 
           {/* ── 右侧内容区 ── */}
-          <div className="flex-1 overflow-y-auto relative">
+          <div className="flex-1 flex flex-col min-h-0">
             {/* 固定栏 — 左侧标题+副标题，右侧关闭按钮，所有分页统一 */}
-            <div className="sticky top-0 z-10 flex h-[60px] shrink-0 items-center justify-between px-6 bg-background border-b">
+            <div className="flex h-[60px] shrink-0 items-center justify-between px-6 bg-background border-b">
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold leading-tight">{SECTION_META[activeMenu].title}</h2>
                 <p className="text-sm text-muted-foreground leading-tight">{SECTION_META[activeMenu].subtitle}</p>
@@ -108,6 +109,8 @@ export function PersonalCenter() {
               </button>
             </div>
 
+            {/* 可滚动内容区 */}
+            <div className="flex-1 overflow-y-auto relative">
             {activeMenu === "profile" && <ProfileSection />}
             {activeMenu === "styles" && <StyleSection />}
             {activeMenu === "memory" && <MemorySection />}
@@ -116,6 +119,7 @@ export function PersonalCenter() {
             {activeMenu === "notifications" && <NotificationsSection />}
             {activeMenu === "account" && <AccountSection />}
             {activeMenu === "devices" && <DevicesSection />}
+            {activeMenu === "labs" && <LabsSection />}
             {activeMenu === "about" && <AboutSection />}
 
             {/* ── 右下角圆形 + 按钮（写作风格/记忆管理用） ── */}
@@ -129,6 +133,7 @@ export function PersonalCenter() {
                 }}
               />
             )}
+            </div>
           </div>
         </DialogPrimitive.Content>
       </DialogPortal>
