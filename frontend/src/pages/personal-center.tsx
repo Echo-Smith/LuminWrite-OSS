@@ -120,11 +120,14 @@ export function PersonalCenter() {
 
             {/* ── 右下角圆形 + 按钮（写作风格/记忆管理用） ── */}
             {(activeMenu === "styles" || activeMenu === "memory") && (
-              <FloatingAddButton onClick={() => {
-                // 通过自定义事件触发各子组件的添加操作
-                const event = new CustomEvent("personal-center-add");
-                window.dispatchEvent(event);
-              }} />
+              <FloatingAddButton
+                disabled={isGuest}
+                onClick={() => {
+                  // 通过自定义事件触发各子组件的添加操作
+                  const event = new CustomEvent("personal-center-add");
+                  window.dispatchEvent(event);
+                }}
+              />
             )}
           </div>
         </DialogPrimitive.Content>

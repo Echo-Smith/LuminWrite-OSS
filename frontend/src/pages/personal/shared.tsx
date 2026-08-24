@@ -47,12 +47,18 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
 
 // ─── 右下角圆形 + 按钮 ──────────────────────────────────
 
-export function FloatingAddButton({ onClick }: { onClick: () => void }) {
+export function FloatingAddButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
-      className="absolute bottom-6 right-6 z-20 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
-      title="新建"
+      disabled={disabled}
+      className={cn(
+        "absolute bottom-6 right-6 z-20 flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition-transform",
+        disabled
+          ? "bg-muted text-muted-foreground cursor-not-allowed"
+          : "bg-primary text-primary-foreground hover:scale-105 active:scale-95"
+      )}
+      title={disabled ? "注册后可用" : "新建"}
     >
       <Plus className="h-5 w-5" />
     </button>

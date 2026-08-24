@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useMemoryStore, type UserMemory } from "@/stores/memory-store";
+import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 import { SimpleModal, formatDate } from "./shared";
 
@@ -36,14 +37,15 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 export function MemorySection() {
   const { memories, loading, fetchMemories, createMemory, deleteMemory } = useMemoryStore();
+  const isGuest = useAuthStore((s) => s.user?.role === "guest");
   const [showCreate, setShowCreate] = useState(false);
   const [newCategory, setNewCategory] = useState("");
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
 
   useEffect(() => {
-    fetchMemories();
-  }, [fetchMemories]);
+    if (!isGuest) fetchMemories();
+  }, [fetchMemories, isGuest]);
 
   // 监听右下角 + 按钮事件
   useEffect(() => {
@@ -62,6 +64,24 @@ export function MemorySection() {
       setNewValue("");
     }
   };
+
+  if (isGuest) {
+    return (
+      <div className="px-6 pt-6 pb-12 space-y-6">
+        <Card className="border-amber-200/60 bg-amber-50/50 dark:bg-amber-950/20">
+          <CardContent className="py-6 text-center">
+            <Brain className="mx-auto h-10 w-10 text-amber-500/50" />
+            <p className="mt-3 text-sm text-amber-900 dark:text-amber-200 font-medium">
+              游客模式无法管理记忆
+            </p>
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              注册账号后可查看和管理 AI 学习到的写作偏好
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const grouped = memories.reduce((acc, m) => {
     if (!acc[m.tier]) acc[m.tier] = [];

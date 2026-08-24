@@ -100,8 +100,9 @@ type Server struct {
 	db *database.DB
 
 	// Billing
-	billingRepo *database.BillingRepo
-	pointCalc    *services.PointCalculator
+billingRepo *database.BillingRepo
+pointCalc    *services.PointCalculator
+alipaySvc    *AlipayService
 
 	// Email verification (commercial feature)
 	emailSvc     *EmailService
@@ -493,6 +494,28 @@ func New(cfg *config.Config) (*Server, error) {
 		if s.db == nil {
 			s.db = db
 		}
+
+		// Initialize Alipay payment service
+		if cfg.Alipay.Enabled {
+			alipaySvc, err := NewAlipayService(AlipayConfigConfig{
+				Enabled:        cfg.Alipay.Enabled,
+				AppID:          cfg.Alipay.AppID,
+				PrivateKey:     cfg.Alipay.PrivateKey,
+				PublicKey:      cfg.Alipay.PublicKey,
+				CertPath:       cfg.Alipay.CertPath,
+				RootCertPath:   cfg.Alipay.RootCertPath,
+				AlipayCertPath: cfg.Alipay.AlipayCertPath,
+				NotifyURL:      cfg.Alipay.NotifyURL,
+				ReturnURL:      cfg.Alipay.ReturnURL,
+				Sandbox:        cfg.Alipay.Sandbox,
+			}, s.billingRepo)
+			if err != nil {
+				slog.Error("alipay: failed to initialize payment service", "error", err)
+			} else {
+				s.alipaySvc = alipaySvc
+				slog.Info("alipay payment service enabled", "sandbox", cfg.Alipay.Sandbox)
+			}
+		}
 		slog.Info("billing system initialized", "db_available", true)
 	}
 	if llm != nil {
@@ -562,6 +585,15 @@ func New(cfg *config.Config) (*Server, error) {
 	// KB is now a standalone tool (search_knowledge), not mixed into SearchClient.
 	// The KbSearchAdapter is passed to Harness directly via NewHarness().
 	slog.Info("local knowledge base initialized (standalone search_knowledge tool)")
+
+		// Wire KB manager and user style store into Style Builder for tool calls
+		if s.styleBuilder != nil {
+			s.styleBuilder.WithKbManager(s.kbMgr)
+			if s.userStyleStore != nil {
+				s.styleBuilder.WithUserStyleStore(s.userStyleStore)
+			}
+			slog.Info("style builder wired with KB manager and user style store")
+		}
 	} else {
 		slog.Warn("knowledge manager skipped: database not available")
 	}
@@ -597,27 +629,12 @@ func New(cfg *config.Config) (*Server, error) {
 		searchClient.SetCredibilityLookup(editorial.NewCredibilityLookupAdapter(edStore))
 		slog.Info("source credibility lookup wired into search client")
 
-		// Register Agent executors (using RoleAgentRunner with ChatWithTools loop)
-		if llm != nil {
-			kbAdapter := services.NewKbSearchAdapter(s.kbMgr)
-
-			// ── 初始化编辑部工具注册中心 ──
-			toolRegistry := editorial.NewEditorialToolRegistry()
-			editorial.RegisterBuiltinTools(toolRegistry)
-
-			edSvc.Orchestrator().RegisterExecutor(editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore, kbAdapter, toolRegistry))
-			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
-				edSvc.Orchestrator().RegisterExecutor(editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, toolRegistry))
-				edSvc.Orchestrator().RegisterExecutor(editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, toolRegistry))
-			}
-
-			// 初始化对照实验运行器
-			expRunner := editorial.NewExperimentRunner(
-				edStore, defaultLLM, searchClient, embeddingClient,
-				profileLoader, edSvc.Orchestrator(),
-			)
-			editorial.SetExperimentRunner(expRunner)
-		}
+		// 初始化对照实验运行器（不再依赖 Orchestrator）
+		expRunner := editorial.NewExperimentRunner(
+			edStore, defaultLLM, searchClient, embeddingClient,
+			profileLoader, edEmitter,
+		)
+		editorial.SetExperimentRunner(expRunner)
 
 		s.editorialSvc = edSvc
 		s.editorialHdlr = editorial.NewHandlers(edSvc)
@@ -638,12 +655,10 @@ func New(cfg *config.Config) (*Server, error) {
 
 			researchExec := editorial.NewResearchAgentExecutor(defaultLLM, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("researcher", researchExec)
-			if defaultProfile, ok := profileLoader.Get("yinyue"); ok {
-				writingExec := editorial.NewWritingAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, dagToolRegistry)
-				reviewExec := editorial.NewReviewAgentExecutor(defaultLLM, defaultProfile, searchClient, edStore, kbAdapter, dagToolRegistry)
-				s.dagExecutor.RegisterExecutor("writer", writingExec)
-				s.dagExecutor.RegisterExecutor("reviewer", reviewExec)
-			}
+			writingExec := editorial.NewWritingAgentExecutor(defaultLLM, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
+			reviewExec := editorial.NewReviewAgentExecutor(defaultLLM, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
+			s.dagExecutor.RegisterExecutor("writer", writingExec)
+			s.dagExecutor.RegisterExecutor("reviewer", reviewExec)
 			slog.Info("DAG workflow system initialized (planner + executor)")
 		}
 	} else {
@@ -741,6 +756,12 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Get("/billing/recharge/orders", s.handleBillingRechargeOrders)
 		r.With(s.jwtAuthMiddleware).Post("/billing/redeem", s.handleBillingRedeem)
 		r.With(s.jwtAuthMiddleware).Get("/billing/features", s.handleBillingFeatures)
+		r.With(s.jwtAuthMiddleware).Post("/billing/payment/alipay", s.handleAlipayCreatePayment)
+		r.With(s.jwtAuthMiddleware).Get("/billing/orders", s.handleBillingOrderStatus)
+
+		// Payment callback (no JWT, public endpoint)
+		r.Post("/billing/callback/alipay", s.handleAlipayCallback)
+		r.Get("/billing/callback/alipay", s.handleAlipayCallback)
 
 		// Topics
 		r.Get("/topics", s.handleListTopics)
@@ -764,18 +785,18 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 	r.Post("/feedback/aggregate", s.handleAggregateFeedback)
 	r.Post("/feedback/suggestions/{style}/{version}", s.handleGenerateSuggestions)
 
-	// Memory (requires auth — user identity from JWT)
-	r.With(s.jwtAuthMiddleware).Get("/memories", s.handleListMemories)
-	r.With(s.jwtAuthMiddleware).Post("/memories", s.handleCreateMemory)
-	r.With(s.jwtAuthMiddleware).Delete("/memories/{id}", s.handleDeleteMemory)
-	r.With(s.jwtAuthMiddleware).Post("/memories/{id}/dismiss", s.handleDismissMemory)
+	// Memory (requires auth — user identity from JWT, guests excluded)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories", s.handleListMemories)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories", s.handleCreateMemory)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/memories/{id}", s.handleDeleteMemory)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/{id}/dismiss", s.handleDismissMemory)
 
-	// Memory Files (Markdown memory layer)
-	r.With(s.jwtAuthMiddleware).Get("/memories/file", s.handleGetMemoryFile)
-	r.With(s.jwtAuthMiddleware).Post("/memories/file/export", s.handleExportMemoryFile)
-	r.With(s.jwtAuthMiddleware).Post("/memories/file/import", s.handleImportMemoryFile)
-	r.With(s.jwtAuthMiddleware).Get("/memories/global", s.handleGetGlobalMemory)
-	r.With(s.jwtAuthMiddleware).Put("/memories/global", s.handleUpdateGlobalMemory)
+	// Memory Files (Markdown memory layer — guests excluded)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/file", s.handleGetMemoryFile)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/export", s.handleExportMemoryFile)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/import", s.handleImportMemoryFile)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/global", s.handleGetGlobalMemory)
+	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/memories/global", s.handleUpdateGlobalMemory)
 
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
@@ -1131,6 +1152,8 @@ r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions
 				r.Post("/billing/recharge", s.handleAdminBillingRecharge)
 				r.Post("/billing/redeem-codes", s.handleAdminBillingCreateRedeemCodes)
 				r.Delete("/billing/redeem-codes/{id}", s.handleAdminBillingDisableRedeemCode)
+				r.Post("/billing/reset-plan-balance", s.handleAdminBillingReset)
+				r.Post("/billing/expire-subscriptions", s.handleAdminBillingExpire)
 			})
 
 			// SSE Notifications (admin test — any admin)
@@ -1209,6 +1232,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.cronScheduler != nil {
 		go s.cronScheduler.Start(ctx, s.executeCronJob)
 	}
+
+	// Start billing cron (plan_balance reset + subscription expiry)
+	go s.startBillingCron(ctx)
 
 	// Start memory file watcher (hot-reload of Markdown memory files)
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
@@ -1740,6 +1766,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		s.traces.CreateTrace(context.Background(), execCtx)
 	}
 
+	// ── Async: extract task_name from user input via LLM ──
+	// Generates a short, human-readable title for the session list.
+	// Priority in display: article_title > task_name > user_input (truncated) > "历史会话"
+	// Runs in background so it doesn't block agent execution.
+	if s.traces != nil && llmClient != nil && p.Message != "" {
+		go s.extractTaskName(traceID, p.Message, llmClient)
+	}
+
 	// Create editorial task for writing process traceability
 	// All intermediate artifacts (search results, research brief, outline,
 	// draft, review report, etc.) will be recorded against this task.
@@ -1920,6 +1954,8 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			&harnessSessionStore{svc: s.memorySvc},
 			emitter,
 		)
+		// 注入工具扣费回调（商业版）
+		h.SetToolSettleFunc(s.SettleToolPoints)
 		agentRunner = &harnessRunner{harness: h, session: writingSession}
 		slog.Info("using harness agent (单层持续会话)", "trace_id", traceID, "conversation_id", execCtx.ConversationID, "kb_enabled", kbEnabled)
 	} else if agentMode == "pipeline" {
@@ -1972,7 +2008,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
 
 		if execCtx.Mode == "guided" {
-			engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
+			engineSteps = append(engineSteps, steps.NewOutlineStepWithProfile(llmClient, styleProfile))
 		}
 
 		engineSteps = append(engineSteps,
@@ -2013,6 +2049,8 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			&harnessSessionStore{svc: s.memorySvc},
 			emitter,
 		)
+		// 注入工具扣费回调（商业版）
+		h.SetToolSettleFunc(s.SettleToolPoints)
 		agentRunner = &harnessRunner{harness: h, session: writingSession}
 		slog.Info("using harness agent (default fallback)", "trace_id", traceID, "kb_enabled", kbEnabled)
 	}
@@ -2306,6 +2344,8 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 					&harnessSessionStore{svc: s.memorySvc},
 					emitter,
 				)
+				// 注入工具扣费回调（商业版）
+				h.SetToolSettleFunc(s.SettleToolPoints)
 				agentRunner = &harnessRunner{harness: h, session: writingSession}
 			} else {
 				var engineSteps []engine.Step
@@ -2344,9 +2384,9 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 					))
 				}
 				engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
-				if execCtx.Mode == "guided" {
-					engineSteps = append(engineSteps, steps.NewOutlineStep(llmClient))
-				}
+			if execCtx.Mode == "guided" {
+				engineSteps = append(engineSteps, steps.NewOutlineStepWithProfile(llmClient, styleProfile))
+			}
 				engineSteps = append(engineSteps,
 					steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, resumeKBSearcher),
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
@@ -2616,6 +2656,7 @@ func (s *Server) handleSessionResume(client *websocket.Client, payload json.RawM
 				Status:         status,
 				Article:        getStr(trace, "article"),
 				ArticleTitle:   getStr(trace, "article_title"),
+				TaskName:       getStr(trace, "task_name"),
 				Style:          getStr(trace, "style_slug"),
 				Mode:           getStr(trace, "mode"),
 				UserInput:      getStr(trace, "user_input"),
@@ -2994,4 +3035,66 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 		models = []modelInfo{}
 	}
 	response.OK(w, map[string]interface{}{"models": models})
+}
+
+// extractTaskName uses an LLM to generate a short, human-readable task name
+// from the user's writing instruction. The result is stored in agent_traces.task_name
+// and used as the session list display title (priority: article_title > task_name > user_input truncated).
+//
+// This runs asynchronously in a goroutine — it must not block agent execution.
+// If the LLM call fails or returns empty, the task_name column stays NULL and
+// the frontend falls back to truncating user_input.
+func (s *Server) extractTaskName(traceID, userInput string, llmClient *tools.LLMClient) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	systemMsg := "你是中文写作产品的任务命名助手。根据用户的写作指令，生成一个简短（4-20字）的任务名称。只返回纯文本，不要加引号、不要加解释。"
+	userMsg := fmt.Sprintf(`请为以下写作指令生成一个简短的任务名称（4-20字，概括核心主题）：
+
+%s
+
+要求：
+- 提取核心主题，去掉"帮我写一篇关于"等指令前缀
+- 如果指令中已有明确标题，直接用该标题
+- 保持简洁，不超过20个字`, userInput)
+
+	resp, _, err := llmClient.Chat(ctx, []tools.LLMMessage{
+		{Role: "system", Content: systemMsg},
+		{Role: "user", Content: userMsg},
+	}, tools.WithTemperature(0), tools.WithThinking(false))
+	if err != nil {
+		slog.Warn("extractTaskName: LLM call failed", "error", err, "trace_id", traceID)
+		return
+	}
+
+	// Clean up response: strip quotes, whitespace, newlines
+	taskName := strings.TrimSpace(resp)
+	taskName = strings.Trim(taskName, `"'"""''`)
+	taskName = strings.ReplaceAll(taskName, "\n", "")
+	taskName = strings.ReplaceAll(taskName, "\r", "")
+
+	// Sanity check: must be non-empty and not excessively long
+	if len([]rune(taskName)) < 2 || len([]rune(taskName)) > 128 {
+		slog.Warn("extractTaskName: result too short or too long, skipping",
+			"task_name", taskName, "trace_id", traceID)
+		return
+	}
+
+	if err := s.traces.UpdateTaskName(ctx, traceID, taskName); err != nil {
+		slog.Warn("extractTaskName: failed to save task_name", "error", err, "trace_id", traceID)
+		return
+	}
+
+	slog.Info("extractTaskName: task_name saved",
+		"trace_id", traceID, "task_name", taskName)
+
+	// Push task_name to frontend via WebSocket so the UI updates in real-time.
+	// Only updates if article_title hasn't been set yet (article_title takes priority).
+	s.hub.SendToTrace(traceID, &websocket.ServerMessage{
+		Type: websocket.MsgTaskNameUpdated,
+		Payload: map[string]interface{}{
+			"trace_id":  traceID,
+			"task_name": taskName,
+		},
+	})
 }
