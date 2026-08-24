@@ -26,17 +26,18 @@ WHERE plan_balance = 0 AND paid_balance = 0 AND balance > 0;
 
 -- 3. 设置 plan_reset_at 为所有已有用户的下一次注册月周年
 --    基于 users.created_at 计算下一个周年日
+--    注意：PostgreSQL 不支持 LAST_DAY()（MySQL 函数），用 DATE_TRUNC + INTERVAL 计算月末
 UPDATE user_point_balance b
 SET plan_reset_at = sub.next_reset
 FROM (
     SELECT
         b2.user_id,
-        -- 计算下一个注册月周年：从 created_at 开始，加 N 个月直到超过 NOW()
+        -- 计算下一个注册月周年：下个月的同一天（或月末如果注册日 > 下月天数）
         CASE
-            WHEN EXTRACT(DAY FROM u.created_at) > EXTRACT(DAY FROM LAST_DAY(NOW())) THEN
-                -- 注册日是 31 号等，取本月最后一天
+            WHEN EXTRACT(DAY FROM u.created_at) > EXTRACT(DAY FROM (DATE_TRUNC('month', NOW() + INTERVAL '1 month') + INTERVAL '1 month - 1 day')) THEN
+                -- 注册日是 31 号等，取下月最后一天
                 DATE_TRUNC('month', NOW() + INTERVAL '1 month')::timestamptz
-                  + (EXTRACT(DAY FROM LAST_DAY(NOW() + INTERVAL '1 month')) - 1) * INTERVAL '1 day'
+                  + INTERVAL '1 month - 1 day'
             ELSE
                 DATE_TRUNC('month', NOW() + INTERVAL '1 month')::timestamptz
                   + (EXTRACT(DAY FROM u.created_at) - 1) * INTERVAL '1 day'
