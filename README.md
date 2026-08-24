@@ -88,6 +88,7 @@ System Prompt 从全量注入（3000+ tokens）精简为常驻层（500-800 toke
 | **引导模式** | 提纲确认、编辑、最多五次重做 |
 | **风格配置** | Style Profile 独立管理，支持版本、灰度发布和回滚 |
 | **流式输出** | WebSocket 实时推送，支持暂停/恢复/取消 |
+| **富文本编辑** | Tiptap/ProseMirror 富文本编辑器，支持加粗、列表、引用、代码块等格式 |
 | **质量评审** | 6 维度评分（事实/结构/风格/修辞/篇幅/安全） |
 | **自动修正** | 评审未通过时自动修正，最多 3 次尝试 |
 
@@ -109,11 +110,11 @@ LLM 在持续会话中自主调用的工具：
 | `fact_check` | 提取事实声明并通过搜索验证 |
 | `retrieve_context` | 按需获取会话上下文 |
 
-> **搜索源扩展**：本仓库提供了 `SearchClient` 的完整接口和多源并发搜索框架。各搜索源以独立模块形式接入，开发者可以参照 `search_stubs.go` 中的 stub 实现来对接自己的搜索源。
+> **搜索源扩展**：本仓库提供了 `SearchClient` 的完整接口和多源并发搜索框架。搜索源以独立模块形式接入，开发者可以参照 `search_stubs.go` 中的 stub 实现来对接自己的搜索源。
 
 ### 在线编辑与导出
 
-- **实时编辑**：在聊天框内直接编辑文章（Markdown 格式）
+- **富文本编辑**：基于 Tiptap/ProseMirror 的所见即所得编辑器，支持加粗、斜体、列表、引用、代码块等 Markdown 格式
 - **多格式导出**：Markdown (.md) / Word (.doc) / PDF（打印模式）
 - **纯前端实现**：无需后端 API，浏览器直接生成文件
 
@@ -173,7 +174,7 @@ LLM 在持续会话中自主调用的工具：
 ### 管理后台
 
 - **风格管理**：Profile 创建、编辑、版本控制、灰度发布
-- **模型配置**：多模型接入（DeepSeek/OpenAI 兼容接口）、密钥管理
+- **模型配置**：多模型接入（DeepSeek/OpenAI 兼容接口）、密钥管理、自定义 Headers、Reasoning Effort
 - **A/B 评测**：对照组/实验组自动化评测与指标对比
 - **Luminbuddy Eval Center**：以 WABench 统一管理数据集、冻结候选、Shadow Run、人工评审、Badcase 与发布证据
 - **反馈分析**：分段反馈统计、质量趋势
@@ -232,12 +233,12 @@ LLM 在持续会话中自主调用的工具：
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui |
-| 后端 | Go 1.22+, chi router, coder/websocket |
+| 前端 | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui, Tiptap/ProseMirror |
+| 后端 | Go 1.25+, chi router, coder/websocket |
 | 数据库 | PostgreSQL 17 + pgvector + paradedb (BM25) |
 | LLM | DeepSeek API (默认), 支持 OpenAI 兼容接口 |
 | Embedding | DashScope text-embedding-v3 (1024维) |
-| 部署 | Docker Compose |
+| 部署 | Docker Compose, 1Panel |
 | 监控 | Prometheus 指标 + slog 结构化日志 + Trace 链路追踪 |
 
 ---
@@ -252,7 +253,7 @@ cp .env.docker.example .env.docker
 docker compose up -d
 ```
 
-默认入口：前端 `http://localhost:3000`，后端健康检查 `http://localhost:8080/api/v2/health`。
+默认入口：前端 `http://localhost:3002`，后端健康检查 `http://localhost:8080/api/v2/health`。
 
 ### 本地开发
 
@@ -333,6 +334,15 @@ func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([
 ---
 
 ## 更新日志
+
+### v0.7.0 (2026-08-24)
+
+- **富文本编辑器**：基于 Tiptap/ProseMirror 升级写作输入框，支持加粗、列表、引用、代码块等格式
+- **素材库统一**：统一"知识库"与"素材库"概念，UI 层面简化为素材库
+- **模型配置增强**：支持自定义 HTTP Headers 和 Reasoning Effort 参数
+- **风格-知识库绑定**：风格配置可绑定指定素材库
+- **部署优化**：GOAMD64 v3 兼容、1Panel 离线镜像打包、Docker 镜像加速配置
+- **前端端口调整**：默认端口从 3000 调整为 3002
 
 ### v0.6.0 (2026-08-23)
 

@@ -2,7 +2,7 @@
 
 [中文](README.md) · [Live workspace](https://luminbuddy2.ericdocmic.top/v2/) · [Changelog](#changelog)
 
-> **An AI writing workspace for Chinese content creators**: from intent understanding, source retrieval, and outline confirmation, to style-aware drafting, post-review, feedback, and memory沉淀—transforming one-shot generation into an observable, interruptible, and iterative writing process.
+> **An AI writing workspace for Chinese content creators**: from intent understanding, source retrieval, and outline confirmation, to style-aware drafting, post-review, feedback, and memory sedimentation—transforming one-shot generation into an observable, interruptible, and iterative writing process.
 
 ![LuminBuddy writing workspace](docs/assets/luminbuddy-workspace.png)
 
@@ -72,7 +72,7 @@ Writing Request
   → Style-aware Streaming Writing (generate according to Profile rules)
   → Post-review (quality scoring + safety check)
   → Auto-fix (low-severity issues auto-fixed)
-  → Section Feedback + A/B Evaluation + Memory沉淀
+  → Section Feedback + A/B Evaluation + Memory Sedimentation
 ```
 
 ---
@@ -84,10 +84,11 @@ Writing Request
 | Feature | Description |
 |---------|-------------|
 | **Intent Recognition** | Rule-first routing, supports writing/polish/compress/expand/free chat |
-| **Multi-source Retrieval** | Web search (Tavily/Bing/Tencent News) + internal knowledge base (BM25 + Dense + GraphRAG) |
+| **Multi-source Retrieval** | Extensible multi-source search framework + internal knowledge base (BM25 + Dense + GraphRAG) |
 | **Guided Mode** | Outline confirmation, editing, up to five regenerations |
 | **Style Configuration** | Style Profile independently managed, supports versioning, grayscale release and rollback |
 | **Streaming Output** | WebSocket real-time push, supports pause/resume/cancel |
+| **Rich Text Editor** | Tiptap/ProseMirror editor with bold, lists, blockquotes, code blocks |
 | **Quality Review** | 6-dimension scoring (factuality/structure/style/rhetoric/length/safety) |
 | **Auto-fix** | Auto-correct when review fails, up to 3 attempts |
 
@@ -97,7 +98,7 @@ Tools LLM autonomously calls during continuous session:
 
 | Tool | Purpose |
 |------|---------|
-| `search_web` | Search internet for latest information |
+| `search_web` | Search internet for latest information (pluggable search sources) |
 | `search_knowledge` | Retrieve internal knowledge base examples and style guidelines |
 | `read_source` | Read detailed content of search results |
 | `generate_outline` | Generate article outline for user confirmation |
@@ -109,9 +110,11 @@ Tools LLM autonomously calls during continuous session:
 | `fact_check` | Extract factual claims and verify through search |
 | `retrieve_context` | On-demand retrieval of session context |
 
+> **Search Source Extension**: This repo provides the complete `SearchClient` interface and multi-source concurrent search framework. Search sources are integrated as independent modules. Developers can refer to the stub implementations in `search_stubs.go` to connect their own search sources.
+
 ### Online Editing & Export
 
-- **Real-time editing**: Edit article directly in chat box (Markdown format)
+- **Rich Text Editing**: Tiptap/ProseMirror WYSIWYG editor supporting bold, italic, lists, blockquotes, code blocks and other Markdown formats
 - **Multi-format export**: Markdown (.md) / Word (.doc) / PDF (print mode)
 - **Pure frontend implementation**: No backend API needed, browser directly generates files
 
@@ -128,21 +131,57 @@ Four-tier memory architecture:
 
 Supports file-layer bidirectional sync (Markdown file ↔ database), human-readable and editable.
 
-### Admin Dashboard
+### Editorial Multi-Agent Collaboration
 
-- **Style Management**: Profile creation, editing, version control, grayscale release
-- **Model Configuration**: Multi-model access (DeepSeek/OpenAI compatible interface), key management
-- **A/B Evaluation**: Control/experiment group automated evaluation and metric comparison
-- **Feedback Analysis**: Section feedback statistics, quality trends
-- **Audit Logs**: Operation tracking, security audit
-- **Token Monitoring**: Usage statistics, cost analysis
+A complete three-Agent orchestration system for editorial content production:
+
+```
+Human editor creates task → Research Agent → Writing Agent → Review Agent
+  → Quality routing: pass → pending publish / minor issues → return / severe → escalate to human
+```
+
+- **Role-based Agent Executor** (RoleAgentRunner): Each Agent has independent Persona, toolset, and signal tools
+- **Tool Registry Management** (EditorialToolRegistry): Add new tools with `Register`, no switch-case modification needed
+- **Three-layer Model**: Event (objective facts) + Decision (human/system choices) + Transition (state changes)
+- **Quality Routing**: Source count, information gaps, verified claims auto-scored, auto-advance when passing
+- **Agent Reputation**: Records success rate, Token cost, quality scores
+- **Controlled Experiments**: Pipeline / Harness / Editorial three-group blind evaluation (six-dimension LLM scoring)
+
+### A2A Agent Card
+
+Implements the Agent Card concept from the A2A (Agent-to-Agent) protocol, where each Agent role has a self-describing JSON document supporting capability discovery:
+- **Identity**: Name, role, description, version
+- **Capabilities**: Producibles/consumables Artifact types, decision types
+- **Skills**: Tool list
+- **Constraints**: Isolation requirements, Persona
 
 ### Authentication & Security
 
 - **Passkey/WebAuthn**: Passwordless login, device-level security
 - **Guest Mode**: Experience without registration, supports subsequent upgrade
-- **Prompt Injection Defense**: Input sanitization + system prompt defense directives
-- **Sensitive Content Filter**: Built-in sensitive content filtering
+- **Prompt Injection Defense**: Input sanitization (SanitizeExternalContent) + System Prompt 7 defense directives
+- **Security Audit Persistence**: All security events recorded to database, supports historical query and compliance audit
+- **RBAC Fine-grained Permissions**: Role + permission management, supports custom roles and permission assignment
+- **MCP Security Sandbox**: Tool call policy control, domain restrictions, resource limits, violation audit
+
+### MCP Bidirectional Integration
+
+- **MCP Client**: Supports stdio and SSE transports, connects to external MCP servers
+- **MCP Server**: In-process MCP Server, exposes local tools via JSON-RPC 2.0
+- **Tool Registry**: Unified management of built-in tools, MCP tools, and Pipeline steps, naming `mcp__server__tool`
+- **Admin Dashboard**: Visual management of MCP server connection status and tool discovery
+
+### Admin Dashboard
+
+- **Style Management**: Profile creation, editing, version control, grayscale release
+- **Model Configuration**: Multi-model access (DeepSeek/OpenAI compatible), key management, custom HTTP headers, Reasoning Effort
+- **A/B Evaluation**: Control/experiment group automated evaluation and metric comparison
+- **Luminbuddy Eval Center**: WABench dataset management, frozen candidates, Shadow Run, manual review, badcase and release evidence
+- **Feedback Analysis**: Section feedback statistics, quality trends
+- **Audit Logs**: Operation tracking, security audit
+- **Token Monitoring**: Usage statistics, cost analysis
+- **Security Audit**: Prompt Injection event statistics, interception trends, attack pattern analysis
+- **RBAC Management**: Role creation, permission assignment, user-role binding
 
 ---
 
@@ -177,8 +216,8 @@ Supports file-layer bidirectional sync (Markdown file ↔ database), human-reada
 │  └────────────────────────────────────────────────────────┘  │
 │                     │                                       │
 │  ┌──────────┬──────────┬──────────┬──────────┬──────────┐  │
-│  │ DeepSeek │  Tavily  │ Tencent  │ IMA KB   │ DashScope│  │
-│  │  Client  │  Client  │  News    │  Client  │ Embedding│  │
+│  │ DeepSeek │  Search  │ IMA KB   │ DashScope│ MCP Server│  │
+│  │  Client  │  Client  │  Client  │ Embedding│ (JSON-RPC) │  │
 │  └──────────┴──────────┴──────────┴──────────┴──────────┘  │
 └─────────────────────┬───────────────────────────────────────┘
                       │
@@ -195,12 +234,12 @@ Supports file-layer bidirectional sync (Markdown file ↔ database), human-reada
 
 | Layer | Technology |
 |-------|------------|
-| Frontend | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui |
-| Backend | Go 1.22+, chi router, coder/websocket |
+| Frontend | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui, Tiptap/ProseMirror |
+| Backend | Go 1.25+, chi router, coder/websocket |
 | Database | PostgreSQL 17 + pgvector + paradedb (BM25) |
 | LLM | DeepSeek API (default), supports OpenAI compatible interface |
 | Embedding | DashScope text-embedding-v3 (1024-dim) |
-| Deployment | Docker Compose |
+| Deployment | Docker Compose, 1Panel |
 | Monitoring | Prometheus metrics + slog structured logging + Trace tracking |
 
 ---
@@ -215,7 +254,7 @@ cp .env.docker.example .env.docker
 docker compose up -d
 ```
 
-Frontend at `http://localhost:3000`, backend health at `http://localhost:8080/api/v2/health`.
+Frontend at `http://localhost:3002`, backend health at `http://localhost:8080/api/v2/health`.
 
 ### Local Development
 
@@ -244,6 +283,29 @@ cd frontend && npm ci && npm run build
 ./scripts/pack-for-1panel.sh --images
 ```
 
+### Search Source Extension
+
+This repo provides the search client core framework (`backend/internal/tools/search.go`), including:
+- `SearchClient` multi-source concurrent search struct
+- `NewSearchClient` constructor
+- `Search` / `FetchHotTopics` concurrent search methods
+- `KnowledgeSearcher` knowledge base search interface
+
+Search sources are integrated as independent modules. This repo provides stub implementations for all search source types in `search_stubs.go`. Developers can refer to these stubs to connect their own search sources:
+
+```go
+// Example: implement a custom search source
+type MySearchClient struct { /* ... */ }
+
+func NewMySearchClient(/* params */) *MySearchClient { /* ... */ }
+
+func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
+    // Your search logic
+}
+```
+
+Then initialize your search source in `NewSearchClient`.
+
 ---
 
 ## Design Documents
@@ -261,11 +323,37 @@ cd frontend && npm ci && npm run build
 | [Admin Dashboard](docs/08-admin-dashboard.md) | Config, evaluation, observability |
 | [Memory System](docs/11-memory-system.md) | Hard preferences, behavioral patterns, feedback signals |
 | [Editorial System](docs/12-editorial-system.md) | Editorial task management and workflow |
+| [WritingAgentBench Data Layer](docs/13-wabench-data-layer.md) | WABench v1 tables, legacy importer, partitioning, privacy |
+| [Luminbuddy Eval Center](docs/16-wabench-eval-center.md) | Seven evaluation workspaces, Chinese Excel, review traceability |
+| [WritingAgentBench V2](docs/14-wabench-v2-evaluation.md) | Real Harness Adapter, five Rubric, failure-first, independent red team |
 | [Runbook](docs/runbook.md) | Deployment, monitoring, troubleshooting |
 
 ---
 
 ## Changelog
+
+### v0.7.0 (2026-08-24)
+
+- **Rich Text Editor**: Upgraded writing input to Tiptap/ProseMirror with bold, lists, blockquotes, code blocks
+- **Unified Material Library**: Merged "knowledge base" and "material library" concepts into a unified UI
+- **Model Config Enhancement**: Custom HTTP headers and Reasoning Effort parameter support
+- **Style-Knowledge Binding**: Style profiles can bind to specific material libraries
+- **Deployment Optimization**: GOAMD64 v3 compatibility, 1Panel offline image packaging, Docker mirror acceleration
+- **Frontend Port**: Default port changed from 3000 to 3002
+
+### v0.6.0 (2026-08-23)
+
+- **Editorial Agent Tooling**: RoleAgentRunner, EditorialToolRegistry, signal tool mechanism
+- **A2A Agent Card**: Agent capability self-description, A2A protocol discovery support
+- **Security Audit Persistence**: Security events recorded to database, historical query and compliance audit
+- **Brand UI Upgrade**: Unified brand identity, favicon/apple-touch-icon update
+- **Personal Center Refactor**: Split into 8 independent section components
+
+### v0.5.0 (2026-08-21)
+
+- **Editorial Multi-Agent**: Three-Agent orchestration system (research → writing → review + quality routing + reputation + controlled experiments)
+- **Security System**: Red team 20-case evaluation, Prompt Injection defense details, MCP bidirectional integration
+- **Documentation Unification**: UnifiedAgent → Harness naming + architecture history documentation
 
 ### v0.4.0 (2026-08-18)
 
@@ -304,7 +392,7 @@ cd frontend && npm ci && npm run build
 ## Project Disclaimer
 
 - This is a runnable personal product and engineering project, not a validated commercial deployment.
-- External model, retrieval, and data source availability depends on respective service configurations and terms.
+- Search sources are integrated as independent modules; refer to `search_stubs.go` stub implementations to connect your own.
 - The repository contains no production secrets; create local configuration from the example env files.
 
 ## License
