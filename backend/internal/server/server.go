@@ -748,8 +748,9 @@ func (s *Server) Router() http.Handler {
 		r.Get("/models", s.handleListActiveModels)
 
 		// Billing (user-facing)
+		// /billing/plans is public (no JWT) so unauthenticated users can view pricing
+		r.Get("/billing/plans", s.handleBillingPlans)
 		r.With(s.jwtAuthMiddleware).Get("/billing/balance", s.handleBillingBalance)
-		r.With(s.jwtAuthMiddleware).Get("/billing/plans", s.handleBillingPlans)
 		r.With(s.jwtAuthMiddleware).Get("/billing/subscription", s.handleBillingSubscription)
 		r.With(s.jwtAuthMiddleware).Post("/billing/subscribe", s.handleBillingSubscribe)
 		r.With(s.jwtAuthMiddleware).Get("/billing/consumption", s.handleBillingConsumption)
