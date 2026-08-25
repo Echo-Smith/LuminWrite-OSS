@@ -30,7 +30,7 @@ export const MENU_ITEMS: MenuItem[] = [
   { key: "notifications", label: "通知设置", icon: Bell },
   { key: "account", label: "账号管理", icon: KeyRound },
   { key: "devices", label: "设备管理", icon: Monitor },
-  { key: "labs", label: "实验室", icon: FlaskConical },
+  { key: "labs", label: "工作台设置", icon: FlaskConical },
   { key: "about", label: "关于笔润智谈", icon: Info },
 ];
 
@@ -43,7 +43,7 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   notifications: { title: "通知设置", subtitle: "管理在线通知偏好" },
   account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },
   devices: { title: "设备管理", subtitle: "查看在线设备和管理会话" },
-  labs: { title: "实验室", subtitle: "体验正在测试中的实验性功能" },
+  labs: { title: "工作台设置", subtitle: "体验正在测试中的实验性功能" },
   about: { title: "关于笔润智谈", subtitle: "版本信息与产品介绍" },
 };
 

@@ -299,7 +299,7 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Tavily.APIKey, cfg.Tavily.Endpoint, cfg.Tavily.Timeout,
 		cfg.Zhihu.Enabled, cfg.Zhihu.BaseURL, cfg.Zhihu.AccessSecret, cfg.Zhihu.Timeout,
 		cfg.Tencent.Enabled, cfg.Tencent.BaseURL, cfg.Tencent.Timeout,
-		cfg.Weibo.Enabled, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
+		cfg.Weibo.Enabled, cfg.Weibo.AppID, cfg.Weibo.AppSecret, cfg.Weibo.TokenEndpoint, cfg.Weibo.BaseURL, cfg.Weibo.Timeout,
 		cfg.ExtraHot.Enabled, cfg.ExtraHot.BaseURL, cfg.ExtraHot.Timeout,
 		cfg.Bing.Enabled, cfg.Bing.BaseURL, cfg.Bing.Timeout,
 		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
@@ -936,6 +936,10 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/article", s.handleUpdateSessionArticle)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions", s.handleListArticleVersions)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions/{versionId}", s.handleGetArticleVersion)
+		// Plan CRUD (DAG 工作流计划增删查改)
+		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/plan", s.handleGetSessionPlan)
+		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/plan", s.handleUpdateSessionPlan)
+		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}/plan", s.handleDeleteSessionPlan)
 r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
 r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
@@ -1777,29 +1781,26 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		go s.extractTaskName(traceID, p.Message, llmClient)
 	}
 
-	// Create editorial task for writing process traceability
+	// Initialize editorial fields on the existing trace row for writing process traceability.
 	// All intermediate artifacts (search results, research brief, outline,
-	// draft, review report, etc.) will be recorded against this task.
+	// draft, review report, etc.) will be recorded against this trace_id.
+	// (After the two-table merge in 087, task.ID = trace_id, no separate task table needed.)
 	if s.editorialSvc != nil {
 		taskOwnerID := userID
 		if taskOwnerID == "" || taskOwnerID == "anonymous" {
 			taskOwnerID = AdminUserID
 		}
-		taskTitle := p.Message
-		if len([]rune(taskTitle)) > 200 {
-			taskTitle = string([]rune(taskTitle)[:200])
-		}
-		task, err := s.editorialSvc.CreateTask(context.Background(), editorial.CreateTaskInput{
-			Title:     taskTitle,
-			StyleSlug: execCtx.StyleSlug,
-			Priority:  3,
-		}, taskOwnerID)
-		if err != nil {
-			slog.Warn("failed to create editorial task for trace", "error", err, "trace_id", traceID)
-		} else if s.traces != nil {
-			s.traces.LinkEditorialTask(context.Background(), traceID, task.ID)
-			slog.Info("editorial task created for trace", "trace_id", traceID, "task_id", task.ID)
-		}
+		// Update the already-created trace row with editorial columns
+		_, _ = s.editorialSvc.Store().DB().ExecContext(context.Background(), `
+			UPDATE agent_traces SET
+				editorial_status = 'draft',
+				assignee_type = 'human',
+				token_budget = $2,
+				created_by = $3,
+				updated_at = NOW()
+			WHERE trace_id = $1
+		`, traceID, 300000, taskOwnerID)
+		slog.Info("editorial fields initialized on trace", "trace_id", traceID)
 	}
 
 	// Emit agent.created
@@ -1873,21 +1874,37 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// ── Editorial mode: 启动编辑部编排器 (选题→研究→写作→审校) ──
 	if agentMode == "editorial" && s.editorialSvc != nil {
-		// 1. 创建编辑部任务
-		edTask, err := s.editorialSvc.CreateTask(context.Background(), editorial.CreateTaskInput{
-			Title:       p.Message,
-			Description: "编辑部模式写作",
-			StyleSlug:   execCtx.StyleSlug,
-			TokenBudget: 300000,
-			Priority:    3,
-		}, userID)
+		// 1. 在已有的 agent_traces 行上补充 editorial 字段
+		// （CreateTrace 已经创建了行，现在补充 editorial_status, assignee_type 等）
+		edStore := s.editorialSvc.Store()
+		_, err := edStore.DB().ExecContext(context.Background(), `
+			UPDATE agent_traces SET
+				editorial_status = 'draft',
+				assignee_type = 'human',
+				token_budget = $2,
+				priority = $3,
+				created_by = $4,
+				description = $5,
+				accept_criteria = $6,
+				mode = 'editorial',
+				updated_at = NOW()
+			WHERE trace_id = $1
+		`, traceID, 300000, 3, userID, "编辑部模式写作", "")
 		if err != nil {
-			slog.Error("editorial: failed to create task", "error", err, "trace_id", traceID)
+			slog.Error("editorial: failed to initialize task fields on trace", "error", err, "trace_id", traceID)
 			client.Send(&websocket.ServerMessage{
 				Type:    "error",
-				Payload: map[string]string{"message": "failed to create editorial task"},
+				Payload: map[string]string{"message": "failed to initialize editorial task"},
 			})
 			return
+		}
+
+		// 构造 Task 对象用于后续 editorial 操作
+		edTask := &editorial.Task{
+			ID:       traceID,
+			Title:    p.Message,
+			OwnerID:  userID,
+			Status:   editorial.StatusDraft,
 		}
 
 		// 2. 创建选题卡 Artifact 并自动批准
@@ -1926,11 +1943,6 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 			Rationale:   "编辑部模式自动批准立项",
 		}); err != nil {
 			slog.Error("editorial: failed to advance to research", "error", err, "task_id", edTask.ID)
-		}
-
-		// 关联 trace 与 editorial task
-		if s.traces != nil {
-			s.traces.LinkEditorialTask(context.Background(), traceID, edTask.ID)
 		}
 
 		slog.Info("editorial mode started", "trace_id", traceID, "task_id", edTask.ID)
