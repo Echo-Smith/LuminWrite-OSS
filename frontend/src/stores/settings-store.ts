@@ -6,7 +6,8 @@
  *
  * 目前管理：
  * - agentMode: "harness" | "pipeline" | "editorial" — 编排模式选择
- * - enableEditorial: boolean — 是否在侧栏显示编辑部入口（实验功能）
+ * - enableEditorial: boolean — 是否在侧栏显示工作台入口（实验功能）
+ * - lastStyle: string — 上次写作使用的风格 slug（新建会话时作为默认值）
  *
  * 注意：本 store 不 import auth-store，避免循环依赖。
  * token 从 localStorage 直接读取（与 auth-store 的 STORAGE_KEY 一致）。
@@ -31,10 +32,12 @@ function getToken(): string | null {
 
 interface SettingsState {
   agentMode: AgentMode;
-  enableEditorial: boolean;  // 是否显示编辑部入口（实验功能）
+  enableEditorial: boolean;  // 是否显示工作台入口（实验功能）
+  lastStyle: string;        // 上次写作使用的风格 slug
   loaded: boolean;          // 是否已从后端加载
   setAgentMode: (mode: AgentMode) => void;
   setEnableEditorial: (enabled: boolean) => void;
+  setLastStyle: (style: string) => void;
   loadFromServer: () => Promise<void>;
   syncToServer: (prefs: Record<string, unknown>) => Promise<void>;
 }
@@ -42,6 +45,7 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentMode: "harness",
   enableEditorial: false,
+  lastStyle: "yinyue",
   loaded: false,
 
   setAgentMode: (mode) => {
@@ -53,6 +57,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setEnableEditorial: (enabled) => {
     set({ enableEditorial: enabled });
     get().syncToServer({ enable_editorial: enabled });
+  },
+
+  setLastStyle: (style) => {
+    set({ lastStyle: style });
+    get().syncToServer({ last_style: style });
   },
 
   loadFromServer: async () => {
@@ -71,6 +80,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const enableEditorial = json.data.enable_editorial;
         if (typeof enableEditorial === "boolean") {
           set({ enableEditorial });
+        }
+        const lastStyle = json.data.last_style;
+        if (typeof lastStyle === "string" && lastStyle) {
+          set({ lastStyle });
         }
       }
     } catch {

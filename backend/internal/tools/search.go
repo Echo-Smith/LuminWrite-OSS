@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -44,7 +45,7 @@ type SearchClient struct {
 func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Duration,
 	zhihuEnabled bool, zhihuBaseURL, zhihuAccessSecret string, zhihuTimeout time.Duration,
 	tencentEnabled bool, tencentBaseURL string, tencentTimeout time.Duration,
-	weiboEnabled bool, weiboBaseURL string, weiboTimeout time.Duration,
+	weiboEnabled bool, weiboAppID, weiboAppSecret, weiboTokenEndpoint, weiboBaseURL string, weiboTimeout time.Duration,
 	extraHotEnabled bool, extraHotBaseURL string, extraHotTimeout time.Duration,
 	bingEnabled bool, bingBaseURL string, bingTimeout time.Duration,
 	tencentCLIPath string, tencentCLITimeout time.Duration,
@@ -68,7 +69,7 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	c.tencentCLI = NewTencentNewsCLIClient(tencentCLIPath, tencentCLITimeout)
 
 	if weiboEnabled {
-		c.weibo = NewWeiboClient(weiboBaseURL, weiboTimeout)
+		c.weibo = NewWeiboClient(weiboAppID, weiboAppSecret, weiboTokenEndpoint, weiboBaseURL, weiboTimeout)
 	}
 
 	if extraHotEnabled {
@@ -94,7 +95,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.tencent != nil || c.tencentCLI != nil && c.tencentCLI.IsConfigured() || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.tavily != nil || c.zhihu != nil || c.tencent != nil || (c.tencentCLI != nil && c.tencentCLI.IsConfigured()) || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -152,44 +153,20 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 		}()
 	}
 
-	if c.tencent != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r, err := c.tencent.Search(ctx, query, maxPerSource)
-			if err != nil {
-				slog.Warn("tencent news search failed", "error", err, "query", query)
-				return
-			}
-			mu.Lock()
-			results = append(results, r...)
-			mu.Unlock()
-		}()
-	}
+	// NOTE: Tencent news search is intentionally excluded from the Search()
+	// pipeline — its search API returns low-quality/irrelevant results.
+	// Tencent is still used for FetchHotTopics() (hot topic aggregation).
+	//
+	// Weibo search uses the official Open API (智搜) with client-credentials
+	// token, so it's safe to include in the search pipeline.
 
-	// CLI-based news search (more reliable than HTTP scraping)
-	if c.tencentCLI != nil && c.tencentCLI.IsConfigured() {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r, err := c.tencentCLI.Search(ctx, query, maxPerSource)
-			if err != nil {
-				slog.Warn("tencent news CLI search failed", "error", err, "query", query)
-				return
-			}
-			mu.Lock()
-			results = append(results, r...)
-			mu.Unlock()
-		}()
-	}
-
-	if c.weibo != nil {
+	if c.weibo != nil && c.weibo.HasOpenAPI() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			r, err := c.weibo.Search(ctx, query, maxPerSource)
 			if err != nil {
-				slog.Warn("weibo search failed", "error", err, "query", query)
+				slog.Warn("weibo 智搜 failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -229,6 +206,21 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 	}
 
 	wg.Wait()
+
+	// ── Cross-source deduplication ──
+	// Multiple sources (e.g., AnySearch + Tavily) may return the same URL.
+	// Deduplicate by URL (exact) and by title (Jaccard similarity > 0.7) before
+	// enrichment and truncation, so the downstream gets only unique results.
+	beforeDedup := len(results)
+	results = DedupSearchResults(results)
+	if beforeDedup != len(results) {
+		slog.Info("cross-source dedup removed duplicates",
+			"query", query,
+			"before", beforeDedup,
+			"after", len(results),
+			"removed", beforeDedup-len(results),
+		)
+	}
 
 	// Enrich with credibility scores if a lookup is configured
 	if c.credibilityLookup != nil && len(results) > 0 {
@@ -330,6 +322,30 @@ func (c *SearchClient) activeSources() []string {
 // ActiveSources returns the list of configured search source names (public).
 func (c *SearchClient) ActiveSources() []string {
 	return c.activeSources()
+}
+
+// ExtractURL fetches and extracts full page content from a URL.
+// It tries AnySearch.Extract first (5万字 limit, Markdown output, server-side rendering),
+// falls back to URLFetcher (8KB limit, plain text) if AnySearch is unavailable or fails.
+// Returns title, content, and source label.
+func (c *SearchClient) ExtractURL(ctx context.Context, targetURL string) (title, content, source string, err error) {
+	// Try AnySearch Extract first
+	if c.anysearch != nil {
+		t, cont, e := c.anysearch.Extract(ctx, targetURL)
+		if e == nil && cont != "" {
+			return t, cont, "anysearch", nil
+		}
+		slog.Warn("anysearch extract failed, falling back to URLFetcher",
+			"url", targetURL, "error", e)
+	}
+
+	// Fallback: URLFetcher
+	fetcher := NewURLFetcher()
+	result, e := fetcher.FetchContent(ctx, targetURL)
+	if e != nil {
+		return "", "", "", fmt.Errorf("extract URL failed: %w", e)
+	}
+	return result.Title, result.Content, "url_fetcher", nil
 }
 
 // FetchHotTopics fetches hot topics from all configured sources (Tencent, Weibo).
@@ -483,10 +499,174 @@ func normalizeTencentCLITopics(items []map[string]interface{}, limit int) []map[
 	return topics
 }
 
+// ─── Deduplication helpers ──────────────────────────────
+
+// DedupSearchResults removes duplicate search results by URL (exact match)
+// and by title similarity (Jaccard > 0.7). When a duplicate is detected,
+// the result with the higher Score is kept.
+// This function is exported so that both SearchClient.Search (cross-source
+// dedup) and external callers like agent.executeSearchWeb (incremental
+// session dedup) can share the same logic.
+func DedupSearchResults(results []engine.SearchResult) []engine.SearchResult {
+	if len(results) <= 1 {
+		return results
+	}
+
+	seenURLs := make(map[string]bool)
+	var deduped []engine.SearchResult
+
+	for _, r := range results {
+		// 1. URL exact dedup
+		urlKey := normalizeURL(r.URL)
+		if urlKey != "" {
+			if seenURLs[urlKey] {
+				continue // already have this URL
+			}
+		}
+
+		// 2. Title Jaccard dedup against already-kept results
+		isDup := false
+		for j := range deduped {
+			if isSimilarSearchTitle(r.Title, deduped[j].Title) {
+				isDup = true
+				// Keep the one with higher Score
+				if r.Score > deduped[j].Score {
+					deduped[j] = r
+				}
+				break
+			}
+		}
+		if !isDup {
+			if urlKey != "" {
+				seenURLs[urlKey] = true
+			}
+			deduped = append(deduped, r)
+		}
+	}
+
+	return deduped
+}
+
+// DedupAgainstExisting removes from newResults any entry that duplicates
+// an existing result (by URL or title similarity). This is used by the
+// Harness mode to avoid accumulating duplicates in Session.SearchResults
+// across multiple search_web calls.
+func DedupAgainstExisting(existing []engine.SearchResult, newResults []engine.SearchResult) []engine.SearchResult {
+	if len(newResults) == 0 {
+		return nil
+	}
+
+	// Build lookup maps from existing results
+	existingURLs := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		urlKey := normalizeURL(e.URL)
+		if urlKey != "" {
+			existingURLs[urlKey] = true
+		}
+	}
+
+	var filtered []engine.SearchResult
+	for _, r := range newResults {
+		// URL exact dedup against existing
+		urlKey := normalizeURL(r.URL)
+		if urlKey != "" && existingURLs[urlKey] {
+			continue
+		}
+
+		// Title Jaccard dedup against existing
+		isDup := false
+		for _, e := range existing {
+			if isSimilarSearchTitle(r.Title, e.Title) {
+				isDup = true
+				break
+			}
+		}
+		if !isDup {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// normalizeURL normalizes a URL for deduplication: trims whitespace,
+// lowercases scheme/host, removes trailing slashes and fragments.
+func normalizeURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	// Add scheme if missing for url.Parse to work
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		rawURL = "https://" + rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return strings.ToLower(rawURL)
+	}
+	// Normalize: lowercase scheme+host, strip fragment, strip trailing slash
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.TrimSuffix(parsed.Path, "/")
+	if path == "" {
+		path = "/"
+	}
+	return host + path
+}
+
+// isSimilarSearchTitle checks if two titles are similar enough to be duplicates.
+// Uses exact match, containment, and character-level Jaccard similarity > 0.7.
+func isSimilarSearchTitle(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+
+	// Exact match
+	if a == b {
+		return true
+	}
+
+	// One contains the other (for truncated titles)
+	if len(a) > 10 && strings.Contains(b, a) {
+		return true
+	}
+	if len(b) > 10 && strings.Contains(a, b) {
+		return true
+	}
+
+	// Character-level Jaccard similarity for Chinese text
+	setA := make(map[rune]bool)
+	for _, r := range a {
+		setA[r] = true
+	}
+	setB := make(map[rune]bool)
+	for _, r := range b {
+		setB[r] = true
+	}
+
+	intersection := 0
+	for r := range setA {
+		if setB[r] {
+			intersection++
+		}
+	}
+	union := len(setA) + len(setB) - intersection
+
+	if union == 0 {
+		return false
+	}
+
+	similarity := float64(intersection) / float64(union)
+	return similarity > 0.7
+}
+
 // ─── Helpers ─────────────────────────────────────────────
 
 func encodeQuery(query string) string {
-	return strings.ReplaceAll(query, " ", "%20")
+	return url.QueryEscape(query)
 }
 
 func cleanHTML(s string) string {

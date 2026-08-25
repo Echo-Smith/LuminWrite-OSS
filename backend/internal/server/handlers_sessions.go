@@ -501,3 +501,142 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		"username": body.Username,
 	})
 }
+
+// ─── Plan CRUD (DAG 工作流计划增删查改) ───────────────────
+
+// handleGetSessionPlan 获取编辑部会话的 DAG 工作流计划
+//
+// GET /api/v2/sessions/{traceId}/plan
+// Header: Authorization: Bearer <jwt>
+func (s *Server) handleGetSessionPlan(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	if s.editorialSvc == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "editorial service not available")
+		return
+	}
+
+	plan, err := s.editorialSvc.Store().GetPlan(r.Context(), traceID)
+	if err != nil {
+		if err == editorial.ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "session not found")
+			return
+		}
+		slog.Warn("failed to get plan", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to get plan")
+		return
+	}
+
+	if plan == nil {
+		response.OK(w, map[string]interface{}{"plan": nil})
+		return
+	}
+
+	response.OK(w, map[string]interface{}{"plan": plan})
+}
+
+// handleUpdateSessionPlan 更新编辑部会话的 DAG 工作流计划（用户编辑 DAG）
+//
+// PUT /api/v2/sessions/{traceId}/plan
+// Body: { "agents": [...], "workflow": {...}, "rationale": "..." }
+// Header: Authorization: Bearer <jwt>
+func (s *Server) handleUpdateSessionPlan(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	if s.editorialSvc == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "editorial service not available")
+		return
+	}
+
+	var plan editorial.PlanResult
+	if err := json.NewDecoder(r.Body).Decode(&plan); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid plan JSON: "+err.Error())
+		return
+	}
+
+	// 基本校验
+	if len(plan.Agents) == 0 {
+		response.Err(w, http.StatusBadRequest, "bad_request", "plan must contain at least one agent")
+		return
+	}
+	if len(plan.Workflow.Nodes) == 0 {
+		response.Err(w, http.StatusBadRequest, "bad_request", "plan must contain at least one node")
+		return
+	}
+
+	if err := s.editorialSvc.Store().UpdatePlan(r.Context(), traceID, &plan); err != nil {
+		if err == editorial.ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "session not found")
+			return
+		}
+		slog.Warn("failed to update plan", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to update plan")
+		return
+	}
+
+	// 如果 DAGExecutor 存在，同步更新内存缓存
+	if s.dagExecutor != nil {
+		s.dagExecutor.CachePlan(traceID, &plan)
+	}
+
+	slog.Info("plan updated", "trace_id", traceID, "agents", len(plan.Agents), "nodes", len(plan.Workflow.Nodes))
+
+	response.OK(w, map[string]interface{}{"updated": true, "plan": plan})
+}
+
+// handleDeleteSessionPlan 删除编辑部会话的 DAG 工作流计划
+//
+// DELETE /api/v2/sessions/{traceId}/plan
+// Header: Authorization: Bearer <jwt>
+func (s *Server) handleDeleteSessionPlan(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	if traceID == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "trace_id is required")
+		return
+	}
+
+	if s.editorialSvc == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "editorial service not available")
+		return
+	}
+
+	if err := s.editorialSvc.Store().DeletePlan(r.Context(), traceID); err != nil {
+		if err == editorial.ErrTaskNotFound {
+			response.Err(w, http.StatusNotFound, "not_found", "session not found")
+			return
+		}
+		slog.Warn("failed to delete plan", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to delete plan")
+		return
+	}
+
+	slog.Info("plan deleted", "trace_id", traceID)
+
+	response.OK(w, map[string]interface{}{"deleted": true})
+}

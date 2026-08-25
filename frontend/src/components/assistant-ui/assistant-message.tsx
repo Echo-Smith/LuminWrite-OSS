@@ -105,7 +105,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             ))}
             {textParts.map((part, i) => (
               <div key={i}>
-                <StreamText streaming={part.streaming}>
+                <StreamText streaming={part.streaming ?? false}>
                   <MarkdownContent content={part.text} />
                 </StreamText>
                 {part.streaming && (

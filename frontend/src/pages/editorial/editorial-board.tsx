@@ -1,5 +1,5 @@
 /**
- * 编辑部主编决策台 — 协作工作台界面
+ * 工作台主编决策台 — 协作工作台界面
  *
  * 顶部：主编决策台（待我决定、风险预警、预算预警、可自动推进）
  * 下方：看板视图（任务列表按状态分列）
@@ -186,7 +186,7 @@ export function EditorialBoard() {
               <ArrowLeft className="h-4 w-4" />
             </button>
             <FileText className="h-5 w-5 text-primary" />
-            <h1 className="text-lg font-semibold">编辑部</h1>
+            <h1 className="text-lg font-semibold">工作台</h1>
             <div className="flex items-center gap-1 ml-2">
               <button
                 onClick={() => setView("dashboard")}
@@ -382,11 +382,11 @@ export function EditorialBoard() {
               )}
             </div>
 
-            {/* 编辑部知识 */}
+            {/* 工作台知识 */}
             <div>
               <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
                 <BookOpen className="h-3.5 w-3.5" />
-                编辑部知识沉淀
+                工作台知识沉淀
               </h2>
               {knowledge.length === 0 ? (
                 <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">

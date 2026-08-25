@@ -473,15 +473,21 @@ func (s *Server) testTavilyConnectivity(ctx context.Context, apiKey string) erro
 }
 
 func (s *Server) testAnySearchConnectivity(ctx context.Context, baseURL, apiKey string) error {
+	// Backwards compat: strip /v1/search suffix if present
+	baseURL = strings.TrimRight(baseURL, "/")
 	if baseURL == "" {
-		baseURL = "https://api.anysearch.com/v1/search"
+		baseURL = "https://api.anysearch.com"
 	}
-	body := `{"query":"test","max_results":1}`
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, strings.NewReader(body))
+	if strings.HasSuffix(baseURL, "/v1/search") {
+		baseURL = strings.TrimSuffix(baseURL, "/v1/search")
+	}
+	body := `{"query":"test","max_results":1,"zone":"cn","language":"zh-CN"}`
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/search", strings.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Anysearch-Client", "skill/3.1.0")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

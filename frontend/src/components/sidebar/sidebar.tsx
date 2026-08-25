@@ -118,9 +118,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
         {enableEditorial && (
           <button
-            onClick={() => navigate("/editorial")}
+            onClick={() => navigate("/workspace")}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-            title="编辑部"
+            title="工作台"
           >
             <Newspaper className="h-4 w-4" />
           </button>
@@ -209,10 +209,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             variant="ghost"
             size="sm"
             className="w-full justify-start gap-2 text-muted-foreground"
-            onClick={() => navigate("/editorial")}
+            onClick={() => navigate("/workspace")}
           >
             <Newspaper className="h-4 w-4" />
-            编辑部
+            工作台
           </Button>
         )}
       </div>

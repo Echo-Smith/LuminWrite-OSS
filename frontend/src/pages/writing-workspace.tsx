@@ -8,7 +8,7 @@
  * 集成全局键盘快捷键
  */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { PanelRightOpen, Menu, RefreshCw, Play, XCircle, FileText, Network } from "lucide-react";
+import { PanelRightOpen, Menu, RefreshCw, Play, XCircle, FileText, Network, Pencil } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -23,6 +23,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { toast } from "@/stores/toast-store";
 import { PulseIndicator } from "@/components/animation";
 import { WorkflowCanvas } from "@/components/workflow/canvas";
+import { getRoleTheme, getRoleIllustration } from "@/components/workflow/agent-illustration";
 import { cn } from "@/lib/utils";
 
 export function WritingWorkspace() {
@@ -43,7 +44,7 @@ export function WritingWorkspace() {
   const connectWS = useAgentStore((s) => s.connectWS);
   const composerRef = useRef<WritingComposerHandle | null>(null);
 
-  // 编辑部模式状态
+  // 工作台模式状态
   const agentMode = useSettingsStore((s) => s.agentMode);
   const isEditorial = agentMode === "editorial";
   const workflowPlan = useWorkflowStore((s) => s.plan);
@@ -52,9 +53,15 @@ export function WritingWorkspace() {
   const agents = useWorkflowStore((s) => s.agents);
   const workflowUserInput = useWorkflowStore((s) => s.userInput);
 
-  // 编辑部模式仅在有活跃 workflow（plan 存在或状态非 idle）时接管中央区域，
-  // 否则回退到普通 Thread，这样切换到其他写作会话时不会被编辑部页面覆盖。
-  const isEditorialActive = isEditorial && (workflowPlan != null || workflowStatus !== "idle");
+  // 有活跃会话且开始写作时自动显示右侧面板
+  const session = sessions.find((s) => s.id === activeSessionId);
+  const isWriting = session?.status === "running" || session?.status === "paused";
+
+  // 工作台模式激活条件：
+  // 1. 全局 agentMode 为 editorial 且有活跃 workflow（plan 存在或状态非 idle）
+  // 2. 当前活跃会话的 mode 为 editorial（从左侧历史切换到工作台会话时）
+  const isSessionEditorial = session?.mode === "editorial";
+  const isEditorialActive = isSessionEditorial || (isEditorial && (workflowPlan != null || workflowStatus !== "idle"));
 
   // 从数据库加载历史会话列表
   useEffect(() => {
@@ -66,11 +73,7 @@ export function WritingWorkspace() {
     loadBalance();
   }, [loadBalance]);
 
-  // 有活跃会话且开始写作时自动显示右侧面板
-  const session = sessions.find((s) => s.id === activeSessionId);
-  const isWriting = session?.status === "running" || session?.status === "paused";
-
-  // 编辑部模式：有 plan 或正在 planning 时自动展开右侧面板
+  // 工作台模式：有 plan 或正在 planning 时自动展开右侧面板
   useEffect(() => {
     if (isEditorialActive && (workflowPlan || workflowStatus === "planning" || workflowStatus === "running")) {
       setShowDetail(true);
@@ -82,19 +85,22 @@ export function WritingWorkspace() {
     if (!isEditorialActive && isWriting) setShowDetail(true);
   }, [isWriting, isEditorialActive]);
 
-  // 离开 editorial 模式时重置 workflow 状态
+  // 离开工作台模式时重置 workflow 状态
   useEffect(() => {
     if (!isEditorial) {
       workflowReset();
     }
   }, [isEditorial, workflowReset]);
 
-  // 切换会话时重置已完成的 workflow 状态（避免之前完成的编辑部工作流覆盖新会话的 Thread）
+  // 切换会话时重置已完成的 workflow 状态（避免之前完成的工作台工作流覆盖新会话的 Thread）
   // 仅当 workflow 不是正在规划/运行时才重置，避免中断活跃工作流
+  // 注意：切换到工作台历史会话时不 reset，因为需要保留恢复的 workflow 状态
   useEffect(() => {
+    const currentSession = sessions.find((s) => s.id === activeSessionId);
+    // 如果切到的是工作台历史会话，不 reset（需要恢复状态）
+    if (currentSession?.mode === "editorial") return;
     if (workflowStatus === "completed" || workflowStatus === "failed" || workflowStatus === "idle") {
       // 如果当前会话有消息（普通写作会话），重置 workflow 以显示 Thread
-      const currentSession = sessions.find((s) => s.id === activeSessionId);
       if (currentSession && currentSession.messages.length > 0) {
         workflowReset();
       }
@@ -186,10 +192,10 @@ export function WritingWorkspace() {
                     ? workflowUserInput.slice(0, 30) + "…"
                     : workflowUserInput
                   : workflowStatus === "planning" ? "规划中…" :
-                   workflowStatus === "running" ? "编辑部工作流执行中" :
+                   workflowStatus === "running" ? "工作台工作流执行中" :
                    workflowStatus === "completed" ? "写作完成" :
                    workflowStatus === "failed" ? "执行失败" :
-                   workflowPlan ? "编辑部模式" : "写作工作台")
+                   workflowPlan ? "工作台模式" : "写作工作台")
                 : (session?.title ?? "写作工作台")}
             </h2>
             {!isEditorialActive && session && (
@@ -255,9 +261,9 @@ export function WritingWorkspace() {
           </div>
         </header>
 
-        {/* 消息流 / 编辑部工作流区域 */}
-        {/* 编辑部模式仅在有活跃 workflow（plan 存在或状态非 idle）时接管中央区域， */}
-        {/* 否则回退到普通 Thread，这样切换到其他写作会话时不会被编辑部页面覆盖。 */}
+        {/* 消息流 / 工作台工作流区域 */}
+        {/* 工作台模式仅在有活跃 workflow（plan 存在或状态非 idle）时接管中央区域， */}
+        {/* 否则回退到普通 Thread，这样切换到其他写作会话时不会被工作台页面覆盖。 */}
         <div className="flex-1 overflow-hidden">
           {isEditorialActive ? (
             <EditorialContent
@@ -290,7 +296,7 @@ export function WritingWorkspace() {
   );
 }
 
-// ─── 编辑部模式中央内容 ───────────────────────────────
+// ─── 工作台模式中央内容 ───────────────────────────────
 
 function EditorialContent({
   plan,
@@ -303,9 +309,18 @@ function EditorialContent({
 }) {
   const finalArticle = useWorkflowStore((s) => s.finalArticle);
   const finalArticleLoading = useWorkflowStore((s) => s.finalArticleLoading);
+  const isEditMode = useWorkflowStore((s) => s.isEditMode);
+  const setEditMode = useWorkflowStore((s) => s.setEditMode);
 
   // 视图切换：completed 状态下在「文章」和「DAG 图」之间切换
   const [completedView, setCompletedView] = useState<"article" | "dag">("article");
+
+  // 进入编辑模式时自动切换到 DAG 视图
+  useEffect(() => {
+    if (isEditMode && completedView !== "dag") {
+      setCompletedView("dag");
+    }
+  }, [isEditMode, completedView]);
 
   // DAG 完成但文章还在加载
   if (runStatus === "completed" && finalArticleLoading) {
@@ -342,31 +357,50 @@ function EditorialContent({
     return (
       <div className="flex h-full flex-col">
         {/* 视图切换工具栏 */}
-        <div className="flex shrink-0 items-center gap-1 border-b px-3 py-1.5">
-          <button
-            onClick={() => setCompletedView("article")}
-            className={cn(
-              "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-ui",
-              completedView === "article"
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            )}
-          >
-            <FileText className="h-3.5 w-3.5" />
-            文章
-          </button>
-          <button
-            onClick={() => setCompletedView("dag")}
-            className={cn(
-              "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-ui",
-              completedView === "dag"
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            )}
-          >
-            <Network className="h-3.5 w-3.5" />
-            DAG 图
-          </button>
+        <div className="flex shrink-0 items-center justify-between border-b px-3 py-1.5">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => !isEditMode && setCompletedView("article")}
+              disabled={isEditMode}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-ui",
+                completedView === "article"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                isEditMode && "opacity-40 cursor-not-allowed",
+              )}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              文章
+            </button>
+            <button
+              onClick={() => setCompletedView("dag")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-ui",
+                completedView === "dag"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              )}
+            >
+              <Network className="h-3.5 w-3.5" />
+              DAG 图
+            </button>
+          </div>
+          {/* 编辑 DAG 按钮 — 仅在 DAG 视图显示 */}
+          {completedView === "dag" && plan && !isEditMode && (
+            <button
+              onClick={() => setEditMode(true)}
+              className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-blue-700"
+            >
+              <Pencil className="h-3 w-3" />
+              编辑 DAG
+            </button>
+          )}
+          {isEditMode && (
+            <span className="text-xs font-medium text-blue-600">
+              编辑模式中 — 完成后点击保存
+            </span>
+          )}
         </div>
 
         {/* 视图内容 */}
@@ -396,7 +430,21 @@ function EditorialContent({
   }
 
   if (plan) {
-    return <WorkflowCanvas />;
+    return (
+      <div className="relative h-full">
+        {/* 编辑模式切换按钮 */}
+        {!isEditMode && (
+          <button
+            onClick={() => setEditMode(true)}
+            className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-lg transition hover:bg-blue-700"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            编辑 DAG
+          </button>
+        )}
+        <WorkflowCanvas />
+      </div>
+    );
   }
 
   return (
@@ -408,7 +456,7 @@ function EditorialContent({
             ? "正在分析写作意图，生成 Agent 集群..."
             : !wsConnected
               ? "正在连接服务器..."
-              : "编辑部模式 (Beta)"}
+              : "工作台模式 (Beta)"}
         </p>
         <p className="mt-2 text-xs text-muted-foreground/60">
           {runStatus === "planning"
@@ -420,7 +468,7 @@ function EditorialContent({
   );
 }
 
-// ─── 编辑部模式右侧面板 ─────────────────────────────────
+// ─── 工作台模式右侧面板 ─────────────────────────────────
 
 function WorkflowDetailPanel({ onClose }: { onClose: () => void }) {
   const plan = useWorkflowStore((s) => s.plan);
@@ -458,7 +506,7 @@ function WorkflowDetailPanel({ onClose }: { onClose: () => void }) {
     <div className="flex h-full w-full sm:w-80 flex-col sm:border-l bg-surface anim-slide-left">
       {/* 头部 */}
       <div className="flex h-12 shrink-0 items-center justify-between px-4">
-        <h3 className="text-sm font-medium">编辑部工作流</h3>
+        <h3 className="text-sm font-medium">工作台工作流</h3>
         <button
           onClick={onClose}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-ui"
@@ -530,30 +578,41 @@ function WorkflowDetailPanel({ onClose }: { onClose: () => void }) {
               const agentNodes = plan!.workflow.nodes.filter((n) => n.agent_id === agent.id);
               const nodeState = agentNodes.length > 0 ? nodeStates.get(agentNodes[0].id) : undefined;
               const status = nodeState?.status || "pending";
-              const roleColor =
-                agent.role === "researcher" ? "text-blue-600" :
-                agent.role === "writer" ? "text-green-600" :
-                agent.role === "reviewer" ? "text-amber-600" :
-                "text-purple-600";
+              const theme = getRoleTheme(agent.role);
+              const RoleIllustration = getRoleIllustration(agent.role);
               return (
-                <div key={agent.id} className="rounded-lg border bg-card/50 p-2.5 space-y-1">
-                  <div className="flex items-center gap-2">
+                <div
+                  key={agent.id}
+                  className="overflow-hidden rounded-lg border"
+                  style={{ borderColor: theme.morandiBorder, background: "var(--card)" }}
+                >
+                  {/* 莫兰迪色卡头部 */}
+                  <div
+                    className="flex items-center gap-2 px-2.5 py-2"
+                    style={{ background: theme.morandiBg }}
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-white/60 dark:bg-black/20">
+                      <RoleIllustration size={24} />
+                    </span>
+                    <span className="text-xs font-medium truncate flex-1" style={{ color: theme.morandiText }}>
+                      {agent.role}
+                    </span>
                     <span className={cn("h-2 w-2 rounded-full shrink-0",
                       status === "running" ? "bg-blue-500 animate-pulse" :
                       status === "completed" ? "bg-green-500" :
                       status === "failed" ? "bg-red-500" :
                       "bg-muted-foreground/30"
                     )} />
-                    <span className="text-xs font-medium truncate flex-1">{agent.name}</span>
-                    <span className={cn("text-[10px] font-medium shrink-0", roleColor)}>
-                      {agent.role}
-                    </span>
                   </div>
-                  {agent.persona && (
-                    <p className="text-[10px] text-muted-foreground line-clamp-2 pl-4">
-                      {agent.persona}
-                    </p>
-                  )}
+                  {/* Agent 信息 */}
+                  <div className="p-2.5">
+                    <span className="text-xs font-medium text-foreground">{agent.name}</span>
+                    {agent.persona && (
+                      <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">
+                        {agent.persona}
+                      </p>
+                    )}
+                  </div>
                 </div>
               );
             })}

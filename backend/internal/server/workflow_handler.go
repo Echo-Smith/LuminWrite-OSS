@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 )
 
@@ -124,6 +125,14 @@ func (s *Server) handleWorkflowPlan(client *websocket.Client, p websocket.Workfl
 	// 缓存 plan 结果到 DAGExecutor，同时注册生成的 Agent
 	s.dagExecutor.CachePlan(taskID, planResult)
 
+	// 持久化 plan 到 agent_traces.plan_json，使历史会话能恢复 DAG 视图
+	if err := s.editorialSvc.Store().SavePlan(ctx, taskID, planResult); err != nil {
+		slog.Warn("workflow: failed to persist plan to DB", "error", err, "task_id", taskID)
+		// 非致命错误，继续执行
+	} else {
+		slog.Info("workflow: plan persisted to DB", "task_id", taskID)
+	}
+
 	// 返回 workflow.created 给前端
 	client.Send(&websocket.ServerMessage{
 		Type: websocket.MsgWorkflowCreated,
@@ -181,13 +190,19 @@ func (s *Server) handleWorkflowExecute(client *websocket.Client, taskID, userID 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
-		if err := s.dagExecutor.Execute(ctx, &plan.Workflow, task); err != nil {
+		err := s.dagExecutor.Execute(ctx, &plan.Workflow, task)
+		if err != nil {
 			slog.Error("workflow: DAG execution failed", "error", err, "task_id", taskID)
 			client.Send(&websocket.ServerMessage{
 				Type:    websocket.MsgWorkflowFailed,
 				Payload: map[string]string{"error": "DAG execution failed: " + err.Error()},
 			})
+			return
 		}
+
+		// ── DAG 执行成功：提取最终文章并创建 trace 记录 ──
+		// 使编辑部模式产生的文章也出现在用户的写作历史列表中
+		s.recordEditorialArticle(ctx, task, plan, userID)
 	}()
 
 	slog.Info("workflow: execution started", "task_id", taskID, "nodes", len(plan.Workflow.Nodes))
@@ -284,4 +299,88 @@ func (s *Server) handleWorkflowCancel(client *websocket.Client, taskID string) {
 			"status":  "cancelled",
 		},
 	})
+}
+
+// recordEditorialArticle 在 DAG 执行完成后，从 editorial store 获取最终 draft artifact，
+// 更新 agent_traces 记录（task.ID 即 trace_id，CreateTask 时已创建行）并广播 agent.completed 事件，
+// 使编辑部模式产生的文章出现在用户的写作历史列表中。
+func (s *Server) recordEditorialArticle(ctx context.Context, task *editorial.Task, plan *editorial.PlanResult, userID string) {
+	if s.editorialSvc == nil {
+		return
+	}
+
+	edStore := s.editorialSvc.Store()
+
+	// 优先获取 revised_draft，其次 draft
+	draft, err := edStore.GetLatestApprovedArtifact(ctx, task.ID, editorial.ArtifactRevisedDraft)
+	if err != nil || draft == nil {
+		draft, err = edStore.GetLatestApprovedArtifact(ctx, task.ID, editorial.ArtifactDraft)
+	}
+	if err != nil || draft == nil {
+		slog.Warn("editorial: no draft artifact found after DAG completion",
+			"task_id", task.ID, "error", err)
+		return
+	}
+
+	// 解析 draft JSON 获取文章内容
+	var draftData struct {
+		Title     string `json:"title"`
+		Content   string `json:"content"`
+		WordCount int    `json:"word_count"`
+	}
+	if err := json.Unmarshal([]byte(draft.Content), &draftData); err != nil {
+		slog.Warn("editorial: failed to parse draft content", "error", err, "task_id", task.ID)
+		return
+	}
+
+	article := draftData.Content
+	articleTitle := draftData.Title
+	if articleTitle == "" {
+		articleTitle = task.Title
+	}
+
+	// 获取 review report（如果有）
+	var reviewData interface{}
+	if reviewArt, err := edStore.GetLatestApprovedArtifact(ctx, task.ID, editorial.ArtifactReviewReport); err == nil && reviewArt != nil {
+		json.Unmarshal([]byte(reviewArt.Content), &reviewData)
+	}
+
+	// 获取 total token usage
+	totalTokens := 0
+	if s.dagExecutor != nil {
+		totalTokens = int(s.dagExecutor.GetTokenBudget().GetTotalUsed())
+	}
+
+	// task.ID 就是 trace_id（两表合一后 CreateTask 直接在 agent_traces 中创建行）
+	traceID := task.ID
+
+	// 更新 trace 为完成状态（含文章、标题等）
+	if s.traces != nil {
+		s.traces.CompleteTrace(ctx, &engine.ExecutionContext{
+			TraceID:      traceID,
+			Status:       engine.StatusCompleted,
+			Article:      article,
+			ArticleTitle: articleTitle,
+			TotalTokens:  totalTokens,
+			StepHistory:  []engine.StepRecord{},
+			StartedAt:    task.CreatedAt,
+		})
+	}
+
+	// 广播 agent.completed 事件，使前端 agent-store 能接收并更新 session
+	s.hub.Broadcast(&websocket.ServerMessage{
+		Type: websocket.MsgAgentCompleted,
+		Payload: websocket.CompletedPayload{
+			TraceID:      traceID,
+			Article:      article,
+			ArticleTitle: articleTitle,
+			Review:       reviewData,
+			TokenUsage:   map[string]int{"total_tokens": totalTokens},
+		},
+	})
+
+	slog.Info("editorial: article recorded as trace",
+		"trace_id", traceID, "task_id", task.ID,
+		"article_title", articleTitle, "word_count", draftData.WordCount,
+		"total_tokens", totalTokens)
 }

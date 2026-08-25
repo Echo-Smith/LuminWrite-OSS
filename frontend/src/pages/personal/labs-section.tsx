@@ -1,5 +1,5 @@
 /**
- * 实验室 Section — 实验性功能开关
+ * 工作台设置 Section — 实验性功能开关
  *
  * 展示正在测试中的功能，用户可自主决定是否启用。
  * 所有开关均通过 settings-store 云端同步。
@@ -32,20 +32,20 @@ export function LabsSection() {
 
       {/* 实验功能列表 */}
       <div className="space-y-3">
-        {/* 编辑部入口 */}
+        {/* 工作台入口 */}
         <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
             <Newspaper className="h-5 w-5 text-primary" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold">编辑部入口</span>
+              <span className="text-sm font-semibold">工作台入口</span>
               <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
                 Beta
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              在左侧栏显示编辑部入口，支持多 Agent 角色协作的长文创作模式。
+              在左侧栏显示工作台入口，支持多 Agent 角色协作的长文创作模式。
               适合万字长文、深度报告等高质量产出场景。
             </p>
           </div>
@@ -62,7 +62,7 @@ export function LabsSection() {
         <div className="flex items-center gap-2">
           <FlaskConical className="h-4 w-4 text-muted-foreground" />
           <p className="text-xs text-muted-foreground">
-            <strong className="text-foreground">实验室功能说明</strong>
+            <strong className="text-foreground">工作台功能说明</strong>
           </p>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">

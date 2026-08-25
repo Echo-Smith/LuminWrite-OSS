@@ -17,6 +17,7 @@ import type {
   WritingArtifact,
 } from "@/lib/types";
 import { useAuthStore } from "@/stores/auth-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { useEditorialStore } from "@/stores/editorial-store";
 import { useBillingStore } from "@/stores/billing-store";
@@ -146,6 +147,7 @@ interface AgentStore {
   _getActiveSession: () => WritingSession | null;
   _updateActiveSession: (updater: (s: WritingSession) => WritingSession) => void;
   _updateLastAssistantMessage: (updater: (m: ChatMessage) => ChatMessage) => void;
+  _restoreEditorialWorkflow: (traceId: string, session: WritingSession) => void;
 }
 
 function genId(): string {
@@ -174,7 +176,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       traceId: null,
       conversationId: null,
       status: "idle",
-      style: "yinyue",
+      style: useSettingsStore.getState().lastStyle || "yinyue",
       mode: "auto",
       createdAt: Date.now(),
       awaitInputAt: null,
@@ -193,6 +195,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     const session = get().sessions.find((s) => s.id === id);
     if (session?.traceId && session.messages.length === 0) {
       get().loadSessionDetail(session.traceId);
+    } else if (session?.mode === "editorial" && session?.traceId) {
+      // 工作台历史会话已加载过消息，但仍需恢复 workflow-store 状态
+      get()._restoreEditorialWorkflow(session.traceId, session);
     }
   },
 
@@ -394,6 +399,39 @@ articleTitle: d.article_title,
             : s
         ),
       }));
+
+      // ── 工作台模式历史会话：恢复 workflow-store 状态 ──
+      // 当切换到工作台历史会话时，需要恢复 workflow-store 的关键状态，
+      // 使 EditorialContent 组件能正确显示文章视图和 DAG 图。
+      if (d.mode === "editorial") {
+        const wfStore = useWorkflowStore.getState();
+        // 先 reset 再恢复，避免残留上一个会话的状态
+        wfStore.reset();
+        // 恢复基本字段
+        wfStore.setUserInput(d.user_input || "");
+        wfStore.setTaskId(traceId);
+        // 恢复最终文章（从 session 数据中提取）
+        if (d.article) {
+          useWorkflowStore.setState({
+            finalArticle: {
+              title: d.article_title || "",
+              content: d.article,
+              word_count: d.article.length,
+            },
+            finalArticleLoading: false,
+            runStatus: "completed",
+          });
+        } else {
+          useWorkflowStore.setState({
+            finalArticle: null,
+            finalArticleLoading: false,
+            runStatus: "completed",
+          });
+        }
+        // 从后端加载持久化的 plan（恢复 DAG 视图：agents + nodes + edges）
+        // 这是异步的，加载完成后 workflow-store 的 plan/agents/workflowSpec 会被更新
+        wfStore.loadPlan(traceId);
+      }
     } catch (e) {
       console.error("Failed to load session detail:", e);
     }
@@ -828,6 +866,34 @@ case "agent.paused": {
         const pointsUsed = p.points_used as number | undefined;
         const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"], points_used: pointsUsed };
 
+        // ── 工作台模式兼容：如果没有活跃 session（DAG 路径不走 agent.start），
+        // 用 trace_id 创建一个 session，使文章出现在左侧写作历史中
+        const editorialTraceId = p.trace_id as string | undefined;
+        if (editorialTraceId && !get()._getActiveSession()) {
+          const userInput = useWorkflowStore.getState().userInput || articleTitle || "工作台模式写作";
+          const newSession: WritingSession = {
+            id: editorialTraceId,
+            title: articleTitle || userInput.slice(0, 30) || "工作台模式写作",
+            messages: [
+              { id: genMsgId(), role: "user", parts: [{ type: "text", text: userInput }], createdAt: Date.now() - 1000 },
+              { id: genMsgId(), role: "assistant", parts: [], createdAt: Date.now(), status: "running" },
+            ],
+            traceId: editorialTraceId,
+            conversationId: editorialTraceId,
+            status: "completed",
+            style: useSettingsStore.getState().lastStyle || "yinyue",
+            mode: "editorial",
+            createdAt: Date.now(),
+            awaitInputAt: null,
+            kbEnabled: true,
+            articleTitle: articleTitle || null,
+          };
+          set((state) => ({
+            sessions: [newSession, ...state.sessions.filter((s) => s.traceId !== editorialTraceId)],
+            activeSessionId: editorialTraceId,
+          }));
+        }
+
         get()._updateLastAssistantMessage((m) => {
           // 如果后端返回了 article，先移除所有旧 text parts，
           // 再添加一个干净的最终 text part，确保只显示一篇文章。
@@ -1115,7 +1181,7 @@ case "agent.paused": {
         break;
       }
 
-      // Beta: 编辑部模式 DAG 工作流消息 — 转发到 workflow-store
+      // Beta: 工作台模式 DAG 工作流消息 — 转发到 workflow-store
       case "workflow.created":
       case "workflow.started":
       case "workflow.completed":
@@ -1346,5 +1412,36 @@ break;
       }
       return { ...s, messages };
     });
+  },
+
+  _restoreEditorialWorkflow: (traceId, session) => {
+    const wfStore = useWorkflowStore.getState();
+    // 先 reset 再恢复，避免残留上一个会话的状态
+    wfStore.reset();
+    // 从已加载的 session 数据恢复 workflow-store 状态
+    wfStore.setUserInput(session.title || "");
+    wfStore.setTaskId(traceId);
+    // 从 session 的 messages 中提取文章内容
+    const assistantMsg = session.messages.find((m) => m.role === "assistant");
+    const textPart = assistantMsg?.parts.find((p) => p.type === "text");
+    if (textPart && textPart.type === "text") {
+      useWorkflowStore.setState({
+        finalArticle: {
+          title: session.articleTitle || "",
+          content: textPart.text,
+          word_count: textPart.text.length,
+        },
+        finalArticleLoading: false,
+        runStatus: "completed",
+      });
+    } else {
+      useWorkflowStore.setState({
+        finalArticle: null,
+        finalArticleLoading: false,
+        runStatus: "completed",
+      });
+    }
+    // 从后端加载持久化的 plan（恢复 DAG 视图：agents + nodes + edges）
+    wfStore.loadPlan(traceId);
   },
 }));

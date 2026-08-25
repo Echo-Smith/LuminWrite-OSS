@@ -274,6 +274,9 @@ func (r *RoleAgentRunner) buildSystemPrompt(cfg RoleRunConfig, hasSearch, hasKB 
 	sb.WriteString("不得输出违法违规内容。\n")
 	sb.WriteString("如果素材不足以支撑写作，应在报告中说明而非编造。\n")
 
+	// 注入 Prompt 注入防御指令（与 Pipeline/Harness 模式对齐）
+	sb.WriteString(engine.PromptInjectionDefenseDirective)
+
 	return sb.String()
 }
 
@@ -348,88 +351,6 @@ func formatKnowledgeResults(results []engine.SearchResult) string {
 			snippet = string([]rune(snippet)[:500]) + "…"
 		}
 		sb.WriteString(fmt.Sprintf("   %s\n\n", snippet))
-	}
-	return sb.String()
-}
-
-// compressRoleSearchResults 用 LLM 将原始搜索结果压缩为结构化研究简报。
-func compressRoleSearchResults(ctx context.Context, llm *tools.LLMClient, query string, results []engine.SearchResult) string {
-	if llm == nil || len(results) == 0 {
-		return formatRoleSearchResults(results)
-	}
-
-	var rawBuf strings.Builder
-	for i, r := range results {
-		snippet := r.Snippet
-		if len([]rune(snippet)) > 200 {
-			snippet = string([]rune(snippet)[:200]) + "…"
-		}
-		rawBuf.WriteString(fmt.Sprintf("[%d] %s\n    %s\n    来源: %s\n\n", i+1, r.Title, snippet, r.Source))
-	}
-
-	systemMsg := "你是研究助理。将搜索结果压缩为结构化研究简报。只输出简报内容，不要寒暄。"
-	userMsg := fmt.Sprintf(`搜索关键词：%s
-
-原始搜索结果：
-%s
-
-请将以上搜索结果压缩为一份研究简报，格式如下：
-
-## 研究简报：<关键词>
-
-### 关键事实
-- （提取最重要的事实，每条一行，用 [序号] 标注来源）
-
-### 数据与细节
-- （提取具体数据、数字、日期等）
-
-### 多方观点
-- （如有不同视角的信息，分条列出）
-
-### 写作建议
-- （基于以上素材，给出可用方向提示）
-
-要求：
-1. 简报总长度控制在 300-500 字
-2. 每条事实后用 [序号] 标注来源，方便后续 read_source 查阅原文
-3. 去重：不同来源的相同信息只保留一条
-4. 如果素材不足以支撑某些维度，直接省略该维度`, query, rawBuf.String())
-
-	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
-		{Role: "system", Content: systemMsg},
-		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0.1), tools.WithThinking(false))
-
-	if err != nil {
-		slog.Warn("compressRoleSearchResults: LLM compression failed, falling back",
-			"error", err,
-			"query", query,
-			"results", len(results),
-		)
-		return formatRoleSearchResults(results)
-	}
-
-	if resp == "" {
-		return formatRoleSearchResults(results)
-	}
-
-	slog.Info("search_web: results compressed to research brief",
-		"query", query,
-		"raw_results", len(results),
-		"brief_chars", len([]rune(resp)),
-	)
-	return resp
-}
-
-// formatRoleSearchResults 是 compressRoleSearchResults 的 fallback。
-func formatRoleSearchResults(results []engine.SearchResult) string {
-	var sb strings.Builder
-	for i, r := range results {
-		snippet := r.Snippet
-		if len([]rune(snippet)) > 150 {
-			snippet = string([]rune(snippet)[:150]) + "…"
-		}
-		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, r.Title, snippet))
 	}
 	return sb.String()
 }

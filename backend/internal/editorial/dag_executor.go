@@ -132,6 +132,11 @@ func (e *DAGExecutor) GetRegistry() *DynamicAgentRegistry {
 	return e.registry
 }
 
+// GetTokenBudget 返回 Token 预算管理器（外部读取总用量）
+func (e *DAGExecutor) GetTokenBudget() *DAGTokenBudget {
+	return e.tokenBudget
+}
+
 // Cancel 取消指定 task 的 DAG 执行
 func (e *DAGExecutor) Cancel(taskID string) bool {
 	e.runsMu.Lock()

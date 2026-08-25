@@ -430,23 +430,24 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 	// ── Fetch topic URL content as primary background source ──
 	// If the writing was initiated from a hot topic with a URL, fetch the
 	// original article to provide rich event details and narrative context.
+	// Uses AnySearch.Extract (5万字 Markdown) first, falls back to URLFetcher.
 	if execCtx.TopicURL != "" {
-		fetcher := tools.NewURLFetcher()
-		result, err := fetcher.FetchContent(ctx, execCtx.TopicURL)
+		title, content, source, err := s.search.ExtractURL(ctx, execCtx.TopicURL)
 		if err != nil {
 			slog.Warn("failed to fetch topic URL content", "url", execCtx.TopicURL, "error", err)
-		} else if result != nil && result.Content != "" {
+		} else if content != "" {
 			allResults = append(allResults, engine.SearchResult{
-				Title:    result.Title,
-				Snippet:  result.Content,
-				URL:      result.URL,
+				Title:    title,
+				Snippet:  content,
+				URL:      execCtx.TopicURL,
 				Source:   "topic_url",
 			})
-			seenURLs[result.URL] = true
+			seenURLs[execCtx.TopicURL] = true
 			slog.Info("topic URL content fetched as background",
 				"url", execCtx.TopicURL,
-				"title", result.Title,
-				"content_length", len([]rune(result.Content)),
+				"title", title,
+				"content_length", len([]rune(content)),
+				"fetcher", source,
 			)
 		}
 	}
@@ -642,7 +643,7 @@ func (s *RelevanceStep) Execute(ctx context.Context, execCtx *engine.ExecutionCo
 	if s.embedding != nil && s.embedding.IsConfigured() {
 		execCtx.SearchResults = deduplicateResultsSemantic(ctx, execCtx.SearchResults, s.embedding)
 	} else {
-		execCtx.SearchResults = deduplicateResults(execCtx.SearchResults)
+		execCtx.SearchResults = tools.DedupSearchResults(execCtx.SearchResults)
 	}
 
 	// Stochastic sampling: keep all strong/medium results, randomly sample weak results
@@ -735,81 +736,6 @@ func computeRelevanceScore(topic string, keywords []string, result *engine.Searc
 	return finalScore
 }
 
-// deduplicateResults removes near-duplicate search results based on title similarity.
-func deduplicateResults(results []engine.SearchResult) []engine.SearchResult {
-	if len(results) <= 1 {
-		return results
-	}
-
-	var deduped []engine.SearchResult
-	for _, r := range results {
-		isDup := false
-		for j := range deduped {
-			if isSimilarTitle(r.Title, deduped[j].Title) {
-				isDup = true
-				// Keep the one with higher score
-				if r.Score > deduped[j].Score {
-					deduped[j] = r
-				}
-				break
-			}
-		}
-		if !isDup {
-			deduped = append(deduped, r)
-		}
-	}
-
-	return deduped
-}
-
-// isSimilarTitle checks if two titles are similar enough to be duplicates.
-// Uses a simple character overlap ratio (Jaccard-like similarity).
-func isSimilarTitle(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	a = strings.ToLower(strings.TrimSpace(a))
-	b = strings.ToLower(strings.TrimSpace(b))
-
-	// Exact match
-	if a == b {
-		return true
-	}
-
-	// One contains the other (for truncated titles)
-	if len(a) > 10 && strings.Contains(b, a) {
-		return true
-	}
-	if len(b) > 10 && strings.Contains(a, b) {
-		return true
-	}
-
-	// Character-level Jaccard similarity for Chinese text
-	setA := make(map[rune]bool)
-	for _, r := range a {
-		setA[r] = true
-	}
-	setB := make(map[rune]bool)
-	for _, r := range b {
-		setB[r] = true
-	}
-
-	intersection := 0
-	for r := range setA {
-		if setB[r] {
-			intersection++
-		}
-	}
-	union := len(setA) + len(setB) - intersection
-
-	if union == 0 {
-		return false
-	}
-
-	similarity := float64(intersection) / float64(union)
-	return similarity > 0.7
-}
-
 // ─── Semantic Deduplication (pgvector / embedding-based) ──
 
 // deduplicateResultsSemantic removes near-duplicate search results using
@@ -818,7 +744,7 @@ func isSimilarTitle(a, b string) bool {
 // 文档来源: docs/02-database-schema.md — pgvector 语义去重
 func deduplicateResultsSemantic(ctx context.Context, results []engine.SearchResult, emb *tools.EmbeddingClient) []engine.SearchResult {
 	if len(results) <= 1 || emb == nil || !emb.IsConfigured() {
-		return deduplicateResults(results)
+		return tools.DedupSearchResults(results)
 	}
 
 	// Build texts for embedding (title + snippet)
@@ -834,7 +760,7 @@ func deduplicateResultsSemantic(ctx context.Context, results []engine.SearchResu
 	embeddings, _, err := emb.Embed(ctx, texts)
 	if err != nil || len(embeddings) != len(results) {
 		slog.Warn("semantic dedup: embedding failed, falling back to text dedup", "error", err)
-		return deduplicateResults(results)
+		return tools.DedupSearchResults(results)
 	}
 
 	// Semantic similarity threshold (cosine similarity)

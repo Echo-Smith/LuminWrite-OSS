@@ -5,7 +5,7 @@
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
 import { useState, useEffect, useCallback } from "react";
-import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, type LucideIcon } from "lucide-react";
+import { ChevronRight, ChevronLeft, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -431,36 +431,63 @@ function SourcesList({
             联网搜索
             <span className="font-mono-sm">{webResults.length} 条</span>
           </div>
-          {webResults.map((r, i) => (
-            <StaggerItem key={i} index={i} interval={40} animation="fade-up">
-              <div className="rounded-lg border border-blue-200/50 dark:border-blue-900/30 bg-blue-50/20 dark:bg-blue-950/10 p-2.5 space-y-1 hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-ui">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-xs shrink-0 text-blue-700 dark:text-blue-400">
-                    {String(r.source ?? "web")}
-                  </Badge>
-                  {r.relevance != null && (
-                    <Badge variant={(relevanceColor[String(r.relevance)] as "success" | "secondary" | "outline" | "destructive") ?? "outline"} className="text-xs">
-                      {String(r.relevance)}
+          {webResults.map((r, i) => {
+            const images = Array.isArray(r.images) ? r.images : [];
+            return (
+              <StaggerItem key={i} index={i} interval={40} animation="fade-up">
+                <div className="rounded-lg border border-blue-200/50 dark:border-blue-900/30 bg-blue-50/20 dark:bg-blue-950/10 p-2.5 space-y-1.5 hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-ui min-w-0 overflow-hidden">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs shrink-0 text-blue-700 dark:text-blue-400">
+                      {String(r.source ?? "web")}
                     </Badge>
+                    {r.relevance != null && (
+                      <Badge variant={(relevanceColor[String(r.relevance)] as "success" | "secondary" | "outline" | "destructive") ?? "outline"} className="text-xs">
+                        {String(r.relevance)}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
+                  {r.snippet != null && String(r.snippet) && (
+                    <p className="text-xs text-muted-foreground line-clamp-2">{String(r.snippet)}</p>
+                  )}
+                  {/* 图片缩略图 — 水平滚动（仅在有图片时渲染） */}
+                  {images.length > 0 && (
+                    <div className="relative min-w-0">
+                      <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+                        {images.map((img, imgIdx) => (
+                          <a
+                            key={imgIdx}
+                            href={img.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0"
+                          >
+                            <img
+                              src={img.url}
+                              alt={img.description ?? `图片 ${imgIdx + 1}`}
+                              className="h-16 w-16 sm:h-20 sm:w-20 object-cover rounded-md border border-border/50 hover:border-primary/50 transition-all hover:scale-105"
+                              loading="lazy"
+                              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {r.url != null && String(r.url) && (
+                    <a
+                      href={String(r.url)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-primary hover:underline"
+                    >
+                      查看原文 →
+                    </a>
                   )}
                 </div>
-                <p className="text-sm font-medium line-clamp-1">{String(r.title ?? "")}</p>
-                {r.snippet != null && String(r.snippet) && (
-                  <p className="text-xs text-muted-foreground line-clamp-2">{String(r.snippet)}</p>
-                )}
-                {r.url != null && String(r.url) && (
-                  <a
-                    href={String(r.url)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-primary hover:underline"
-                  >
-                    查看原文 →
-                  </a>
-                )}
-              </div>
-            </StaggerItem>
-          ))}
+              </StaggerItem>
+            );
+          })}
         </div>
       )}
 

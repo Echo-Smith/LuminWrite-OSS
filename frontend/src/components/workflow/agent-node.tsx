@@ -2,10 +2,18 @@
  * AgentNodeCard — React Flow 自定义节点
  *
  * 显示 Agent 角色名、状态、输出类型、Token 使用量和流式输出。
+ * 编辑模式下显示删除按钮和选中高亮。
+ *
+ * 视觉设计：
+ * - 卡片头部：莫兰迪浅色背景 + 左上角黑白人形插画 + 角色名
+ * - 卡片主体：白色背景 + 节点信息
+ * - 色彩区分：莫兰迪色卡（蓝灰/灰绿/暖灰/紫灰）替代纯色色条
  */
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getRoleTheme, getRoleIllustration } from "./agent-illustration";
 
 export interface AgentNodeData {
   label: string;
@@ -18,10 +26,15 @@ export interface AgentNodeData {
   error?: string;
   roleColor: string;
   statusColor: string;
+  // 编辑模式扩展
+  isEditMode?: boolean;
+  isSelected?: boolean;
+  onDelete?: () => void;
+  onSelect?: () => void;
   [key: string]: unknown;
 }
 
-function AgentNodeCardComponent({ data }: { data: AgentNodeData }) {
+function AgentNodeCardComponent({ data, selected }: { data: AgentNodeData; selected?: boolean }) {
   const {
     label,
     agentName,
@@ -31,9 +44,15 @@ function AgentNodeCardComponent({ data }: { data: AgentNodeData }) {
     streamText,
     tokensUsed,
     error,
-    roleColor,
     statusColor,
+    isEditMode,
+    isSelected,
+    onDelete,
+    onSelect,
   } = data;
+
+  const theme = getRoleTheme(agentRole);
+  const Illustration = getRoleIllustration(agentRole);
 
   const statusLabel: Record<string, string> = {
     pending: "等待中",
@@ -45,50 +64,84 @@ function AgentNodeCardComponent({ data }: { data: AgentNodeData }) {
 
   return (
     <div
-      className="relative rounded-xl border-2 bg-white shadow-lg transition-all duration-300 dark:bg-zinc-900"
+      className={cn(
+        "relative overflow-hidden rounded-xl border-2 bg-white shadow-lg transition-all duration-300 dark:bg-zinc-900",
+        isEditMode && "cursor-pointer hover:shadow-xl",
+        isEditMode && isSelected && "ring-2 ring-blue-500 ring-offset-2",
+      )}
       style={{
-        borderColor: statusColor,
+        borderColor: isEditMode && isSelected ? "#3b82f6" : theme.morandiBorder,
         width: 240,
         minHeight: 120,
       }}
+      onClick={(e) => {
+        if (isEditMode && onSelect) {
+          e.stopPropagation();
+          onSelect();
+        }
+      }}
     >
+      {/* 编辑模式删除按钮 */}
+      {isEditMode && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete?.();
+          }}
+          className="absolute -right-2 -top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white shadow-md transition hover:bg-red-600"
+          title="删除节点"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+
       {/* 输入 handle（左侧） */}
       <Handle
         type="target"
         position={Position.Left}
-        style={{ background: roleColor, width: 10, height: 10 }}
+        style={{
+          background: theme.morandiBorder,
+          width: isEditMode ? 12 : 10,
+          height: isEditMode ? 12 : 10,
+        }}
       />
 
-      {/* 角色色条 */}
+      {/* ── 莫兰迪色卡头部（上半部分）── */}
       <div
-        className="absolute left-0 top-0 h-full w-1 rounded-l-xl"
-        style={{ background: roleColor }}
-      />
+        className="flex items-center gap-2.5 px-3 py-2.5"
+        style={{ background: theme.morandiBg }}
+      >
+        {/* 左上角黑白人形插画 */}
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center">
+          <Illustration size={32} />
+        </div>
 
-      <div className="p-3 pl-4">
-        {/* 角色标签 */}
-        <div className="mb-1 flex items-center justify-between">
-          <span
-            className="rounded-full px-2 py-0.5 text-xs font-medium text-white"
-            style={{ background: roleColor }}
-          >
+        <div className="flex-1 min-w-0">
+          {/* 角色名 */}
+          <div className="text-xs font-medium" style={{ color: theme.morandiText }}>
             {agentRole}
-          </span>
-          <span
-            className="flex items-center gap-1 text-xs font-medium"
-            style={{ color: statusColor }}
-          >
-            {status === "running" && (
-              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-            )}
-            {statusLabel[status] || status}
-          </span>
+          </div>
+          {/* 节点名称 */}
+          <div className="text-sm font-semibold text-zinc-900 dark:text-white truncate">
+            {label}
+          </div>
         </div>
 
-        {/* 节点名称 */}
-        <div className="text-sm font-semibold text-zinc-900 dark:text-white">
-          {label}
+        {/* 状态指示 */}
+        <div
+          className="flex items-center gap-1 text-xs font-medium shrink-0"
+          style={{ color: statusColor }}
+        >
+          {status === "running" && (
+            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+          )}
+          {statusLabel[status] || status}
         </div>
+      </div>
+
+      {/* ── 卡片主体 ─── */}
+      <div className="p-3">
+        {/* Agent 名称 */}
         <div className="text-xs text-zinc-500 dark:text-zinc-400">
           {agentName}
         </div>
@@ -125,7 +178,11 @@ function AgentNodeCardComponent({ data }: { data: AgentNodeData }) {
       <Handle
         type="source"
         position={Position.Right}
-        style={{ background: roleColor, width: 10, height: 10 }}
+        style={{
+          background: theme.morandiBorder,
+          width: isEditMode ? 12 : 10,
+          height: isEditMode ? 12 : 10,
+        }}
       />
     </div>
   );

@@ -160,9 +160,12 @@ type TencentConfig struct {
 }
 
 type WeiboConfig struct {
-	Enabled bool
-	BaseURL string
-	Timeout time.Duration
+	Enabled       bool
+	BaseURL       string
+	Timeout       time.Duration
+	AppID         string
+	AppSecret     string
+	TokenEndpoint string
 }
 
 type ExtraHotConfig struct {
@@ -313,9 +316,12 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			Timeout: getEnvDuration("TENCENT_TIMEOUT", 15*time.Second),
 		},
 		Weibo: WeiboConfig{
-			Enabled: getEnvBool("WEIBO_ENABLED", false),
-			BaseURL: getEnv("WEIBO_BASE_URL", "https://weibo.com/ajax"),
-			Timeout: getEnvDuration("WEIBO_TIMEOUT", 15*time.Second),
+			Enabled:       getEnvBool("WEIBO_ENABLED", false),
+			BaseURL:        getEnv("WEIBO_BASE_URL", "https://weibo.com/ajax"),
+			Timeout:        getEnvDuration("WEIBO_TIMEOUT", 15*time.Second),
+			AppID:          getEnv("WEIBO_APP_ID", ""),
+			AppSecret:      getEnv("WEIBO_APP_SECRET", ""),
+			TokenEndpoint:  getEnv("WEIBO_TOKEN_ENDPOINT", "http://open-im.api.weibo.com/open/auth/ws_token"),
 		},
 		ExtraHot: ExtraHotConfig{
 			Enabled: getEnvBool("EXTRA_HOT_ENABLED", true),
@@ -329,8 +335,8 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 		},
 		AnySearch: AnySearchConfig{
 			APIKey:   getEnv("ANYSEARCH_API_KEY", ""),
-			Endpoint: getEnv("ANYSEARCH_ENDPOINT", "https://api.anysearch.com/v1/search"),
-			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 15*time.Second),
+			Endpoint: getEnv("ANYSEARCH_ENDPOINT", "https://api.anysearch.com"),
+			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 30*time.Second),
 		},
 		Kb: KbInternalConfig{
 			DocreaderAddr:     getEnv("DOCREADER_ADDR", "docreader:50051"),

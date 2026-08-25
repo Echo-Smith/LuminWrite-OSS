@@ -12,7 +12,7 @@ import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
-import { EditorialBoard } from "@/pages/editorial/editorial-board";
+import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 工作台页面组件（内部保留 EditorialBoard 命名）
 import { MyStylesPage } from "@/pages/my-styles";
 import { TermsPage } from "@/pages/legal/terms";
 import { PrivacyPage } from "@/pages/legal/privacy";
@@ -108,9 +108,9 @@ export function App() {
             }
           />
 
-          {/* 编辑部 — 需登录 */}
+          {/* 工作台 — 需登录 */}
           <Route
-            path="/editorial"
+            path="/workspace"
             element={
               <ProtectedRoute>
                 <PageTransition>
@@ -119,8 +119,10 @@ export function App() {
               </ProtectedRoute>
             }
           />
+          {/* 兼容旧路由 /editorial → /workspace */}
+          <Route path="/editorial" element={<Navigate to="/workspace" replace />} />
 
-          {/* /workflow 已集成到 /write 的编辑部模式中，重定向 */}
+          {/* /workflow 已集成到 /write 的工作台模式中，重定向 */}
           <Route path="/workflow" element={<Navigate to="/write" replace />} />
 
           {/* 法律页面 — 公开访问，无需登录 */}

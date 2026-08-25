@@ -104,6 +104,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
         sess.id === s.activeSessionId ? { ...sess, style: st } : sess
       ),
     }));
+    // 持久化上次风格选择，新建会话时自动使用
+    useSettingsStore.getState().setLastStyle(st);
   }, []);
 
   const sessionStatus = useAgentStore((s) => {
@@ -119,7 +121,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     return session?.awaitInputAt != null;
   });
 
-  // 编辑部模式运行状态
+  // 工作台模式运行状态
   const wfRunStatus = useWorkflowStore((s) => s.runStatus);
   const isWorkflowBusy = agentMode === "editorial" && (wfRunStatus === "planning" || wfRunStatus === "running" || wfRunStatus === "created");
 
@@ -145,7 +147,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     }
 
     if (agentMode === "editorial") {
-      // 编辑部模式：发送 workflow.start 触发 Planner + DAG 执行
+      // 工作台模式：发送 workflow.start 触发 Planner + DAG 执行
       const { setUserInput, setRunStatus } = useWorkflowStore.getState();
       setUserInput(currentText.trim());
       setRunStatus("planning");
@@ -154,6 +156,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       setMessage("");
       return;
     }
+
+    // 持久化当前使用的风格
+    useSettingsStore.getState().setLastStyle(style);
 
     startWriting({
       message: currentText.trim(),

@@ -1,5 +1,5 @@
 /**
- * WorkflowPage — 编辑部模式 DAG 工作流页面
+ * WorkflowPage — 工作台模式 DAG 工作流页面
  *
  * 整合输入面板、节点图画布和节点执行状态面板。
  * 通过 agent-store 的 WebSocket 连接与后端交互。

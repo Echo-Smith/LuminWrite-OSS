@@ -3,11 +3,13 @@ package editorial
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
@@ -21,9 +23,15 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+// DB returns the underlying database connection (for direct SQL when needed)
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // ─── Task CRUD ───────────────────────────────────────────
 
-// CreateTask 创建任务
+// CreateTask 创建任务（现在直接在 agent_traces 表中创建）
+// Task.ID 即为 trace_id
 func (s *Store) CreateTask(ctx context.Context, input CreateTaskInput, userID string) (*Task, error) {
 	styleSlug := input.StyleSlug
 	if styleSlug == "" {
@@ -34,16 +42,37 @@ func (s *Store) CreateTask(ctx context.Context, input CreateTaskInput, userID st
 		budget = 300000
 	}
 
+	// 生成 trace_id（与 Harness 模式的 trace_xxx 格式一致）
+	traceID := fmt.Sprintf("trace_%s", strings.ReplaceAll(uuid.NewString(), "-", "")[:20])
+
 	var task Task
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO editorial_tasks (title, description, owner_id, status, accept_criteria, token_budget, priority, tags, style_slug, created_by)
-		VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8, $3)
-		RETURNING id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
-			created_by, created_at, updated_at
+		INSERT INTO agent_traces (trace_id, user_id, user_input, style_slug, mode, status,
+			description, accept_criteria, token_budget, priority, tags, created_by,
+			editorial_status, assignee_type)
+		VALUES ($1, $2, $3, $4, 'editorial', 'idle', $5, $6, $7, $8, $9, $2, 'draft', 'human')
+		RETURNING
+			trace_id, -- id
+			user_input, -- title
+			description,
+			COALESCE(user_id::text, ''), -- owner_id
+			assignee_type,
+			deadline,
+			editorial_status, -- status (editorial workflow status)
+			accept_criteria,
+			allowed_tools,
+			token_budget,
+			COALESCE((token_usage->>'token_used')::int, 0), -- token_used
+			priority,
+			tags,
+			style_slug,
+			COALESCE(conversation_id, ''),
+			COALESCE(created_by::text, ''),
+			created_at,
+			updated_at
 	`,
-		input.Title, input.Description, userID, input.AcceptCriteria,
-		budget, input.Priority, pq.Array(input.Tags), styleSlug,
+		traceID, userID, input.Title, styleSlug,
+		input.Description, input.AcceptCriteria, budget, input.Priority, pq.Array(input.Tags),
 	).Scan(
 		&task.ID, &task.Title, &task.Description, &task.OwnerID, &task.AssigneeType,
 		&task.Deadline, &task.Status, &task.AcceptCriteria,
@@ -57,14 +86,30 @@ func (s *Store) CreateTask(ctx context.Context, input CreateTaskInput, userID st
 	return &task, nil
 }
 
-// GetTask 获取任务
+// GetTask 获取任务（从 agent_traces 读取）
 func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	var task Task
 	err := s.db.QueryRowContext(ctx, `
-	SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-		allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
-		created_by, created_at, updated_at
-	FROM editorial_tasks WHERE id = $1
+	SELECT
+		trace_id, -- id
+		user_input, -- title
+		COALESCE(description, ''), -- description (may not exist as column, using '')
+		COALESCE(user_id::text, ''), -- owner_id
+		assignee_type,
+		deadline,
+		editorial_status, -- status (editorial workflow status)
+		accept_criteria,
+		allowed_tools,
+		token_budget,
+		COALESCE((token_usage->>'token_used')::int, 0), -- token_used
+		priority,
+		tags,
+		style_slug,
+		COALESCE(conversation_id, ''),
+		COALESCE(created_by::text, ''),
+		created_at,
+		updated_at
+	FROM agent_traces WHERE trace_id = $1
 	`, id).Scan(
 		&task.ID, &task.Title, &task.Description, &task.OwnerID, &task.AssigneeType,
 		&task.Deadline, &task.Status, &task.AcceptCriteria,
@@ -81,33 +126,38 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	return &task, nil
 }
 
-// ListTasks 列出任务（支持状态过滤和用户隔离）
+// ListTasks 列出任务（从 agent_traces 读取，支持状态过滤和用户隔离）
 func (s *Store) ListTasks(ctx context.Context, status string, ownerID string, limit, offset int) ([]Task, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 
 	query := `
-		SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
-			created_by, created_at, updated_at
-		FROM editorial_tasks
+		SELECT
+			trace_id, user_input, COALESCE(description, ''),
+			COALESCE(user_id::text, ''), assignee_type, deadline, editorial_status,
+			accept_criteria, allowed_tools, token_budget,
+			COALESCE((token_usage->>'token_used')::int, 0), priority, tags,
+			style_slug, COALESCE(conversation_id, ''), COALESCE(created_by::text, ''),
+			created_at, updated_at
+		FROM agent_traces
+		WHERE mode = 'editorial'
 	`
 	args := []interface{}{}
 	argIdx := 1
 	whereParts := []string{}
 	if status != "" {
-		whereParts = append(whereParts, fmt.Sprintf("status = $%d", argIdx))
+		whereParts = append(whereParts, fmt.Sprintf("editorial_status = $%d", argIdx))
 		args = append(args, status)
 		argIdx++
 	}
 	if ownerID != "" {
-		whereParts = append(whereParts, fmt.Sprintf("owner_id = $%d", argIdx))
+		whereParts = append(whereParts, fmt.Sprintf("user_id = $%d", argIdx))
 		args = append(args, ownerID)
 		argIdx++
 	}
 	if len(whereParts) > 0 {
-		query += " WHERE " + strings.Join(whereParts, " AND ")
+		query += " AND " + strings.Join(whereParts, " AND ")
 	}
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, limit, offset)
@@ -135,11 +185,12 @@ func (s *Store) ListTasks(ctx context.Context, status string, ownerID string, li
 	return tasks, nil
 }
 
-// UpdateTaskStatus 更新任务状态
+// UpdateTaskStatus 更新任务状态（更新 agent_traces.editorial_status）
 func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status TaskStatus, assignee AssigneeType) error {
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = $4 WHERE id = $1
+		UPDATE agent_traces SET editorial_status = $2, assignee_type = $3, updated_at = $4
+		WHERE trace_id = $1
 	`, id, status, assignee, now)
 	if err != nil {
 		return fmt.Errorf("update task status: %w", err)
@@ -147,10 +198,14 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status TaskStat
 	return nil
 }
 
-// AddTokenUsage 增加任务 Token 用量
+// AddTokenUsage 增加任务 Token 用量（更新 agent_traces.token_usage JSONB）
 func (s *Store) AddTokenUsage(ctx context.Context, taskID string, tokens int) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE editorial_tasks SET token_used = token_used + $2, updated_at = NOW() WHERE id = $1
+		UPDATE agent_traces
+		SET token_usage = COALESCE(token_usage, '{}'::jsonb)
+			|| jsonb_build_object('token_used', COALESCE((token_usage->>'token_used')::int, 0) + $2),
+			updated_at = NOW()
+		WHERE trace_id = $1
 	`, taskID, tokens)
 	return err
 }
@@ -158,6 +213,7 @@ func (s *Store) AddTokenUsage(ctx context.Context, taskID string, tokens int) er
 // ─── Artifact CRUD ───────────────────────────────────────
 
 // CreateArtifact 创建交付物
+// taskID 参数现在实际是 trace_id（两表合一后 task.ID 就是 trace_id）
 func (s *Store) CreateArtifact(ctx context.Context, input SubmitArtifactInput, taskID string) (*Artifact, error) {
 	return s.CreateArtifactWithVersioning(ctx, input, taskID, "", "{}", nil)
 }
@@ -167,7 +223,7 @@ func (s *Store) CreateArtifactWithVersioning(ctx context.Context, input SubmitAr
 	// 获取当前最大版本号
 	var maxVersion int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(version), 0) FROM editorial_artifacts WHERE task_id = $1 AND type = $2
+		SELECT COALESCE(MAX(version), 0) FROM editorial_artifacts WHERE trace_id = $1 AND type = $2
 	`, taskID, input.Type).Scan(&maxVersion)
 	if err != nil {
 		return nil, fmt.Errorf("get max version: %w", err)
@@ -183,7 +239,7 @@ func (s *Store) CreateArtifactWithVersioning(ctx context.Context, input SubmitAr
 		// 自动找到前一版本并标记
 		s.db.ExecContext(ctx, `
 			UPDATE editorial_artifacts SET status = 'superseded', updated_at = NOW()
-			WHERE task_id = $1 AND type = $2 AND version = $3
+			WHERE trace_id = $1 AND type = $2 AND version = $3
 		`, taskID, input.Type, maxVersion)
 	}
 
@@ -200,9 +256,9 @@ func (s *Store) CreateArtifactWithVersioning(ctx context.Context, input SubmitAr
 	}
 
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO editorial_artifacts (task_id, type, version, content, status, produced_by, parent_id, token_cost, checksum, provenance, retention_until)
+		INSERT INTO editorial_artifacts (trace_id, type, version, content, status, produced_by, parent_id, token_cost, checksum, provenance, retention_until)
 		VALUES ($1, $2, $3, $4, 'submitted', $5, $6, $7, $8, $9, $10)
-		RETURNING id, task_id, type, version, content, status, produced_by,
+		RETURNING id, trace_id, type, version, content, status, produced_by,
 			reviewed_by, review_note, COALESCE(parent_id::text, ''), token_cost, checksum, provenance, retention_until, created_at, updated_at
 	`,
 		taskID, input.Type, nextVersion, input.Content, input.ProducedBy, parentID, input.TokenCost, checksum, provenance, retentionUntilTime,
@@ -227,7 +283,7 @@ func (s *Store) CreateArtifactWithVersioning(ctx context.Context, input SubmitAr
 func (s *Store) GetArtifact(ctx context.Context, id string) (*Artifact, error) {
 	var art Artifact
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, type, version, content::text, status, produced_by,
+		SELECT id, trace_id, type, version, content::text, status, produced_by,
 			COALESCE(reviewed_by::text, ''), review_note, COALESCE(parent_id::text, ''),
 			token_cost, created_at, updated_at
 		FROM editorial_artifacts WHERE id = $1
@@ -248,10 +304,10 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (*Artifact, error) {
 // ListArtifacts 列出任务的所有交付物
 func (s *Store) ListArtifacts(ctx context.Context, taskID string) ([]Artifact, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, task_id, type, version, content::text, status, produced_by,
+		SELECT id, trace_id, type, version, content::text, status, produced_by,
 			COALESCE(reviewed_by::text, ''), review_note, COALESCE(parent_id::text, ''),
 			token_cost, created_at, updated_at
-		FROM editorial_artifacts WHERE task_id = $1 ORDER BY created_at ASC
+		FROM editorial_artifacts WHERE trace_id = $1 ORDER BY created_at ASC
 	`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts: %w", err)
@@ -277,11 +333,11 @@ func (s *Store) ListArtifacts(ctx context.Context, taskID string) ([]Artifact, e
 func (s *Store) GetLatestApprovedArtifact(ctx context.Context, taskID string, artType ArtifactType) (*Artifact, error) {
 	var art Artifact
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, type, version, content::text, status, produced_by,
+		SELECT id, trace_id, type, version, content::text, status, produced_by,
 			COALESCE(reviewed_by::text, ''), review_note, COALESCE(parent_id::text, ''),
 			token_cost, created_at, updated_at
 		FROM editorial_artifacts
-		WHERE task_id = $1 AND type = $2 AND status = 'approved'
+		WHERE trace_id = $1 AND type = $2 AND status = 'approved'
 		ORDER BY version DESC LIMIT 1
 	`, taskID, artType).Scan(
 		&art.ID, &art.TaskID, &art.Type, &art.Version, &art.Content, &art.Status,
@@ -304,7 +360,7 @@ func (s *Store) ReviewArtifact(ctx context.Context, id string, input ReviewArtif
 		UPDATE editorial_artifacts
 		SET status = $2, reviewed_by = $3, review_note = $4, updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, task_id, type, version, content::text, status, produced_by,
+		RETURNING id, trace_id, type, version, content::text, status, produced_by,
 			COALESCE(reviewed_by::text, ''), review_note, COALESCE(parent_id::text, ''),
 			token_cost, created_at, updated_at
 	`, id, input.Status, input.ReviewerID, input.ReviewNote).Scan(
@@ -327,7 +383,7 @@ func (s *Store) ReviewArtifact(ctx context.Context, id string, input ReviewArtif
 
 // decisionScanColumns is the canonical column list for scanning Decision rows.
 // Includes both new actor model columns and legacy columns for backward compat.
-const decisionScanColumns = `id, task_id, type,
+const decisionScanColumns = `id, trace_id, type,
 	COALESCE(actor_type, 'system'), COALESCE(actor_user_id::text, ''), COALESCE(actor_role, ''), COALESCE(actor_label, ''),
 	COALESCE(approve_target_status, ''), COALESCE(reject_target_status, ''),
 	status, rationale, evidence, COALESCE(artifact_id::text, ''),
@@ -434,7 +490,7 @@ func (s *Store) CreateDecision(ctx context.Context, input CreateDecisionInput, t
 	var d Decision
 	rawRow := s.db.QueryRowContext(ctx, `
 		INSERT INTO editorial_decisions (
-			task_id, type,
+			trace_id, type,
 			actor_type, actor_user_id, actor_role, actor_label,
 			approve_target_status, reject_target_status,
 			status, rationale, evidence, artifact_id, decided_at,
@@ -481,7 +537,7 @@ func actorFromLegacy(decidedBy string, decidedByType DecidedByType) Actor {
 func (s *Store) ListDecisions(ctx context.Context, taskID string) ([]Decision, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+decisionScanColumns+`
-		FROM editorial_decisions WHERE task_id = $1 ORDER BY created_at ASC
+		FROM editorial_decisions WHERE trace_id = $1 ORDER BY created_at ASC
 	`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list decisions: %w", err)
@@ -508,13 +564,13 @@ func (s *Store) ListPendingDecisions(ctx context.Context, ownerID string, limit 
 		SELECT d.` + decisionScanColumns + `,
 		       t.title, t.status, t.assignee_type, t.owner_id, t.priority, t.token_used, t.token_budget
 		FROM editorial_decisions d
-		JOIN editorial_tasks t ON t.id = d.task_id
-		WHERE d.status = 'pending'
+		JOIN agent_traces t ON t.trace_id = d.trace_id
+		WHERE d.status = 'pending' AND t.mode = 'editorial'
 	`
 	args := []interface{}{}
 	argIdx := 1
 	if ownerID != "" {
-		query += fmt.Sprintf(" AND t.owner_id = $%d", argIdx)
+		query += fmt.Sprintf(" AND t.user_id = $%d", argIdx)
 		args = append(args, ownerID)
 		argIdx++
 	}
@@ -633,7 +689,7 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 		UPDATE editorial_decisions
 		SET status = $2, rationale = $3, decided_by = $4, decided_at = NOW()
 		WHERE id = $1 AND status = 'pending'
-		RETURNING task_id,
+		RETURNING trace_id,
 			COALESCE(approve_target_status, ''),
 			COALESCE(reject_target_status, '')
 	`, params.DecisionID, params.Status, params.Rationale, params.DecidedBy).Scan(
@@ -662,7 +718,7 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 		// Lock the task row for the duration of this transaction
 		var currentStatus TaskStatus
 		err = tx.QueryRowContext(ctx, `
-			SELECT status FROM editorial_tasks WHERE id = $1 FOR UPDATE
+			SELECT editorial_status FROM agent_traces WHERE trace_id = $1 FOR UPDATE
 		`, taskID).Scan(&currentStatus)
 		if err != nil {
 			return nil, "", fmt.Errorf("lock task in tx: %w", err)
@@ -677,7 +733,7 @@ func (s *Store) ResolveDecisionTx(ctx context.Context, params ResolveDecisionTxP
 		} else {
 			assignee := defaultAssignee(nextStatus)
 			_, err = tx.ExecContext(ctx, `
-			UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+			UPDATE agent_traces SET editorial_status = $2, assignee_type = $3, updated_at = NOW() WHERE trace_id = $1
 		`, taskID, nextStatus, assignee)
 			if err != nil {
 				return nil, "", fmt.Errorf("update task status in tx: %w", err)
@@ -725,9 +781,9 @@ func (s *Store) AdvanceTaskTx(ctx context.Context, params AdvanceTaskTxParams) (
 
 	// 1. Lock the task row and verify the transition is legal
 	var currentStatus TaskStatus
-	err = tx.QueryRowContext(ctx, `
-		SELECT status FROM editorial_tasks WHERE id = $1 FOR UPDATE
-	`, params.TaskID).Scan(&currentStatus)
+		err = tx.QueryRowContext(ctx, `
+			SELECT editorial_status FROM agent_traces WHERE trace_id = $1 FOR UPDATE
+		`, params.TaskID).Scan(&currentStatus)
 	if err == sql.ErrNoRows {
 		return nil, ErrTaskNotFound
 	}
@@ -791,7 +847,7 @@ func (s *Store) AdvanceTaskTx(ctx context.Context, params AdvanceTaskTxParams) (
 	var d Decision
 	rawRow := tx.QueryRowContext(ctx, `
 		INSERT INTO editorial_decisions (
-			task_id, type,
+			trace_id, type,
 			actor_type, actor_user_id, actor_role, actor_label,
 			approve_target_status, reject_target_status,
 			status, rationale, evidence, artifact_id, decided_at,
@@ -815,7 +871,7 @@ func (s *Store) AdvanceTaskTx(ctx context.Context, params AdvanceTaskTxParams) (
 		assignee = defaultAssignee(params.TargetStatus)
 	}
 	_, err = tx.ExecContext(ctx, `
-		UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+		UPDATE agent_traces SET editorial_status = $2, assignee_type = $3, updated_at = NOW() WHERE trace_id = $1
 	`, params.TaskID, params.TargetStatus, assignee)
 	if err != nil {
 		return nil, fmt.Errorf("update task status in tx: %w", err)
@@ -849,11 +905,13 @@ func (s *Store) TransitionTask(ctx context.Context, cmd TransitionCommand) (*Tas
 
 	// 1. Lock the task row and read current state
 	var task Task
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, title, description, owner_id, assignee_type, deadline, status, accept_criteria,
-			allowed_tools, token_budget, token_used, priority, tags, style_slug, COALESCE(conversation_id, ''),
-			created_by, created_at, updated_at
-		FROM editorial_tasks WHERE id = $1 FOR UPDATE
+		err = tx.QueryRowContext(ctx, `
+		SELECT trace_id, user_input, COALESCE(description, ''),
+			COALESCE(user_id::text, ''), assignee_type, deadline, editorial_status, accept_criteria,
+			allowed_tools, token_budget, COALESCE((token_usage->>'token_used')::int, 0),
+			priority, tags, style_slug, COALESCE(conversation_id, ''),
+			COALESCE(created_by::text, ''), created_at, updated_at
+		FROM agent_traces WHERE trace_id = $1 FOR UPDATE
 	`, cmd.TaskID).Scan(
 		&task.ID, &task.Title, &task.Description, &task.OwnerID, &task.AssigneeType,
 		&task.Deadline, &task.Status, &task.AcceptCriteria,
@@ -881,7 +939,7 @@ func (s *Store) TransitionTask(ctx context.Context, cmd TransitionCommand) (*Tas
 	// 4. Update task status
 	assignee := defaultAssignee(cmd.TargetStatus)
 	_, err = tx.ExecContext(ctx, `
-		UPDATE editorial_tasks SET status = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1
+		UPDATE agent_traces SET editorial_status = $2, assignee_type = $3, updated_at = NOW() WHERE trace_id = $1
 	`, cmd.TaskID, cmd.TargetStatus, assignee)
 	if err != nil {
 		return nil, fmt.Errorf("update task status: %w", err)
@@ -892,9 +950,9 @@ func (s *Store) TransitionTask(ctx context.Context, cmd TransitionCommand) (*Tas
 		agentRole := agentRoleForStatus(cmd.TargetStatus)
 		if agentRole != "" {
 			_, err = tx.ExecContext(ctx, `
-				INSERT INTO editorial_agent_leases (task_id, agent_role, expired_at)
-				VALUES ($1, $2, NOW() + INTERVAL '10 minutes')
-			`, cmd.TaskID, agentRole)
+			INSERT INTO editorial_agent_leases (trace_id, agent_role, expired_at)
+			VALUES ($1, $2, NOW() + INTERVAL '10 minutes')
+		`, cmd.TaskID, agentRole)
 			if err != nil {
 				// If the unique index on active leases fails, it means another agent is already running
 				return nil, fmt.Errorf("%w: task_id=%s role=%s", ErrLeaseConflict, cmd.TaskID, agentRole)
@@ -924,9 +982,9 @@ func (s *Store) RecordAgentRunEvent(ctx context.Context, evt AgentRunEvent) (*Ag
 		artifactID = nil
 	}
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO editorial_agent_run_events (task_id, type, agent_role, status, artifact_id, error, metadata)
+		INSERT INTO editorial_agent_run_events (trace_id, type, agent_role, status, artifact_id, error, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, task_id, type, agent_role, status, COALESCE(artifact_id::text, ''), COALESCE(error, ''), created_at
+		RETURNING id, trace_id, type, agent_role, status, COALESCE(artifact_id::text, ''), COALESCE(error, ''), created_at
 	`, evt.TaskID, evt.Type, evt.AgentRole, evt.Status, artifactID, evt.Error, evt.Metadata,
 	).Scan(&e.ID, &e.TaskID, &e.Type, &e.AgentRole, &e.Status, &e.ArtifactID, &e.Error, &e.CreatedAt)
 	if err != nil {
@@ -938,9 +996,9 @@ func (s *Store) RecordAgentRunEvent(ctx context.Context, evt AgentRunEvent) (*Ag
 // ListAgentRunEvents lists events for a task, ordered by creation time.
 func (s *Store) ListAgentRunEvents(ctx context.Context, taskID string) ([]AgentRunEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, task_id, type, agent_role, status, COALESCE(artifact_id::text, ''), COALESCE(error, ''), created_at
+		SELECT id, trace_id, type, agent_role, status, COALESCE(artifact_id::text, ''), COALESCE(error, ''), created_at
 		FROM editorial_agent_run_events
-		WHERE task_id = $1
+		WHERE trace_id = $1
 		ORDER BY created_at ASC
 	`, taskID)
 	if err != nil {
@@ -972,7 +1030,7 @@ func (s *Store) AcquireLease(ctx context.Context, taskID string, role AgentRole,
 		UPDATE editorial_agent_leases
 		SET status = 'active', expired_at = NOW() + $3::interval,
 		    released_at = NULL, acquired_at = NOW()
-		WHERE task_id = $1 AND agent_role = $2 AND status != 'active'
+		WHERE trace_id = $1 AND agent_role = $2 AND status != 'active'
 	`, taskID, string(role), ttlStr)
 	if err == nil {
 		if rows, _ := result.RowsAffected(); rows > 0 {
@@ -983,7 +1041,7 @@ func (s *Store) AcquireLease(ctx context.Context, taskID string, role AgentRole,
 	// No existing non-active lease to reactivate — try to INSERT a new one.
 	// This will fail if an active lease exists (partial unique index).
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO editorial_agent_leases (task_id, agent_role, expired_at)
+		INSERT INTO editorial_agent_leases (trace_id, agent_role, expired_at)
 		VALUES ($1, $2, NOW() + $3::interval)
 	`, taskID, string(role), ttlStr)
 	if err != nil {
@@ -997,7 +1055,7 @@ func (s *Store) ReleaseLease(ctx context.Context, taskID string, role AgentRole,
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE editorial_agent_leases
 		SET status = $3, released_at = NOW()
-		WHERE task_id = $1 AND agent_role = $2 AND status = 'active'
+		WHERE trace_id = $1 AND agent_role = $2 AND status = 'active'
 	`, taskID, string(role), status)
 	return err
 }
@@ -1007,7 +1065,7 @@ func (s *Store) HasActiveLease(ctx context.Context, taskID string, role AgentRol
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM editorial_agent_leases
-		WHERE task_id = $1 AND agent_role = $2 AND status = 'active' AND expired_at > NOW()
+		WHERE trace_id = $1 AND agent_role = $2 AND status = 'active' AND expired_at > NOW()
 	`, taskID, string(role)).Scan(&count)
 	if err != nil {
 		return false, err
@@ -1017,12 +1075,12 @@ func (s *Store) HasActiveLease(ctx context.Context, taskID string, role AgentRol
 
 // ─── Sub-resource ownership resolution ──────────────────
 
-// GetTaskIDForArtifact resolves the task_id that owns an artifact.
+// GetTaskIDForArtifact resolves the trace_id that owns an artifact.
 // Returns ErrArtifactNotFound if the artifact does not exist.
 func (s *Store) GetTaskIDForArtifact(ctx context.Context, artifactID string) (string, error) {
 	var taskID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT task_id FROM editorial_artifacts WHERE id = $1
+		SELECT trace_id FROM editorial_artifacts WHERE id = $1
 	`, artifactID).Scan(&taskID)
 	if err == sql.ErrNoRows {
 		return "", ErrArtifactNotFound
@@ -1033,12 +1091,12 @@ func (s *Store) GetTaskIDForArtifact(ctx context.Context, artifactID string) (st
 	return taskID, nil
 }
 
-// GetTaskIDForDecision resolves the task_id that owns a decision.
+// GetTaskIDForDecision resolves the trace_id that owns a decision.
 // Returns ErrDecisionNotFound if the decision does not exist.
 func (s *Store) GetTaskIDForDecision(ctx context.Context, decisionID string) (string, error) {
 	var taskID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT task_id FROM editorial_decisions WHERE id = $1
+		SELECT trace_id FROM editorial_decisions WHERE id = $1
 	`, decisionID).Scan(&taskID)
 	if err == sql.ErrNoRows {
 		return "", ErrDecisionNotFound
@@ -1063,4 +1121,83 @@ func agentRoleForStatus(status TaskStatus) string {
 	default:
 		return ""
 	}
+}
+
+// ─── Plan CRUD（持久化 DAG 工作流计划）───────────────────
+
+// SavePlan 将 Planner 生成的 PlanResult 序列化为 JSON 存入 agent_traces.plan_json
+func (s *Store) SavePlan(ctx context.Context, traceID string, plan *PlanResult) error {
+	if plan == nil {
+		return fmt.Errorf("plan is nil")
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal plan: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE agent_traces SET plan_json = $2, updated_at = NOW() WHERE trace_id = $1
+	`, traceID, planJSON)
+	if err != nil {
+		return fmt.Errorf("save plan: %w", err)
+	}
+	return nil
+}
+
+// GetPlan 从 agent_traces.plan_json 读取并反序列化 PlanResult
+func (s *Store) GetPlan(ctx context.Context, traceID string) (*PlanResult, error) {
+	var planJSON []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT plan_json FROM agent_traces WHERE trace_id = $1
+	`, traceID).Scan(&planJSON)
+	if err == sql.ErrNoRows {
+		return nil, ErrTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get plan: %w", err)
+	}
+	if planJSON == nil {
+		return nil, nil // plan_json 列为 NULL，表示没有 plan
+	}
+	var plan PlanResult
+	if err := json.Unmarshal(planJSON, &plan); err != nil {
+		return nil, fmt.Errorf("unmarshal plan: %w", err)
+	}
+	return &plan, nil
+}
+
+// UpdatePlan 更新 plan_json（用户编辑 DAG 后调用）
+func (s *Store) UpdatePlan(ctx context.Context, traceID string, plan *PlanResult) error {
+	if plan == nil {
+		return fmt.Errorf("plan is nil")
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal plan: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE agent_traces SET plan_json = $2, updated_at = NOW() WHERE trace_id = $1
+	`, traceID, planJSON)
+	if err != nil {
+		return fmt.Errorf("update plan: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return ErrTaskNotFound
+	}
+	return nil
+}
+
+// DeletePlan 清除 plan_json（删除 DAG 计划）
+func (s *Store) DeletePlan(ctx context.Context, traceID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE agent_traces SET plan_json = NULL, updated_at = NOW() WHERE trace_id = $1
+	`, traceID)
+	if err != nil {
+		return fmt.Errorf("delete plan: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return ErrTaskNotFound
+	}
+	return nil
 }

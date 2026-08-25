@@ -27,7 +27,7 @@ export function WorkflowInput({ onPlan, onRun }: WorkflowInputProps) {
     <div className="border-b border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="mb-3 flex items-center gap-2">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
-          📋 编辑部模式
+          📋 工作台模式
         </h2>
         <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-400">
           Beta

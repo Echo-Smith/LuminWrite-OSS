@@ -237,6 +237,8 @@ export interface SearchResult {
   url?: string;
   source: string;
   relevance?: "strong" | "medium" | "weak" | "conflict";
+  images?: Array<{ url: string; description?: string }>;
+  answer?: string;
 }
 
 // ─── 反馈 ────────────────────────────────────────────────

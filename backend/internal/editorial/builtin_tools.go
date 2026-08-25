@@ -114,6 +114,82 @@ func (t *ReadSourceTool) Execute(ctx context.Context, args string, runCtx *ToolR
 	return executeReadSource(args, runCtx)
 }
 
+// FetchURLTool 抓取网页全文工具
+type FetchURLTool struct{ baseTool }
+
+func NewFetchURLTool() *FetchURLTool {
+	return &FetchURLTool{baseTool{
+		name:        "fetch_url",
+		description: "抓取指定网页 URL 的完整内容（全文 Markdown）。适用于需要阅读完整原始文章的场景。",
+		category:    "retrieval",
+		roles:       []string{"researcher", "writer", "reviewer"},
+		maxCalls:    5,
+		schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string", "description": "要抓取的网页 URL"},
+			},
+			"required": []string{"url"},
+		},
+	}}
+}
+
+func (t *FetchURLTool) Execute(ctx context.Context, args string, runCtx *ToolRunContext) (string, error) {
+	var a struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(args), &a); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if a.URL == "" {
+		return "错误：URL 不能为空", nil
+	}
+	if runCtx.Search == nil {
+		return "错误：搜索服务不可用", nil
+	}
+
+	if runCtx.Emitter != nil {
+		runCtx.Emitter.StepStart("fetch_url", 0)
+	}
+
+	title, content, source, err := runCtx.Search.ExtractURL(ctx, a.URL)
+	if err != nil {
+		if runCtx.Emitter != nil {
+			runCtx.Emitter.StepComplete("fetch_url", map[string]any{"url": a.URL, "error": err.Error()}, 0)
+		}
+		return fmt.Sprintf("抓取失败: %v", err), nil
+	}
+
+	// 将抓取的全文也存入 SearchResults，方便后续 read_source 引用
+	// 增量去重：如果该 URL 已存在，则不重复添加
+	newResult := engine.SearchResult{
+		Title:   title,
+		Snippet: content,
+		URL:     a.URL,
+		Source:  source,
+	}
+	runCtx.SearchMu.Lock()
+	existing := *runCtx.SearchResults
+	unique := tools.DedupAgainstExisting(existing, []engine.SearchResult{newResult})
+	*runCtx.SearchResults = append(existing, unique...)
+	runCtx.SearchMu.Unlock()
+
+	if runCtx.Emitter != nil {
+		runCtx.Emitter.StepComplete("fetch_url", map[string]any{
+			"url":      a.URL,
+			"title":    title,
+			"fetcher":  source,
+			"chars":    len([]rune(content)),
+		}, 0)
+	}
+
+	// 净化外部内容：防止抓取的网页全文中的 prompt injection 进入 LLM 上下文
+	safeTitle := engine.SanitizeExternalContent(title, fmt.Sprintf("fetch_url[%s].title", a.URL))
+	safeContent := engine.SanitizeExternalContent(content, fmt.Sprintf("fetch_url[%s].content", a.URL))
+
+	return fmt.Sprintf("标题: %s\n来源: %s\n全文内容:\n%s", safeTitle, source, safeContent), nil
+}
+
 // ─── 写作类工具 ───────────────────────────────────────────────
 
 // GenerateOutlineTool 生成文章提纲
@@ -304,10 +380,12 @@ func executeSearchWeb(arguments string, cfg *ToolRunContext) (string, error) {
 	}
 
 	cfg.SearchMu.Lock()
-	*cfg.SearchResults = append(*cfg.SearchResults, results...)
+	existing := *cfg.SearchResults
+	unique := tools.DedupAgainstExisting(existing, results)
+	*cfg.SearchResults = append(existing, unique...)
 	cfg.SearchMu.Unlock()
 
-	brief := compressRoleSearchResults(context.Background(), cfg.LLM, args.Query, results)
+	brief, _, _ := tools.CompressSearchResults(context.Background(), cfg.LLM, args.Query, results)
 
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepComplete("search_web", map[string]any{
@@ -351,7 +429,9 @@ func executeSearchKnowledge(arguments string, cfg *ToolRunContext) (string, erro
 	}
 
 	cfg.SearchMu.Lock()
-	*cfg.SearchResults = append(*cfg.SearchResults, results...)
+	existing := *cfg.SearchResults
+	unique := tools.DedupAgainstExisting(existing, results)
+	*cfg.SearchResults = append(existing, unique...)
 	cfg.SearchMu.Unlock()
 
 	formatted := formatKnowledgeResults(results)
@@ -382,14 +462,47 @@ func executeReadSource(arguments string, cfg *ToolRunContext) (string, error) {
 	}
 
 	r := results[args.Index-1]
-	formatted := fmt.Sprintf("标题: %s\n来源: %s\n摘要: %s\nURL: %s", r.Title, r.Source, r.Snippet, r.URL)
+
+	// 如果 Snippet 较短且结果有 URL，尝试抓取全文
+	content := r.Snippet
+	fetchedFull := false
+	fetcher := ""
+	if r.URL != "" && len([]rune(content)) < 2000 && cfg.Search != nil {
+		title, full, source, err := cfg.Search.ExtractURL(context.Background(), r.URL)
+		if err == nil && full != "" {
+			content = full
+			if title != "" {
+				r.Title = title
+			}
+			fetchedFull = true
+			fetcher = source
+			// 更新缓存的 Snippet
+			cfg.SearchMu.Lock()
+			results[args.Index-1].Snippet = full
+			results[args.Index-1].Title = title
+			cfg.SearchMu.Unlock()
+		}
+	}
+
+	// 净化外部内容：防止搜索结果/抓取全文中的 prompt injection 进入 LLM 上下文
+	safeTitle := engine.SanitizeExternalContent(r.Title, fmt.Sprintf("read_source[%d].title", args.Index))
+	safeContent := engine.SanitizeExternalContent(content, fmt.Sprintf("read_source[%d].content", args.Index))
+
+	var formatted string
+	if fetchedFull {
+		formatted = fmt.Sprintf("标题: %s\n来源: %s\n抓取方式: %s\n全文内容:\n%s\n\nURL: %s", safeTitle, r.Source, fetcher, safeContent, r.URL)
+	} else {
+		formatted = fmt.Sprintf("标题: %s\n来源: %s\n摘要: %s\nURL: %s", safeTitle, r.Source, safeContent, r.URL)
+	}
 
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepStart("read_source", 0)
 		cfg.Emitter.StepComplete("read_source", map[string]any{
-			"index":  args.Index,
-			"title":  r.Title,
-			"source": r.Source,
+			"index":       args.Index,
+			"title":       r.Title,
+			"source":      r.Source,
+			"fetchedFull": fetchedFull,
+			"fetcher":     fetcher,
 		}, 0)
 	}
 	return formatted, nil
@@ -551,6 +664,7 @@ func RegisterBuiltinTools(registry *EditorialToolRegistry) {
 	registry.Register(NewSearchWebTool())
 	registry.Register(NewSearchKnowledgeTool())
 	registry.Register(NewReadSourceTool())
+	registry.Register(NewFetchURLTool())
 
 	// 写作类
 	registry.Register(NewGenerateOutlineTool())

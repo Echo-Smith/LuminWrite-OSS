@@ -610,12 +610,35 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 	}
 
 	// 保存到 session 供后续复用（read_source 可以读取原始结果）
+	// 增量去重：排除已在 Session.SearchResults 中的重复条目（URL 精确 + 标题 Jaccard）
 	if cfg.Session != nil {
-		cfg.Session.SearchResults = append(cfg.Session.SearchResults, results...)
+		unique := tools.DedupAgainstExisting(cfg.Session.SearchResults, results)
+		if len(unique) < len(results) {
+			slog.Info("search_web: incremental dedup removed duplicates",
+				"query", args.Query,
+				"new_results", len(results),
+				"unique", len(unique),
+				"removed", len(results)-len(unique),
+			)
+		}
+
+		// 如果所有结果都与已有结果重复，告诉 LLM 不要再用同一 query 搜索
+		if len(unique) == 0 && len(cfg.Session.SearchResults) > 0 {
+			if cfg.Emitter != nil {
+				cfg.Emitter.StepComplete("search_web", map[string]any{
+					"query":   args.Query,
+					"results": 0,
+					"reason":   "all duplicates",
+				}, int64(time.Since(start).Milliseconds()))
+			}
+			return fmt.Sprintf("搜索「%s」的所有结果与已有结果重复（已有 %d 条）。请使用 read_source 读取已有结果，或换一个更具体的关键词。", args.Query, len(cfg.Session.SearchResults)), nil
+		}
+
+		cfg.Session.SearchResults = append(cfg.Session.SearchResults, unique...)
 	}
 
 	// 用 LLM 将原始搜索结果压缩为研究简报
-	brief := compressSearchResults(context.Background(), cfg.LLM, args.Query, results)
+	brief, _, _ := tools.CompressSearchResults(context.Background(), cfg.LLM, args.Query, results)
 
 	if cfg.Emitter != nil {
 		cfg.Emitter.StepComplete("search_web", map[string]any{
@@ -680,8 +703,18 @@ func executeSearchKnowledge(cfg ToolExecutorConfig, arguments string) (string, e
 	}
 
 	// 保存到 session 供 read_source 复用
+	// 增量去重：排除已在 Session.SearchResults 中的重复条目
 	if cfg.Session != nil {
-		cfg.Session.SearchResults = append(cfg.Session.SearchResults, results...)
+		unique := tools.DedupAgainstExisting(cfg.Session.SearchResults, results)
+		if len(unique) < len(results) {
+			slog.Info("search_knowledge: incremental dedup removed duplicates",
+				"query", args.Query,
+				"new_results", len(results),
+				"unique", len(unique),
+				"removed", len(results)-len(unique),
+			)
+		}
+		cfg.Session.SearchResults = append(cfg.Session.SearchResults, unique...)
 	}
 
 	formatted := formatKnowledgeResults(results)
@@ -710,7 +743,10 @@ func executeReadSource(cfg ToolExecutorConfig, arguments string) (string, error)
 	}
 
 	r := cfg.Session.SearchResults[args.Index-1]
-	formatted := fmt.Sprintf("标题: %s\n来源: %s\n摘要: %s\nURL: %s", r.Title, r.Source, r.Snippet, r.URL)
+	// 净化外部内容：防止搜索结果中的 prompt injection 进入 LLM 上下文
+	title := engine.SanitizeExternalContent(r.Title, fmt.Sprintf("read_source[%d].title", args.Index))
+	snippet := engine.SanitizeExternalContent(r.Snippet, fmt.Sprintf("read_source[%d].snippet", args.Index))
+	formatted := fmt.Sprintf("标题: %s\n来源: %s\n摘要: %s\nURL: %s", title, r.Source, snippet, r.URL)
 
 	start := time.Now()
 	if cfg.Emitter != nil {
@@ -1607,88 +1643,7 @@ func formatKnowledgeResults(results []engine.SearchResult) string {
 	return sb.String()
 }
 
-// compressSearchResults 用 LLM 将原始搜索结果压缩为结构化研究简报。
-func compressSearchResults(ctx context.Context, llm *tools.LLMClient, query string, results []engine.SearchResult) string {
-	if llm == nil || len(results) == 0 {
-		return formatSearchResults(results)
-	}
-
-	var rawBuf strings.Builder
-	for i, r := range results {
-		snippet := r.Snippet
-		if len([]rune(snippet)) > 200 {
-			snippet = string([]rune(snippet)[:200]) + "…"
-		}
-		rawBuf.WriteString(fmt.Sprintf("[%d] %s\n    %s\n    来源: %s\n\n", i+1, r.Title, snippet, r.Source))
-	}
-
-	systemMsg := "你是研究助理。将搜索结果压缩为结构化研究简报。只输出简报内容，不要寒暄。"
-	userMsg := fmt.Sprintf(`搜索关键词：%s
-
-原始搜索结果：
-%s
-
-请将以上搜索结果压缩为一份研究简报，格式如下：
-
-## 研究简报：<关键词>
-
-### 关键事实
-- （提取最重要的事实，每条一行，用 [序号] 标注来源）
-
-### 数据与细节
-- （提取具体数据、数字、日期等）
-
-### 多方观点
-- （如有不同视角的信息，分条列出）
-
-### 写作建议
-- （基于以上素材，给出可用方向提示）
-
-要求：
-1. 简报总长度控制在 300-500 字
-2. 每条事实后用 [序号] 标注来源，方便后续 read_source 查阅原文
-3. 去重：不同来源的相同信息只保留一条
-4. 如果素材不足以支撑某些维度，直接省略该维度`, query, rawBuf.String())
-
-	resp, _, err := llm.Chat(ctx, []tools.LLMMessage{
-		{Role: "system", Content: systemMsg},
-		{Role: "user", Content: userMsg},
-	}, tools.WithTemperature(0.1), tools.WithThinking(false))
-
-	if err != nil {
-		slog.Warn("compressSearchResults: LLM compression failed, falling back",
-			"error", err,
-			"query", query,
-			"results", len(results),
-		)
-		return formatSearchResults(results)
-	}
-
-	if resp == "" {
-		return formatSearchResults(results)
-	}
-
-	slog.Info("search_web: results compressed to research brief",
-		"query", query,
-		"raw_results", len(results),
-		"brief_chars", len([]rune(resp)),
-	)
-	return resp
-}
-
-// formatSearchResults 是 compressSearchResults 的 fallback。
-func formatSearchResults(results []engine.SearchResult) string {
-	var sb strings.Builder
-	for i, r := range results {
-		snippet := r.Snippet
-		if len([]rune(snippet)) > 150 {
-			snippet = string([]rune(snippet)[:150]) + "…"
-		}
-		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, r.Title, snippet))
-	}
-	return sb.String()
-}
-
+// formatReviewResult formats the review result for display.
 func formatReviewResult(r *engine.ReviewResult) string {
 	if r == nil {
 		return "评审未返回结果"
