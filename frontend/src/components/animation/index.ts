@@ -14,3 +14,4 @@ export { AnimatedBar } from "./animated-bar";
 export { AnimatedCheck } from "./animated-check";
 export { PageTransition } from "./page-transition";
 export { ConfettiBurst } from "./confetti-burst";
+export { StreamText } from "./stream-text";

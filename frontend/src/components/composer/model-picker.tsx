@@ -57,8 +57,8 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // If no models loaded yet, show a simple label
   if (loading && models.length === 0) {
     return (
-      <div className="flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+      <div className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground">
+        <Loader2 className="h-[18px] w-[18px] animate-spin text-blue-500" />
         <span className="hidden sm:inline">加载模型...</span>
       </div>
     );
@@ -67,8 +67,8 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // If models are empty (fetch failed or no config), show fallback
   if (models.length === 0) {
     return (
-      <div className="flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground">
-        <Cpu className="h-3.5 w-3.5 text-blue-500" />
+      <div className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground">
+        <Cpu className="h-[18px] w-[18px] text-blue-500" />
         <span className="hidden sm:inline">{value || "默认模型"}</span>
       </div>
     );
@@ -77,15 +77,15 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground">
-          <Cpu className="h-3.5 w-3.5 text-blue-500" />
+        <button className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground">
+          <Cpu className="h-[18px] w-[18px] text-blue-500" />
           <span className="hidden sm:inline">{selected?.display_name ?? selected?.model_name ?? "选择模型"}</span>
           {selected && selected.cost_level && COST_LEVELS[selected.cost_level] && (
-            <span className={cn("ml-0.5 text-[10px] hidden sm:inline", COST_LEVELS[selected.cost_level].color)}>
+            <span className={cn("ml-0.5 text-[11px] hidden sm:inline", COST_LEVELS[selected.cost_level].color)}>
               {COST_LEVELS[selected.cost_level].label}
             </span>
           )}
-          <ChevronDown className="h-3 w-3 opacity-50 hidden sm:block" />
+          <ChevronDown className="h-4 w-4 opacity-50 hidden sm:block" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-64 p-1">

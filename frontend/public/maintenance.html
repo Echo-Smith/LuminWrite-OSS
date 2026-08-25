@@ -8,8 +8,8 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: #0f0f12;
-      color: #e4e4e7;
+      background: #0a0a0a;
+      color: #fafafa;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -21,27 +21,31 @@
       text-align: center;
     }
     .logo {
-      width: 72px;
-      height: 72px;
+      width: 56px;
+      height: 56px;
       margin: 0 auto 2rem;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #333 0%, #1a1a1a 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
       animation: pulse 2s ease-in-out infinite;
     }
-    .logo svg {
-      width: 100%;
-      height: 100%;
+    .logo span {
+      font-size: 26px;
+      font-weight: 700;
+      color: #fafafa;
     }
     h1 {
       font-size: 1.75rem;
       font-weight: 700;
       margin-bottom: 0.75rem;
-      background: linear-gradient(135deg, #818cf8, #c084fc);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      letter-spacing: -0.02em;
     }
     .subtitle {
       font-size: 1rem;
-      color: #a1a1aa;
+      color: #737373;
       margin-bottom: 1.5rem;
       line-height: 1.6;
     }
@@ -49,12 +53,12 @@
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      background: rgba(129, 140, 248, 0.1);
-      border: 1px solid rgba(129, 140, 248, 0.2);
+      background: #171717;
+      border: 1px solid #262626;
       border-radius: 0.5rem;
       padding: 0.5rem 1rem;
       font-size: 0.875rem;
-      color: #a5b4fc;
+      color: #a3a3a3;
       margin-bottom: 2rem;
     }
     .eta-icon {
@@ -64,11 +68,11 @@
     }
     .refresh-hint {
       font-size: 0.8125rem;
-      color: #71717a;
+      color: #525252;
       margin-top: 2rem;
     }
     .refresh-hint a {
-      color: #818cf8;
+      color: #a3a3a3;
       text-decoration: none;
     }
     .refresh-hint a:hover {
@@ -86,22 +90,7 @@
 </head>
 <body>
   <div class="container">
-    <div class="logo">
-      <svg viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="36" cy="36" r="34" stroke="url(#grad)" stroke-width="2" opacity="0.3"/>
-        <circle cx="36" cy="36" r="28" stroke="url(#grad)" stroke-width="2" opacity="0.5"/>
-        <circle cx="36" cy="36" r="22" stroke="url(#grad)" stroke-width="2" opacity="0.7"/>
-        <circle cx="36" cy="36" r="16" fill="url(#grad)" opacity="0.15"/>
-        <path d="M28 30 L36 22 L44 30 M28 42 L36 50 L44 42" stroke="url(#grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="36" cy="36" r="4" fill="url(#grad)"/>
-        <defs>
-          <linearGradient id="grad" x1="0" y1="0" x2="72" y2="72">
-            <stop offset="0" stop-color="#818cf8"/>
-            <stop offset="1" stop-color="#c084fc"/>
-          </linearGradient>
-        </defs>
-      </svg>
-    </div>
+    <div class="logo"><span>笔</span></div>
     <h1>笔润智谈正在维护中</h1>
     <p class="subtitle">
       我们正在进行系统升级，以提供更好的写作体验。<br>

@@ -59,7 +59,7 @@ export const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
       editorProps: {
         attributes: {
           class:
-            "tiptap-content outline-none min-h-[40px] max-h-[200px] overflow-y-auto text-sm px-4 pt-3 pb-1",
+            "tiptap-content outline-none min-h-[44px] max-h-[200px] overflow-y-auto text-[15px] leading-[24px] px-4 pt-3 pb-1",
           "aria-label": "写作输入框",
         },
         handleKeyDown(_view, event) {

@@ -4,7 +4,7 @@
 import { useState } from "react";
 import {
   Info, Heart, BookOpen, Zap, ScrollText, Sparkles,
-  Palette, Shield, Brain, ChevronRight, Mail, FileText,
+  Palette, Shield, Brain, ChevronRight, Mail, FileText, Github,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icon";
 import { Card, CardContent } from "@/components/ui/card";
@@ -183,6 +183,18 @@ export function AboutSection() {
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm">隐私政策</span>
+          </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
+        </a>
+        <a
+          href="https://github.com/Echo-Smith/luminbuddy-writing-agent-v2"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5 hover:bg-accent/50 transition-ui"
+        >
+          <div className="flex items-center gap-2">
+            <Github className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm">开源项目</span>
           </div>
           <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
         </a>

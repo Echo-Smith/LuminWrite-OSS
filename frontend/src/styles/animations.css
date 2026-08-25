@@ -588,6 +588,25 @@
   animation: anim-fade-up var(--anim-duration-normal) var(--anim-ease-precise) forwards;
 }
 
+/* ── 流式文字逐词浮现（参考 transitions.dev streaming text） ── */
+:root {
+  --stream-gap: 50ms;
+  --stream-fade: 320ms;
+  --stream-blur: 1px;
+  --stream-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.t-stream-w {
+  opacity: 0;
+  filter: blur(var(--stream-blur));
+  transition:
+    opacity var(--stream-fade) var(--stream-ease),
+    filter var(--stream-fade) var(--stream-ease);
+}
+.t-stream-w.is-in {
+  opacity: 1;
+  filter: blur(0);
+}
+
 /* ════════════════════════════════════════════════════════════
  * 5. REDUCED MOTION — 尊重无障碍偏好
  * ════════════════════════════════════════════════════════════ */
@@ -600,4 +619,5 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  .t-stream-w { transition: none !important; filter: none !important; opacity: 1 !important; }
 }

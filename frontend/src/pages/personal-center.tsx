@@ -110,7 +110,7 @@ export function PersonalCenter() {
             </div>
 
             {/* 可滚动内容区 */}
-            <div className="flex-1 overflow-y-auto relative">
+            <div className="flex-1 overflow-y-auto relative scrollbar-hide">
             {activeMenu === "profile" && <ProfileSection />}
             {activeMenu === "styles" && <StyleSection />}
             {activeMenu === "memory" && <MemorySection />}

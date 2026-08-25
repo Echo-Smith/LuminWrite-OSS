@@ -20,7 +20,7 @@ import { OutlineTool } from "@/components/tools/outline-tool";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { toast } from "@/stores/toast-store";
 import { cn } from "@/lib/utils";
-import { TypingDots, StreamingCursor, AnimatedCheck, ConfettiBurst } from "@/components/animation";
+import { TypingDots, StreamingCursor, AnimatedCheck, ConfettiBurst, StreamText } from "@/components/animation";
 import { CompactStepTimeline } from "@/components/tools/compact-step-timeline";
 
 interface AssistantMessageProps {
@@ -105,7 +105,9 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             ))}
             {textParts.map((part, i) => (
               <div key={i}>
-                <MarkdownContent content={part.text} />
+                <StreamText streaming={part.streaming}>
+                  <MarkdownContent content={part.text} />
+                </StreamText>
                 {part.streaming && (
                   <StreamingCursor active className="ml-0.5" />
                 )}
@@ -528,25 +530,51 @@ const [saving, setSaving] = useState(false);
 
 /**
  * WordCountProgress — 流式写作中的实时字数进度条
- * 从 session.style 获取目标字数范围，显示当前进度
+ * 极简版：无外边框，只有进度条 + 当前字数
+ * 从 API 动态获取所选风格的 word_range
  */
+
+// 模块级缓存：slug → [min, max]
+const styleWordRangeCache = new Map<string, [number, number]>();
+
+function useStyleWordRange(slug: string): [number, number] {
+  const [range, setRange] = useState<[number, number]>(
+    () => styleWordRangeCache.get(slug) ?? [1000, 2000]
+  );
+
+  useEffect(() => {
+    if (styleWordRangeCache.has(slug)) {
+      setRange(styleWordRangeCache.get(slug)!);
+      return;
+    }
+    const controller = new AbortController();
+    fetch(`/api/v2/styles/${encodeURIComponent(slug)}`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => {
+        const p = data?.data ?? data;
+        const wr = p?.word_range;
+        if (wr) {
+          const min = Array.isArray(wr) ? wr[0] : wr.min;
+          const max = Array.isArray(wr) ? wr[1] : wr.max;
+          const r: [number, number] = [min ?? 1000, max ?? 2000];
+          styleWordRangeCache.set(slug, r);
+          setRange(r);
+        }
+      })
+      .catch(() => { /* 静默失败，用 fallback */ });
+    return () => controller.abort();
+  }, [slug]);
+
+  return range;
+}
+
 function WordCountProgress({ text }: { text: string }) {
   const sessionStyle = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.style ?? "yinyue";
   });
 
-  // 风格对应的目标字数范围（fallback）
-  const STYLE_WORD_RANGE: Record<string, [number, number]> = {
-    yinyue: [1800, 2800],
-    sheping: [1500, 2500],
-    xinwen: [800, 1500],
-    pinglun: [1200, 2000],
-    sanwen: [800, 1500],
-  };
-  const range = STYLE_WORD_RANGE[sessionStyle] ?? [1000, 2000];
-  const targetMin = range[0];
-  const targetMax = range[1];
+  const [targetMin, targetMax] = useStyleWordRange(sessionStyle);
 
   // 计算中文字数（去除空白和标记符号）
   const cleanText = text.replace(/\s/g, "").replace(/[#*>\-_`~]/g, "");
@@ -556,34 +584,30 @@ function WordCountProgress({ text }: { text: string }) {
   // 判断当前状态
   const isBelowTarget = currentCount < targetMin;
   const isInRange = currentCount >= targetMin && currentCount <= targetMax;
-  const isAboveTarget = currentCount > targetMax;
 
   // 以每 100 字为粒度触发 pop-in 动画，避免每帧闪烁
   const popInKey = Math.floor(currentCount / 100);
 
   return (
-    <div className="mt-3 flex items-center gap-3 rounded-md bg-muted/30 dark:bg-muted/10 px-3 py-2 anim-fade-in">
-      <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+    <div className="mt-2 flex items-center gap-2.5 anim-fade-in">
+      <div className="flex-1 h-1 rounded-full bg-muted/40 overflow-hidden">
         <div
           className={cn(
             "h-full rounded-full transition-all duration-300",
-            isBelowTarget ? "bg-blue-400" : isInRange ? "bg-emerald-500" : "bg-amber-500"
+            isBelowTarget ? "bg-primary" : "bg-emerald-500"
           )}
           style={{ width: `${progressPercent}%` }}
         />
       </div>
-      <div className="flex items-center gap-1.5 text-xs tabular-nums shrink-0">
-        <span
-          key={popInKey}
-          className={cn(
-            "font-medium anim-pop-in",
-            isInRange ? "text-emerald-600" : isAboveTarget ? "text-amber-600" : "text-muted-foreground"
-          )}
-        >
-          {currentCount}
-        </span>
-        <span className="text-muted-foreground/60">/ {targetMin}-{targetMax} 字</span>
-      </div>
+      <span
+        key={popInKey}
+        className={cn(
+          "text-xs tabular-nums font-medium anim-pop-in shrink-0",
+          isInRange ? "text-emerald-600" : "text-muted-foreground"
+        )}
+      >
+        {currentCount} / {targetMin}-{targetMax}
+      </span>
     </div>
   );
 }

@@ -657,8 +657,8 @@ func New(cfg *config.Config) (*Server, error) {
 
 			researchExec := editorial.NewResearchAgentExecutor(s.llmSvc, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("researcher", researchExec)
-			writingExec := editorial.NewWritingAgentExecutor(s.llmSvc, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
-			reviewExec := editorial.NewReviewAgentExecutor(s.llmSvc, profileLoader, searchClient, edStore, kbAdapter, dagToolRegistry)
+			writingExec := editorial.NewWritingAgentExecutor(s.llmSvc, profileLoader, s.userStyleStore, searchClient, edStore, kbAdapter, dagToolRegistry)
+			reviewExec := editorial.NewReviewAgentExecutor(s.llmSvc, profileLoader, s.userStyleStore, searchClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("writer", writingExec)
 			s.dagExecutor.RegisterExecutor("reviewer", reviewExec)
 			slog.Info("DAG workflow system initialized (planner + executor)")
@@ -1650,8 +1650,8 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		}
 	}
 
-	// ── 余额检查（admin 豁免）──
-	if userRole != "admin" && userID != AdminUserID && s.billingRepo != nil {
+	// ── 余额检查（admin/guest 豁免：游客由 completedCount 限制次数）──
+	if userRole != "admin" && userRole != "guest" && userID != AdminUserID && s.billingRepo != nil {
 		balance, ok, err := s.CheckUserBalance(context.Background(), userID, 0)
 		if err == nil && !ok {
 			client.SendDirect(&websocket.ServerMessage{

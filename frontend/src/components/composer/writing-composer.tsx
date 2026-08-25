@@ -149,7 +149,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       const { setUserInput, setRunStatus } = useWorkflowStore.getState();
       setUserInput(currentText.trim());
       setRunStatus("planning");
-      sendWS("workflow.start", { user_input: currentText.trim(), kb_enabled: kbEnabled });
+      sendWS("workflow.start", { user_input: currentText.trim(), kb_enabled: kbEnabled, style_slug: style });
       editorRef.current?.clear();
       setMessage("");
       return;
@@ -411,15 +411,15 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
           {/* 左侧：+ 素材按钮 */}
           <button
             className={cn(
-              "relative flex items-center justify-center h-7 w-7 rounded-full border border-border/60 text-muted-foreground transition-ui",
+              "relative flex items-center justify-center h-8 w-8 rounded-xl text-muted-foreground transition-ui",
               showMaterials
-                ? "bg-accent text-foreground border-transparent"
+                ? "bg-accent text-foreground"
                 : "hover:bg-accent hover:text-foreground"
             )}
             onClick={() => setShowMaterials(!showMaterials)}
             title="添加素材"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-[18px] w-[18px]" />
             {materials.length > 0 && (
               <span className="absolute -top-1 -right-1 rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground leading-4">
                 {materials.length}
@@ -450,11 +450,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                     cancelWriting();
                   }
                 }}
-                className="flex items-center justify-center h-8 w-8 rounded-full border border-destructive/30 text-destructive transition-transform-precise hover:scale-105 active:scale-95 hover:bg-destructive/10"
+                className="flex items-center justify-center h-9 w-9 rounded-xl border border-destructive/30 text-destructive transition-transform-precise hover:scale-105 active:scale-95 hover:bg-destructive/10"
                 title="停止"
               >
                 <span key="stop-icon" className="anim-fade-scale flex items-center justify-center">
-                  <Square className="h-3.5 w-3.5" />
+                  <Square className="h-4 w-4" />
                 </span>
               </button>
             )}
@@ -464,7 +464,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 onClick={handleSend}
                 disabled={!message.trim()}
                 className={cn(
-                  "flex items-center justify-center h-8 w-8 rounded-full transition-transform-precise",
+                  "flex items-center justify-center h-9 w-9 rounded-xl transition-transform-precise",
                   message.trim()
                     ? "bg-foreground text-background hover:scale-105 active:scale-95"
                     : "bg-muted text-muted-foreground cursor-not-allowed"
@@ -472,7 +472,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
                 title="发送 (Enter)"
               >
                 <span key="send-icon" className="anim-fade-scale flex items-center justify-center">
-                  <PenLine className="h-4 w-4" />
+                  <PenLine className="h-[18px] w-[18px]" />
                 </span>
               </button>
             )}

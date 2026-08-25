@@ -15,7 +15,6 @@ import { PenLine, Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-
 import { UserMessage } from "./user-message";
 import { AssistantMessage } from "./assistant-message";
 import { useAgentStore } from "@/stores/agent-store";
-import { Button } from "@/components/ui/button";
 import { FadeIn, StaggerItem } from "@/components/animation";
 import type { Topic, AgentStartPayload } from "@/lib/types";
 
@@ -167,7 +166,7 @@ function topicToPayload(topic: Topic): AgentStartPayload {
   };
 }
 
-/** 单个建议按钮 — 支持纯文本和 Topic 两种模式 */
+/** 单个建议按钮 — 豆包风格：全宽、细边框、圆角 */
 function SuggestionButton({
   text,
   payload,
@@ -180,19 +179,17 @@ function SuggestionButton({
   const startWriting = useAgentStore((s) => s.startWriting);
 
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      className="gap-1.5 text-xs"
+    <button
       onClick={() => startWriting(payload ?? { message: text })}
+      className="flex w-full items-center gap-1.5 h-[42px] rounded-xl border border-border/5 px-3 text-left text-sm text-foreground transition-ui hover:bg-accent/60"
     >
       {isHot ? (
-        <Flame className="h-3 w-3 text-orange-500" />
+        <Flame className="h-4 w-4 shrink-0 text-orange-500" />
       ) : (
-        <Lightbulb className="h-3 w-3 text-amber-500" />
+        <Lightbulb className="h-4 w-4 shrink-0 text-amber-500" />
       )}
-      {text}
-    </Button>
+      <span className="truncate">{text}</span>
+    </button>
   );
 }
 
@@ -260,21 +257,21 @@ function EmptyState() {
         </FadeIn>
 
         {/* 建议按钮 */}
-        <FadeIn direction="up" delay={200} className="space-y-3">
+        <FadeIn direction="up" delay={200} className="space-y-3 w-full max-w-lg">
           <div className="flex items-center justify-center gap-1.5">
             <Flame className="h-3.5 w-3.5 text-orange-500" />
-            <p className="text-xs text-muted-foreground font-mono-sm">
+            <p className="text-[12px] text-muted-foreground/60">
               {loading ? "正在获取热搜话题…" : suggestions.some((s) => s.isHot) ? "试试这些热搜话题" : "试试这些"}
             </p>
             {loading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
+          <div className="flex flex-col items-center gap-2.5">
             {loading ? (
               // 骨架占位
               [0, 1, 2].map((i) => (
                 <div
                   key={i}
-                  className="h-8 w-48 animate-pulse rounded-md bg-muted/60"
+                  className="h-[42px] w-full max-w-md animate-pulse rounded-xl bg-muted/60"
                 />
               ))
             ) : (
@@ -285,6 +282,7 @@ function EmptyState() {
                   interval={80}
                   animation="fade-up"
                   as="div"
+                  className="w-full max-w-md"
                 >
                   <SuggestionButton
                     text={suggestion.text}

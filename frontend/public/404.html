@@ -8,8 +8,8 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: #0f0f12;
-      color: #e4e4e7;
+      background: #0a0a0a;
+      color: #fafafa;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -17,30 +17,43 @@
       padding: 2rem;
     }
     .container {
-      max-width: 520px;
+      max-width: 440px;
       text-align: center;
     }
+    .logo {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 2rem;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #333 0%, #1a1a1a 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .logo span {
+      font-size: 26px;
+      font-weight: 700;
+      color: #fafafa;
+    }
     .code {
-      font-size: 6rem;
+      font-size: 5rem;
       font-weight: 800;
       line-height: 1;
-      margin-bottom: 1rem;
-      background: linear-gradient(135deg, #818cf8, #c084fc);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      margin-bottom: 1.5rem;
+      color: #404040;
       letter-spacing: -0.05em;
     }
-    .message {
-      font-size: 1.25rem;
-      font-weight: 600;
-      color: #d4d4d8;
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
       margin-bottom: 0.5rem;
     }
     .description {
-      font-size: 0.9375rem;
-      color: #a1a1aa;
-      margin-bottom: 2rem;
+      font-size: 0.8125rem;
+      color: #737373;
+      margin-bottom: 2.5rem;
       line-height: 1.6;
     }
     .actions {
@@ -60,59 +73,60 @@
       text-decoration: none;
       transition: all 0.15s ease;
       cursor: pointer;
-      border: none;
+      border: 1px solid #262626;
     }
     .btn-primary {
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      color: white;
+      background: #fafafa;
+      color: #0a0a0a;
     }
     .btn-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+      background: #e5e5e5;
+      border-color: #e5e5e5;
     }
     .btn-secondary {
       background: transparent;
-      color: #d4d4d8;
-      border: 1px solid #3f3f46;
+      color: #d4d4d4;
+      border: 1px solid #262626;
     }
     .btn-secondary:hover {
-      background: #27272a;
-      border-color: #52525b;
+      background: #171717;
+      border-color: #404040;
     }
     .btn svg {
-      width: 16px;
-      height: 16px;
+      width: 15px;
+      height: 15px;
     }
     .links {
       margin-top: 2rem;
       padding-top: 2rem;
-      border-top: 1px solid #27272a;
+      border-top: 1px solid #171717;
     }
     .links-title {
       font-size: 0.8125rem;
-      color: #71717a;
+      color: #525252;
       margin-bottom: 0.75rem;
     }
     .links-list {
       display: flex;
       flex-wrap: wrap;
-      gap: 1rem;
+      gap: 0.875rem;
       justify-content: center;
     }
     .links-list a {
       font-size: 0.8125rem;
-      color: #818cf8;
+      color: #a3a3a3;
       text-decoration: none;
     }
     .links-list a:hover {
-      text-decoration: underline;
+      color: #fafafa;
     }
   </style>
 </head>
 <body>
   <div class="container">
+    <div class="logo"><span>笔</span></div>
     <div class="code">404</div>
-    <div class="message">页面不存在</div>
+    <h1>页面不存在</h1>
     <p class="description">
       您访问的页面可能已被移除、重命名或暂时不可用。<br>
       请检查地址是否正确，或返回以下页面继续。

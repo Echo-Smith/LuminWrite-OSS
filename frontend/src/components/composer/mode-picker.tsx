@@ -28,17 +28,17 @@ export function ModePicker({ value, onChange }: ModePickerProps) {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
           <button
-            className="flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+            className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
           >
             {selected && (
               <span key={`mode-icon-${selected.value}`} className="flex items-center anim-fade-scale">
-                <selected.icon className="h-3.5 w-3.5" />
+                <selected.icon className="h-[18px] w-[18px]" />
               </span>
             )}
             <span key={`mode-label-${selected?.value ?? 'none'}`} className="hidden sm:inline anim-fade-scale">
               {selected?.label ?? "选择模式"}
             </span>
-            <ChevronDown className="h-3 w-3 opacity-50 hidden sm:block" />
+            <ChevronDown className="h-4 w-4 opacity-50 hidden sm:block" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 p-1">

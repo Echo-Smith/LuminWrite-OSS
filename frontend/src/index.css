@@ -75,6 +75,9 @@
 }
 
 @layer base {
+  html {
+    font-size: 16px;
+  }
   * {
     border-color: hsl(var(--border));
   }
@@ -82,6 +85,7 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
@@ -124,6 +128,15 @@
     background-color: hsl(var(--muted-foreground) / 0.4);
   }
 
+  /* ── 隐藏滚动条（仍可滚动） ── */
+  .scrollbar-hide {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
   /* ── 等宽字体 ── */
   .font-mono-sm {
     font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
@@ -141,16 +154,18 @@
       box-shadow var(--anim-duration-fast) var(--anim-ease-smooth);
   }
 
-  /* ── Composer 容器：圆角矩形 + 聚焦阴影（无边框，参考豆包） ── */
+  /* ── Composer 容器：圆角矩形 + 细边框 + 聚焦阴影（参考豆包） ── */
   .composer-shell {
-    border: none;
-    border-radius: var(--radius);
+    border: 1px solid hsl(var(--border) / 0.6);
+    border-radius: var(--composer-radius);
     background: hsl(var(--card));
     box-shadow: var(--shadow-composer);
     transition:
+      border-color var(--anim-duration-fast) var(--anim-ease-smooth),
       box-shadow var(--anim-duration-fast) var(--anim-ease-smooth);
   }
   .composer-shell:focus-within {
+    border-color: hsl(var(--border));
     box-shadow: var(--shadow-composer-focus);
   }
 
@@ -338,7 +353,7 @@
 
 /* ── 基础编辑区 ── */
 .tiptap-content {
-  min-height: 40px;
+  min-height: 44px;
   max-height: 200px;
   overflow-y: auto;
 }

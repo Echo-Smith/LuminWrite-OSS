@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
@@ -240,18 +241,19 @@ func (e *ResearchAgentExecutor) Execute(ctx context.Context, ac *AgentContext, t
 
 // WritingAgentExecutor 写作 Agent 执行器
 type WritingAgentExecutor struct {
-	llmResolver   LLMResolver
-	profileLoader *profile.Loader
-	search        *tools.SearchClient
-	kbSearcher    tools.KnowledgeSearcher
+	llmResolver    LLMResolver
+	profileLoader  *profile.Loader
+	userStyleStore *database.UserStyleStore
+	search         *tools.SearchClient
+	kbSearcher     tools.KnowledgeSearcher
 	store          *Store
-	toolRegistry  *EditorialToolRegistry
+	toolRegistry   *EditorialToolRegistry
 	*emitterHolder
 }
 
 // NewWritingAgentExecutor 创建写作 Agent 执行器（动态加载 Profile）
-func NewWritingAgentExecutor(llmResolver LLMResolver, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
-	return &WritingAgentExecutor{llmResolver: llmResolver, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
+func NewWritingAgentExecutor(llmResolver LLMResolver, loader *profile.Loader, userStyleStore *database.UserStyleStore, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *WritingAgentExecutor {
+	return &WritingAgentExecutor{llmResolver: llmResolver, profileLoader: loader, userStyleStore: userStyleStore, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *WritingAgentExecutor) Role() AgentRole { return RoleWriting }
@@ -323,13 +325,8 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 	// ── 获取角色配置 ──
 	agentCfg := getAgentConfig(ac, "writer")
 
-	// 动态加载写作风格 Profile
-	var styleProfile *profile.StyleProfile
-	if e.profileLoader != nil && task.StyleSlug != "" {
-		if p, ok := e.profileLoader.Get(task.StyleSlug); ok {
-			styleProfile = p
-		}
-	}
+	// 动态加载写作风格 Profile（支持用户自定义风格 my_ 前缀）
+	styleProfile := e.resolveStyleProfile(ctx, task.StyleSlug, task.OwnerID)
 
 	// ── 启动 RoleAgentRunner ──
 	llmClient := e.llmResolver.GetClient(ctx, "")
@@ -417,18 +414,19 @@ func (e *WritingAgentExecutor) Execute(ctx context.Context, ac *AgentContext, ta
 
 // ReviewAgentExecutor 审校 Agent 执行器
 type ReviewAgentExecutor struct {
-	llmResolver   LLMResolver
-	profileLoader *profile.Loader
-	search        *tools.SearchClient
-	kbSearcher    tools.KnowledgeSearcher
+	llmResolver    LLMResolver
+	profileLoader  *profile.Loader
+	userStyleStore *database.UserStyleStore
+	search         *tools.SearchClient
+	kbSearcher     tools.KnowledgeSearcher
 	store          *Store
-	toolRegistry  *EditorialToolRegistry
+	toolRegistry   *EditorialToolRegistry
 	*emitterHolder
 }
 
 // NewReviewAgentExecutor 创建审校 Agent 执行器（动态加载 Profile）
-func NewReviewAgentExecutor(llmResolver LLMResolver, loader *profile.Loader, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
-	return &ReviewAgentExecutor{llmResolver: llmResolver, profileLoader: loader, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
+func NewReviewAgentExecutor(llmResolver LLMResolver, loader *profile.Loader, userStyleStore *database.UserStyleStore, search *tools.SearchClient, store *Store, kbSearcher tools.KnowledgeSearcher, toolRegistry *EditorialToolRegistry) *ReviewAgentExecutor {
+	return &ReviewAgentExecutor{llmResolver: llmResolver, profileLoader: loader, userStyleStore: userStyleStore, search: search, store: store, kbSearcher: kbSearcher, toolRegistry: toolRegistry, emitterHolder: newEmitterHolder()}
 }
 
 func (e *ReviewAgentExecutor) Role() AgentRole { return RoleReview }
@@ -486,13 +484,8 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 	// ── 获取角色配置 ──
 	agentCfg := getAgentConfig(ac, "reviewer")
 
-	// 动态加载写作风格 Profile
-	var styleProfile *profile.StyleProfile
-	if e.profileLoader != nil && task.StyleSlug != "" {
-		if p, ok := e.profileLoader.Get(task.StyleSlug); ok {
-			styleProfile = p
-		}
-	}
+	// 动态加载写作风格 Profile（支持用户自定义风格 my_ 前缀）
+	styleProfile := e.resolveStyleProfile(ctx, task.StyleSlug, task.OwnerID)
 
 	// ── 启动 RoleAgentRunner ──
 	llmClient := e.llmResolver.GetClient(ctx, "")
@@ -618,6 +611,62 @@ func (e *ReviewAgentExecutor) Execute(ctx context.Context, ac *AgentContext, tas
 		"task_id", task.ID, "passed", passed, "issues", len(issues), "tokens", tokenUsed)
 
 	return art, nil
+}
+
+// resolveStyleProfile 加载写作风格 Profile，支持内置风格和用户自定义风格（my_ 前缀）。
+// 对于 my_ 前缀的 slug，从 user_style_profiles 表加载用户自定义风格配置。
+// 对于普通 slug，从全局 profile.Loader 加载内置/DB 全局风格。
+// 如果找不到，返回 nil（RoleAgentRunner 会跳过风格注入）。
+func resolveStyleProfile(loader *profile.Loader, userStyleStore *database.UserStyleStore, slug, ownerID string) *profile.StyleProfile {
+	if slug == "" {
+		return nil
+	}
+
+	// 用户自定义风格（my_ 前缀）
+	if strings.HasPrefix(slug, "my_") && userStyleStore != nil && ownerID != "" && ownerID != "anonymous" {
+		rawSlug := strings.TrimPrefix(slug, "my_")
+		userProfile, err := userStyleStore.GetProfileBySlugAndOwner(context.Background(), rawSlug, ownerID)
+		if err != nil {
+			slog.Warn("failed to load user custom style for editorial, falling back to global",
+				"slug", slug, "error", err, "user_id", ownerID)
+		} else if userProfile.CurrentVersion > 0 {
+			version, err := userStyleStore.GetLatestVersion(context.Background(), userProfile.ID)
+			if err != nil {
+				slog.Warn("failed to load user style version for editorial, falling back to global",
+					"slug", slug, "error", err, "user_id", ownerID)
+			} else {
+				var sp profile.StyleProfile
+				if err := json.Unmarshal([]byte(version.Config), &sp); err != nil {
+					slog.Warn("failed to unmarshal user style config for editorial, falling back to global",
+						"slug", slug, "error", err, "user_id", ownerID)
+				} else {
+					slog.Info("loaded user custom style for editorial",
+						"slug", slug, "name", sp.Name, "version", sp.Version, "user_id", ownerID)
+					return &sp
+				}
+			}
+		}
+		// 加载失败时继续 fallback 到全局 loader
+	}
+
+	// 全局风格（内置或 DB 中的全局 profile）
+	if loader != nil {
+		if p, ok := loader.Get(slug); ok {
+			return p
+		}
+	}
+
+	return nil
+}
+
+// resolveStyleProfile 是 WritingAgentExecutor 的便捷方法
+func (e *WritingAgentExecutor) resolveStyleProfile(_ context.Context, slug, ownerID string) *profile.StyleProfile {
+	return resolveStyleProfile(e.profileLoader, e.userStyleStore, slug, ownerID)
+}
+
+// resolveStyleProfile 是 ReviewAgentExecutor 的便捷方法
+func (e *ReviewAgentExecutor) resolveStyleProfile(_ context.Context, slug, ownerID string) *profile.StyleProfile {
+	return resolveStyleProfile(e.profileLoader, e.userStyleStore, slug, ownerID)
 }
 
 // getAgentConfig 获取角色配置：优先使用 DAGExecutor 注入的 AgentConfig，

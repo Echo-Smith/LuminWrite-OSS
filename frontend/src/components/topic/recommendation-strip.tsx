@@ -1,9 +1,7 @@
 /**
- * RecommendationStrip — AI 推荐选题横幅（仅“全部选题”视图显示）
+ * RecommendationStrip — AI 推荐选题（豆包风格：垂直列排、细边框按钮）
  */
 import { Lightbulb, Loader2, RefreshCw } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import type { Topic } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -18,45 +16,43 @@ export function RecommendationStrip({ recommendations, loading, onOpen, onRefres
   if (recommendations.length === 0 && !loading) return null;
 
   return (
-    <div className="mb-6 rounded-xl border bg-gradient-to-r from-purple-50 to-blue-50 p-4 dark:from-purple-950/30 dark:to-blue-950/30">
-      <div className="mb-3 flex items-center gap-2">
-        <Lightbulb className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-        <span className="text-sm font-medium text-purple-900 dark:text-purple-200">AI 推荐选题</span>
-        {loading && <Loader2 className="h-3 w-3 animate-spin text-purple-400" />}
+    <div className="mb-6">
+      {/* 标题行 */}
+      <div className="mb-3 flex items-center gap-2 px-1">
+        <Lightbulb className="h-4 w-4 text-muted-foreground/60" />
+        <span className="text-[12px] text-muted-foreground/60">AI 推荐选题</span>
+        {loading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/60" />}
         {onRefresh && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-7 gap-1 text-purple-700 hover:bg-purple-100 dark:text-purple-300 dark:hover:bg-purple-900/30"
+          <button
             onClick={onRefresh}
             disabled={loading}
+            className="ml-auto flex items-center gap-1 h-7 rounded-lg px-2 text-xs text-muted-foreground transition-ui hover:bg-accent hover:text-foreground disabled:opacity-50"
           >
             <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
             换一批
-          </Button>
+          </button>
         )}
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      {/* 垂直列排推荐按钮 */}
+      <div className="flex flex-col gap-2.5">
         {recommendations.map((topic) => (
-          <div
+          <button
             key={topic.id ?? topic.title}
-            className="flex-shrink-0 cursor-pointer rounded-lg border bg-white px-3 py-2 shadow-sm transition-shadow hover:shadow-md dark:bg-card dark:border-border"
             onClick={() => onOpen(topic)}
+            className="flex w-full items-center gap-2 h-[42px] rounded-xl border border-border/5 px-3 text-left text-sm text-foreground transition-ui hover:bg-accent/60"
           >
-            <div className="flex items-center gap-2">
-              {topic.hot_rank > 0 && (
-                <Badge className="bg-orange-100 text-orange-700 dark:bg-orange-950/50 dark:text-orange-300">
-                  #{topic.hot_rank}
-                </Badge>
-              )}
-              <span className="text-sm font-medium">{topic.title}</span>
-            </div>
-            {topic.recommendation_reason && (
-              <p className="mt-1 max-w-xs truncate text-xs text-muted-foreground">
-                {topic.recommendation_reason}
-              </p>
+            {topic.hot_rank > 0 && (
+              <span className="shrink-0 rounded-md bg-orange-100 px-1.5 py-0.5 text-[11px] font-medium text-orange-700 dark:bg-orange-950/50 dark:text-orange-300">
+                #{topic.hot_rank}
+              </span>
             )}
-          </div>
+            <span className="truncate font-medium">{topic.title}</span>
+            {topic.recommendation_reason && (
+              <span className="ml-auto hidden truncate text-xs text-muted-foreground/60 sm:inline">
+                {topic.recommendation_reason}
+              </span>
+            )}
+          </button>
         ))}
       </div>
     </div>
