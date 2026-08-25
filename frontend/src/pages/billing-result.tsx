@@ -3,10 +3,12 @@
  *
  * 支付宝支付完成后通过 return_url 跳转到此页面。
  * 从 URL 参数中提取订单号，轮询后端订单状态，展示支付结果。
+ * 使用设计系统变量，与主应用视觉统一。
  */
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Check, X, Loader2, ArrowLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useBillingStore } from "@/stores/billing-store";
 
 type Status = "loading" | "success" | "pending" | "failed";
@@ -119,13 +121,13 @@ export default function BillingResultPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 flex items-center justify-center px-4">
-      <div className="max-w-md w-full bg-white dark:bg-slate-800 rounded-2xl shadow-lg p-8 text-center">
+    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <div className="max-w-md w-full rounded-2xl border border-border bg-card shadow-sm p-8 text-center">
         {/* Loading */}
         {status === "loading" && (
           <>
             <div className="flex justify-center mb-6">
-              <Loader2 className="w-16 h-16 text-indigo-500 animate-spin" />
+              <Loader2 className="h-12 w-12 text-muted-foreground animate-spin" />
             </div>
             <h2 className="text-xl font-semibold mb-2">正在确认支付结果...</h2>
             <p className="text-sm text-muted-foreground">
@@ -140,8 +142,8 @@ export default function BillingResultPage() {
         {status === "success" && (
           <>
             <div className="flex justify-center mb-6">
-              <div className="w-16 h-16 rounded-full bg-emerald-100 dark:bg-emerald-900 flex items-center justify-center">
-                <Check className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
+              <div className="h-14 w-14 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                <Check className="h-7 w-7 text-emerald-600 dark:text-emerald-400" />
               </div>
             </div>
             <h2 className="text-xl font-semibold mb-2 text-emerald-600 dark:text-emerald-400">
@@ -160,12 +162,12 @@ export default function BillingResultPage() {
                 已充入 {Math.floor(orderInfo.point_amount)} 积分
               </p>
             )}
-            <button
-              onClick={() => navigate("/profile")}
-              className="w-full py-3 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white font-medium transition-colors"
+            <Button
+              onClick={() => navigate("/personal-center/wallet")}
+              className="w-full"
             >
               查看积分管理
-            </button>
+            </Button>
           </>
         )}
 
@@ -173,7 +175,7 @@ export default function BillingResultPage() {
         {status === "pending" && (
           <>
             <div className="flex justify-center mb-6">
-              <Loader2 className="w-16 h-16 text-amber-500" />
+              <Loader2 className="h-12 w-12 text-amber-500" />
             </div>
             <h2 className="text-xl font-semibold mb-2 text-amber-600">
               支付结果确认中
@@ -183,12 +185,13 @@ export default function BillingResultPage() {
               <br />
               如果长时间未到账，请联系客服。
             </p>
-            <button
-              onClick={() => navigate("/profile")}
-              className="w-full py-3 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 font-medium transition-colors"
+            <Button
+              variant="outline"
+              onClick={() => navigate("/personal-center/wallet")}
+              className="w-full"
             >
-              返回个人中心
-            </button>
+              返回积分管理
+            </Button>
           </>
         )}
 
@@ -196,39 +199,42 @@ export default function BillingResultPage() {
         {status === "failed" && (
           <>
             <div className="flex justify-center mb-6">
-              <div className="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900 flex items-center justify-center">
-                <X className="w-8 h-8 text-red-600 dark:text-red-400" />
+              <div className="h-14 w-14 rounded-full bg-destructive/10 flex items-center justify-center">
+                <X className="h-7 w-7 text-destructive" />
               </div>
             </div>
-            <h2 className="text-xl font-semibold mb-2 text-red-600 dark:text-red-400">
+            <h2 className="text-xl font-semibold mb-2 text-destructive">
               支付未完成
             </h2>
             <p className="text-sm text-muted-foreground mb-6">
               {errorMsg || "支付未成功或已取消"}
             </p>
-            <button
-              onClick={() => navigate("/pricing")}
-              className="w-full py-3 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white font-medium transition-colors mb-2"
-            >
-              重新选择套餐
-            </button>
-            <button
-              onClick={() => navigate("/profile")}
-              className="w-full py-3 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 font-medium transition-colors"
-            >
-              返回个人中心
-            </button>
+            <div className="space-y-2">
+              <Button
+                onClick={() => navigate("/pricing")}
+                className="w-full"
+              >
+                重新选择套餐
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => navigate("/personal-center/wallet")}
+                className="w-full"
+              >
+                返回积分管理
+              </Button>
+            </div>
           </>
         )}
 
         {/* Back link */}
         <div className="mt-8">
           <button
-            onClick={() => navigate("/")}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1"
+            onClick={() => navigate("/write")}
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-ui"
           >
-            <ArrowLeft className="w-3 h-3" />
-            返回首页
+            <ArrowLeft className="h-3.5 w-3.5" />
+            返回写作
           </button>
         </div>
       </div>

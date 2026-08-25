@@ -210,7 +210,7 @@ export function WalletSection() {
           {/* ── 概览 Tab ── */}
           <TabsContent value="overview" className="px-6 pt-2 pb-12 space-y-4 m-0">
             {/* 余额卡片 */}
-            <div className="rounded-xl border border-border bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20 p-4">
+            <div className="rounded-xl border border-border bg-card p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-muted-foreground">当前余额</span>
                 <Badge variant="secondary" className="text-[10px]">
@@ -285,7 +285,7 @@ export function WalletSection() {
                     key={amt}
                     onClick={() => setRechargeAmount(amt)}
                     className={cn(
-                      "rounded-md border px-2.5 py-1 text-xs transition-ui",
+                      "rounded-lg border px-2.5 py-1 text-xs transition-ui",
                       rechargeAmount === amt
                         ? "border-foreground bg-foreground text-background"
                         : "border-border/60 text-muted-foreground hover:bg-accent"
@@ -322,7 +322,7 @@ export function WalletSection() {
                       key={plan.id}
                       className={cn(
                         "rounded-lg border p-2.5 space-y-1 cursor-pointer transition-ui",
-                        plan.is_popular ? "border-amber-400 dark:border-amber-700 ring-1 ring-amber-400/30" : "border-border",
+                        plan.is_popular ? "border-foreground/20 ring-1 ring-foreground/10" : "border-border",
                         selectedPlan === plan.id && "border-foreground ring-1 ring-foreground/20"
                       )}
                       onClick={() => setSelectedPlan(plan.id)}
@@ -376,7 +376,7 @@ export function WalletSection() {
                     key={d}
                     onClick={() => handleDaysChange(d)}
                     className={cn(
-                      "rounded-md px-1.5 py-0.5 text-[10px] transition-ui",
+                      "rounded-lg px-1.5 py-0.5 text-[10px] transition-ui",
                       consumptionDays === d
                         ? "bg-foreground text-background"
                         : "text-muted-foreground hover:bg-accent"
@@ -389,7 +389,7 @@ export function WalletSection() {
             </div>
 
             {/* 汇总卡片 */}
-            <div className="rounded-lg border border-border/60 bg-muted/30 dark:bg-muted/10 p-2.5">
+            <div className="rounded-lg border border-border bg-card p-2.5">
               {summaryLoading ? (
                 <div className="flex items-center justify-center py-1.5">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
@@ -398,7 +398,7 @@ export function WalletSection() {
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] text-muted-foreground">近 {consumptionDays} 天总消耗</span>
-                    <span className="text-sm font-semibold text-orange-600 dark:text-orange-400">
+                    <span className="text-sm font-semibold text-foreground">
                       {fmt(summary.total_consumed)} 积分
                     </span>
                   </div>
@@ -407,7 +407,7 @@ export function WalletSection() {
                       {Object.entries(summary.by_category)
                         .sort((a, b) => b[1] - a[1])
                         .map(([cat, pts]) => (
-                          <Badge key={cat} variant="outline" className="text-[9px] h-4 gap-0.5">
+                          <Badge key={cat} variant="outline" className="text-[10px] h-4 gap-0.5">
                             {taskTypeLabel(cat)} {fmt(pts)}
                           </Badge>
                         ))}
@@ -434,7 +434,7 @@ export function WalletSection() {
                     <div
                       key={log.id}
                       className={cn(
-                        "rounded-md border transition-ui overflow-hidden",
+                        "rounded-lg border transition-ui overflow-hidden",
                         isExpanded ? "border-border bg-accent/30" : "border-border/40"
                       )}
                     >
@@ -457,7 +457,7 @@ export function WalletSection() {
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="text-muted-foreground/60 text-[10px]">{formatDateTime(log.created_at)}</span>
-                          <span className="text-orange-600 dark:text-orange-400 font-medium">-{fmt(log.points_used)}</span>
+                          <span className="text-muted-foreground font-medium">-{fmt(log.points_used)}</span>
                         </div>
                       </button>
                       {/* 展开详情 */}
@@ -531,13 +531,13 @@ export function WalletSection() {
             ) : (
               <div className="space-y-1">
                 {rechargeOrders.map((order) => (
-                  <div key={order.id} className="rounded-md border border-border/40 px-2.5 py-2 text-xs space-y-1">
+                  <div key={order.id} className="rounded-lg border border-border/40 px-2.5 py-2 text-xs space-y-1">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="text-green-600 dark:text-green-400 font-medium">+{Math.floor(order.point_amount)} 积分</span>
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">+{Math.floor(order.point_amount)} 积分</span>
                         <span className="text-[10px] text-muted-foreground/60">¥{order.amount}</span>
                       </div>
-                      <Badge variant={order.status === "paid" ? "default" : "outline"} className="text-[9px] h-4">
+                      <Badge variant={order.status === "paid" ? "default" : "outline"} className="text-[10px] h-4">
                         {order.status === "paid" ? "已支付" : order.status === "pending" ? "待支付" : order.status}
                       </Badge>
                     </div>

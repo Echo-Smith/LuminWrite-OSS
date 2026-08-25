@@ -3,11 +3,15 @@
  *
  * 展示所有可用套餐，支持月付/年付切换。
  * 点击订阅后跳转支付宝支付页面。
+ * 使用设计系统 hsl(var(--*)) 变量 + shadcn 组件，与主应用视觉统一。
  */
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Check, ArrowLeft, Sparkles } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useBillingStore, type SubscriptionPlan } from "@/stores/billing-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { cn } from "@/lib/utils";
 
 export default function PricingPage() {
   const navigate = useNavigate();
@@ -63,8 +67,15 @@ export default function PricingPage() {
     return points.toLocaleString();
   };
 
+  const features = [
+    "全部写作功能",
+    "多角色编辑模式",
+    "写作记忆 & 风格学习",
+    "素材库 & 事实核查",
+  ];
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
+    <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-12 max-w-5xl">
         {/* Header */}
         <div className="text-center mb-12">
@@ -78,27 +89,29 @@ export default function PricingPage() {
 
         {/* Period Toggle */}
         <div className="flex justify-center mb-10">
-          <div className="inline-flex items-center gap-1 p-1 bg-slate-200 dark:bg-slate-800 rounded-lg">
+          <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-muted">
             <button
               onClick={() => setPeriod("monthly")}
-              className={`px-6 py-2 rounded-md text-sm font-medium transition-all ${
+              className={cn(
+                "px-6 py-2 rounded-lg text-sm font-medium transition-ui",
                 period === "monthly"
-                  ? "bg-white dark:bg-slate-700 shadow-sm text-slate-900 dark:text-white"
-                  : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-              }`}
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
             >
               按月付费
             </button>
             <button
               onClick={() => setPeriod("yearly")}
-              className={`px-6 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
+              className={cn(
+                "px-6 py-2 rounded-lg text-sm font-medium transition-ui flex items-center gap-2",
                 period === "yearly"
-                  ? "bg-white dark:bg-slate-700 shadow-sm text-slate-900 dark:text-white"
-                  : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-              }`}
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
             >
               按年付费
-              <span className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 rounded-full">
+              <span className="text-xs px-2 py-0.5 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 rounded-full">
                 买10送2
               </span>
             </button>
@@ -107,7 +120,7 @@ export default function PricingPage() {
 
         {/* Error Message */}
         {error && (
-          <div className="max-w-md mx-auto mb-6 p-4 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 text-sm text-center">
+          <div className="max-w-md mx-auto mb-6 p-4 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-sm text-center">
             {error}
           </div>
         )}
@@ -123,15 +136,17 @@ export default function PricingPage() {
             return (
               <div
                 key={plan.id}
-                className={`relative rounded-2xl border-2 p-6 transition-all ${
+                className={cn(
+                  "relative rounded-xl border p-6 transition-ui",
                   plan.is_popular
-                    ? "border-indigo-500 shadow-xl scale-105 bg-white dark:bg-slate-800"
-                    : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 hover:border-slate-300 dark:hover:border-slate-600"
-                }`}
+                    ? "border-foreground/20 shadow-md bg-card"
+                    : "border-border bg-card hover:border-foreground/15"
+                )}
               >
                 {plan.is_popular && (
                   <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                    <span className="px-4 py-1 bg-indigo-500 text-white text-xs font-medium rounded-full shadow-lg">
+                    <span className="flex items-center gap-1 px-3 py-1 bg-foreground text-background text-xs font-medium rounded-full shadow-md">
+                      <Sparkles className="h-3 w-3" />
                       最受欢迎
                     </span>
                   </div>
@@ -154,7 +169,7 @@ export default function PricingPage() {
                         <span className="text-sm text-muted-foreground">{unit}</span>
                       </div>
                       {period === "yearly" && (
-                        <p className="text-xs text-emerald-600 mt-1">
+                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
                           约合 {formatPrice(plan.price_yearly / 12)}/月，省 {formatPrice(plan.price_monthly * 12 - plan.price_yearly)}
                         </p>
                       )}
@@ -165,59 +180,32 @@ export default function PricingPage() {
                 {/* Features */}
                 <ul className="space-y-2 mb-6 text-sm">
                   <li className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                    </svg>
+                    <Check className="h-4 w-4 text-emerald-500 shrink-0" />
                     <span>每月 {formatPoints(plan.point_quota)} 积分</span>
                   </li>
-                  <li className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                    </svg>
-                    <span>全部写作功能</span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                    </svg>
-                    <span>多角色编辑模式</span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                    </svg>
-                    <span>写作记忆 & 风格学习</span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                    </svg>
-                    <span>素材库 & 事实核查</span>
-                  </li>
+                  {features.map((f) => (
+                    <li key={f} className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <span>{f}</span>
+                    </li>
+                  ))}
                   {!isFree && (
                     <li className="flex items-center gap-2">
-                      <svg className="w-4 h-4 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                      </svg>
+                      <Check className="h-4 w-4 text-emerald-500 shrink-0" />
                       <span>充值积分永久有效</span>
                     </li>
                   )}
                 </ul>
 
                 {/* CTA Button */}
-                <button
+                <Button
                   onClick={() => handleSubscribe(plan)}
                   disabled={loading || isCurrent}
-                  className={`w-full py-3 rounded-lg font-medium transition-all ${
-                    isCurrent
-                      ? "bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed"
-                      : plan.is_popular
-                      ? "bg-indigo-500 hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/30"
-                      : "bg-slate-900 dark:bg-slate-100 hover:bg-slate-700 dark:hover:bg-slate-300 text-white dark:text-slate-900"
-                  } ${loading ? "opacity-50 cursor-wait" : ""}`}
+                  variant={isCurrent ? "secondary" : plan.is_popular ? "default" : "outline"}
+                  className="w-full"
                 >
-                  {isCurrent ? "当前套餐" : isFree ? "开始使用" : "立即订阅"}
-                </button>
+                  {loading ? "处理中…" : isCurrent ? "当前套餐" : isFree ? "开始使用" : "立即订阅"}
+                </Button>
               </div>
             );
           })}
@@ -226,41 +214,29 @@ export default function PricingPage() {
         {/* FAQ Section */}
         <div className="max-w-2xl mx-auto mt-16">
           <h2 className="text-2xl font-bold text-center mb-8">常见问题</h2>
-          <div className="space-y-4">
-            <div className="p-4 bg-white dark:bg-slate-800 rounded-lg">
-              <h3 className="font-medium mb-1">积分是如何计算的？</h3>
-              <p className="text-sm text-muted-foreground">
-                套餐积分每月重置（基于注册日），充值积分永久有效。扣减时先扣套餐积分，再扣充值积分。
-              </p>
-            </div>
-            <div className="p-4 bg-white dark:bg-slate-800 rounded-lg">
-              <h3 className="font-medium mb-1">年付有什么优惠？</h3>
-              <p className="text-sm text-muted-foreground">
-                年付按月分发积分（买10送2），相当于8.3折。积分每月到账，不是一次性给完。
-              </p>
-            </div>
-            <div className="p-4 bg-white dark:bg-slate-800 rounded-lg">
-              <h3 className="font-medium mb-1">可以升级套餐吗？</h3>
-              <p className="text-sm text-muted-foreground">
-                可以。升级时按剩余天数等比折算旧套餐价值抵扣新套餐价格，差价部分通过支付宝支付。
-              </p>
-            </div>
-            <div className="p-4 bg-white dark:bg-slate-800 rounded-lg">
-              <h3 className="font-medium mb-1">搜索和核查怎么计费？</h3>
-              <p className="text-sm text-muted-foreground">
-                搜索 5 积分/次，事实核查 10 积分/次，URL 抓取 2 积分/次。写作按 Token 计费。
-              </p>
-            </div>
+          <div className="space-y-3">
+            {[
+              { q: "积分是如何计算的？", a: "套餐积分每月重置（基于注册日），充值积分永久有效。扣减时先扣套餐积分，再扣充值积分。" },
+              { q: "年付有什么优惠？", a: "年付按月分发积分（买10送2），相当于8.3折。积分每月到账，不是一次性给完。" },
+              { q: "可以升级套餐吗？", a: "可以。升级时按剩余天数等比折算旧套餐价值抵扣新套餐价格，差价部分通过支付宝支付。" },
+              { q: "搜索和核查怎么计费？", a: "搜索 5 积分/次，事实核查 10 积分/次，URL 抓取 2 积分/次。写作按 Token 计费。" },
+            ].map((item) => (
+              <div key={item.q} className="rounded-lg border border-border bg-card p-4">
+                <h3 className="font-medium mb-1">{item.q}</h3>
+                <p className="text-sm text-muted-foreground">{item.a}</p>
+              </div>
+            ))}
           </div>
         </div>
 
         {/* Back to home */}
         <div className="text-center mt-12">
           <button
-            onClick={() => navigate("/")}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => navigate("/write")}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-ui"
           >
-            ← 返回首页
+            <ArrowLeft className="h-3.5 w-3.5" />
+            返回写作
           </button>
         </div>
       </div>
