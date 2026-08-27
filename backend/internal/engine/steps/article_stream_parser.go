@@ -25,10 +25,17 @@ type ArticleStreamParserConfig struct {
 }
 
 // ParsedArticle is the normalized article produced by ArticleStreamParser.
+//
+// SectionBody is the compatibility adapter output for LCP's section_body
+// content. It deliberately contains only the normalized body: the title and
+// any legacy JSON/separator framing are never carried into section_body.
+// Keeping this value in the steps package avoids coupling the legacy input
+// adapter to the future LCP parser package.
 type ParsedArticle struct {
-	Title    string
-	Body     string
-	Protocol ArticleOutputProtocol
+	Title       string
+	Body        string
+	SectionBody string
+	Protocol    ArticleOutputProtocol
 }
 
 // ArticleStreamParser normalizes model output into a separate title and body.
@@ -102,6 +109,13 @@ func (p *ArticleStreamParser) Body() string {
 	return p.body.String()
 }
 
+// SectionBody returns the normalized LCP section_body compatibility output
+// accumulated so far. Legacy JSON remains an input-only compatibility format;
+// this method never produces or exposes its title/separator envelope.
+func (p *ArticleStreamParser) SectionBody() string {
+	return p.Body()
+}
+
 // Protocol returns the protocol resolved for the current streaming round.
 // It is empty while the prefix is still undecided or immediately after Reset.
 func (p *ArticleStreamParser) Protocol() ArticleOutputProtocol {
@@ -120,7 +134,13 @@ func (p *ArticleStreamParser) Finalize(fullText string) ParsedArticle {
 			p.resolveFallback(true)
 		}
 	}
-	return ParsedArticle{Title: p.title, Body: p.body.String(), Protocol: p.protocol}
+	body := p.SectionBody()
+	return ParsedArticle{
+		Title:       p.title,
+		Body:        body,
+		SectionBody: body,
+		Protocol:    p.protocol,
+	}
 }
 
 func (p *ArticleStreamParser) resolveRecognized(final bool) bool {

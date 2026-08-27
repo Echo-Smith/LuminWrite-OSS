@@ -4,6 +4,7 @@
   "version_id": "ver_1",
   "base_version_id": null,
   "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "version_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "root": {
     "block_id": "blk_root",
     "type": "document",
@@ -12,29 +13,39 @@
       {
         "block_id": "blk_section_1",
         "type": "section",
-        "attrs": {
-          "level": 1
-        },
+        "attrs": { "level": 1, "section_id": "section_intro" },
         "children": [
           {
-            "block_id": "blk_text_1",
-            "type": "text",
-            "text": "治理型写作运行时",
+            "block_id": "blk_paragraph_1",
+            "type": "paragraph",
             "attrs": {},
-            "children": []
-          },
-          {
-            "block_id": "blk_citation_1",
-            "type": "citation",
-            "text": "[1]",
-            "attrs": {
-              "source_id": "source_1",
-              "locator": "p.12"
-            },
-            "children": []
+            "children": [
+              {
+                "type": "text",
+                "text": "治理型写作运行时",
+                "attrs": {},
+                "children": [],
+                "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+                "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+              },
+              {
+                "type": "citation",
+                "source_id": "source_1",
+                "attrs": {},
+                "children": [],
+                "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+                "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+              }
+            ],
+            "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+            "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
           }
-        ]
+        ],
+        "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+        "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
       }
-    ]
+    ],
+    "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+    "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   }
 }

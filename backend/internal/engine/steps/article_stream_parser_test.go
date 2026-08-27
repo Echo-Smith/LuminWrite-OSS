@@ -109,6 +109,12 @@ func TestArticleStreamParserProtocols(t *testing.T) {
 			if result.Body != tt.wantBody {
 				t.Fatalf("body = %q, want %q", result.Body, tt.wantBody)
 			}
+			if result.SectionBody != tt.wantBody {
+				t.Fatalf("section body = %q, want %q", result.SectionBody, tt.wantBody)
+			}
+			if parser.SectionBody() != tt.wantBody {
+				t.Fatalf("streaming section body = %q, want %q", parser.SectionBody(), tt.wantBody)
+			}
 			if streamed.String() != tt.wantBody {
 				t.Fatalf("streamed body = %q, want %q", streamed.String(), tt.wantBody)
 			}
@@ -124,6 +130,43 @@ func TestArticleStreamParserProtocols(t *testing.T) {
 			}
 			if wantTitleEvents == 1 && titles[0] != tt.wantTitle {
 				t.Fatalf("emitted title = %q, want %q", titles[0], tt.wantTitle)
+			}
+		})
+	}
+}
+
+func TestArticleStreamParserAdaptsLegacyAndMarkdownToLCPSectionBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantBody string
+		protocol ArticleOutputProtocol
+	}{
+		{
+			name:     "legacy JSON is input compatibility only",
+			input:    "{\"title\":\"旧标题\"}\n---ARTICLE---\n旧正文。",
+			wantBody: "旧正文。",
+			protocol: ArticleProtocolLegacyJSON,
+		},
+		{
+			name:     "canonical Markdown remains the output protocol",
+			input:    "## 新标题\n\n新正文。",
+			wantBody: "新正文。",
+			protocol: ArticleProtocolMarkdown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewArticleStreamParser(ArticleStreamParserConfig{})
+			parser.Push(tt.input)
+			result := parser.Finalize(tt.input)
+
+			if result.SectionBody != tt.wantBody || parser.SectionBody() != tt.wantBody {
+				t.Fatalf("section_body adapter leaked protocol framing: result=%q streaming=%q want=%q", result.SectionBody, parser.SectionBody(), tt.wantBody)
+			}
+			if result.Protocol != tt.protocol {
+				t.Fatalf("protocol = %q, want %q", result.Protocol, tt.protocol)
 			}
 		})
 	}
