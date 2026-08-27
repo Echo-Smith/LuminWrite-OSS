@@ -41,21 +41,8 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
 
-      - name: Build
-        working-directory: backend
-        run: go build ./...
-
-      - name: Run database migration tests
-        working-directory: backend
-        run: go test -v -count=1 ./internal/database/...
-
-      - name: Run editorial integration tests
-        working-directory: backend
-        run: go test -v -count=1 ./internal/editorial/...
-
-      - name: Run all other tests
-        working-directory: backend
-        run: go test -count=1 ./...
+      - name: Verify backend
+        run: make verify-backend
 
   frontend-build:
     name: Frontend Build
@@ -75,6 +62,5 @@ jobs:
         working-directory: frontend
         run: npm ci --legacy-peer-deps
 
-      - name: Build
-        working-directory: frontend
-        run: npm run build
+      - name: Verify frontend
+        run: make verify-frontend

@@ -190,38 +190,37 @@ func (p *StyleProfile) RenderTitleConstraints() string {
 // RenderOutputFormat renders the output format instruction based on
 // the profile's OutputFormat settings and whether an outline title exists.
 // Returns empty string if no format constraint is needed.
-func (p *StyleProfile) RenderOutputFormat(taskMode string, outlineTitle string, separator string) string {
-	if p == nil {
-		// Default for nil profile: use JSON title for writing mode
-		if taskMode == "writing" {
-			return RenderJSONTitleFormat("", separator)
-		}
+func (p *StyleProfile) RenderOutputFormat(taskMode string, outlineTitle string) string {
+	if !IsArticleTaskMode(taskMode) {
 		return ""
 	}
 
-	if taskMode != "writing" {
-		// Non-writing modes: plain Markdown if configured
-		if p.OutputFormat.UseMarkdown {
-			return fmt.Sprintf("\n输出格式：Markdown，标题以 %s 开头\n", p.OutputFormat.TitlePrefix)
-		}
-		return ""
-	}
-
-	// Writing mode with Markdown enabled
-	if p.OutputFormat.UseMarkdown {
-		return RenderJSONTitleFormat(outlineTitle, separator)
-	}
-
-	return ""
+	// Full-article tasks always use the canonical Markdown contract. Style profiles
+	// may shape the content, but they cannot replace the transport contract.
+	return RenderMarkdownArticleFormat(outlineTitle)
 }
 
-// RenderJSONTitleFormat renders the JSON title + separator + Markdown body format.
-// Exported so steps package can use it for nil-profile fallback.
-func RenderJSONTitleFormat(outlineTitle, separator string) string {
-	if outlineTitle != "" {
-		return fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行，title 必须与上方【标题】完全一致），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"%s\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", separator, outlineTitle, separator)
+// IsArticleTaskMode reports whether a task returns a complete article rather
+// than chat text or a point extraction result.
+func IsArticleTaskMode(taskMode string) bool {
+	switch taskMode {
+	case "writing", "polish", "shorten", "expand":
+		return true
+	default:
+		return false
 	}
-	return fmt.Sprintf("\n输出格式：\n先输出标题 JSON（一行），然后换行输出分隔符 %s，再换行输出正文 Markdown。\n格式示例：\n{\"title\":\"文章标题\"}\n%s\n正文内容（不要重复标题，直接从第一段开始）\n", separator, separator)
+}
+
+// MarkdownArticleOutputReminder is intentionally short so callers can repeat it
+// near the final user/tool message even after a long context.
+const MarkdownArticleOutputReminder = "【完整文章输出格式】仅当本轮输出完整文章时：第一行必须是“## 标题”，空一行后输出正文；标题前不要添加客套话，不要输出 JSON 或额外分隔符。"
+
+// RenderMarkdownArticleFormat renders the canonical article contract.
+func RenderMarkdownArticleFormat(outlineTitle string) string {
+	if outlineTitle != "" {
+		return fmt.Sprintf("\n输出格式（标题必须与已确认标题完全一致）：\n## %s\n\n正文内容\n", outlineTitle)
+	}
+	return "\n输出格式：\n## 文章标题\n\n正文内容\n"
 }
 
 // ── Internal appenders ──────────────────────────────────

@@ -52,7 +52,7 @@ function stripMarkdownSymbols(markdown: string): string {
   text = text.replace(/~~([^~]+)~~/g, "$1");
 
   // 7. 上标 ^text^ → text（Markdown 扩展语法的上标）
-  text = text.replace(/\^([^\^\n]+)\^/g, "$1");
+  text = text.replace(/\^([^\n^]+)\^/g, "$1");
 
   // 8. HTML 标签 <sup>...</sup> / <sub>...</sub> → 保留内容，移除标签
   text = text.replace(/<sup[^>]*>([\s\S]*?)<\/sup>/gi, "$1");

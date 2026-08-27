@@ -34,10 +34,9 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - name: Test backend
-        working-directory: backend
         # Several integration packages run migrations against this one service;
         # package-level parallelism would race the shared schema.
-        run: go test -p 1 ./...
+        run: make verify-backend
 
   frontend:
     runs-on: ubuntu-latest
@@ -53,9 +52,8 @@ jobs:
         # tw-shimmer currently declares a Tailwind 4-only peer range while this
         # product remains on Tailwind 3; the existing lockfile is the tested set.
         run: npm ci --legacy-peer-deps
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
+      - name: Verify frontend
+        run: make verify-frontend
 
   repository-hygiene:
     runs-on: ubuntu-latest

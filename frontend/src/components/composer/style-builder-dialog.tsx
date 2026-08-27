@@ -118,7 +118,7 @@ function AssistantMessage({ content }: { content: string }) {
 function highlightJson(jsonStr: string): ReactNode {
   // Tokenize: keys ("...":), strings, numbers, booleans, null, punctuation
   const tokens: ReactNode[] = [];
-  const regex = /("(?:[^"\\]|\\.)*"\s*:)|("(?:[^"\\]|\\.)*")|\b(true|false|null)\b|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([{}\[\],])/g;
+  const regex = /("(?:[^"\\]|\\.)*"\s*:)|("(?:[^"\\]|\\.)*")|\b(true|false|null)\b|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([{}[\],])/g;
   let lastIndex = 0;
   let key = 0;
 

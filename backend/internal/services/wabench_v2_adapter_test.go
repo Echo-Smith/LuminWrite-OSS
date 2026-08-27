@@ -55,8 +55,14 @@ func TestLuminbuddyV2AdapterExecutesRealHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if trace.Status != engine.StatusCompleted || !strings.Contains(trace.Article, "Harness 真实输出") {
+	if trace.Status != engine.StatusCompleted || !strings.Contains(trace.Article, "通过真实 Agent Harness") {
 		t.Fatalf("unexpected Harness trace: %+v", trace)
+	}
+	if trace.ArticleTitle != "Harness 真实输出" || strings.Contains(trace.Article, "## Harness 真实输出") {
+		t.Fatalf("article title was not separated from body: %+v", trace)
+	}
+	if len(trace.StepHistory) != 1 || trace.StepHistory[0].Step != engine.StepArticleOutput {
+		t.Fatalf("article output protocol was not recorded: %+v", trace.StepHistory)
 	}
 	if trace.TaskIntent != "writing" || trace.TotalTokens != 37 {
 		t.Fatalf("intent/tokens were not captured from Harness: %+v", trace)
@@ -73,6 +79,10 @@ type fixtureWABenchKnowledgeSearcher struct{}
 
 func (fixtureWABenchKnowledgeSearcher) SearchKB(_ context.Context, _ string, _ string, _ int) ([]engine.SearchResult, error) {
 	return []engine.SearchResult{{Title: "fixture", Snippet: "fixture", Source: "local_kb"}}, nil
+}
+
+func (searcher fixtureWABenchKnowledgeSearcher) SearchKBInKB(ctx context.Context, userID, _ string, query string, limit int) ([]engine.SearchResult, error) {
+	return searcher.SearchKB(ctx, userID, query, limit)
 }
 
 func TestLuminbuddyV2AdapterLabelsLocalKnowledgeProvider(t *testing.T) {

@@ -49,7 +49,7 @@ func NewIntentStep(llm *tools.LLMClient) *IntentStep {
 	return &IntentStep{llm: llm}
 }
 
-func (s *IntentStep) Name() engine.StepName { return engine.StepIntent }
+func (s *IntentStep) Name() engine.StepName  { return engine.StepIntent }
 func (s *IntentStep) CanPause() bool         { return false }
 func (s *IntentStep) Timeout() time.Duration { return 30 * time.Second }
 func (s *IntentStep) Critical() bool         { return true }
@@ -220,7 +220,7 @@ func NewQueryPlanStep(llm *tools.LLMClient) *QueryPlanStep {
 	return &QueryPlanStep{llm: llm}
 }
 
-func (s *QueryPlanStep) Name() engine.StepName { return engine.StepQueryPlan }
+func (s *QueryPlanStep) Name() engine.StepName  { return engine.StepQueryPlan }
 func (s *QueryPlanStep) CanPause() bool         { return false }
 func (s *QueryPlanStep) Timeout() time.Duration { return 30 * time.Second }
 func (s *QueryPlanStep) Critical() bool         { return false }
@@ -388,7 +388,7 @@ func NewSearchStep(llm *tools.LLMClient, search *tools.SearchClient) *SearchStep
 	return &SearchStep{llm: llm, search: search}
 }
 
-func (s *SearchStep) Name() engine.StepName { return engine.StepSearch }
+func (s *SearchStep) Name() engine.StepName  { return engine.StepSearch }
 func (s *SearchStep) CanPause() bool         { return true }
 func (s *SearchStep) Timeout() time.Duration { return 45 * time.Second }
 func (s *SearchStep) Critical() bool         { return false }
@@ -437,10 +437,10 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 			slog.Warn("failed to fetch topic URL content", "url", execCtx.TopicURL, "error", err)
 		} else if content != "" {
 			allResults = append(allResults, engine.SearchResult{
-				Title:    title,
-				Snippet:  content,
-				URL:      execCtx.TopicURL,
-				Source:   "topic_url",
+				Title:   title,
+				Snippet: content,
+				URL:     execCtx.TopicURL,
+				Source:  "topic_url",
 			})
 			seenURLs[execCtx.TopicURL] = true
 			slog.Info("topic URL content fetched as background",
@@ -591,7 +591,7 @@ func NewRelevanceStepWithEmbedding(emb *tools.EmbeddingClient) *RelevanceStep {
 	return &RelevanceStep{embedding: emb}
 }
 
-func (s *RelevanceStep) Name() engine.StepName { return engine.StepRelevance }
+func (s *RelevanceStep) Name() engine.StepName  { return engine.StepRelevance }
 func (s *RelevanceStep) CanPause() bool         { return false }
 func (s *RelevanceStep) Timeout() time.Duration { return 30 * time.Second }
 func (s *RelevanceStep) Critical() bool         { return false }
@@ -833,7 +833,7 @@ func NewOutlineStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *O
 	return &OutlineStep{llm: llm, profile: p}
 }
 
-func (s *OutlineStep) Name() engine.StepName { return engine.StepOutline }
+func (s *OutlineStep) Name() engine.StepName  { return engine.StepOutline }
 func (s *OutlineStep) CanPause() bool         { return true }
 func (s *OutlineStep) Timeout() time.Duration { return 60 * time.Second }
 func (s *OutlineStep) Critical() bool         { return true }
@@ -1003,8 +1003,8 @@ func getString(m map[string]interface{}, key string) string {
 type WriteStep struct {
 	llm        *tools.LLMClient
 	profile    *profile.StyleProfile
-	search     *tools.SearchClient      // optional, enables agent loop with tool calls
-	kbSearcher tools.KnowledgeSearcher  // optional, enables search_knowledge tool
+	search     *tools.SearchClient     // optional, enables agent loop with tool calls
+	kbSearcher tools.KnowledgeSearcher // optional, enables search_knowledge tool
 }
 
 func NewWriteStep(llm *tools.LLMClient) *WriteStep {
@@ -1026,7 +1026,7 @@ func NewWriteStepWithKB(llm *tools.LLMClient, p *profile.StyleProfile, search *t
 	return &WriteStep{llm: llm, profile: p, search: search, kbSearcher: kb}
 }
 
-func (s *WriteStep) Name() engine.StepName { return engine.StepWrite }
+func (s *WriteStep) Name() engine.StepName  { return engine.StepWrite }
 func (s *WriteStep) CanPause() bool         { return true }
 func (s *WriteStep) Timeout() time.Duration { return 180 * time.Second }
 func (s *WriteStep) Critical() bool         { return true }
@@ -1088,7 +1088,7 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		AddStyleConstraints(s.profile, taskMode, hasOutlineTitle, execCtx.WordLimit).
 		AddUserMaterials(execCtx.UserMaterials).
 		AddMemory(execCtx).
-		AddOutputFormat(s.profile, taskMode, outlineTitle, ArticleSeparator)
+		AddOutputFormat(s.profile, taskMode, outlineTitle)
 
 	// Stream the article
 	messages := []tools.LLMMessage{
@@ -1135,20 +1135,29 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		}
 	}
 
-	// Determine whether JSON title prefix is expected
-	// (true for writing mode with markdown output format)
-	useJSONTitle := taskMode == "writing" && (s.profile == nil || s.profile.OutputFormat.UseMarkdown)
-
-	// State machine for JSON title prefix extraction
-	var titleBuf strings.Builder
-	var bodyBuf strings.Builder // tracks only the body text sent to user (excludes JSON prefix)
-	titleCharCount := 0
-	titleResolved := false
+	articleTask := profile.IsArticleTaskMode(taskMode)
+	var bodyBuf strings.Builder // tracks only body text sent to user (excludes title/protocol prefix)
 
 	// streamBody is a helper that sends delta to user AND accumulates into bodyBuf
 	streamBody := func(text string) {
 		bodyBuf.WriteString(text)
 		emitter.StreamDelta(text)
+	}
+
+	confirmedTitle := strings.TrimSpace(execCtx.ArticleTitle)
+	if execCtx.Outline != nil && strings.TrimSpace(execCtx.Outline.Title) != "" {
+		confirmedTitle = strings.TrimSpace(execCtx.Outline.Title)
+	}
+	var articleParser *ArticleStreamParser
+	if articleTask {
+		articleParser = NewArticleStreamParser(ArticleStreamParserConfig{
+			ConfirmedTitle: confirmedTitle,
+			OnTitle: func(title string) {
+				execCtx.ArticleTitle = title
+				emitter.ArticleTitle(title)
+			},
+			OnBody: streamBody,
+		})
 	}
 
 	// onReasoning forwards thinking content to the frontend for visualization
@@ -1165,78 +1174,22 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 	onStreamReset := func() {
 		slog.Info("agent loop stream reset — discarding intermediate content",
 			"trace_id", execCtx.TraceID,
-			"title_resolved", titleResolved,
 			"body_chars", bodyBuf.Len())
-		titleBuf.Reset()
 		bodyBuf.Reset()
-		titleCharCount = 0
-		titleResolved = false
+		if articleParser != nil {
+			articleParser.Reset()
+		}
 		emitter.StreamReset()
 	}
 
-	// The streaming callback handles JSON title prefix extraction and body streaming.
-	// It's shared between the normal streaming path and the agent loop's final stream.
+	// The streaming callback uses one parser for canonical Markdown and legacy
+	// JSON compatibility. Non-article task modes remain lossless plain streams.
 	streamCallback := func(delta string) {
-		if !titleResolved && useJSONTitle {
-			// Still collecting JSON title prefix
-			titleBuf.WriteString(delta)
-			titleCharCount += len([]rune(delta))
-			buf := titleBuf.String()
-
-			// Try to find the separator
-			sepIdx := strings.Index(buf, ArticleSeparator)
-			if sepIdx >= 0 {
-				// Separator found — parse JSON title from everything before it
-				jsonPart := strings.TrimSpace(buf[:sepIdx])
-				var title string
-				if t, ok := ParseTitleJSON(jsonPart); ok {
-					title = t
-				} else {
-					// JSON parse failed — try regex fallback on the prefix
-					title = ExtractTitleFromMarkdown(jsonPart)
-				}
-				if title != "" {
-					execCtx.ArticleTitle = title
-					emitter.ArticleTitle(title)
-				}
-
-				// Content after separator becomes the start of the streamed body
-				after := strings.TrimLeft(buf[sepIdx+len(ArticleSeparator):], "\n\r ")
-				// Strip duplicate ## title heading if LLM repeated it
-				after = StripLeadingTitleHeading(after, title)
-				if after != "" {
-					streamBody(after)
-				}
-				titleResolved = true
-				titleBuf.Reset()
-				return
-			}
-
-			// No separator found yet — check character limit for fallback
-			if titleCharCount > TitleCollectCharLimit {
-				// LLM didn't follow the format — switch to fallback mode
-				// Try to extract title from what we've collected
-				title := ExtractTitleFromMarkdown(buf)
-				if title != "" {
-					execCtx.ArticleTitle = title
-					emitter.ArticleTitle(title)
-				}
-				// Output collected content as body (filter out JSON lines)
-				bodyPart := FilterJSONLines(buf)
-				bodyPart = StripLeadingTitleHeading(bodyPart, title)
-				if bodyPart != "" {
-					streamBody(bodyPart)
-				}
-				titleResolved = true
-				titleBuf.Reset()
-				return
-			}
-			// Still collecting, don't forward to user
-			return
+		if articleParser != nil {
+			articleParser.Push(delta)
+		} else {
+			streamBody(delta)
 		}
-
-		// Normal streaming (title already resolved or non-writing mode)
-		streamBody(delta)
 
 		// Check pause between stream chunks
 		if err := execCtx.CheckPause(ctx, emitter, engine.StepWrite); err != nil {
@@ -1276,24 +1229,21 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 		return fmt.Errorf("article generation failed: %w", err)
 	}
 
-	// Determine the final article body text
+	// Resolve buffered prefixes after the final chunk. This also supports LLM
+	// clients that return fullText without invoking the streaming callback.
 	articleBody := bodyBuf.String()
-	if !useJSONTitle {
-		// Non-writing modes: fullText IS the body (no JSON prefix)
+	if articleParser != nil {
+		parsed := articleParser.Finalize(fullText)
+		articleBody = parsed.Body
+		execCtx.ArticleTitle = parsed.Title
+		engine.RecordArticleOutputProtocol(execCtx, string(parsed.Protocol))
+		slog.Info("write step article output protocol resolved",
+			"trace_id", execCtx.TraceID,
+			"protocol", parsed.Protocol,
+			"deviated", parsed.Protocol != ArticleProtocolMarkdown,
+		)
+	} else {
 		articleBody = fullText
-	}
-
-	// Post-stream: if title still not resolved (e.g. very short output), try final fallback
-	if !titleResolved && useJSONTitle {
-		title := ExtractTitleFromMarkdown(fullText)
-		if title != "" {
-			execCtx.ArticleTitle = title
-			emitter.ArticleTitle(title)
-		}
-		// If still not resolved, the body is the filtered fullText
-		if articleBody == "" {
-			articleBody = FilterJSONLines(fullText)
-		}
 	}
 
 	// For guided mode: always force the outline title, overriding whatever LLM generated
@@ -1323,7 +1273,7 @@ type PostReviewStep struct {
 	llm            *tools.LLMClient
 	sensitiveCheck engine.SensitiveChecker
 	profile        *profile.StyleProfile
-	search         *tools.SearchClient  // optional, enables fact-checking via web search
+	search         *tools.SearchClient   // optional, enables fact-checking via web search
 	jiaozhen       *tools.JiaozhenClient // optional, enables rumor fact-checking
 }
 
@@ -1354,7 +1304,7 @@ func NewPostReviewStepWithSearchAndJiaozhen(llm *tools.LLMClient, sc engine.Sens
 	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p, search: search, jiaozhen: jiaozhen}
 }
 
-func (s *PostReviewStep) Name() engine.StepName { return engine.StepPostReview }
+func (s *PostReviewStep) Name() engine.StepName  { return engine.StepPostReview }
 func (s *PostReviewStep) CanPause() bool         { return false }
 func (s *PostReviewStep) Timeout() time.Duration { return 60 * time.Second }
 func (s *PostReviewStep) Critical() bool         { return false }
@@ -1710,7 +1660,7 @@ func NewAutoFixStepWithProfile(llm *tools.LLMClient, p *profile.StyleProfile) *A
 	return &AutoFixStep{llm: llm, profile: p}
 }
 
-func (s *AutoFixStep) Name() engine.StepName { return engine.StepAutoFix }
+func (s *AutoFixStep) Name() engine.StepName  { return engine.StepAutoFix }
 func (s *AutoFixStep) CanPause() bool         { return false }
 func (s *AutoFixStep) Timeout() time.Duration { return 90 * time.Second }
 func (s *AutoFixStep) Critical() bool         { return false }
@@ -2180,10 +2130,10 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
 
 	// Step 2: Search for each claim concurrently (web search)
 	type claimResult struct {
-		Claim     string
-		Query     string
-		Results   []engine.SearchResult
-		Jiaozhen  *tools.JiaozhenResult
+		Claim    string
+		Query    string
+		Results  []engine.SearchResult
+		Jiaozhen *tools.JiaozhenResult
 	}
 
 	var (
