@@ -36,6 +36,7 @@
         "node_id": "node_root",
         "kind": "sequence",
         "capability": "writing.sequence",
+        "capability_version": "1.0.0",
         "depends_on": [],
         "input_artifact_types": [
           "brief"
@@ -79,10 +80,15 @@
         "trust_level": "T2",
         "template_id": null,
         "estimated_cost_usd": 1.2,
-        "estimated_duration_ms": 120000
+        "estimated_duration_ms": 120000,
+        "estimated_confidence": 0.9
       }
     ],
     "selected_plan_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "selection_source": "system",
+    "requested_orchestration": "auto",
+    "effective_orchestration": "outline_first",
+    "user_override": false,
     "reason_code": "balanced_longform",
     "summary": "在质量和成本之间选择有界动态计划",
     "confidence": 0.9,
@@ -90,6 +96,7 @@
     "degradation_conditions": [
       "validator_unavailable"
     ],
+    "fallback_plan_hash": null,
     "created_at": "2026-08-27T00:00:00Z"
   }
 }

@@ -195,6 +195,7 @@
               "node_id",
               "kind",
               "capability",
+              "capability_version",
               "depends_on",
               "input_artifact_types",
               "output_artifact_types",
@@ -223,6 +224,11 @@
                 ]
               },
               "capability": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "capability_version": {
                 "type": "string",
                 "minLength": 1,
                 "pattern": "\\S"
@@ -295,8 +301,31 @@
                   "fallback",
                   "partial"
                 ]
+              },
+              "fallback_node_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "partial_output_types": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "required": ["failure_path"], "properties": { "failure_path": { "const": "fallback" } } },
+                "then": { "required": ["fallback_node_id"], "properties": { "fallback_node_id": true } },
+                "else": { "not": { "required": ["fallback_node_id"] } }
+              },
+              {
+                "if": { "required": ["failure_path"], "properties": { "failure_path": { "const": "partial" } } },
+                "then": { "required": ["partial_output_types"], "properties": { "partial_output_types": true } },
+                "else": { "not": { "required": ["partial_output_types"] } }
+              }
+            ]
           }
         },
         "static_validation": {
@@ -403,11 +432,16 @@
         "intent_plan_ref",
         "candidates",
         "selected_plan_hash",
+        "selection_source",
+        "requested_orchestration",
+        "effective_orchestration",
+        "user_override",
         "reason_code",
         "summary",
         "confidence",
         "approval_required",
         "degradation_conditions",
+        "fallback_plan_hash",
         "created_at"
       ],
       "properties": {
@@ -450,7 +484,8 @@
               "trust_level",
               "template_id",
               "estimated_cost_usd",
-              "estimated_duration_ms"
+              "estimated_duration_ms",
+              "estimated_confidence"
             ],
             "properties": {
               "plan_hash": {
@@ -484,6 +519,11 @@
               "estimated_duration_ms": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "estimated_confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
               }
             }
           }
@@ -491,6 +531,18 @@
         "selected_plan_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "selection_source": {
+          "enum": ["user", "system"]
+        },
+        "requested_orchestration": {
+          "enum": ["auto", "fast", "outline_first", "sourced", "strict_research"]
+        },
+        "effective_orchestration": {
+          "enum": ["fast", "outline_first", "sourced", "strict_research"]
+        },
+        "user_override": {
+          "type": "boolean"
         },
         "reason_code": {
           "type": "string",
@@ -518,11 +570,39 @@
             "pattern": "\\S"
           }
         },
+        "fallback_plan_hash": {
+          "anyOf": [
+            { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            { "type": "null" }
+          ]
+        },
         "created_at": {
           "type": "string",
           "format": "date-time"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "requested_orchestration": { "const": "auto" }
+            },
+            "required": ["requested_orchestration"]
+          },
+          "then": {
+            "properties": {
+              "selection_source": { "const": "system" },
+              "user_override": { "const": false }
+            }
+          },
+          "else": {
+            "properties": {
+              "selection_source": { "const": "user" },
+              "user_override": { "const": true }
+            }
+          }
+        }
+      ]
     }
   }
 }

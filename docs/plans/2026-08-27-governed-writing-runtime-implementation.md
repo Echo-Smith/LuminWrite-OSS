@@ -20,6 +20,7 @@
 - [x] Task 1：治理运行时设计基线与兼容边界已在双版本分支提交。
 - [x] Task 2：LCP v1 Schema、fixtures、WritingContract 领域对象、严格解码和优先级测试已完成。
 - [x] Task 3：Document AST、受限 Markdown/LCP parser、RevisionSet 与旧 ArticleStreamParser 适配已完成。
+- [x] Task 4：类型化 Writing Plan IR、Capability Registry、T1–T4 策略编译与静态验证已完成。
 
 ---
 
