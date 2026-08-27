@@ -14,6 +14,17 @@
 
 **Current maturity: Engineering Beta**. The repository contains a complete frontend and backend, Harness single-layer Agent orchestration, writing Pipeline, guided outlines, style profiles, A/B evaluation, feedback system, tiered memory, and monitoring metrics; continuously iterating.
 
+### Governed Writing Runtime: Target Architecture and Migration Boundary
+
+V2 evolves toward the [Governed Writing Runtime](docs/19-governed-writing-runtime.md) as its single target architecture and protocol baseline, delivered through the [implementation plan](docs/plans/2026-08-27-governed-writing-runtime-implementation.md). New capabilities must bind a versioned WritingContract, ExecutablePlan, Artifact, quality state, and Snapshot. The document is the primary product object; chat is the channel for changing the contract, explaining decisions, and controlling execution.
+
+During migration, the existing Harness, Pipeline, and Editorial DAG remain available as executors or compatibility adapters:
+
+- `agent.start` and `workflow.start` retain wire compatibility for now, but they are not two parallel authoritative runtimes.
+- Legacy `mode` and `agent_mode` are not the new `task_mode`, `orchestration_mode`, and `assurance_level`; old fields must not carry the new semantics.
+- `agent.completed` and `workflow.completed` only mean the current executor path ended. They do not mean the content is Accepted, Verified, or formally committed.
+- The Article Output Contract only defines the streaming Markdown parsing boundary. Successful parsing does not imply LCP validation, Document AST construction, version commit, or quality acceptance.
+
 ---
 
 ## Problems Solved
