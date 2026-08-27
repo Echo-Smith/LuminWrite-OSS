@@ -1,0 +1,53 @@
+{
+  "schema_version": "lcp/1.0",
+  "snapshot_manifest_id": "snap_planning",
+  "run_id": "run_demo",
+  "checkpoint_id": "checkpoint_contract",
+  "created_at": "2026-08-27T00:00:00Z",
+  "persisted_at": null,
+  "complete": false,
+  "contract_ref": {
+    "id": "ctr_demo",
+    "version": 1,
+    "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "intent_plan_ref": {
+    "id": "iplan_demo",
+    "version": 1,
+    "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "executable_plan_ref": {
+    "id": "plan_demo",
+    "version": 1,
+    "hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "strategy_decision_ref": null,
+  "document": {
+    "document_id": "doc_demo",
+    "base_version_id": null,
+    "candidate_version_id": null,
+    "ast_hash": null
+  },
+  "material_refs": [],
+  "source_snapshot_refs": [],
+  "artifact_refs": [],
+  "revision_set_refs": [],
+  "validator_versions": [],
+  "execution_provenance": {
+    "models": [],
+    "capabilities": [],
+    "prompt_templates": []
+  },
+  "decision_record_refs": [],
+  "usage": {
+    "input_tokens": 1000,
+    "output_tokens": 2000,
+    "cost_usd": 0.5,
+    "duration_ms": 120000,
+    "retry_count": 0
+  },
+  "degradations": [],
+  "quality_report_ref": null,
+  "ledger_ref": "ledger://run_demo",
+  "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+}

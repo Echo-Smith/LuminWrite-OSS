@@ -1,0 +1,27 @@
+{
+  "schema_version": "lcp/1.0",
+  "artifact_id": "art_outline_1",
+  "run_id": "run_demo",
+  "node_id": "node_outline",
+  "attempt": 0,
+  "idempotency_key": "run_demo:node_outline:1",
+  "artifact_type": "outline",
+  "status": "committed",
+  "version": 1,
+  "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "media_type": "application/json",
+  "content_ref": "object://artifacts/art_outline_1.json",
+  "parent_artifact_ids": [],
+  "provenance": {
+    "producer": "outline_executor",
+    "capability_version": "1.0.0",
+    "input_hashes": [
+      "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "model_ref": "deepseek:chat",
+    "prompt_template_ref": "outline:v1"
+  },
+  "snapshot_manifest_id": null,
+  "quality_report_id": null,
+  "created_at": "2026-08-27T00:00:00Z"
+}

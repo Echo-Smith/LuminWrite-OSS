@@ -1,0 +1,573 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminbuddy.dev/schemas/lcp/v1/quality-report.schema.json",
+  "title": "LCP v1 QualityReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "run_id",
+    "document_versions",
+    "requested_assurance",
+    "achieved_assurance",
+    "assurance_satisfied",
+    "quality_state",
+    "validators",
+    "degradations",
+    "findings",
+    "decision_records",
+    "snapshot_manifest_id",
+    "snapshot_persisted",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "lcp/1.0"
+    },
+    "report_id": {
+      "type": "string",
+      "pattern": "^qr_[A-Za-z0-9_-]+$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[A-Za-z0-9_-]+$"
+    },
+    "document_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_version_id",
+        "validated_version_id",
+        "committed_version_id",
+        "version_consistent"
+      ],
+      "properties": {
+        "candidate_version_id": {
+          "type": "string",
+          "pattern": "^ver_[A-Za-z0-9_-]+$"
+        },
+        "validated_version_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^ver_[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "committed_version_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^ver_[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version_consistent": {
+          "type": "boolean"
+        }
+      }
+    },
+    "requested_assurance": {
+      "enum": [
+        "flexible",
+        "standard",
+        "sourced",
+        "strict"
+      ]
+    },
+    "achieved_assurance": {
+      "enum": [
+        "flexible",
+        "standard",
+        "sourced",
+        "strict"
+      ]
+    },
+    "assurance_satisfied": {
+      "type": "boolean"
+    },
+    "quality_state": {
+      "enum": [
+        "candidate_draft",
+        "accepted_draft",
+        "verified_deliverable"
+      ]
+    },
+    "validators": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "validator_id",
+          "version",
+          "required",
+          "status",
+          "equivalence"
+        ],
+        "properties": {
+          "validator_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "unavailable",
+              "skipped"
+            ]
+          },
+          "equivalence": {
+            "enum": [
+              "primary",
+              "equivalent_fallback",
+              "non_equivalent_fallback",
+              "none"
+            ]
+          }
+        }
+      }
+    },
+    "degradations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "validator_id",
+          "equivalence",
+          "from_assurance",
+          "to_assurance",
+          "reason_code"
+        ],
+        "properties": {
+          "validator_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "equivalence": {
+            "enum": [
+              "equivalent",
+              "non_equivalent"
+            ]
+          },
+          "from_assurance": {
+            "enum": [
+              "flexible",
+              "standard",
+              "sourced",
+              "strict"
+            ]
+          },
+          "to_assurance": {
+            "enum": [
+              "flexible",
+              "standard",
+              "sourced",
+              "strict"
+            ]
+          },
+          "reason_code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "severity",
+          "category",
+          "code",
+          "message",
+          "validator_id",
+          "status",
+          "waiver_decision_id"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "severity": {
+            "enum": [
+              "BLOCKER",
+              "ERROR",
+              "WARNING"
+            ]
+          },
+          "category": {
+            "enum": [
+              "structure",
+              "contract",
+              "evidence",
+              "semantic_preservation",
+              "voice",
+              "readability",
+              "delivery",
+              "snapshot"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "validator_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "resolved",
+              "waived"
+            ]
+          },
+          "waiver_decision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^decision_[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "severity": {
+                  "const": "BLOCKER"
+                }
+              },
+              "required": [
+                "severity"
+              ]
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "open",
+                    "resolved"
+                  ]
+                },
+                "waiver_decision_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "waived"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "ERROR",
+                    "WARNING"
+                  ]
+                },
+                "waiver_decision_id": {
+                  "type": "string",
+                  "pattern": "^decision_[A-Za-z0-9_-]+$"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "decision_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decision_id",
+          "decision_type",
+          "reason_code",
+          "summary",
+          "decided_by",
+          "decided_at"
+        ],
+        "properties": {
+          "decision_id": {
+            "type": "string",
+            "pattern": "^decision_[A-Za-z0-9_-]+$"
+          },
+          "decision_type": {
+            "enum": [
+              "accept",
+              "error_waiver",
+              "degradation",
+              "repair",
+              "reject"
+            ]
+          },
+          "reason_code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "decided_by": {
+            "enum": [
+              "user",
+              "policy",
+              "validator"
+            ]
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "snapshot_manifest_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^snap_[A-Za-z0-9_-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "snapshot_persisted": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "quality_state": {
+            "const": "accepted_draft"
+          }
+        },
+        "required": [
+          "quality_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "document_versions": {
+            "type": "object",
+            "properties": {
+              "committed_version_id": {
+                "type": "string",
+                "pattern": "^ver_[A-Za-z0-9_-]+$"
+              },
+              "version_consistent": {
+                "const": true
+              }
+            }
+          },
+          "findings": {
+            "type": "array",
+            "allOf": [
+              {
+                "not": {
+                  "type": "array",
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "severity": {
+                        "enum": [
+                          "BLOCKER"
+                        ]
+                      },
+                      "status": {
+                        "enum": [
+                          "open"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "severity",
+                      "status"
+                    ]
+                  }
+                }
+              },
+              {
+                "not": {
+                  "type": "array",
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "severity": {
+                        "enum": [
+                          "ERROR"
+                        ]
+                      },
+                      "status": {
+                        "enum": [
+                          "open"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "severity",
+                      "status"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "quality_state": {
+            "const": "verified_deliverable"
+          }
+        },
+        "required": [
+          "quality_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "document_versions": {
+            "type": "object",
+            "properties": {
+              "validated_version_id": {
+                "type": "string",
+                "pattern": "^ver_[A-Za-z0-9_-]+$"
+              },
+              "committed_version_id": {
+                "type": "string",
+                "pattern": "^ver_[A-Za-z0-9_-]+$"
+              },
+              "version_consistent": {
+                "const": true
+              }
+            }
+          },
+          "assurance_satisfied": {
+            "const": true
+          },
+          "validators": {
+            "type": "array",
+            "minItems": 1,
+            "not": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "const": true
+                  },
+                  "status": {
+                    "enum": [
+                      "failed",
+                      "unavailable",
+                      "skipped"
+                    ]
+                  }
+                },
+                "required": [
+                  "required",
+                  "status"
+                ]
+              }
+            }
+          },
+          "findings": {
+            "type": "array",
+            "not": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "severity": {
+                    "enum": [
+                      "BLOCKER",
+                      "ERROR"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "open",
+                      "waived"
+                    ]
+                  }
+                },
+                "required": [
+                  "severity",
+                  "status"
+                ]
+              }
+            }
+          },
+          "snapshot_manifest_id": {
+            "type": "string",
+            "pattern": "^snap_[A-Za-z0-9_-]+$"
+          },
+          "snapshot_persisted": {
+            "const": true
+          }
+        }
+      }
+    }
+  ]
+}

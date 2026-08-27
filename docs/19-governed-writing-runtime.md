@@ -117,17 +117,32 @@ evidence_policy:
 delivery:
   format: markdown
   language: zh-CN
-  length: 5000-7000
+  length:
+    min: 5000
+    max: 7000
 
 collaboration:
   task_mode: guided
   orchestration_mode: auto
+  assurance_level: sourced
   approval_mode: conditional
+
+source_attributions:
+  - field_path: /collaboration/task_mode
+    source: user
+    value_hash: sha256:...
+    recorded_at: 2026-08-27T00:00:00Z
+
+inferences: []
 ```
 
 规则：
 
 - 每次运行绑定一个确定的合约版本。
+- LCP v1 使用 `contract_hash` 保存排除哈希字段自身后的规范 JSON SHA-256，格式为 `sha256:<64 lowercase hex>`。
+- `delivery.length` 使用 `{min,max}` 正整数对象，不再使用需要二次解析的范围字符串。
+- `source_attributions` 按 JSON Pointer 记录关键字段来自 `user`、`system_inference` 或 `platform_default`，并绑定字段值哈希。
+- `inferences` 与最终有效值分离，记录建议值、置信度、状态、reason code 和面向审计的简短说明；不保存隐藏思维链。
 - 已确认合约不原地覆盖，只能产生新版本。
 - 用户确认、系统推断和平台默认值必须标记来源。
 - 影响任务方向的低置信度推断必须澄清。

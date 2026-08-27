@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminbuddy.dev/schemas/lcp/v1/artifact.schema.json",
+  "title": "LCP v1 Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_id",
+    "run_id",
+    "node_id",
+    "attempt",
+    "idempotency_key",
+    "artifact_type",
+    "status",
+    "version",
+    "content_hash",
+    "media_type",
+    "content_ref",
+    "parent_artifact_ids",
+    "provenance",
+    "snapshot_manifest_id",
+    "quality_report_id",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "lcp/1.0"
+    },
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^art_[A-Za-z0-9_-]+$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[A-Za-z0-9_-]+$"
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "artifact_type": {
+      "enum": [
+        "brief",
+        "source_pack",
+        "research_note",
+        "claim_map",
+        "outline",
+        "section_draft",
+        "full_draft",
+        "review_report",
+        "revision_set",
+        "quality_report"
+      ]
+    },
+    "status": {
+      "enum": [
+        "provisional",
+        "generated",
+        "parsed",
+        "validated",
+        "committed",
+        "superseded"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "media_type": {
+      "enum": [
+        "application/json",
+        "text/markdown",
+        "text/plain"
+      ]
+    },
+    "content_ref": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "parent_artifact_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^art_[A-Za-z0-9_-]+$"
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "capability_version",
+        "input_hashes",
+        "model_ref",
+        "prompt_template_ref"
+      ],
+      "properties": {
+        "producer": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "capability_version": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "input_hashes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "model_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt_template_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "snapshot_manifest_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^snap_[A-Za-z0-9_-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quality_report_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^qr_[A-Za-z0-9_-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "committed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "snapshot_manifest_id": {
+            "type": "string",
+            "pattern": "^snap_[A-Za-z0-9_-]+$"
+          }
+        }
+      }
+    }
+  ]
+}

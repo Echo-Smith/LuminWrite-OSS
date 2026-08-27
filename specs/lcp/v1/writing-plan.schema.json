@@ -1,0 +1,528 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminbuddy.dev/schemas/lcp/v1/writing-plan.schema.json",
+  "title": "LCP v1 Writing Plan Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "intent_plan",
+    "executable_plan",
+    "strategy_decision"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "lcp/1.0"
+    },
+    "intent_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_plan_id",
+        "contract_ref",
+        "intent_plan_hash",
+        "summary",
+        "created_by",
+        "created_at",
+        "proposed_steps"
+      ],
+      "properties": {
+        "intent_plan_id": {
+          "type": "string",
+          "pattern": "^iplan_[A-Za-z0-9_-]+$"
+        },
+        "contract_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version",
+            "hash"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "intent_plan_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "created_by": {
+          "enum": [
+            "user",
+            "system",
+            "model"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "proposed_steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "step_id",
+              "objective",
+              "capability_hint",
+              "depends_on"
+            ],
+            "properties": {
+              "step_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "objective": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "capability_hint": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "depends_on": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "executable_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "intent_plan_ref",
+        "plan_hash",
+        "trust_level",
+        "status",
+        "root_node_id",
+        "nodes",
+        "static_validation"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "pattern": "^plan_[A-Za-z0-9_-]+$"
+        },
+        "intent_plan_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version",
+            "hash"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "plan_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "trust_level": {
+          "enum": [
+            "T1",
+            "T2",
+            "T3",
+            "T4"
+          ]
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "validated",
+            "approved",
+            "locked",
+            "superseded"
+          ]
+        },
+        "root_node_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node_id",
+              "kind",
+              "capability",
+              "depends_on",
+              "input_artifact_types",
+              "output_artifact_types",
+              "bounds",
+              "failure_path"
+            ],
+            "properties": {
+              "node_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "kind": {
+                "enum": [
+                  "sequence",
+                  "parallel",
+                  "map",
+                  "reduce",
+                  "condition",
+                  "retry",
+                  "refine",
+                  "human_gate",
+                  "validate",
+                  "fallback",
+                  "action"
+                ]
+              },
+              "capability": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "depends_on": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "input_artifact_types": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "output_artifact_types": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "bounds": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "max_attempts",
+                  "max_concurrency",
+                  "max_items",
+                  "max_cost_usd",
+                  "timeout_ms"
+                ],
+                "properties": {
+                  "max_attempts": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max_concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max_items": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max_cost_usd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "failure_path": {
+                "enum": [
+                  "fail",
+                  "pause",
+                  "fallback",
+                  "partial"
+                ]
+              }
+            }
+          }
+        },
+        "static_validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "valid",
+            "checked_at",
+            "errors",
+            "capability_registry_version",
+            "budget_valid",
+            "permissions_valid",
+            "artifact_flow_valid",
+            "failure_paths_valid"
+          ],
+          "properties": {
+            "valid": {
+              "type": "boolean"
+            },
+            "checked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "capability_registry_version": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "budget_valid": {
+              "type": "boolean"
+            },
+            "permissions_valid": {
+              "type": "boolean"
+            },
+            "artifact_flow_valid": {
+              "type": "boolean"
+            },
+            "failure_paths_valid": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "validated",
+                  "approved",
+                  "locked"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+            "static_validation": {
+              "type": "object",
+              "properties": {
+                  "valid": {
+                    "const": true
+                  },
+                "errors": {
+                  "type": "array",
+                  "maxItems": 0
+                  },
+                  "budget_valid": {
+                    "const": true
+                  },
+                  "permissions_valid": {
+                    "const": true
+                  },
+                  "artifact_flow_valid": {
+                    "const": true
+                  },
+                  "failure_paths_valid": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "strategy_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "intent_plan_ref",
+        "candidates",
+        "selected_plan_hash",
+        "reason_code",
+        "summary",
+        "confidence",
+        "approval_required",
+        "degradation_conditions",
+        "created_at"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "pattern": "^decision_[A-Za-z0-9_-]+$"
+        },
+        "intent_plan_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version",
+            "hash"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "plan_hash",
+              "trust_level",
+              "template_id",
+              "estimated_cost_usd",
+              "estimated_duration_ms"
+            ],
+            "properties": {
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "trust_level": {
+                "enum": [
+                  "T1",
+                  "T2",
+                  "T3",
+                  "T4"
+                ]
+              },
+              "template_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "estimated_cost_usd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "estimated_duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "selected_plan_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "approval_required": {
+          "type": "boolean"
+        },
+        "degradation_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

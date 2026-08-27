@@ -1,0 +1,95 @@
+{
+  "schema_version": "lcp/1.0",
+  "intent_plan": {
+    "intent_plan_id": "iplan_demo",
+    "contract_ref": {
+      "id": "ctr_demo",
+      "version": 1,
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "intent_plan_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "summary": "先研究材料，再形成结构并完成核验",
+    "created_by": "model",
+    "created_at": "2026-08-27T00:00:00Z",
+    "proposed_steps": [
+      {
+        "step_id": "step_1",
+        "objective": "形成可核验的长文",
+        "capability_hint": "writing.sequence",
+        "depends_on": []
+      }
+    ]
+  },
+  "executable_plan": {
+    "plan_id": "plan_demo",
+    "intent_plan_ref": {
+      "id": "iplan_demo",
+      "version": 1,
+      "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "plan_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "trust_level": "T2",
+    "status": "validated",
+    "root_node_id": "node_root",
+    "nodes": [
+      {
+        "node_id": "node_root",
+        "kind": "sequence",
+        "capability": "writing.sequence",
+        "depends_on": [],
+        "input_artifact_types": [
+          "brief"
+        ],
+        "output_artifact_types": [
+          "full_draft"
+        ],
+        "bounds": {
+          "max_attempts": 1,
+          "max_concurrency": 1,
+          "max_items": 1,
+          "max_cost_usd": 2.5,
+          "timeout_ms": 300000
+        },
+        "failure_path": "pause"
+      }
+    ],
+    "static_validation": {
+      "valid": false,
+      "checked_at": "2026-08-27T00:00:00Z",
+      "errors": [
+        "cycle"
+      ],
+      "capability_registry_version": "1.0.0",
+      "budget_valid": true,
+      "permissions_valid": true,
+      "artifact_flow_valid": true,
+      "failure_paths_valid": true
+    }
+  },
+  "strategy_decision": {
+    "decision_id": "decision_strategy",
+    "intent_plan_ref": {
+      "id": "iplan_demo",
+      "version": 1,
+      "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "candidates": [
+      {
+        "plan_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "trust_level": "T2",
+        "template_id": null,
+        "estimated_cost_usd": 1.2,
+        "estimated_duration_ms": 120000
+      }
+    ],
+    "selected_plan_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "reason_code": "balanced_longform",
+    "summary": "在质量和成本之间选择有界动态计划",
+    "confidence": 0.9,
+    "approval_required": false,
+    "degradation_conditions": [
+      "validator_unavailable"
+    ],
+    "created_at": "2026-08-27T00:00:00Z"
+  }
+}

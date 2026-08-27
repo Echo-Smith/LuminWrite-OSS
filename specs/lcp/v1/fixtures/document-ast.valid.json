@@ -1,0 +1,40 @@
+{
+  "schema_version": "lcp/1.0",
+  "document_id": "doc_demo",
+  "version_id": "ver_1",
+  "base_version_id": null,
+  "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "root": {
+    "block_id": "blk_root",
+    "type": "document",
+    "attrs": {},
+    "children": [
+      {
+        "block_id": "blk_section_1",
+        "type": "section",
+        "attrs": {
+          "level": 1
+        },
+        "children": [
+          {
+            "block_id": "blk_text_1",
+            "type": "text",
+            "text": "治理型写作运行时",
+            "attrs": {},
+            "children": []
+          },
+          {
+            "block_id": "blk_citation_1",
+            "type": "citation",
+            "text": "[1]",
+            "attrs": {
+              "source_id": "source_1",
+              "locator": "p.12"
+            },
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+}

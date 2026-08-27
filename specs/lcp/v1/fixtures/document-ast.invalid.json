@@ -1,0 +1,20 @@
+{
+  "schema_version": "lcp/1.0",
+  "document_id": "doc_demo",
+  "version_id": "ver_1",
+  "base_version_id": null,
+  "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "root": {
+    "block_id": "blk_root",
+    "type": "document",
+    "attrs": {},
+    "children": [
+      {
+        "block_id": "blk_citation",
+        "type": "citation",
+        "attrs": {},
+        "children": []
+      }
+    ]
+  }
+}

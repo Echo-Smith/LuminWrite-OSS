@@ -1,0 +1,13 @@
+{
+  "schema_version": "lcp/1.0",
+  "contract_id": "ctr_invalid",
+  "version": 1,
+  "contract_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "confirmed",
+  "collaboration": {
+    "task_mode": "guided",
+    "orchestration_mode": "editorial",
+    "approval_mode": "conditional",
+    "agent_mode": "harness"
+  }
+}

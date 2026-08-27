@@ -15,6 +15,12 @@
 
 两版从 codex/v2-stabilization-oss 与 codex/v2-stabilization-commercial 的干净提交开始。共同内核、Schema、前端和测试文件必须逐字一致；商业差异只放在 capability、policy、validator、connector 和治理页面。
 
+**Execution status (2026-08-27):**
+
+- [x] Task 1：治理运行时设计基线与兼容边界已在双版本分支提交。
+- [x] Task 2：LCP v1 Schema、fixtures、WritingContract 领域对象、严格解码和优先级测试已完成。
+- [ ] Task 3：Document AST、受限 Markdown/LCP parser 与 RevisionSet。
+
 ---
 
 ## Task 1: 固定设计基线与共享协议
