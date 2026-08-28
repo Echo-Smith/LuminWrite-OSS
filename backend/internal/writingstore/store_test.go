@@ -95,6 +95,20 @@ func TestQualityPreflightRejectsBlockersAndUnpersistedVerification(t *testing.T)
 	}
 }
 
+func TestQualityPreflightAllowsAcceptedDraftBelowRequestedAssurance(t *testing.T) {
+	report := QualityReportRecord{
+		ReportID: "qr_accepted_lower_assurance", ReportVersion: 1, RunID: "run_test",
+		PlanID: "plan_test", PlanVersion: 1, DocumentID: "doc_test", CandidateVersionID: "ver_test",
+		ContentHash: testHash("accepted-lower-assurance"), RequestedAssurance: writingkernel.AssuranceLevelStrict,
+		AchievedAssurance: writingkernel.AssuranceLevelSourced, AssuranceSatisfied: false,
+		QualityState: QualityAcceptedDraft, VersionConsistent: true, Payload: map[string]any{},
+		SnapshotID: "snap_test", SnapshotVersion: 1, SnapshotPersisted: true, Trace: testTrace(),
+	}
+	if err := validateQualityReport(report); err != nil {
+		t.Fatalf("Accepted Draft should preserve an assurance shortfall without claiming Verified: %v", err)
+	}
+}
+
 func TestContractIsImmutableAndReplaySafe(t *testing.T) {
 	store, fixture := newIntegrationFixture(t, false)
 	ctx := context.Background()

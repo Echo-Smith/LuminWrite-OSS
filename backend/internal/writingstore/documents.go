@@ -11,7 +11,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 )
 
-const QualityCandidateDraft = "candidate_draft"
+const QualityCandidateDraft = string(writingkernel.QualityStateCandidateDraft)
 
 type DocumentRecord struct {
 	DocumentID       string

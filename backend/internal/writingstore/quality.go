@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	QualityAcceptedDraft       = "accepted_draft"
-	QualityVerifiedDeliverable = "verified_deliverable"
+	QualityAcceptedDraft       = string(writingkernel.QualityStateAcceptedDraft)
+	QualityVerifiedDeliverable = string(writingkernel.QualityStateVerifiedDeliverable)
 )
 
 type QualityReportRecord struct {
@@ -154,7 +154,7 @@ func validateQualityReport(report QualityReportRecord) error {
 	case QualityCandidateDraft:
 	case QualityAcceptedDraft:
 		if report.BlockerCount > 0 || report.OpenErrorCount > 0 || !report.VersionConsistent ||
-			!report.AssuranceSatisfied || assuranceRank(report.AchievedAssurance) < assuranceRank(report.RequestedAssurance) {
+			!report.SnapshotPersisted {
 			return fmt.Errorf("%w: BLOCKER or open ERROR prevents accepted draft", ErrInvalidRecord)
 		}
 	case QualityVerifiedDeliverable:

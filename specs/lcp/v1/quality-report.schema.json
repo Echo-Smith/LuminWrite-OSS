@@ -248,6 +248,50 @@
             "minLength": 1,
             "pattern": "\\S"
           },
+          "validator_status": {
+            "enum": [
+              "passed",
+              "failed",
+              "unavailable",
+              "skipped"
+            ]
+          },
+          "rule_version": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "explanation": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "fix_scope": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "block_id": {
+                "type": "string",
+                "pattern": "^blk_[A-Za-z0-9_-]+$"
+              },
+              "claim_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "source_ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
+          },
           "status": {
             "enum": [
               "open",
@@ -369,6 +413,33 @@
           "decided_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      }
+    },
+    "gate_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "passed",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
           }
         }
       }
