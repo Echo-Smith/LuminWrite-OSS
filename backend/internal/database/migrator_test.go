@@ -122,6 +122,83 @@ func TestVerifyMigrationChecksumFailsClosed(t *testing.T) {
 	}
 }
 
+func TestLegacyMigrationCompatibilityPreservesDeployedChecksums(t *testing.T) {
+	for _, historical := range []struct {
+		version  string
+		checksum string
+	}{
+		{"086_style_kb_binding", "01670f535b7654ca932bf346511f23b958a7bd1fd3952d2327cfef7fbe020058"},
+		{"087_merge_tasks_traces", "7ed25d33beb64437275289b2b70be248ecb69464146cea1eb14a29de78b932f5"},
+	} {
+		contents, err := migrationFS.ReadFile("migrations/" + historical.version + ".up.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := computeChecksum(string(contents)); got != historical.checksum {
+			t.Fatalf("historical migration %s was rewritten: got checksum %s", historical.version, got)
+		}
+	}
+
+	versions, err := discoverMigrations(migrationFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position := make(map[string]int, len(versions))
+	for index, version := range versions {
+		position[version] = index
+	}
+	if !(position["085z_style_kb_binding_compat"] < position["086_style_kb_binding"] &&
+		position["086_style_kb_binding"] < position["086z_style_kb_binding_normalize"] &&
+		position["086z_style_kb_binding_normalize"] < position["086zz_merge_tasks_uuid_compat"] &&
+		position["086zz_merge_tasks_uuid_compat"] < position["086zzz_merge_child_ids_compat"] &&
+		position["086zzz_merge_child_ids_compat"] < position["087_merge_tasks_traces"]) {
+		t.Fatal("compatibility migrations must bracket historical migrations 086 and 087")
+	}
+
+	compat := readWritingMigration(t, "085z_style_kb_binding_compat", "up")
+	normalize := readWritingMigration(t, "086z_style_kb_binding_normalize", "up")
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS config JSONB",
+		"ADD COLUMN IF NOT EXISTS profile_slug",
+	} {
+		if !strings.Contains(compat, fragment) {
+			t.Errorf("compatibility bridge missing %s", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"version_row.profile_id = profile.id",
+		"DROP COLUMN IF EXISTS profile_slug",
+		"DROP COLUMN IF EXISTS config",
+	} {
+		if !strings.Contains(normalize, fragment) {
+			t.Errorf("normalization migration missing %s", fragment)
+		}
+	}
+
+	actorCompat := readWritingMigration(t, "086zz_merge_tasks_uuid_compat", "up")
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS editorial_task_actor_legacy",
+		"legacy-owner:",
+		"legacy-created-by:",
+		"ALTER COLUMN owner_id TYPE UUID",
+	} {
+		if !strings.Contains(actorCompat, fragment) {
+			t.Errorf("actor compatibility migration missing %s", fragment)
+		}
+	}
+
+	childCompat := readWritingMigration(t, "086zzz_merge_child_ids_compat", "up")
+	for _, fragment := range []string{
+		"GENERATED ALWAYS AS (id::TEXT) STORED UNIQUE",
+		"ALTER COLUMN task_id TYPE VARCHAR(64) USING task_id::TEXT",
+		"REFERENCES editorial_tasks(legacy_trace_id)",
+	} {
+		if !strings.Contains(childCompat, fragment) {
+			t.Errorf("child-id compatibility migration missing %s", fragment)
+		}
+	}
+}
+
 // TestWritingRuntimeMigrationStructure locks down the database boundary for the
 // governed writing runtime.  It deliberately reads the embedded SQL rather
 // than requiring PostgreSQL so that a missing or accidentally weakened
