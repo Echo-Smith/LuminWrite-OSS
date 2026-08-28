@@ -39,6 +39,10 @@ var validRunStatuses = map[string]bool{
 }
 
 func (s *Store) CreateRun(ctx context.Context, record RunRecord) error {
+	return s.InTransaction(ctx, func(tx *Tx) error { return tx.CreateRun(ctx, record) })
+}
+
+func (tx *Tx) CreateRun(ctx context.Context, record RunRecord) error {
 	if err := validateID(record.RunID, "run_", "run_id"); err != nil {
 		return err
 	}
@@ -75,7 +79,7 @@ func (s *Store) CreateRun(ctx context.Context, record RunRecord) error {
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	result, err := s.db.ExecContext(ctx, `
+	result, err := tx.tx.ExecContext(ctx, `
 		INSERT INTO writing_runs (
 			run_id, document_id, contract_id, contract_version, contract_hash,
 			base_version_id, status, approval_mode, requested_assurance,
@@ -98,7 +102,7 @@ func (s *Store) CreateRun(ctx context.Context, record RunRecord) error {
 	}
 	var documentID, contractID, contractHash string
 	var contractVersion int
-	err = s.db.QueryRowContext(ctx, `
+	err = tx.tx.QueryRowContext(ctx, `
 		SELECT document_id, contract_id, contract_version, contract_hash
 		FROM writing_runs WHERE run_id=$1
 	`, record.RunID).Scan(&documentID, &contractID, &contractVersion, &contractHash)
@@ -287,6 +291,7 @@ var validRunEventTypes = map[string]bool{
 	"run.failed": true, "node.started": true, "node.completed": true,
 	"node.failed": true, "artifact.created": true, "quality.updated": true,
 	"snapshot.created": true, "run.transitioned": true,
+	"document.committed":      true,
 	"run.transition_rejected": true, "node.paused": true,
 	"node.cancelled": true,
 }

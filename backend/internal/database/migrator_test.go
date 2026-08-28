@@ -251,6 +251,22 @@ func TestWritingRuntimeDispatchVocabularyIsForwardOnly(t *testing.T) {
 	}
 }
 
+func TestWritingDocumentCommitEventIsForwardOnly(t *testing.T) {
+	up := readWritingMigration(t, "094_writing_document_commit_event", "up")
+	down := readWritingMigration(t, "094_writing_document_commit_event", "down")
+	if !strings.Contains(up, "'document.committed'") {
+		t.Fatal("094 must add the separate durable document commit event")
+	}
+	if strings.Contains(down, "'document.committed'") {
+		t.Fatal("094 down migration must restore the 093 event vocabulary")
+	}
+	for _, eventType := range []string{"run.transitioned", "run.transition_rejected", "node.paused", "node.cancelled"} {
+		if !strings.Contains(up, "'"+eventType+"'") || !strings.Contains(down, "'"+eventType+"'") {
+			t.Fatalf("094 must preserve the 093 event type %q", eventType)
+		}
+	}
+}
+
 // TestWritingRuntimeMigrationStructure locks down the database boundary for the
 // governed writing runtime.  It deliberately reads the embedded SQL rather
 // than requiring PostgreSQL so that a missing or accidentally weakened

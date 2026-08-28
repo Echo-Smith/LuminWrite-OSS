@@ -26,15 +26,15 @@ type GateDecision struct {
 }
 
 type UserQualitySummary struct {
-	QualityState       writingkernel.QualityState
-	RequestedAssurance writingkernel.AssuranceLevel
-	AchievedAssurance  writingkernel.AssuranceLevel
-	AssuranceSatisfied bool
-	KeyFindings        []writingkernel.QualityFinding
+	QualityState       writingkernel.QualityState     `json:"quality_state"`
+	RequestedAssurance writingkernel.AssuranceLevel   `json:"requested_assurance"`
+	AchievedAssurance  writingkernel.AssuranceLevel   `json:"achieved_assurance"`
+	AssuranceSatisfied bool                           `json:"assurance_satisfied"`
+	KeyFindings        []writingkernel.QualityFinding `json:"key_findings"`
 }
 
 type AuditQualityReport struct {
-	Report writingkernel.QualityReport
+	Report writingkernel.QualityReport `json:"report"`
 }
 
 type ValidatorCriticality string

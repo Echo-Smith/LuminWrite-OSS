@@ -176,6 +176,9 @@ func (s *Server) registerRoutesFromChi(r chi.Router) {
 		if strings.HasPrefix(route, "/api/v2/admin") {
 			auth = "admin"
 		} else if strings.Contains(route, "/my-") ||
+			strings.Contains(route, "/documents") ||
+			strings.Contains(route, "/contracts") ||
+			strings.Contains(route, "/runs") ||
 			strings.Contains(route, "/preferences") ||
 			strings.Contains(route, "/materials") ||
 			strings.Contains(route, "/sessions") ||
@@ -194,7 +197,7 @@ func (s *Server) registerRoutesFromChi(r chi.Router) {
 
 		// Check for WebSocket/SSE routes
 		isWS := strings.Contains(route, "/ws/")
-		isSSE := strings.Contains(route, "/sse/") || strings.Contains(route, "/stream")
+		isSSE := strings.Contains(route, "/sse/") || strings.Contains(route, "/stream") || strings.HasSuffix(route, "/events")
 
 		if isWS {
 			s.routeReg.addWebSocket(route, "WebSocket endpoint")
@@ -249,6 +252,8 @@ func inferCategory(route string) string {
 		return "tools"
 	case strings.HasPrefix(route, "/api/v2/editorial"):
 		return "editorial"
+	case strings.HasPrefix(route, "/api/v2/documents"), strings.HasPrefix(route, "/api/v2/contracts"), strings.HasPrefix(route, "/api/v2/runs"):
+		return "writing"
 	case strings.HasPrefix(route, "/api/v2/ws/"):
 		return "realtime"
 	case strings.HasPrefix(route, "/api/v2/sse/"), strings.Contains(route, "/stream"):

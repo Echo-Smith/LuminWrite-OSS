@@ -677,6 +677,13 @@ func validatorsForAssurance(level writingkernel.AssuranceLevel) []string {
 	}
 }
 
+// RequiredValidatorsForAssurance exposes the compiler's mandatory quality
+// floor so dispatch authorization cannot trust a validator list supplied by a
+// client or by an older plan snapshot.
+func RequiredValidatorsForAssurance(level writingkernel.AssuranceLevel) []string {
+	return append([]string(nil), validatorsForAssurance(level)...)
+}
+
 func hasErrorPrefix(values []string, prefix string) bool {
 	for _, value := range values {
 		if strings.HasPrefix(value, prefix) {

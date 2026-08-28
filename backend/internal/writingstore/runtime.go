@@ -15,17 +15,22 @@ import (
 )
 
 type RuntimeRun struct {
-	RunID, DocumentID, ContractID, ContractHash string
-	ContractVersion                             int
-	Status                                      string
-	ActivePlanID                                string
-	ActivePlanVersion                           int
-	ApprovalMode, ApprovalStatus                string
-	Budget                                      writingplan.PlanBudget
-	Permissions                                 []writingplan.Permission
-	LastEventSequence                           int64
-	LastSnapshotID                              string
-	LastSnapshotVersion                         int
+	RunID               string                   `json:"run_id"`
+	DocumentID          string                   `json:"document_id"`
+	ContractID          string                   `json:"contract_id"`
+	ContractHash        string                   `json:"contract_hash"`
+	ContractVersion     int                      `json:"contract_version"`
+	BaseVersionID       string                   `json:"base_version_id,omitempty"`
+	Status              string                   `json:"status"`
+	ActivePlanID        string                   `json:"active_plan_id,omitempty"`
+	ActivePlanVersion   int                      `json:"active_plan_version,omitempty"`
+	ApprovalMode        string                   `json:"approval_mode"`
+	ApprovalStatus      string                   `json:"approval_status,omitempty"`
+	Budget              writingplan.PlanBudget   `json:"budget"`
+	Permissions         []writingplan.Permission `json:"permissions"`
+	LastEventSequence   int64                    `json:"last_event_sequence"`
+	LastSnapshotID      string                   `json:"last_snapshot_id,omitempty"`
+	LastSnapshotVersion int                      `json:"last_snapshot_version,omitempty"`
 }
 
 func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, error) {
@@ -33,12 +38,12 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 		return RuntimeRun{}, err
 	}
 	var run RuntimeRun
-	var planID, approvalStatus, snapshotID sql.NullString
+	var baseVersionID, planID, approvalStatus, snapshotID sql.NullString
 	var planVersion, snapshotVersion sql.NullInt64
 	var budget, permissions []byte
 	err := s.db.QueryRowContext(ctx, `
 		SELECT r.run_id, r.document_id, r.contract_id, r.contract_version,
-		       r.contract_hash, r.status, r.active_plan_id, r.active_plan_version,
+		       r.contract_hash, r.base_version_id, r.status, r.active_plan_id, r.active_plan_version,
 		       r.approval_mode, COALESCE(p.approval_status, ''), r.budget,
 		       r.permissions, r.last_event_sequence, r.last_snapshot_id,
 		       r.last_snapshot_version
@@ -47,7 +52,7 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 		 AND p.plan_id=r.active_plan_id AND p.plan_version=r.active_plan_version
 		WHERE r.run_id=$1
 	`, runID).Scan(&run.RunID, &run.DocumentID, &run.ContractID, &run.ContractVersion,
-		&run.ContractHash, &run.Status, &planID, &planVersion, &run.ApprovalMode,
+		&run.ContractHash, &baseVersionID, &run.Status, &planID, &planVersion, &run.ApprovalMode,
 		&approvalStatus, &budget, &permissions, &run.LastEventSequence,
 		&snapshotID, &snapshotVersion)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -56,7 +61,7 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 	if err != nil {
 		return RuntimeRun{}, fmt.Errorf("load runtime run: %w", err)
 	}
-	run.ActivePlanID, run.ApprovalStatus, run.LastSnapshotID = planID.String, approvalStatus.String, snapshotID.String
+	run.BaseVersionID, run.ActivePlanID, run.ApprovalStatus, run.LastSnapshotID = baseVersionID.String, planID.String, approvalStatus.String, snapshotID.String
 	run.ActivePlanVersion, run.LastSnapshotVersion = int(planVersion.Int64), int(snapshotVersion.Int64)
 	if err := json.Unmarshal(budget, &run.Budget); err != nil {
 		return RuntimeRun{}, fmt.Errorf("decode run budget: %w", err)

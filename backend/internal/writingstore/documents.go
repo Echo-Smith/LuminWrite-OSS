@@ -14,16 +14,16 @@ import (
 const QualityCandidateDraft = string(writingkernel.QualityStateCandidateDraft)
 
 type DocumentRecord struct {
-	DocumentID       string
-	OwnerUserID      string
-	Title            string
-	Status           string
-	CurrentVersion   int
-	CurrentVersionID string
-	Metadata         map[string]any
-	Actor            Actor
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	DocumentID       string         `json:"document_id"`
+	OwnerUserID      string         `json:"owner_user_id"`
+	Title            string         `json:"title"`
+	Status           string         `json:"status"`
+	CurrentVersion   int            `json:"current_version"`
+	CurrentVersionID string         `json:"current_version_id,omitempty"`
+	Metadata         map[string]any `json:"metadata"`
+	Actor            Actor          `json:"actor"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 func (s *Store) CreateDocument(ctx context.Context, record DocumentRecord) error {
@@ -88,13 +88,13 @@ type CommitDocumentVersionParams struct {
 }
 
 type StoredDocumentVersion struct {
-	Version         writingkernel.DocumentVersion
-	Sequence        int
-	ContractID      string
-	ContractVersion int
-	QualityState    string
-	CreatedAt       time.Time
-	Trace           TraceContext
+	Version         writingkernel.DocumentVersion `json:"document"`
+	Sequence        int                           `json:"sequence"`
+	ContractID      string                        `json:"contract_id"`
+	ContractVersion int                           `json:"contract_version"`
+	QualityState    string                        `json:"quality_state"`
+	CreatedAt       time.Time                     `json:"created_at"`
+	Trace           TraceContext                  `json:"trace"`
 }
 
 func (s *Store) CommitDocumentVersion(ctx context.Context, params CommitDocumentVersionParams) (StoredDocumentVersion, error) {

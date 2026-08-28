@@ -23,11 +23,12 @@ var jwtHeader = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ
 
 // JWTPayload represents the claims inside a JWT.
 type JWTPayload struct {
-	Sub  string `json:"sub"`  // subject (user ID)
-	Role string `json:"role"` // role: "user", "admin"
-	Jti  string `json:"jti"`  // JWT ID (session ID) — unique per token, used for session tracking
-	Iat  int64  `json:"iat"`  // issued at (unix seconds)
-	Exp  int64  `json:"exp"`  // expiration (unix seconds)
+	Sub          string   `json:"sub"`                     // subject (user ID)
+	Role         string   `json:"role"`                    // role: "user", "admin"
+	WorkspaceIDs []string `json:"workspace_ids,omitempty"` // explicit tenant memberships
+	Jti          string   `json:"jti"`                     // JWT ID (session ID) — unique per token, used for session tracking
+	Iat          int64    `json:"iat"`                     // issued at (unix seconds)
+	Exp          int64    `json:"exp"`                     // expiration (unix seconds)
 }
 
 // GenerateJWT creates a signed JWT token for the given user ID and role.

@@ -12,10 +12,10 @@ import (
 )
 
 type ContractRecord struct {
-	DocumentID string
-	Contract   writingkernel.WritingContract
-	Trace      TraceContext
-	CreatedAt  time.Time
+	DocumentID string                        `json:"document_id"`
+	Contract   writingkernel.WritingContract `json:"contract"`
+	Trace      TraceContext                  `json:"trace"`
+	CreatedAt  time.Time                     `json:"created_at"`
 }
 
 func (s *Store) PutContract(ctx context.Context, record ContractRecord) error {

@@ -25,6 +25,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
@@ -98,6 +99,9 @@ type Server struct {
 
 	// Raw database handle (for queries without a dedicated repo)
 	db *database.DB
+
+	// Governed writing API. Nil only when persistence is unavailable.
+	writingAPI writingAPIService
 
 	// Billing
 billingRepo *database.BillingRepo
@@ -518,6 +522,13 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		slog.Info("billing system initialized", "db_available", true)
 	}
+	if dbAvail && db != nil {
+		governedStore, err := writingstore.New(db)
+		if err != nil {
+			return nil, fmt.Errorf("initialize governed writing store: %w", err)
+		}
+		s.writingAPI = newPersistentWritingAPI(governedStore)
+	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
 		// Wire LLM metrics (Prometheus instrumentation)
@@ -726,6 +737,7 @@ func (s *Server) Router() http.Handler {
 
 	// API v2
 	r.Route("/api/v2", func(r chi.Router) {
+		s.registerWritingRoutes(r)
 		// Styles (jwtOptional: logged-in users see global + their private styles)
 		r.With(s.jwtOptionalMiddleware).Get("/styles", s.handleListStylesWithUserStyles)
 		r.With(s.jwtOptionalMiddleware).Get("/styles/{slug}", s.handleGetStyle)
