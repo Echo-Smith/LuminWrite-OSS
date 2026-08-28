@@ -24,6 +24,7 @@
 - [x] Task 5：治理数据库、不可变账本、版本化 Artifact/Quality/Snapshot 与延迟质量门禁已完成。
 - [x] Task 6：事务 Repository、精确幂等、单调事件账本与 Snapshot 原子提交已完成。
 - [x] Task 7a：治理运行状态转换图、终态约束与非法转换审计契约已完成；Orchestrator 和数据库适配待后续子任务。
+- [x] Task 7b：Executor typed input/output、能力版本绑定、候选 Artifact 与完整 lineage 校验已完成；旧执行器适配待后续子任务。
 
 ---
 
@@ -288,6 +289,7 @@ Repository 返回领域对象，不泄漏 pgx rows 到 writingkernel。每个写
 - Create: backend/internal/writingruntime/orchestrator.go
 - Create: backend/internal/writingruntime/orchestrator_test.go
 - Create: backend/internal/writingruntime/executor.go
+- Create: backend/internal/writingruntime/executor_test.go
 - Create: backend/internal/writingruntime/checkpoint.go
 - Create: backend/internal/writingruntime/recovery.go
 - Create: backend/internal/writingruntime/executor_adapters.go
