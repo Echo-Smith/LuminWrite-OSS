@@ -199,6 +199,40 @@ func TestLegacyMigrationCompatibilityPreservesDeployedChecksums(t *testing.T) {
 	}
 }
 
+func TestWritingNodeKindAlignmentIsForwardOnly(t *testing.T) {
+	ledger, err := migrationFS.ReadFile("migrations/091_writing_run_ledger.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := computeChecksum(string(ledger)); got != "afe2f9dd4fe61cbcff1a836331b5418dc83c34cd089ee67f05fd39a027508ffe" {
+		t.Fatalf("published migration 091 was rewritten: got checksum %s", got)
+	}
+
+	up := readWritingMigration(t, "092_writing_node_kind_alignment", "up")
+	down := readWritingMigration(t, "092_writing_node_kind_alignment", "down")
+	for _, fragment := range []string{
+		"DROP CONSTRAINT IF EXISTS chk_writing_attempt_kind",
+		"ADD CONSTRAINT chk_writing_attempt_kind",
+	} {
+		if !strings.Contains(up, fragment) || !strings.Contains(down, fragment) {
+			t.Fatalf("node-kind alignment migration must safely replace its check constraint: %s", fragment)
+		}
+	}
+	for _, kind := range []string{
+		"sequence", "parallel", "map", "reduce", "condition", "retry",
+		"refine", "human_gate", "validate", "fallback", "action",
+	} {
+		if !strings.Contains(up, "'"+kind+"'") {
+			t.Errorf("092 must persist writing-plan node kind %q", kind)
+		}
+	}
+	for _, legacyKind := range []string{"action", "map", "parallel", "branch", "validate", "retry", "refine"} {
+		if !strings.Contains(down, "'"+legacyKind+"'") {
+			t.Errorf("092 down migration must restore legacy node kind %q", legacyKind)
+		}
+	}
+}
+
 // TestWritingRuntimeMigrationStructure locks down the database boundary for the
 // governed writing runtime.  It deliberately reads the embedded SQL rather
 // than requiring PostgreSQL so that a missing or accidentally weakened
