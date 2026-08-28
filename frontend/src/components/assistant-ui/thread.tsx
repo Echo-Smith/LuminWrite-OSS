@@ -18,7 +18,7 @@ import { useAgentStore } from "@/stores/agent-store";
 import { FadeIn, StaggerItem } from "@/components/animation";
 import type { Topic, AgentStartPayload } from "@/lib/types";
 
-export function Thread() {
+export function Thread({ variant = "full" }: { variant?: "full" | "dock" }) {
   const sessions = useAgentStore((s) => s.sessions);
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
   const streamingText = useAgentStore((s) => s.streamingText);
@@ -63,7 +63,7 @@ export function Thread() {
 
   // 空状态
   if (messages.length === 0) {
-    return <EmptyState />;
+    return <EmptyState compact={variant === "dock"} />;
   }
 
   return (
@@ -71,7 +71,7 @@ export function Thread() {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto"
+        className={variant === "dock" ? "h-full overflow-y-auto px-2" : "h-full overflow-y-auto"}
       >
       {messages.map((message, idx) => {
         // 计算文章版本号：统计到当前位置为止有多少条带文本内容的 assistant 消息
@@ -193,7 +193,7 @@ function SuggestionButton({
   );
 }
 
-function EmptyState() {
+function EmptyState({ compact = false }: { compact?: boolean }) {
   const [suggestions, setSuggestions] = useState<{ text: string; payload?: AgentStartPayload; isHot?: boolean }[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -236,7 +236,13 @@ function EmptyState() {
   }, []);
 
   return (
-    <div className="flex h-full items-center justify-center p-8">
+    <div className={compact ? "flex h-full items-center justify-center px-5 py-3" : "flex h-full items-center justify-center p-8"}>
+      {compact ? (
+        <div className="w-full max-w-2xl text-center">
+          <p className="text-sm font-medium">从一句写作要求开始</p>
+          <p className="mt-1 text-xs text-muted-foreground">系统会先整理合约与计划，正文始终留在上方文档区。</p>
+        </div>
+      ) : (
       <div className="max-w-md text-center space-y-8">
         {/* 品牌图标 */}
         <FadeIn direction="scale" className="flex justify-center">
@@ -295,6 +301,7 @@ function EmptyState() {
           </div>
         </FadeIn>
       </div>
+      )}
     </div>
   );
 }

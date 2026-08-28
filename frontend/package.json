@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
+    "test": "node --test tests/*.test.ts",
     "test:wabench": "node --test tests/wabench-eval.test.ts"
   },
   "dependencies": {

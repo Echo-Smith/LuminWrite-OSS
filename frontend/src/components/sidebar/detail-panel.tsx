@@ -5,7 +5,7 @@
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
 import { useState, useEffect, useCallback } from "react";
-import { ChevronRight, ChevronLeft, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, type LucideIcon } from "lucide-react";
+import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -18,9 +18,13 @@ import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 import { AgentStepCard } from "@/components/tools/agent-step-card";
 import { CompactStepTimeline } from "@/components/tools/compact-step-timeline";
+import { RunDetailTabs } from "@/components/runtime/run-detail-tabs";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 
 interface DetailPanelProps {
   onClose?: () => void;
+  governed?: boolean;
 }
 
 // ─── Agent 角色映射 ──────────────────────────────────────
@@ -85,7 +89,11 @@ const AGENT_ROLES: AgentRole[] = [
   },
 ];
 
-export function DetailPanel({ onClose }: DetailPanelProps) {
+export function DetailPanel({ onClose, governed = false }: DetailPanelProps) {
+  return governed ? <GovernedDetailPanel onClose={onClose} /> : <LegacyDetailPanel onClose={onClose} />;
+}
+
+function LegacyDetailPanel({ onClose }: { onClose?: () => void }) {
   const [activeTab, setActiveTab] = useState("trace");
 
   const session = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
@@ -187,6 +195,39 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
         </ScrollArea>
       </Tabs>
     </div>
+  );
+}
+
+function GovernedDetailPanel({ onClose }: { onClose?: () => void }) {
+  const activeTab = useWorkspaceLayoutStore((state) => state.detailTab);
+  const setActiveTab = useWorkspaceLayoutStore((state) => state.setDetailTab);
+  const document = useWritingRuntimeStore((state) => state.document);
+  const versions = useWritingRuntimeStore((state) => state.versions);
+  const run = useWritingRuntimeStore((state) => state.run);
+  const events = useWritingRuntimeStore((state) => state.events);
+  const artifacts = useWritingRuntimeStore((state) => state.artifacts);
+  const quality = useWritingRuntimeStore((state) => state.quality);
+  const version = versions.find((item) => item.document.version_id === document?.current_version_id)?.document
+    ?? versions[versions.length - 1]?.document
+    ?? null;
+
+  return (
+    <aside className="governed-detail-panel" aria-label="文档详情面板">
+      <div className="governed-detail-header">
+        <div><span>DOCUMENT DESK</span><h3>详情</h3></div>
+        {onClose && <button onClick={onClose} aria-label="收起详情面板"><ChevronRight className="h-4 w-4" />收起</button>}
+      </div>
+      <RunDetailTabs
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        version={version}
+        versions={versions}
+        run={run}
+        events={events}
+        artifacts={artifacts}
+        quality={quality}
+      />
+    </aside>
   );
 }
 

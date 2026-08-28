@@ -4,7 +4,7 @@
  * 绿点流程，默认折叠，运行中仅展示当前进行步骤。
  * 用于对话框消息和右侧详情面板的流程 Tab。
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
@@ -26,14 +26,7 @@ export function CompactStepTimeline({ parts, isRunning, defaultOpen = false }: C
   const currentStep = parts.find((p) => p.status === "running");
   const [open, setOpen] = useState(defaultOpen);
 
-  // 运行中时自动展开，完成后自动折叠
-  useEffect(() => {
-    if (isRunning && runningCount > 0) {
-      setOpen(true);
-    } else if (!isRunning) {
-      setOpen(false);
-    }
-  }, [isRunning, runningCount]);
+  // 展开状态完全由用户控制；运行事件只更新摘要，不劫持面板偏好。
 
   if (parts.length === 0) return null;
 
