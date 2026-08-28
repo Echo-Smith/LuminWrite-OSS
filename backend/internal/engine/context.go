@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -211,6 +212,8 @@ type ExecutionContext struct {
 	cancelCh     chan struct{}
 	confirmCh    chan map[string]interface{}
 	disconnectCh chan struct{} // closed when WS client disconnects
+	disconnectMu sync.RWMutex
+	llmFailureMu sync.Mutex
 }
 
 // TaskIntent holds the result of intent classification.
@@ -219,6 +222,24 @@ type TaskIntent struct {
 	Confidence      float64 `json:"confidence"`
 	Source          string  `json:"source"` // rules | llm
 	NormalizedInput string  `json:"normalizedInput"`
+}
+
+// CompatibilityInput is the immutable seed accepted by governed legacy
+// adapters. A fresh ExecutionContext is built for every node attempt so legacy
+// steps cannot share control channels or mutate an authoritative run object.
+type CompatibilityInput struct {
+	TraceID, UserID, SessionID, StyleSlug, Mode, UserInput string
+	UserMaterials                                          []string
+	WordLimit, MaxTokens                                   int
+}
+
+func NewCompatibilityExecutionContext(input CompatibilityInput) *ExecutionContext {
+	ctx := NewExecutionContext(input.TraceID, input.UserID, input.UserInput)
+	ctx.SessionID, ctx.StyleSlug, ctx.Mode = input.SessionID, input.StyleSlug, input.Mode
+	ctx.UserMaterials = append([]string(nil), input.UserMaterials...)
+	ctx.WordLimit, ctx.MaxTokens = input.WordLimit, input.MaxTokens
+	ctx.AgentMode = "governed_compatibility"
+	return ctx
 }
 
 // NewExecutionContext creates a new context for a writing execution.
@@ -361,6 +382,9 @@ func (ctx *ExecutionContext) WaitForConfirmWithTimeout(ctxGo context.Context, ti
 		timerC = timer.C
 	}
 
+	ctx.disconnectMu.RLock()
+	disconnectCh := ctx.disconnectCh
+	ctx.disconnectMu.RUnlock()
 	select {
 	case data := <-ctx.confirmCh:
 		return data, nil
@@ -368,7 +392,7 @@ func (ctx *ExecutionContext) WaitForConfirmWithTimeout(ctxGo context.Context, ti
 		return nil, context.Canceled
 	case <-ctxGo.Done():
 		return nil, ctxGo.Err()
-	case <-ctx.disconnectCh:
+	case <-disconnectCh:
 		return nil, ErrClientDisconnected
 	case <-timerC:
 		return nil, ErrConfirmTimeout
@@ -386,6 +410,8 @@ func (ctx *ExecutionContext) CheckBudget() bool {
 // SignalDisconnect marks the client as disconnected.
 // Safe to call multiple times — uses sync.Once semantics via channel close.
 func (ctx *ExecutionContext) SignalDisconnect() {
+	ctx.disconnectMu.Lock()
+	defer ctx.disconnectMu.Unlock()
 	select {
 	case <-ctx.disconnectCh:
 		// already closed
@@ -396,8 +422,11 @@ func (ctx *ExecutionContext) SignalDisconnect() {
 
 // IsDisconnected checks if the client has disconnected.
 func (ctx *ExecutionContext) IsDisconnected() bool {
+	ctx.disconnectMu.RLock()
+	disconnectCh := ctx.disconnectCh
+	ctx.disconnectMu.RUnlock()
 	select {
-	case <-ctx.disconnectCh:
+	case <-disconnectCh:
 		return true
 	default:
 		return false
@@ -414,7 +443,9 @@ func (ctx *ExecutionContext) Reconnect() {
 	ctx.resumeCh = make(chan struct{}, 1)
 	ctx.cancelCh = make(chan struct{}, 1)
 	ctx.confirmCh = make(chan map[string]interface{}, 1)
+	ctx.disconnectMu.Lock()
 	ctx.disconnectCh = make(chan struct{})
+	ctx.disconnectMu.Unlock()
 	ctx.PausedAt = nil
 }
 
@@ -428,13 +459,23 @@ func (ctx *ExecutionContext) ResumeFromPause() {
 // RecordLLMFailure increments the consecutive LLM failure counter.
 // Returns true if the circuit breaker has tripped.
 func (ctx *ExecutionContext) RecordLLMFailure() bool {
+	ctx.llmFailureMu.Lock()
+	defer ctx.llmFailureMu.Unlock()
 	ctx.ConsecutiveLLMFails++
 	return ctx.MaxLLMFails > 0 && ctx.ConsecutiveLLMFails >= ctx.MaxLLMFails
 }
 
 // RecordLLMSuccess resets the consecutive LLM failure counter.
 func (ctx *ExecutionContext) RecordLLMSuccess() {
+	ctx.llmFailureMu.Lock()
+	defer ctx.llmFailureMu.Unlock()
 	ctx.ConsecutiveLLMFails = 0
+}
+
+func (ctx *ExecutionContext) LLMFailureCount() int {
+	ctx.llmFailureMu.Lock()
+	defer ctx.llmFailureMu.Unlock()
+	return ctx.ConsecutiveLLMFails
 }
 
 // CheckFixLimit returns true if the max fix attempts have been reached.

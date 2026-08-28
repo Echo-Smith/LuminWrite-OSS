@@ -194,9 +194,9 @@ func (c *Compiler) Compile(req CompileRequest) (CompileResult, error) {
 		}
 	}
 	if req.RequiredFinalArtifact == "" {
-		req.RequiredFinalArtifact = "verified_deliverable"
+		req.RequiredFinalArtifact = "revision_set"
 	}
-	if req.RequiredFinalArtifact == "verified_deliverable" {
+	if req.RequiredFinalArtifact == "revision_set" {
 		req.RequiredValidators = unionStrings(req.RequiredValidators, validatorsForAssurance(req.Contract.Collaboration.AssuranceLevel))
 	}
 	nodesBeforeRequiredValidators := len(plan.Nodes)
@@ -483,7 +483,7 @@ func ValidatePlan(plan ExecutablePlan, ctx ValidationContext) StaticValidation {
 		for _, node := range plan.Nodes {
 			if containsArtifact(node.OutputArtifactTypes, ctx.RequiredFinalArtifact) {
 				found = true
-				if ctx.RequiredFinalArtifact == "verified_deliverable" {
+				if ctx.RequiredFinalArtifact == "revision_set" {
 					ancestors := map[string]bool{}
 					for _, dep := range transitiveDependencies(node.NodeID, nodes) {
 						ancestors[dep] = true
@@ -601,7 +601,7 @@ func ensureValidators(nodes []PlanNode, required []string, registry *CapabilityR
 			Bounds: manifest.MaxBounds, FailurePath: FailurePause})
 		present[capabilityID] = true
 		for i := range nodes {
-			if i == len(nodes)-1 || !containsArtifact(nodes[i].OutputArtifactTypes, "verified_deliverable") {
+			if i == len(nodes)-1 || !containsArtifact(nodes[i].OutputArtifactTypes, "revision_set") {
 				continue
 			}
 			nodes[i].DependsOn = appendUnique(nodes[i].DependsOn, nodeID)
@@ -619,7 +619,7 @@ func terminalNodeIDs(nodes []PlanNode) []string {
 	}
 	result := []string{}
 	for _, node := range nodes {
-		if !dependedOn[node.NodeID] && !containsArtifact(node.OutputArtifactTypes, "verified_deliverable") {
+		if !dependedOn[node.NodeID] && !containsArtifact(node.OutputArtifactTypes, "revision_set") {
 			result = append(result, node.NodeID)
 		}
 	}
@@ -632,7 +632,7 @@ func terminalNodeIDs(nodes []PlanNode) []string {
 func validatorDependencies(nodes []PlanNode) []string {
 	deps := []string{}
 	for _, node := range nodes {
-		if containsArtifact(node.OutputArtifactTypes, "verified_deliverable") {
+		if containsArtifact(node.OutputArtifactTypes, "revision_set") {
 			for _, dep := range node.DependsOn {
 				deps = appendUnique(deps, dep)
 			}

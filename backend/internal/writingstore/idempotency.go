@@ -36,24 +36,28 @@ func StableID(prefix string, parts ...string) string {
 }
 
 type NodeAttempt struct {
-	AttemptID         string
-	RunID             string
-	PlanID            string
-	PlanVersion       int
-	NodeID            string
-	Attempt           int
-	IdempotencyKey    string
-	NodeKind          writingplan.NodeKind
-	CapabilityID      string
-	CapabilityVersion string
-	ExecutorID        string
-	Status            string
-	FailurePath       writingplan.FailurePath
-	Bounds            writingplan.Bounds
-	CheckpointRef     string
-	InputHash         string
-	InputArtifactIDs  []string
-	CreatedAt         time.Time
+	AttemptID          string
+	RunID              string
+	PlanID             string
+	PlanVersion        int
+	NodeID             string
+	Attempt            int
+	IdempotencyKey     string
+	NodeKind           writingplan.NodeKind
+	CapabilityID       string
+	CapabilityVersion  string
+	ExecutorID         string
+	Status             string
+	FailurePath        writingplan.FailurePath
+	Bounds             writingplan.Bounds
+	CheckpointRef      string
+	InputHash          string
+	InputArtifactIDs   []string
+	ActualCostUSD      float64
+	ActualInputTokens  int64
+	ActualOutputTokens int64
+	ActualDurationMS   int64
+	CreatedAt          time.Time
 }
 
 func (tx *Tx) EnsureNodeAttempt(ctx context.Context, attempt NodeAttempt) (NodeAttempt, bool, error) {

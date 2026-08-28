@@ -20,6 +20,52 @@ type ArtifactRecorder struct {
 	store *Store
 }
 
+// LegacyPayload is a pure projection of legacy ExecutionContext state. It has
+// no approval or persistence semantics and is safe for governed adapters to
+// translate into provisional writing artifacts.
+type LegacyPayload struct {
+	Type       ArtifactType
+	Content    string
+	MediaType  string
+	ProducedBy string
+	SourceRefs []string
+}
+
+// CollectLegacyPayloads deliberately performs no store writes. The governed
+// runtime owns staging, lineage, quality, and document promotion.
+func CollectLegacyPayloads(execCtx *engine.ExecutionContext) []LegacyPayload {
+	if execCtx == nil {
+		return []LegacyPayload{}
+	}
+	result := make([]LegacyPayload, 0, 5)
+	appendJSON := func(kind ArtifactType, value any, producer string, refs []string) {
+		content, err := json.Marshal(value)
+		if err != nil {
+			return
+		}
+		result = append(result, LegacyPayload{Type: kind, Content: string(content), MediaType: "application/json", ProducedBy: producer, SourceRefs: append([]string(nil), refs...)})
+	}
+	if len(execCtx.SearchResults) > 0 {
+		refs := []string{}
+		for _, item := range execCtx.SearchResults {
+			if item.URL != "" {
+				refs = append(refs, item.URL)
+			}
+		}
+		appendJSON(ArtifactSourcePack, map[string]any{"count": len(execCtx.SearchResults), "results": execCtx.SearchResults, "query": execCtx.UserInput}, "research_agent", refs)
+	}
+	if execCtx.Outline != nil {
+		appendJSON(ArtifactOutline, execCtx.Outline, "writing_agent", []string{})
+	}
+	if execCtx.Article != "" {
+		result = append(result, LegacyPayload{Type: ArtifactDraft, Content: execCtx.Article, MediaType: "text/markdown", ProducedBy: "writing_agent", SourceRefs: []string{}})
+	}
+	if execCtx.ReviewResult != nil {
+		appendJSON(ArtifactReviewReport, execCtx.ReviewResult, "review_agent", []string{})
+	}
+	return result
+}
+
 // NewArtifactRecorder creates a new ArtifactRecorder.
 func NewArtifactRecorder(store *Store) *ArtifactRecorder {
 	return &ArtifactRecorder{store: store}

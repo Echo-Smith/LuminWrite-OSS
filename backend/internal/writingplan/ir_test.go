@@ -113,7 +113,7 @@ func TestRequiredValidatorCannotDegradeToPartial(t *testing.T) {
 	request.Templates = DefaultTemplateRegistry()
 	request.InitialArtifactTypes = []ArtifactType{"contract", "materials"}
 	request.AllowedPermissions = []Permission{"model.invoke", "materials.read", "validation.run", "document.revision"}
-	request.RequiredFinalArtifact = "verified_deliverable"
+	request.RequiredFinalArtifact = "revision_set"
 	request.Budget = PlanBudget{MaxCostUSD: 20, MaxDurationMS: 1000000, MaxConcurrency: 4, MaxNodes: 20, MaxItems: 20}
 	compiled, err := Compile(request)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestRequiredValidatorCannotDegradeToPartial(t *testing.T) {
 			plan.Nodes[i].PartialOutputTypes = []ArtifactType{"quality_report"}
 		}
 	}
-	got := ValidatePlan(plan, ValidationContext{Registry: request.Registry, InitialArtifactTypes: request.InitialArtifactTypes, AllowedPermissions: request.AllowedPermissions, Budget: request.Budget, RequiredValidators: []string{"core.validation.quality"}, RequiredFinalArtifact: "verified_deliverable"})
+	got := ValidatePlan(plan, ValidationContext{Registry: request.Registry, InitialArtifactTypes: request.InitialArtifactTypes, AllowedPermissions: request.AllowedPermissions, Budget: request.Budget, RequiredValidators: []string{"core.validation.quality"}, RequiredFinalArtifact: "revision_set"})
 	assertStaticError(t, got, "required_validator_bypass")
 }
 

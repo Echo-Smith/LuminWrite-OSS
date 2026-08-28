@@ -35,7 +35,7 @@ func TestDefaultFastTemplateCompilesToValidatedT1(t *testing.T) {
 	request.Templates = DefaultTemplateRegistry()
 	request.InitialArtifactTypes = []ArtifactType{"contract", "materials"}
 	request.AllowedPermissions = []Permission{"model.invoke", "materials.read", "validation.run", "document.revision"}
-	request.RequiredFinalArtifact = "verified_deliverable"
+	request.RequiredFinalArtifact = "revision_set"
 	request.Budget = PlanBudget{MaxCostUSD: 20, MaxDurationMS: 1000000, MaxConcurrency: 4, MaxNodes: 20, MaxItems: 20}
 
 	result, err := Compile(request)
@@ -61,7 +61,7 @@ func TestDefaultFastTemplateCompilesToValidatedT1(t *testing.T) {
 		t.Fatalf("plan envelope did not survive JSON round trip: %v", err)
 	}
 	dispatchContext := ValidationContext{Registry: request.Registry, InitialArtifactTypes: request.InitialArtifactTypes, AllowedPermissions: request.AllowedPermissions, Budget: request.Budget,
-		RequiredValidators: []string{"core.validation.quality"}, RequiredFinalArtifact: "verified_deliverable", ExternalResearchAllowed: request.Contract.MaterialPolicy.AllowExternalResearch}
+		RequiredValidators: []string{"core.validation.quality"}, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: request.Contract.MaterialPolicy.AllowExternalResearch}
 	if err := decoded.ValidateForDispatch(dispatchContext); err != nil {
 		t.Fatalf("validated envelope failed current dispatch checks: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestDefaultCatalogFailsClosedUntilTypedExecutorsAreBound(t *testing.T) {
 	request.Templates = DefaultTemplateRegistry()
 	request.InitialArtifactTypes = []ArtifactType{"contract", "materials"}
 	request.AllowedPermissions = []Permission{"model.invoke", "materials.read", "validation.run", "document.revision"}
-	request.RequiredFinalArtifact = "verified_deliverable"
+	request.RequiredFinalArtifact = "revision_set"
 	request.Budget = PlanBudget{MaxCostUSD: 20, MaxDurationMS: 1000000, MaxConcurrency: 4, MaxNodes: 20, MaxItems: 20}
 
 	result, err := Compile(request)
@@ -101,7 +101,7 @@ func TestStrictAssuranceNeverSilentlyUsesIncompleteFastTemplate(t *testing.T) {
 	request.Templates = DefaultTemplateRegistry()
 	request.InitialArtifactTypes = []ArtifactType{"contract", "materials"}
 	request.AllowedPermissions = []Permission{"model.invoke", "materials.read", "validation.run", "document.revision"}
-	request.RequiredFinalArtifact = "verified_deliverable"
+	request.RequiredFinalArtifact = "revision_set"
 	request.Budget = PlanBudget{MaxCostUSD: 20, MaxDurationMS: 1000000, MaxConcurrency: 4, MaxNodes: 20, MaxItems: 20}
 	request.SystemRecommendation = writingkernel.OrchestrationModeStrictResearch
 

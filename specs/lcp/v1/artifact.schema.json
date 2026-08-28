@@ -51,6 +51,8 @@
     },
     "artifact_type": {
       "enum": [
+        "contract",
+        "materials",
         "brief",
         "source_pack",
         "research_note",
@@ -60,7 +62,9 @@
         "full_draft",
         "review_report",
         "revision_set",
-        "quality_report"
+        "quality_report",
+        "evidence_report",
+        "fact_report"
       ]
     },
     "status": {

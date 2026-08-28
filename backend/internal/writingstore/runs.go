@@ -286,7 +286,9 @@ var validRunEventTypes = map[string]bool{
 	"run.resumed": true, "run.cancelled": true, "run.completed": true,
 	"run.failed": true, "node.started": true, "node.completed": true,
 	"node.failed": true, "artifact.created": true, "quality.updated": true,
-	"snapshot.created": true,
+	"snapshot.created": true, "run.transitioned": true,
+	"run.transition_rejected": true, "node.paused": true,
+	"node.cancelled": true,
 }
 
 var validRunEventEntityKinds = map[string]bool{
@@ -305,7 +307,8 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 	if err != nil {
 		return RunEvent{}, err
 	}
-	nodeScoped := event.EventType == "node.started" || event.EventType == "node.completed" || event.EventType == "node.failed" || event.EventType == "artifact.created"
+	nodeScoped := event.EventType == "node.started" || event.EventType == "node.completed" || event.EventType == "node.failed" || event.EventType == "node.paused" || event.EventType == "node.cancelled" || event.EventType == "artifact.created"
+	transitionScoped := event.EventType == "run.transitioned" || event.EventType == "run.transition_rejected"
 	if nodeScoped {
 		expected, err := NodeAttemptKey(event.RunID, event.NodeID, event.Attempt)
 		if err != nil {
@@ -313,6 +316,10 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 		}
 		if event.IdempotencyKey != expected {
 			return RunEvent{}, fmt.Errorf("%w: event idempotency key mismatch", ErrIdempotencyConflict)
+		}
+	} else if transitionScoped {
+		if event.NodeID != "" || event.Attempt != 0 || strings.TrimSpace(event.IdempotencyKey) == "" {
+			return RunEvent{}, fmt.Errorf("%w: transition event requires command idempotency only", ErrInvalidRecord)
 		}
 	} else if event.NodeID != "" || event.Attempt != 0 || event.IdempotencyKey != "" {
 		return RunEvent{}, fmt.Errorf("%w: run-scoped event cannot carry node attempt identity", ErrInvalidRecord)
@@ -332,7 +339,7 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 	if err != nil {
 		return RunEvent{}, fmt.Errorf("lock run event sequence: %w", err)
 	}
-	if nodeScoped {
+	if nodeScoped || transitionScoped {
 		var existing RunEvent
 		var payloadMatches, causationMatches, traceMatches bool
 		err = tx.tx.QueryRowContext(ctx, `

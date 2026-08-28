@@ -82,9 +82,9 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 		}
 
 		// ── Exit check: circuit breaker ──
-		if execCtx.MaxLLMFails > 0 && execCtx.ConsecutiveLLMFails >= execCtx.MaxLLMFails {
+		if failures := execCtx.LLMFailureCount(); execCtx.MaxLLMFails > 0 && failures >= execCtx.MaxLLMFails {
 			e.emitter.Error("circuit_breaker",
-				fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
+				fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", failures),
 				execCtx.CurrentStep)
 			execCtx.Status = StatusFailed
 			return ErrCircuitBreaker
@@ -215,7 +215,7 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			if isLLMError(err) {
 				if execCtx.RecordLLMFailure() {
 					e.emitter.Error("circuit_breaker",
-						fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.ConsecutiveLLMFails),
+						fmt.Sprintf("LLM 连续失败 %d 次，已触发断路器", execCtx.LLMFailureCount()),
 						stepName)
 					execCtx.Status = StatusFailed
 				updateLastStepRecord(execCtx, stepName, "error", nil, durationMs, err.Error())

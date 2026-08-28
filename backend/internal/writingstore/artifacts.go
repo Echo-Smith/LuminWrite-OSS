@@ -43,10 +43,12 @@ type ArtifactRecord struct {
 }
 
 var validArtifactTypes = map[string]bool{
+	"contract": true, "materials": true,
 	"brief": true, "source_pack": true, "research_note": true,
 	"claim_map": true, "outline": true, "section_draft": true,
-	"full_draft": true, "review_report": true, "revision_set": true,
-	"quality_report": true,
+	"full_draft": true, "review_report": true,
+	"revision_set": true, "quality_report": true, "evidence_report": true,
+	"fact_report": true,
 }
 
 var validArtifactStatuses = map[string]bool{

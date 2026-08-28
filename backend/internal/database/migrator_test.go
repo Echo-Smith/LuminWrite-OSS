@@ -233,6 +233,24 @@ func TestWritingNodeKindAlignmentIsForwardOnly(t *testing.T) {
 	}
 }
 
+func TestWritingRuntimeDispatchVocabularyIsForwardOnly(t *testing.T) {
+	up := readWritingMigration(t, "093_writing_runtime_dispatch", "up")
+	down := readWritingMigration(t, "093_writing_runtime_dispatch", "down")
+	for _, fragment := range []string{"run.transitioned", "run.transition_rejected", "node.paused", "node.cancelled", "contract", "materials", "evidence_report", "fact_report"} {
+		if !strings.Contains(up, "'"+fragment+"'") {
+			t.Errorf("093 missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{"candidate_draft", "accepted_draft", "verified_deliverable"} {
+		if strings.Contains(up, "'"+forbidden+"'") {
+			t.Errorf("quality state %q must not become an artifact type", forbidden)
+		}
+	}
+	if !strings.Contains(down, "DROP CONSTRAINT chk_writing_event_type") || !strings.Contains(down, "DROP CONSTRAINT chk_writing_artifact_type") {
+		t.Fatal("093 down migration must restore prior constraints")
+	}
+}
+
 // TestWritingRuntimeMigrationStructure locks down the database boundary for the
 // governed writing runtime.  It deliberately reads the embedded SQL rather
 // than requiring PostgreSQL so that a missing or accidentally weakened

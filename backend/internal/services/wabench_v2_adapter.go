@@ -277,9 +277,13 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 	harness := agent.NewHarness(llm, search, kb, styleProfile, sessionStore, emitter)
 
 	if e.traces != nil {
-		persisted := *execCtx
-		persisted.UserInput = "[WABench private input " + request.Case.InputHash + "]"
-		if err := e.traces.CreateTrace(ctx, &persisted); err != nil {
+		persisted := engine.NewCompatibilityExecutionContext(engine.CompatibilityInput{
+			TraceID: execCtx.TraceID, UserID: execCtx.UserID,
+			UserInput: "[WABench private input " + request.Case.InputHash + "]",
+			StyleSlug: execCtx.StyleSlug, Mode: execCtx.Mode,
+		})
+		persisted.Status, persisted.CurrentStep = execCtx.Status, execCtx.CurrentStep
+		if err := e.traces.CreateTrace(ctx, persisted); err != nil {
 			return nil, fmt.Errorf("create WABench agent trace: %w", err)
 		}
 		execCtx.Status = engine.StatusIdle
@@ -411,7 +415,7 @@ func (e *wabenchCaptureEmitter) Error(code, message string, step engine.StepName
 
 func (e *wabenchCaptureEmitter) Completed(string, string, interface{}, interface{}) {}
 func (e *wabenchCaptureEmitter) Cancelled()                                         {}
-func (e *wabenchCaptureEmitter) Compaction(int, int, string, uint64, string)                        {}
+func (e *wabenchCaptureEmitter) Compaction(int, int, string, uint64, string)        {}
 
 func (e *wabenchCaptureEmitter) snapshot() ([]WABenchToolEvent, []string) {
 	e.mu.Lock()

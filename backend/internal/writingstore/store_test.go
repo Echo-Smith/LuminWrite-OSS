@@ -198,6 +198,64 @@ func TestRunEventsAreAtomicMonotonicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunTransitionAtomicallyAuditsProjectionAndStaleCommands(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	command := RunTransitionCommand{RunID: fixture.runID,
+		IdempotencyKey: fixture.runID + ":transition:pause", ExpectedFrom: "running",
+		RequestedTo: "pausing", RuleAccepted: true, Cause: "test_pause",
+		Summary: "pause", Trace: testTrace()}
+	first, err := store.RecordRunTransition(ctx, command)
+	if err != nil || !first.Accepted || first.EffectiveState != "pausing" {
+		t.Fatalf("first transition=%#v err=%v", first, err)
+	}
+	replayed, err := store.RecordRunTransition(ctx, command)
+	if err != nil || !replayed.Replayed || replayed.Event.Sequence != first.Event.Sequence {
+		t.Fatalf("replay=%#v err=%v", replayed, err)
+	}
+	stale, err := store.RecordRunTransition(ctx, RunTransitionCommand{RunID: fixture.runID,
+		IdempotencyKey: fixture.runID + ":transition:stale", ExpectedFrom: "running",
+		RequestedTo: "failed", RuleAccepted: true, Cause: "stale", Summary: "stale",
+		Trace: testTrace()})
+	if err != nil || stale.Accepted || stale.ActualFrom != "pausing" || stale.EffectiveState != "pausing" {
+		t.Fatalf("stale transition=%#v err=%v", stale, err)
+	}
+	var status string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT status FROM writing_runs WHERE run_id=$1`, fixture.runID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pausing" {
+		t.Fatalf("status=%s", status)
+	}
+}
+
+func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	attempt, dispatch, err := store.StartNodeAttempt(ctx, fixture.nodeAttempt(), testTrace())
+	if err != nil || !dispatch || attempt.Status != "running" {
+		t.Fatalf("start=%#v dispatch=%v err=%v", attempt, dispatch, err)
+	}
+	artifact := fixture.artifact()
+	if err := store.CompleteNodeAttempt(ctx, AttemptCompletion{RunID: fixture.runID,
+		NodeID: fixture.nodeID, Attempt: 1, Status: "succeeded", Artifacts: []ArtifactRecord{artifact},
+		CostUSD: .5, InputTokens: 10, OutputTokens: 20, DurationMS: 30,
+		Trace: testTrace(), CompletedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := store.ListRunAttempts(ctx, fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := store.ListRunArtifacts(ctx, fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].Status != "succeeded" || attempts[0].ActualCostUSD != .5 || len(artifacts) != 1 || artifacts[0].ArtifactID != artifact.ArtifactID {
+		t.Fatalf("attempts=%#v artifacts=%#v", attempts, artifacts)
+	}
+}
+
 func TestArtifactImmutableReplay(t *testing.T) {
 	store, fixture := newIntegrationFixture(t, true)
 	ctx := context.Background()

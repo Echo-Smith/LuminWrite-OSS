@@ -239,13 +239,13 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	outline := base("core.outline.generate", "writing.outline", "engine.step.outline", []ArtifactType{"contract"}, []ArtifactType{"outline"}, []Permission{"model.invoke", "materials.read"}, false)
 	outline.OptionalInputTypes = []ArtifactType{"source_pack"}
 	register(outline)
-	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"candidate_draft"}, []Permission{"model.invoke", "materials.read"}, false)
+	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"full_draft"}, []Permission{"model.invoke", "materials.read"}, false)
 	draft.OptionalInputTypes = []ArtifactType{"outline", "source_pack"}
 	register(draft)
-	quality := base("core.validation.quality", "validation.quality", "engine.step.post_review", []ArtifactType{"candidate_draft"}, []ArtifactType{"quality_report"}, []Permission{"model.invoke", "validation.run"}, true)
+	quality := base("core.validation.quality", "validation.quality", "engine.step.post_review", []ArtifactType{"full_draft"}, []ArtifactType{"quality_report"}, []Permission{"model.invoke", "validation.run"}, true)
 	quality.OptionalInputTypes = []ArtifactType{"evidence_report", "fact_report"}
 	register(quality)
-	register(base("core.document.finalize", "document.finalize", "kernel.document.finalize", []ArtifactType{"candidate_draft", "quality_report"}, []ArtifactType{"verified_deliverable"}, []Permission{"document.revision"}, false))
+	register(base("core.document.finalize", "document.finalize", "kernel.document.finalize", []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}, []Permission{"document.revision"}, false))
 	research := base("core.retrieval.search", "research.collect", "engine.step.search", []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}, []Permission{"external.research", "materials.read"}, false)
 	research.SupportsEvidence = true
 	register(research)
