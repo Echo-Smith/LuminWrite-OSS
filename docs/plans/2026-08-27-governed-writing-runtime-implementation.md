@@ -23,6 +23,7 @@
 - [x] Task 4：类型化 Writing Plan IR、Capability Registry、T1–T4 策略编译与静态验证已完成。
 - [x] Task 5：治理数据库、不可变账本、版本化 Artifact/Quality/Snapshot 与延迟质量门禁已完成。
 - [x] Task 6：事务 Repository、精确幂等、单调事件账本与 Snapshot 原子提交已完成。
+- [x] Task 7a：治理运行状态转换图、终态约束与非法转换审计契约已完成；Orchestrator 和数据库适配待后续子任务。
 
 ---
 
