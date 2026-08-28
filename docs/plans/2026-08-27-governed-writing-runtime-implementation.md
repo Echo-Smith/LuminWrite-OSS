@@ -21,6 +21,7 @@
 - [x] Task 2：LCP v1 Schema、fixtures、WritingContract 领域对象、严格解码和优先级测试已完成。
 - [x] Task 3：Document AST、受限 Markdown/LCP parser、RevisionSet 与旧 ArticleStreamParser 适配已完成。
 - [x] Task 4：类型化 Writing Plan IR、Capability Registry、T1–T4 策略编译与静态验证已完成。
+- [x] Task 5：治理数据库、不可变账本、版本化 Artifact/Quality/Snapshot 与延迟质量门禁已完成。
 
 ---
 
@@ -195,6 +196,7 @@ LLM 只能提出 capability_class 和语义步骤；确定性编译器解析 exe
 - Create: backend/internal/database/migrations/090_writing_artifacts_quality.down.sql
 - Create: backend/internal/database/migrations/091_writing_run_ledger.up.sql
 - Create: backend/internal/database/migrations/091_writing_run_ledger.down.sql
+- Modify: backend/internal/database/migrator.go
 - Modify: backend/internal/database/migrator_test.go
 
 **Step 1: 写迁移结构测试**
@@ -218,11 +220,13 @@ Expected: FAIL until 089–091 are present.
     writing_run_events
     writing_snapshots
 
+另建 `writing_artifact_edges` 保存可约束的 Artifact lineage，`writing_node_attempts` 保存执行、租约、幂等键、成本和失败信息；二者属于治理辅助账本，不改变十张 canonical 对象表的定义。
+
 新 governed run 不以 agent_traces 或 editorial_tasks 作为事实来源；旧表仅用于历史兼容和回放。
 
 **Step 3: 实现版本与快照字段**
 
-Contract、Plan、DocumentVersion、Artifact、QualityReport 和 SnapshotManifest 都保存 schema version、content hash、provenance、来源引用和 actor。RunEvent 使用 (run_id, sequence) 唯一约束。
+Contract、Plan、DocumentVersion、Artifact、QualityReport 和 SnapshotManifest 都保存 schema version、content hash、provenance、来源引用和 actor。RunEvent 使用 (run_id, sequence) 唯一约束并保持 append-only；跨聚合引用使用带 run/document/version 的组合外键。Accepted Draft 与 Verified Deliverable 在事务提交时验证 QualityReport、DocumentVersion 与完整持久化 Snapshot 的闭环，BLOCKER 不可豁免。
 
 **Step 4: 临时 PostgreSQL 验证**
 
@@ -231,7 +235,7 @@ Contract、Plan、DocumentVersion、Artifact、QualityReport 和 SnapshotManifes
 **Step 5: 运行并提交**
 
     go test ./internal/database -run 'Migration|Writing' -count=1
-    git add backend/internal/database/migrations backend/internal/database/migrator_test.go
+    git add backend/internal/database/migrations backend/internal/database/migrator.go backend/internal/database/migrator_test.go
     git commit -m "feat: add governed writing runtime schema"
 
 ## Task 6: 实现事务存储、事件账本和 Snapshot 原子性
