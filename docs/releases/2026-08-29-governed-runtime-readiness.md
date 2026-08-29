@@ -42,13 +42,26 @@ off → shadow → allowlist → percentage → enabled
 2. **RunCore 取消语义修复**：流式 LLM 客户端在中断时返回部分文本 + nil error；governed core 路径现在在取消/超时后稳定失败，不再把截断正文当成功结果交给 canonical 提交。
 3. **HarnessCore 防御测试**：RunCore 不 LoadHistory / 不 StoreMessage / 不发 StreamDone / 不发 Completed（persistent=false 门控 + recording 断言，含 success 与 cancel 两条路径）；Core 输出缺 required artifact、重复/未声明/空 body、usage 未计量（`EXECUTOR_USAGE_UNMEASURED`）均 fail-closed。
 
+## 2026-08-29 加固轮次（外部审阅后）
+
+针对“隔离依赖调用方正确接线”这一根因，完成以下系统级强制（OSS `6db29e0` / Commercial `059f5ad`）：
+
+1. **隔离由构造器证明，不再信任接线**：shadow rollout 执行器只接受实现 `ShadowIsolatedCandidate` 的候选（构造期拒绝 canonical gateway 候选），并在执行期封锁 candidate lane（authority violation 埋点 + evidence）；candidate-authoritative 执行器反向拒绝隔离候选。模式晋升（shadow → allowlist+）从“改 policy”升级为“显式重建执行器”，属审计可见动作。
+2. **材料快照进入单一事实源**：首次 dispatch 将初始材料清单以 run 级 `snapshot.created` 事件写入 RunLedger（first-writer-wins，FOR UPDATE 锁防并发交错）；恢复时只读该记录并重新校验，源材料变更无法影响暂停中的运行。无需新迁移。
+3. **shadow 计费防御**：governed core 路径强制剥离扣费回调（`settleFuncFor`），shadow lane 工具执行不可能消耗用户积分。
+4. **engine emitter 边界**：engine step 只接受 observer-only 的 `GovernedStepEmitter`，任意 legacy emitter 以 `LEGACY_WRITE_VIOLATION` 拒绝；nil 自动兜底。
+5. **真实适配器纵向链路**：三场景各新增 adapter-level 集成测试（Orchestrator → shadow rollout → 真实 Engine/Editorial/Harness adapter → shadow gateway → canonical 提交），原快速场景测试保留。
+6. **确定性与其他**：适配器 payload 遍历排序化（prompt 与 shadow hash 稳定）；rollout 路由支持显式 Subject（用户/租户）并回退 run id；`ExecutionResult.Validate` 拒绝同类型重复输出；095 down 迁移先清除存量 runtime.* 证据再恢复旧约束。
+
+验证：双仓全量 `go test ./...`、race（writingruntime / writingstore / agent）、writingstore 集成测试（全新 ParadeDB 实例）与 095 up/down/up 循环全部通过；前端未改动，沿用前次结论。
+
 ## 解锁下一级的前置条件
 
 ### allowlist（解锁前必须完成）
 
-- **durable evidence 接线**：生产组合根提供持久化 `RolloutEvidenceStore` 与 `ShadowContentSink`（当前 local shadow 使用内存实现，代码内已注明该边界）。
-- **晋升门禁**：design 约定“evidence 存储失败的 policy 不得晋升为 candidate-authoritative”；当前为运维纪律，尚未代码化。晋升流程需把 policy 版本、durable 接线检查和放开时的全量回归固化为 checklist。
-- **candidate-authoritative 接线规程**：candidate adapter 必须换接 canonical gateway（ShadowContentGateway 下的候选结果会被提交防线稳定拒绝），该规程需写入运行手册。
+- **durable evidence 接线**：生产组合根提供持久化 `RolloutEvidenceStore` 与 `ShadowContentSink`（当前 local shadow 使用内存实现，代码内已注明该边界）。**仍待完成。**
+- **晋升门禁**：design 约定“evidence 存储失败的 policy 不得晋升为 candidate-authoritative”。构造器强制化已覆盖“shadow 执行器无法产生 candidate 流量”，但 evidence 健康度与晋升检查仍是运维纪律。**部分完成。**
+- **candidate-authoritative 接线规程**：已由构造器强制（`NewRolloutExecutor` 只接受 canonical 候选、拒绝隔离候选），接线规程需写入运行手册。**结构上已强制，文档待补。**
 - 放量前重跑一次双版本全量回归。
 
 ### percentage（当前不开放）
