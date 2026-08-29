@@ -98,11 +98,19 @@ func (executor *LegacyExecutor) ShadowGateway() *ShadowContentGateway { return e
 
 // ShadowIsolatedCandidate proves that a candidate adapter stages content only
 // into the shadow namespace. Rollout executors require this proof at
-// construction instead of trusting adapter wiring.
+// construction instead of trusting adapter wiring. The unexported seal method
+// can only be implemented inside this package, so an adapter from elsewhere
+// cannot forge the proof by merely exposing a non-nil gateway.
 type ShadowIsolatedCandidate interface {
 	ExecutorAdapter
 	ShadowGateway() *ShadowContentGateway
+	shadowIsolationSeal()
 }
+
+// shadowIsolationSeal marks LegacyExecutor values constructed through
+// NewShadowIsolatedExecutorAdapter: the method exists on the type, and only
+// that constructor sets the shadow gateway that ShadowGateway reports.
+func (executor *LegacyExecutor) shadowIsolationSeal() {}
 
 // NewShadowIsolatedExecutorAdapter builds a candidate adapter whose staged
 // content can never reach the canonical store: every Stage call lands in the

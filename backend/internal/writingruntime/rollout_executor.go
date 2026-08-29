@@ -248,7 +248,11 @@ func (executor *RolloutExecutor) runSupervisedShadow(ctx context.Context, reques
 				"shadow candidate panicked", fmt.Errorf("%v", recovered))}
 		}
 	}()
-	shadowCtx, cancel := context.WithTimeout(ctx, executor.shadowPatience(request))
+	// The orchestrator cancels the execution context as soon as Execute
+	// returns, which is typically right after the faster baseline finishes.
+	// The shadow candidate must outlive that cancellation: it is bounded only
+	// by its own supervisor deadline, not by the baseline's lifetime.
+	shadowCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), executor.shadowPatience(request))
 	defer cancel()
 	result, err := executor.executeLane(shadowCtx, LaneShadow, executor.candidate, request, mode)
 	shadowCh <- laneResult{result: result, err: err}

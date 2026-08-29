@@ -83,6 +83,84 @@ func TestLegacyExecutorDedupesSharedInputHashes(t *testing.T) {
 	}
 }
 
+// delayedRunner respects its context, so under the pre-fix supervisor the
+// orchestrator cancellation would abort it mid-run.
+type delayedRunner struct {
+	delay   time.Duration
+	outputs []LegacyPayload
+}
+
+func (runner *delayedRunner) Run(ctx context.Context, _ LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
+	select {
+	case <-time.After(runner.delay):
+	case <-ctx.Done():
+		return nil, LegacyUsage{}, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, LegacyUsage{}, err
+	}
+	return runner.outputs, LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 1}, nil
+}
+
+// TestShadowCandidateSurvivesOrchestratorCancellation pins the supervisor
+// contract: the orchestrator cancels the execution context right after
+// Execute returns (the baseline is usually faster), and the shadow candidate
+// must still run to completion under its own supervisor deadline.
+func TestShadowCandidateSurvivesOrchestratorCancellation(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	baseline := &fakeGovernedExecutor{descriptor: ExecutorDescriptor{ExecutorID: "baseline.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}}}
+	candidateRunner := &delayedRunner{delay: 30 * time.Millisecond, outputs: []LegacyPayload{{OutputKey: "draft", ArtifactType: "full_draft", MediaType: "text/markdown", Body: []byte("candidate"), Provenance: map[string]any{}, SourceRefs: []string{}}}}
+	candidate, _, _ := mustShadowCandidate(t, request, candidateRunner)
+	policy := DefaultShadowPolicy("candidate.engine", AdapterFamilyEngine, request.Node.Capability, request.Node.CapabilityVersion)
+	provider, _ := NewMutableRolloutPolicyProvider(policy)
+	evidence := &MemoryRolloutEvidenceStore{}
+	executor, err := NewShadowRolloutExecutor(baseline, candidate, provider, evidence, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := executor.Execute(ctx, request)
+	cancel()
+	if err != nil || result.Artifacts[0].ContentHash != hashForTest("draft") {
+		t.Fatalf("baseline result=%#v error=%v", result, err)
+	}
+	var comparison *ShadowComparison
+	eventually(t, 2*time.Second, "shadow candidate completed despite cancellation", func() bool {
+		records := evidence.Records()
+		for _, record := range records {
+			if record.Kind == "shadow_comparison" && record.Comparison != nil && record.Comparison.CandidateStatus == "succeeded" {
+				comparison = record.Comparison
+				return true
+			}
+		}
+		return false
+	})
+	if comparison == nil || comparison.CandidateError != "" {
+		t.Fatalf("comparison=%#v", comparison)
+	}
+}
+
+// TestExecutionResultRejectsDuplicateParents pins that repeating a parent
+// entry cannot substitute for covering the remaining inputs.
+func TestExecutionResultRejectsDuplicateParents(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	materials := InputArtifact{ArtifactID: "art_materials", Version: 1, ArtifactType: "materials",
+		ContentHash: contentHash([]byte("materials")), MediaType: "application/json", ContentRef: "memory://materials"}
+	request.Inputs = append(request.Inputs, materials)
+	now := time.Now().UTC()
+	draft := OutputArtifactDraft{OutputKey: "draft", ArtifactType: "full_draft", ContentHash: hashForTest("draft"),
+		MediaType: "text/markdown", ContentRef: "memory://draft",
+		Parents: []writingstore.ArtifactRef{{ArtifactID: "art_contract", Version: 1},
+			{ArtifactID: "art_materials", Version: 1}, {ArtifactID: "art_materials", Version: 1}},
+		Producer: request.Node.Capability, CapabilityVersion: request.Node.CapabilityVersion,
+		InputHashes: []string{request.Inputs[0].ContentHash, materials.ContentHash}, Provenance: map[string]any{}, SourceRefs: []string{}}
+	result := ExecutionResult{Artifacts: []OutputArtifactDraft{draft}, Usage: ExecutionUsage{CostUSD: 1, DurationMS: 1},
+		StartedAt: now.Add(-time.Millisecond), CompletedAt: now}
+	if err := result.Validate(request); !strings.Contains(err.Error(), "parents contain duplicates") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestPercentageDecisionIsDeterministicAndKillSwitchWins(t *testing.T) {
 	policy := DefaultShadowPolicy("candidate.engine", AdapterFamilyEngine, "core.draft.generate", "1.0.0")
 	policy.Mode, policy.ActivationKey, policy.BasisPoints = RolloutPercentage, "approved-change-42", 5000

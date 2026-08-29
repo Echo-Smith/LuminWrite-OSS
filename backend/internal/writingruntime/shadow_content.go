@@ -105,12 +105,15 @@ func (gateway *ShadowContentGateway) SweepExpired(ctx context.Context) (int, err
 }
 
 // PurgeRun removes every shadow body staged for one run, including orphans
-// whose run never reached a canonical commit.
+// whose run never reached a canonical commit. The separator is explicit so a
+// run id that prefixes another (run_fresh vs run_fresh2) cannot purge its
+// neighbour: sanitized stage keys always continue with "-" after the run id,
+// which holds because a ":" inside a run id would already be rejected here.
 func (gateway *ShadowContentGateway) PurgeRun(ctx context.Context, runID string) (int, error) {
-	if !strings.HasPrefix(runID, "run_") || strings.ContainsAny(runID, "/:") {
+	if !strings.HasPrefix(runID, "run_") || strings.ContainsAny(runID, "/: \t") {
 		return 0, fmt.Errorf("%w: shadow purge requires a valid run id", ErrInvalidExecutionRequest)
 	}
-	return gateway.writes.DeletePrefix(ctx, gateway.policyHash+"/"+runID)
+	return gateway.writes.DeletePrefix(ctx, gateway.policyHash+"/"+runID+"-")
 }
 
 // PolicyHash reports the full policy hash this gateway stages into. Rollout

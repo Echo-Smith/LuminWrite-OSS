@@ -119,12 +119,16 @@ func TestShadowContentGatewaySweepsExpiredAndPurgesRun(t *testing.T) {
 	if _, _, err := gateway.Stage(context.Background(), "run_fresh:node:1:draft", "text/markdown", []byte("keep2")); err != nil {
 		t.Fatal(err)
 	}
+	// A sibling run id that merely prefixes another must survive the purge.
+	if _, _, err := gateway.Stage(context.Background(), "run_fresh2:node:1:draft", "text/markdown", []byte("sibling")); err != nil {
+		t.Fatal(err)
+	}
 	removed, err = gateway.PurgeRun(context.Background(), "run_fresh")
-	if err != nil || removed != 2 || len(sink.Keys()) != 1 {
+	if err != nil || removed != 2 || len(sink.Keys()) != 2 {
 		t.Fatalf("purge removed=%d err=%v keys=%v", removed, err, sink.Keys())
 	}
 	for _, key := range sink.Keys() {
-		if strings.Contains(key, "run_fresh") {
+		if strings.Contains(key, "run_fresh-") {
 			t.Fatalf("run_fresh survived purge: %s", key)
 		}
 	}

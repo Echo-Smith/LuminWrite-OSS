@@ -296,6 +296,9 @@ func (result ExecutionResult) Validate(request ExecutionRequest) error {
 			parents[identity] = struct{}{}
 			lineageHashes[input.ContentHash] = struct{}{}
 		}
+		if len(artifact.Parents) != len(parents) {
+			return fmt.Errorf("%w: artifact parents contain duplicates", ErrInvalidExecutionResult)
+		}
 		if len(parents) != len(inputs) {
 			return fmt.Errorf("%w: artifact parents do not cover every execution input", ErrInvalidExecutionResult)
 		}
