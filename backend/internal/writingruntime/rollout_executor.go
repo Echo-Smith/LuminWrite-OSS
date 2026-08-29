@@ -12,13 +12,59 @@ import (
 type RolloutExecutor struct {
 	baseline  Executor
 	candidate ExecutorAdapter
-	policies  RolloutPolicyProvider
-	evidence  RolloutEvidenceStore
-	telemetry RuntimeTelemetry
-	now       func() time.Time
+	// shadowOnly marks an executor built for shadow rollout: the candidate is
+	// provably shadow-isolated and candidate-authoritative lanes are refused
+	// at execution time.
+	shadowOnly bool
+	policies   RolloutPolicyProvider
+	evidence   RolloutEvidenceStore
+	telemetry  RuntimeTelemetry
+	now        func() time.Time
 }
 
+// NewRolloutExecutor builds the candidate-authoritative rollout executor.
+// The candidate must stage through the canonical gateway: promoting traffic
+// to allowlist/percentage/enabled requires this explicit construction.
 func NewRolloutExecutor(baseline Executor, candidate ExecutorAdapter, policies RolloutPolicyProvider, evidence RolloutEvidenceStore, telemetry RuntimeTelemetry) (*RolloutExecutor, error) {
+	if isolated, ok := candidate.(ShadowIsolatedCandidate); ok && isolated.ShadowGateway() != nil {
+		observeRuntime(context.Background(), telemetry, RuntimeMetric{Kind: MetricAuthorityViolation,
+			Family: candidate.AdapterPolicy().Family, ExecutorID: candidate.Descriptor().ExecutorID,
+			Status: "rejected", ErrorCode: CodeRolloutPolicyInvalid})
+		return nil, rolloutPolicyError("candidate-authoritative rollout cannot wrap a shadow-isolated candidate; construct a shadow rollout executor instead")
+	}
+	return newRolloutExecutor(baseline, candidate, false, policies, evidence, telemetry)
+}
+
+// NewShadowRolloutExecutor builds the shadow rollout executor. The candidate
+// must prove shadow isolation through ShadowIsolatedCandidate, so a wrongly
+// wired canonical gateway fails at construction instead of leaking content
+// into the canonical store before the commit guard rejects it.
+func NewShadowRolloutExecutor(baseline Executor, candidate ExecutorAdapter, policies RolloutPolicyProvider, evidence RolloutEvidenceStore, telemetry RuntimeTelemetry) (*RolloutExecutor, error) {
+	isolated, ok := candidate.(ShadowIsolatedCandidate)
+	if !ok || isolated.ShadowGateway() == nil {
+		observeRuntime(context.Background(), telemetry, RuntimeMetric{Kind: MetricAuthorityViolation,
+			Family: candidateFamily(candidate), ExecutorID: candidateExecutorID(candidate),
+			Status: "rejected", ErrorCode: CodeRolloutPolicyInvalid})
+		return nil, rolloutPolicyError("shadow rollout requires a shadow-isolated candidate adapter")
+	}
+	return newRolloutExecutor(baseline, candidate, true, policies, evidence, telemetry)
+}
+
+func candidateFamily(candidate ExecutorAdapter) AdapterFamily {
+	if candidate == nil {
+		return ""
+	}
+	return candidate.AdapterPolicy().Family
+}
+
+func candidateExecutorID(candidate ExecutorAdapter) string {
+	if candidate == nil {
+		return ""
+	}
+	return candidate.Descriptor().ExecutorID
+}
+
+func newRolloutExecutor(baseline Executor, candidate ExecutorAdapter, shadowOnly bool, policies RolloutPolicyProvider, evidence RolloutEvidenceStore, telemetry RuntimeTelemetry) (*RolloutExecutor, error) {
 	if baseline == nil || candidate == nil || policies == nil || evidence == nil {
 		return nil, ErrRuntimeNotReady
 	}
@@ -37,8 +83,9 @@ func NewRolloutExecutor(baseline Executor, candidate ExecutorAdapter, policies R
 	if candidate.AdapterPolicy().TrafficMode != AdapterTrafficOffline {
 		return nil, rolloutPolicyError("candidate must remain offline behind rollout executor")
 	}
-	return &RolloutExecutor{baseline: baseline, candidate: candidate, policies: policies, evidence: evidence,
-		telemetry: telemetry, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &RolloutExecutor{baseline: baseline, candidate: candidate, shadowOnly: shadowOnly,
+		policies: policies, evidence: evidence, telemetry: telemetry,
+		now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 func (executor *RolloutExecutor) Descriptor() ExecutorDescriptor {
@@ -79,6 +126,17 @@ func (executor *RolloutExecutor) Execute(ctx context.Context, request ExecutionR
 	}
 	if decision.RunShadow {
 		return executor.executeShadow(ctx, request, policy, decision)
+	}
+	if executor.shadowOnly && decision.Lane == LaneCandidate {
+		observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricAuthorityViolation,
+			Family: policy.Family, ExecutorID: policy.ExecutorID, Capability: request.Node.Capability,
+			Mode: policy.Mode, Lane: LaneCandidate, Status: "candidate_lane_blocked",
+			ErrorCode: CodeExecutorTrafficDisabled})
+		_ = executor.record(ctx, RuntimeEvidence{Kind: "route_decision", Identity: request.Identity(),
+			Adapter: executor.candidate.AdapterPolicy(), PolicyHash: policy.PolicyHash,
+			PolicyVersion: policy.PolicyVersion, Mode: policy.Mode, Lane: LaneCandidate,
+			Decision: decision, Status: "candidate_lane_blocked", ErrorCode: CodeExecutorTrafficDisabled})
+		return executor.executeLane(ctx, LaneBaseline, executor.baseline, request, policy.Mode)
 	}
 	if decision.Lane == LaneCandidate {
 		result, executeErr := executor.executeLane(ctx, LaneCandidate, executor.candidate, request, policy.Mode)

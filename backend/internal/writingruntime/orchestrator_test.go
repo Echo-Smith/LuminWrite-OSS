@@ -190,8 +190,8 @@ func newOrchestratorFixture(t *testing.T, idempotency writingplan.IdempotencyCla
 	}
 	checkpoints := &memoryCheckpoints{}
 	orchestrator := &Orchestrator{Store: store, Capabilities: capabilities, Executors: executors,
-		State: NewStateMachine(store), Checkpoints: checkpoints,
-		Initial: fixedInitialProvider{{ArtifactID: "art_contract", Version: 1, ArtifactType: "contract", ContentHash: contractHash, MediaType: "application/json", ContentRef: "memory://contract"}}, Now: func() time.Time { return now }}
+		State: NewStateMachine(store), Checkpoints: checkpoints, Initial: fixedInitialProvider{{ArtifactID: "art_contract", Version: 1, ArtifactType: "contract", ContentHash: contractHash, MediaType: "application/json", ContentRef: "memory://contract"}},
+		Materials: store, Now: func() time.Time { return now }}
 	return orchestratorFixture{orchestrator: orchestrator, store: store, executor: executor, checkpoints: checkpoints}
 }
 
@@ -210,6 +210,8 @@ type fakeRuntimeStore struct {
 	completions   []writingstore.AttemptCompletion
 	transitions   []TransitionRecord
 	completionErr error
+
+	materialSnapshots map[string]writingstore.MaterialSnapshotRecord
 }
 
 func (store *fakeRuntimeStore) LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error) {
@@ -262,6 +264,87 @@ func (store *fakeRuntimeStore) RecordTransition(_ context.Context, record Transi
 		store.run.Status = string(record.EffectiveState)
 	}
 	return nil
+}
+
+func (store *fakeRuntimeStore) SaveInitialMaterialSnapshot(_ context.Context, runID string, manifest []writingstore.MaterialSnapshotArtifact) (writingstore.MaterialSnapshotRecord, bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.materialSnapshots == nil {
+		store.materialSnapshots = map[string]writingstore.MaterialSnapshotRecord{}
+	}
+	if existing, ok := store.materialSnapshots[runID]; ok {
+		return existing, false, nil
+	}
+	record := writingstore.MaterialSnapshotRecord{RunID: runID,
+		Artifacts: append([]writingstore.MaterialSnapshotArtifact(nil), manifest...), CreatedAt: time.Now().UTC()}
+	store.materialSnapshots[runID] = record
+	return record, true, nil
+}
+
+func (store *fakeRuntimeStore) LoadInitialMaterialSnapshot(_ context.Context, runID string) (writingstore.MaterialSnapshotRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.materialSnapshots[runID]
+	if !ok {
+		return writingstore.MaterialSnapshotRecord{}, writingstore.ErrNotFound
+	}
+	return record, nil
+}
+
+type countingInitialProvider struct {
+	mu        sync.Mutex
+	calls     int
+	artifacts []InputArtifact
+}
+
+func (provider *countingInitialProvider) InitialArtifacts(context.Context, writingstore.RuntimeRun, writingstore.PlanRecord) ([]InputArtifact, error) {
+	provider.mu.Lock()
+	provider.calls++
+	provider.mu.Unlock()
+	return append([]InputArtifact(nil), provider.artifacts...), nil
+}
+
+// TestOrchestratorCapturesMaterialSnapshotOnce pins the run-level material
+// snapshot contract: sources are snapshotted exactly once, and every later
+// dispatch — including out-of-band re-execution — reads the persisted
+// snapshot instead of re-reading source materials.
+func TestOrchestratorCapturesMaterialSnapshotOnce(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	provider := &countingInitialProvider{artifacts: []InputArtifact{{ArtifactID: "art_contract", Version: 1,
+		ArtifactType: "contract", ContentHash: hashForTest("contract-v1"), MediaType: "application/json", ContentRef: "memory://contract"}}}
+	fixture.orchestrator.Initial = provider
+	if _, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider called %d times on first dispatch", provider.calls)
+	}
+	provider.artifacts[0].ContentHash = hashForTest("contract-v2")
+	// A completed run rejects re-dispatch — but must not re-snapshot on the way.
+	if _, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID); err == nil {
+		t.Fatal("re-dispatch of a completed run should fail")
+	}
+	if provider.calls != 1 {
+		t.Fatalf("resume re-read source materials: provider called %d times", provider.calls)
+	}
+	saved, err := fixture.store.LoadInitialMaterialSnapshot(context.Background(), fixture.store.run.RunID)
+	if err != nil || len(saved.Artifacts) != 1 || saved.Artifacts[0].ContentHash != hashForTest("contract-v1") {
+		t.Fatalf("persisted snapshot=%#v err=%v", saved, err)
+	}
+}
+
+func TestOrchestratorRejectsTamperedMaterialSnapshot(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	_, _, err := fixture.store.SaveInitialMaterialSnapshot(context.Background(), fixture.store.run.RunID,
+		[]writingstore.MaterialSnapshotArtifact{{ArtifactID: "art_contract", Version: 1, ArtifactType: "contract",
+			ContentHash: "not-a-hash", MediaType: "application/json", ContentRef: "memory://contract"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID)
+	if ErrorCodeOf(err) != CodeMaterialIntegrityFailed {
+		t.Fatalf("err=%v code=%s", err, ErrorCodeOf(err))
+	}
 }
 
 type memoryCheckpoints struct {

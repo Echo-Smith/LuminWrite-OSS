@@ -118,3 +118,91 @@ func TestHarnessCoreAdapterReturnsStableUsageUnmeasuredCode(t *testing.T) {
 		t.Fatalf("err=%v code=%s", err, ErrorCodeOf(err))
 	}
 }
+
+// emittingEngineStep exercises every emitter method, so a mis-wired emitter
+// would panic or leak instead of passing silently.
+type emittingEngineStep struct{}
+
+func (*emittingEngineStep) Name() engine.StepName { return engine.StepName("emitting") }
+func (*emittingEngineStep) CanPause() bool        { return false }
+func (*emittingEngineStep) Execute(_ context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
+	emitter.StepStart(engine.StepName("emit"), 0)
+	emitter.StreamDelta("hello")
+	emitter.StreamReset()
+	emitter.ReasoningDelta("why")
+	emitter.ArticleTitle("title")
+	emitter.StreamDone("partial")
+	emitter.AwaitInput(engine.StepName("await"), nil, []string{}, 1, 2)
+	emitter.Paused(engine.StepName("paused"), nil)
+	emitter.PausedWithReason(engine.StepName("paused"), nil, "why")
+	emitter.Resumed(engine.StepName("resumed"))
+	emitter.Error("code", "message", engine.StepName("error"))
+	emitter.StepComplete(engine.StepName("emit"), nil, 1)
+	emitter.Completed("article", "title", nil, map[string]any{})
+	emitter.Cancelled()
+	emitter.Compaction(1, 2, "preview", 3, "threshold")
+	execCtx.Article = "engine scenario draft"
+	return nil
+}
+
+// foreignStepEmitter stands in for any legacy emitter (session writer, HTTP
+// stream, old event store) that must never reach a governed engine step.
+type foreignStepEmitter struct {
+	deltas int
+}
+
+func (emitter *foreignStepEmitter) StepStart(engine.StepName, int)                  {}
+func (emitter *foreignStepEmitter) StepComplete(engine.StepName, interface{}, int64) {}
+func (emitter *foreignStepEmitter) StreamDelta(string)                              { emitter.deltas++ }
+func (emitter *foreignStepEmitter) StreamReset()                                    {}
+func (emitter *foreignStepEmitter) ReasoningDelta(string)                           {}
+func (emitter *foreignStepEmitter) ArticleTitle(string)                             {}
+func (emitter *foreignStepEmitter) StreamDone(string)                               {}
+func (emitter *foreignStepEmitter) AwaitInput(engine.StepName, interface{}, []string, int, int) {}
+func (emitter *foreignStepEmitter) Paused(engine.StepName, interface{})             {}
+func (emitter *foreignStepEmitter) PausedWithReason(engine.StepName, interface{}, string) {}
+func (emitter *foreignStepEmitter) Resumed(engine.StepName)                         {}
+func (emitter *foreignStepEmitter) Error(string, string, engine.StepName)           {}
+func (emitter *foreignStepEmitter) Completed(string, string, interface{}, interface{}) {}
+func (emitter *foreignStepEmitter) Cancelled()                                      {}
+func (emitter *foreignStepEmitter) Compaction(int, int, string, uint64, string)     {}
+
+func TestEngineStepAdapterRejectsLegacyEmitters(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	runner := EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} }, Emitter: &foreignStepEmitter{},
+		Usage: func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true}, nil }}
+	adapter, err := NewEngineStepExecutorAdapter(ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
+		request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Execute(context.Background(), request)
+	if !errors.Is(err, ErrLegacyEmitterUnsafe) || ErrorCodeOf(err) != CodeLegacyWriteViolation {
+		t.Fatalf("err=%v code=%s", err, ErrorCodeOf(err))
+	}
+}
+
+func TestEngineStepAdapterRunsOnNilOrGovernedEmitterOnly(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	usage := func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil }
+	for _, tt := range []struct {
+		name    string
+		emitter engine.EventEmitter
+	}{
+		{"nil emitter defaults to governed observer", nil},
+		{"governed observer emitter", NewGovernedStepEmitter()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} }, Emitter: tt.emitter, Usage: usage}
+			adapter, err := NewEngineStepExecutorAdapter(ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
+				request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := adapter.Execute(context.Background(), request)
+			if err != nil || len(result.Artifacts) != 1 || result.Artifacts[0].ContentHash != contentHash([]byte("engine scenario draft")) {
+				t.Fatalf("result=%#v error=%v", result, err)
+			}
+		})
+	}
+}

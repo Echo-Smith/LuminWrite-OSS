@@ -149,13 +149,13 @@ func DecideRoute(policy AdapterRolloutPolicy, request ExecutionRequest, now time
 		base.RunShadow = true
 		base.Reason = "shadow"
 	case RolloutAllowlist:
-		if containsString(policy.AllowSubjects, request.RunID) {
+		if containsString(policy.AllowSubjects, routeSubject(request)) {
 			base.Lane, base.Reason = LaneCandidate, "allowlist_match"
 		} else {
 			base.Reason = "allowlist_miss"
 		}
 	case RolloutPercentage:
-		base.SubjectBucket = stableBucket(policy, request.RunID)
+		base.SubjectBucket = stableBucket(policy, routeSubject(request))
 		if base.SubjectBucket < policy.BasisPoints {
 			base.Lane, base.Reason = LaneCandidate, "percentage_match"
 		} else {
@@ -165,6 +165,15 @@ func DecideRoute(policy AdapterRolloutPolicy, request ExecutionRequest, now time
 		base.Lane, base.Reason = LaneCandidate, "enabled"
 	}
 	return base, nil
+}
+
+// routeSubject resolves the rollout audience: an explicit execution subject
+// (user/tenant) when present, otherwise the run id.
+func routeSubject(request ExecutionRequest) string {
+	if subject := strings.TrimSpace(request.Subject); subject != "" {
+		return subject
+	}
+	return request.RunID
 }
 
 func stableBucket(policy AdapterRolloutPolicy, subject string) int {

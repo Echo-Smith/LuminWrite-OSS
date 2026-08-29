@@ -1,3 +1,10 @@
+-- Runtime evidence rows violate the restored pre-Task12 constraints, so a
+-- downgrade with existing evidence would fail: remove the governed evidence
+-- records before restoring the old checks. Export any audit data before
+-- running this downgrade.
+DELETE FROM writing_run_events
+WHERE event_type IN ('runtime.route_decided', 'runtime.execution_observed', 'runtime.shadow_compared');
+
 ALTER TABLE writing_run_events
     DROP CONSTRAINT chk_writing_event_type,
     DROP CONSTRAINT chk_writing_event_node_attempt,

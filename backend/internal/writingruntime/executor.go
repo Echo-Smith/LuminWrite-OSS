@@ -38,6 +38,9 @@ type ExecutionIdentity struct {
 	Attempt        int                   `json:"attempt"`
 	IdempotencyKey string                `json:"idempotency_key"`
 	ContractRef    writingplan.ObjectRef `json:"contract_ref"`
+	// Subject is the rollout audience this execution belongs to (user or
+	// tenant). Empty means the run id is the routing subject.
+	Subject string `json:"subject,omitempty"`
 }
 
 func (identity ExecutionIdentity) Validate() error {
@@ -160,6 +163,9 @@ type ExecutionRequest struct {
 	Node           writingplan.PlanNode
 	Inputs         []InputArtifact
 	Permissions    []writingplan.Permission
+	// Subject carries the rollout audience (user/tenant) for allowlist and
+	// percentage routing. Empty falls back to the run id.
+	Subject string
 }
 
 func (request ExecutionRequest) Validate() error {
@@ -202,7 +208,7 @@ func (request ExecutionRequest) Validate() error {
 }
 
 func (request ExecutionRequest) Identity() ExecutionIdentity {
-	return ExecutionIdentity{RunID: request.RunID, PlanID: request.PlanID, PlanVersion: request.PlanVersion, NodeID: request.NodeID, Attempt: request.Attempt, IdempotencyKey: request.IdempotencyKey, ContractRef: request.ContractRef}
+	return ExecutionIdentity{RunID: request.RunID, PlanID: request.PlanID, PlanVersion: request.PlanVersion, NodeID: request.NodeID, Attempt: request.Attempt, IdempotencyKey: request.IdempotencyKey, ContractRef: request.ContractRef, Subject: strings.TrimSpace(request.Subject)}
 }
 
 func (request ExecutionRequest) Handle() ExecutionHandle {
@@ -265,6 +271,9 @@ func (result ExecutionResult) Validate(request ExecutionRequest) error {
 			!executionHashPattern.MatchString(artifact.ContentHash) || !validExecutionMediaType(artifact.MediaType) ||
 			strings.TrimSpace(artifact.ContentRef) == "" {
 			return fmt.Errorf("%w: invalid or undeclared output artifact", ErrInvalidExecutionResult)
+		}
+		if producedOutputs[artifact.ArtifactType] {
+			return fmt.Errorf("%w: duplicate output artifact type %q", ErrInvalidExecutionResult, artifact.ArtifactType)
 		}
 		if _, duplicate := seenOutputKeys[artifact.OutputKey]; duplicate {
 			return fmt.Errorf("%w: duplicate output key %q", ErrInvalidExecutionResult, artifact.OutputKey)

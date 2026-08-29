@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ var (
 	ErrLegacyOutputMissing    = errors.New("writingruntime: legacy executor output missing")
 	ErrLegacyHarnessUnsafe    = errors.New("writingruntime: Harness.Run cannot be adapted before its session-writing core is extracted")
 	ErrLegacyDAGUnsafe        = errors.New("writingruntime: DAGExecutor cannot be adapted before its store and status writes are extracted")
+	ErrLegacyEmitterUnsafe    = errors.New("writingruntime: legacy emitters may own sessions, streams, or old event stores")
 )
 
 type ContentGateway interface {
@@ -59,6 +61,7 @@ type LegacyExecutor struct {
 	capabilityID, capabilityVersion string
 	requiredPermissions             []writingplan.Permission
 	content                         ContentGateway
+	shadow                          *ShadowContentGateway
 	runner                          LegacyNodeRunner
 	now                             func() time.Time
 }
@@ -88,6 +91,33 @@ func NewLegacyExecutorAdapter(family AdapterFamily, descriptor ExecutorDescripto
 
 func (executor *LegacyExecutor) Descriptor() ExecutorDescriptor { return executor.descriptor }
 func (executor *LegacyExecutor) AdapterPolicy() AdapterPolicy   { return executor.policy }
+
+// ShadowGateway reports the shadow content namespace this adapter stages
+// into, or nil when the adapter stages through the canonical gateway.
+func (executor *LegacyExecutor) ShadowGateway() *ShadowContentGateway { return executor.shadow }
+
+// ShadowIsolatedCandidate proves that a candidate adapter stages content only
+// into the shadow namespace. Rollout executors require this proof at
+// construction instead of trusting adapter wiring.
+type ShadowIsolatedCandidate interface {
+	ExecutorAdapter
+	ShadowGateway() *ShadowContentGateway
+}
+
+// NewShadowIsolatedExecutorAdapter builds a candidate adapter whose staged
+// content can never reach the canonical store: every Stage call lands in the
+// shadow namespace of one policy version.
+func NewShadowIsolatedExecutorAdapter(family AdapterFamily, descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, shadowGateway *ShadowContentGateway, runner LegacyNodeRunner) (*LegacyExecutor, error) {
+	if shadowGateway == nil {
+		return nil, ErrRuntimeNotReady
+	}
+	adapter, err := NewLegacyExecutorAdapter(family, descriptor, capabilityID, capabilityVersion, required, shadowGateway, runner)
+	if err != nil {
+		return nil, err
+	}
+	adapter.shadow = shadowGateway
+	return adapter, nil
+}
 
 func (executor *LegacyExecutor) Prepare(_ context.Context, request ExecutionRequest) (ExecutionRequest, error) {
 	if err := executor.policy.Validate(); err != nil {
@@ -194,14 +224,57 @@ func NewEngineStepExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, c
 	return NewLegacyExecutorAdapter(AdapterFamilyEngine, descriptor, capabilityID, capabilityVersion, required, content, runner)
 }
 
+// sortedPayloadTypes fixes the map iteration order so prompt assembly and
+// shadow comparisons stay deterministic across runs.
+func sortedPayloadTypes(payloads map[writingplan.ArtifactType][][]byte) []writingplan.ArtifactType {
+	types := make([]writingplan.ArtifactType, 0, len(payloads))
+	for artifactType := range payloads {
+		types = append(types, artifactType)
+	}
+	sort.Slice(types, func(i, j int) bool { return types[i] < types[j] })
+	return types
+}
+
+// GovernedStepEmitter is the only emitter engine steps may receive under the
+// governed runtime. It is observer-only by construction: no session writes,
+// no persistence, no terminal events. Legacy emitters are rejected outright.
+type GovernedStepEmitter struct{}
+
+func NewGovernedStepEmitter() *GovernedStepEmitter { return &GovernedStepEmitter{} }
+
+func (*GovernedStepEmitter) StepStart(engine.StepName, int)                  {}
+func (*GovernedStepEmitter) StepComplete(engine.StepName, interface{}, int64) {}
+func (*GovernedStepEmitter) StreamDelta(string)                              {}
+func (*GovernedStepEmitter) StreamReset()                                    {}
+func (*GovernedStepEmitter) ReasoningDelta(string)                           {}
+func (*GovernedStepEmitter) ArticleTitle(string)                             {}
+func (*GovernedStepEmitter) StreamDone(string)                               {}
+func (*GovernedStepEmitter) AwaitInput(engine.StepName, interface{}, []string, int, int) {}
+func (*GovernedStepEmitter) Paused(engine.StepName, interface{})             {}
+func (*GovernedStepEmitter) PausedWithReason(engine.StepName, interface{}, string) {}
+func (*GovernedStepEmitter) Resumed(engine.StepName)                         {}
+func (*GovernedStepEmitter) Error(string, string, engine.StepName)           {}
+func (*GovernedStepEmitter) Completed(string, string, interface{}, interface{}) {}
+func (*GovernedStepEmitter) Cancelled()                                      {}
+func (*GovernedStepEmitter) Compaction(int, int, string, uint64, string)     {}
+
 func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
 	if runner.StepFactory == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
 	}
+	var emitter engine.EventEmitter = NewGovernedStepEmitter()
+	if runner.Emitter != nil {
+		governed, ok := runner.Emitter.(*GovernedStepEmitter)
+		if !ok {
+			return nil, LegacyUsage{}, runtimeError(CodeLegacyWriteViolation, RetryNever,
+				"governed engine steps accept only the observer-only governed emitter", ErrLegacyEmitterUnsafe)
+		}
+		emitter = governed
+	}
 	execCtx := engine.NewCompatibilityExecutionContext(runner.Seed)
 	execCtx.TraceID = input.Request.IdempotencyKey
-	for artifactType, values := range input.Payloads {
-		for _, payload := range values {
+	for _, artifactType := range sortedPayloadTypes(input.Payloads) {
+		for _, payload := range input.Payloads[artifactType] {
 			switch artifactType {
 			case "contract":
 				execCtx.UserInput = string(payload)
@@ -229,7 +302,7 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 	if step == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
 	}
-	if err := step.Execute(ctx, execCtx, runner.Emitter); err != nil {
+	if err := step.Execute(ctx, execCtx, emitter); err != nil {
 		return nil, LegacyUsage{}, err
 	}
 	legacy := editorial.CollectLegacyPayloads(execCtx)
@@ -316,8 +389,8 @@ func (runner EditorialRoleNodeRunner) Run(ctx context.Context, input LegacyNodeI
 		StyleSlug: runner.Seed.StyleSlug, CreatedBy: "writingruntime"}
 	agentContext := editorial.NewAgentContext(editorial.AgentRole(runner.Config.Role), task.ID, task.OwnerID)
 	var upstream strings.Builder
-	for artifactType, bodies := range input.Payloads {
-		for index, body := range bodies {
+	for _, artifactType := range sortedPayloadTypes(input.Payloads) {
+		for index, body := range input.Payloads[artifactType] {
 			legacyType, ok := governedToEditorialArtifact(artifactType)
 			if ok {
 				agentContext.AddInputArtifact(editorial.Artifact{ID: fmt.Sprintf("%s-%d", artifactType, index),
@@ -493,8 +566,8 @@ func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request Harnes
 	execCtx := engine.NewCompatibilityExecutionContext(bridge.Seed)
 	execCtx.TraceID = request.Identity.IdempotencyKey
 	session := agent.NewWritingSession("", bridge.Seed.UserID, bridge.Seed.StyleSlug)
-	for artifactType, values := range request.Artifacts {
-		for _, value := range values {
+	for _, artifactType := range sortedPayloadTypes(request.Artifacts) {
+		for _, value := range request.Artifacts[artifactType] {
 			switch artifactType {
 			case "contract":
 				execCtx.UserInput = string(value)

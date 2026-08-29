@@ -114,6 +114,26 @@ func newCoreSessionAndContext() (*WritingSession, *engine.ExecutionContext) {
 	return session, execCtx
 }
 
+// TestSettleFuncIsGatedToPersistentPath pins the shadow billing defense: the
+// governed core path (persistent=false) must never carry the settle callback,
+// because tool executions in a shadow lane would otherwise consume user
+// points as a user-facing side effect.
+func TestSettleFuncIsGatedToPersistentPath(t *testing.T) {
+	harness := &Harness{}
+	injected := func(context.Context, string, string, string) (float64, error) { return 0, nil }
+	harness.SetToolSettleFunc(injected)
+	if harness.settleFuncFor(true) == nil {
+		t.Fatal("persistent path lost the settle callback")
+	}
+	if harness.settleFuncFor(false) != nil {
+		t.Fatal("governed core path must not carry the settle callback")
+	}
+	bare := &Harness{}
+	if bare.settleFuncFor(true) != nil || bare.settleFuncFor(false) != nil {
+		t.Fatal("unset callback must stay nil on both paths")
+	}
+}
+
 func TestRunCorePersistsNothingAndEmitsNothing(t *testing.T) {
 	server := newChatStreamStub(t, nil)
 	store := &recordingSessionStore{}

@@ -73,6 +73,15 @@ func (h *Harness) SetToolSettleFunc(fn ToolSettleFunc) {
 	h.toolSettleFunc = fn
 }
 
+// settleFuncFor 把扣费限制在持久交互路径。governed Core（persistent=false）
+// 运行在 shadow lane 时绝不能消耗用户积分：扣费属于用户侧副作用。
+func (h *Harness) settleFuncFor(persistent bool) ToolSettleFunc {
+	if persistent {
+		return h.toolSettleFunc
+	}
+	return nil
+}
+
 // Run 执行单次写作/对话请求。
 // execCtx 持有本次请求的输入和状态，session 持有跨轮的会话状态。
 func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) error {
@@ -168,7 +177,7 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		Profile:    h.profile,
 		LLM:        h.llm,
 		MaxCalls:   defaultMaxCalls(intent),
-		SettleFunc: h.toolSettleFunc,
+		SettleFunc: h.settleFuncFor(persistent),
 	}
 	executor := BuildToolExecutor(executorCfg)
 

@@ -251,6 +251,116 @@ type RuntimeEvidenceRecord struct {
 	OccurredAt time.Time
 }
 
+// MaterialSnapshotArtifact is one entry of a run's immutable initial material
+// manifest: the exact identity, hash, and content ref captured at first
+// dispatch.
+type MaterialSnapshotArtifact struct {
+	ArtifactID   string `json:"artifact_id"`
+	Version      int    `json:"version"`
+	ArtifactType string `json:"artifact_type"`
+	ContentHash  string `json:"content_hash"`
+	MediaType    string `json:"media_type"`
+	ContentRef   string `json:"content_ref"`
+}
+
+// MaterialSnapshotRecord is the run-level material snapshot stored in the
+// append-only RunLedger as a run-scoped snapshot.created event.
+type MaterialSnapshotRecord struct {
+	RunID     string
+	Artifacts []MaterialSnapshotArtifact
+	CreatedAt time.Time
+}
+
+const initialMaterialSnapshotKind = "initial_materials"
+
+// SaveInitialMaterialSnapshot persists the run's initial material manifest.
+// The write is first-writer-wins: once a run has a snapshot, later saves
+// return the existing record unchanged, so a paused run always resumes on its
+// original immutable material snapshot instead of re-snapshotting sources.
+func (s *Store) SaveInitialMaterialSnapshot(ctx context.Context, runID string, artifacts []MaterialSnapshotArtifact) (MaterialSnapshotRecord, bool, error) {
+	if s == nil || strings.TrimSpace(runID) == "" || len(artifacts) == 0 {
+		return MaterialSnapshotRecord{}, false, fmt.Errorf("%w: material snapshot requires a run and artifacts", ErrInvalidRecord)
+	}
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact.ArtifactID) == "" || artifact.Version < 1 ||
+			strings.TrimSpace(artifact.ArtifactType) == "" || strings.TrimSpace(artifact.ContentHash) == "" ||
+			strings.TrimSpace(artifact.MediaType) == "" || strings.TrimSpace(artifact.ContentRef) == "" {
+			return MaterialSnapshotRecord{}, false, fmt.Errorf("%w: incomplete material snapshot artifact", ErrInvalidRecord)
+		}
+	}
+	var result MaterialSnapshotRecord
+	var created bool
+	err := s.InTransaction(ctx, func(tx *Tx) error {
+		// Serialize against concurrent dispatches of the same run before the
+		// existence check so first-writer-wins cannot interleave.
+		if _, err := tx.tx.ExecContext(ctx, `SELECT last_event_sequence FROM writing_runs WHERE run_id=$1 FOR UPDATE`, runID); err != nil {
+			return fmt.Errorf("lock run for material snapshot: %w", err)
+		}
+		existing, err := loadInitialMaterialSnapshot(ctx, tx.tx, runID)
+		if err == nil {
+			result, created = existing, false
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		occurred := time.Now().UTC()
+		payload, err := json.Marshal(map[string]any{"kind": initialMaterialSnapshotKind, "artifacts": artifacts})
+		if err != nil {
+			return fmt.Errorf("marshal material snapshot: %w", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(payload, &decoded); err != nil {
+			return fmt.Errorf("decode material snapshot payload: %w", err)
+		}
+		if _, err := tx.AppendRunEvent(ctx, RunEvent{RunID: runID, EventType: "snapshot.created",
+			EntityKind: "snapshot", EntityID: StableID("snapshot_", runID, "materials"),
+			Payload: decoded, OccurredAt: occurred,
+			Trace: TraceContext{Provenance: map[string]any{"runtime": "governed", "snapshot_kind": initialMaterialSnapshotKind},
+				SourceRefs: []string{}, Actor: Actor{Type: ActorPolicy, ID: "writingruntime.orchestrator"}}}); err != nil {
+			return err
+		}
+		result, created = MaterialSnapshotRecord{RunID: runID, Artifacts: append([]MaterialSnapshotArtifact(nil), artifacts...), CreatedAt: occurred}, true
+		return nil
+	})
+	return result, created, err
+}
+
+// LoadInitialMaterialSnapshot returns the run's persisted initial material
+// manifest, or ErrNotFound before the first dispatch captured one.
+func (s *Store) LoadInitialMaterialSnapshot(ctx context.Context, runID string) (MaterialSnapshotRecord, error) {
+	if s == nil {
+		return MaterialSnapshotRecord{}, fmt.Errorf("%w: store is not ready", ErrInvalidRecord)
+	}
+	return loadInitialMaterialSnapshot(ctx, s.db, runID)
+}
+
+func loadInitialMaterialSnapshot(ctx context.Context, runner interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, runID string) (MaterialSnapshotRecord, error) {
+	var payload []byte
+	var occurred time.Time
+	err := runner.QueryRowContext(ctx, `
+		SELECT payload, occurred_at FROM writing_run_events
+		WHERE run_id=$1 AND event_type='snapshot.created' AND entity_kind='snapshot'
+		  AND payload->>'kind'=$2
+		ORDER BY sequence LIMIT 1
+	`, runID, initialMaterialSnapshotKind).Scan(&payload, &occurred)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MaterialSnapshotRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return MaterialSnapshotRecord{}, fmt.Errorf("load material snapshot: %w", err)
+	}
+	var decoded struct {
+		Artifacts []MaterialSnapshotArtifact `json:"artifacts"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return MaterialSnapshotRecord{}, fmt.Errorf("decode material snapshot: %w", err)
+	}
+	return MaterialSnapshotRecord{RunID: runID, Artifacts: decoded.Artifacts, CreatedAt: occurred}, nil
+}
+
 func (s *Store) RecordRuntimeEvidence(ctx context.Context, record RuntimeEvidenceRecord) error {
 	if s == nil || strings.TrimSpace(record.EvidenceID) == "" || record.Payload == nil {
 		return fmt.Errorf("%w: runtime evidence identity and payload are required", ErrInvalidRecord)

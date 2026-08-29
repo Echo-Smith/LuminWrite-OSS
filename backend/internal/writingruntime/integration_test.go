@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingquality"
@@ -74,6 +76,134 @@ func TestTask12QualityLifecycleAndScenarioBlockers(t *testing.T) {
 	})
 	if len(findings) != 1 || ErrorCodeOf(EnforceConflictHandling("ask_user", findings)) != CodeSourceConflictRequiresDecision {
 		t.Fatalf("conflict findings=%#v", findings)
+	}
+}
+
+// TestTask12ScenariosRouteRealB2AdaptersThroughShadowRollout is the adapter
+// level vertical harness: each governed run dispatches through a real
+// RolloutExecutor (shadow lane) whose candidate is a real Engine Step,
+// Editorial Role, or Harness Core B2 adapter behind a shadow content gateway.
+// The existing fast scenario tests above keep covering the DAG/artifact graph
+// with lightweight executors.
+func TestTask12ScenariosRouteRealB2AdaptersThroughShadowRollout(t *testing.T) {
+	scenarios := []struct {
+		name   string
+		family AdapterFamily
+		runner func(t *testing.T) LegacyNodeRunner
+	}{
+		{"engine_step", AdapterFamilyEngine, func(t *testing.T) LegacyNodeRunner {
+			return EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} },
+				Usage: func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil }}
+		}},
+		{"editorial_role", AdapterFamilyEditorial, func(t *testing.T) LegacyNodeRunner {
+			return EditorialRoleNodeRunner{Invoker: &fakeRoleInvoker{result: &editorial.RoleRunResult{Output: "editorial scenario draft", Tokens: 3}},
+				Config:  &editorial.AgentConfig{ID: "writer", Role: "writer"},
+				Usage:   func(*editorial.RoleRunResult) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 2, OutputTokens: 3}, nil }}
+		}},
+		{"harness_core", AdapterFamilyHarness, func(t *testing.T) LegacyNodeRunner {
+			return HarnessCoreNodeRunner{Invoker: &fakeHarnessCoreInvoker{result: HarnessCoreResult{Usage: LegacyUsage{Measured: true, InputTokens: 4, OutputTokens: 5},
+				Outputs: []LegacyPayload{{OutputKey: "full_draft", ArtifactType: "full_draft", MediaType: "text/markdown", Body: []byte("harness scenario draft")}}}}}
+		}},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			now := time.Date(2026, 8, 29, 14, 0, 0, 0, time.UTC)
+			capability, version := "core.draft.generate", "1.0.0"
+			contractHash := hashForTest("contract")
+			plan := writingplan.ExecutablePlan{PlanID: "plan_adapter_" + scenario.name, Status: writingplan.PlanValidated,
+				TrustLevel: writingplan.TrustT1, RootNodeID: "node_draft",
+				Nodes: []writingplan.PlanNode{{NodeID: "node_draft", Kind: writingplan.NodeAction, Capability: capability, CapabilityVersion: version,
+					DependsOn: []string{}, InputArtifactTypes: []writingplan.ArtifactType{"contract"}, OutputArtifactTypes: []writingplan.ArtifactType{"full_draft"},
+					Bounds: writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 2, TimeoutMS: 5000}, FailurePath: writingplan.FailureFail}},
+				StaticValidation: writingplan.StaticValidation{Valid: true, CheckedAt: now, Errors: []string{},
+					CapabilityRegistryVersion: "task12-adapter-scenarios", BudgetValid: true, PermissionsValid: true,
+					ArtifactFlowValid: true, FailurePathsValid: true}}
+			plan, err := plan.WithComputedHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			runID := "run_adapter_" + scenario.name
+			store := &fakeRuntimeStore{run: writingstore.RuntimeRun{RunID: runID, DocumentID: "doc_" + scenario.name,
+				ContractID: "ctr_" + scenario.name, ContractVersion: 1, ContractHash: contractHash,
+				Status: string(StatePlanned), ActivePlanID: plan.PlanID, ActivePlanVersion: 1,
+				Budget:      writingplan.PlanBudget{MaxCostUSD: 10, MaxDurationMS: 10000, MaxConcurrency: 1, MaxNodes: 2, MaxItems: 1},
+				Permissions: []writingplan.Permission{"model.invoke", "materials.read"}},
+				plan: writingstore.PlanRecord{RunID: runID, PlanVersion: 1, ApprovalStatus: "not_required",
+					Envelope: writingplan.WritingPlanEnvelope{IntentPlan: writingplan.IntentPlan{ContractRef: writingplan.ObjectRef{ID: "ctr_" + scenario.name, Version: 1, Hash: contractHash}}, ExecutablePlan: plan}}}
+			capabilities := writingplan.NewCapabilityRegistry("task12-adapter-scenarios")
+			if err := capabilities.RegisterExecutor(writingplan.ExecutorBinding{ID: "baseline.engine",
+				AcceptedInputTypes: []writingplan.ArtifactType{"contract"}, ProducedOutputTypes: []writingplan.ArtifactType{"full_draft"},
+				Dispatch: func(context.Context, writingplan.ExecutionRequest) (writingplan.ExecutionResult, error) {
+					return writingplan.ExecutionResult{}, nil
+				}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := capabilities.Register(writingplan.CapabilityManifest{ID: capability, Class: "writing.draft", Executor: "baseline.engine",
+				InputTypes: []writingplan.ArtifactType{"contract"}, OptionalInputTypes: []writingplan.ArtifactType{}, OutputTypes: []writingplan.ArtifactType{"full_draft"},
+				Permissions: []writingplan.Permission{"model.invoke", "materials.read"}, EstimatedCostUSD: 1, EstimatedDurationMS: 100,
+				Version: version, SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}, MaxBounds: plan.Nodes[0].Bounds,
+				Idempotency: writingplan.IdempotencySafe, Available: true}); err != nil {
+				t.Fatal(err)
+			}
+			baseline := &fakeGovernedExecutor{descriptor: ExecutorDescriptor{ExecutorID: "baseline.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}}}
+			canonical := &stageCountingGateway{inner: &memoryGateway{body: []byte("contract")}}
+			policy := DefaultShadowPolicy("candidate."+scenario.name, scenario.family, capability, version)
+			shadowGateway, err := NewShadowContentGateway(canonical, NewMemoryShadowContentSink(), policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, err := NewShadowIsolatedExecutorAdapter(scenario.family,
+				ExecutorDescriptor{ExecutorID: "candidate." + scenario.name, Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
+				capability, version, []writingplan.Permission{"model.invoke"}, shadowGateway, scenario.runner(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider, err := NewMutableRolloutPolicyProvider(policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence := &MemoryRolloutEvidenceStore{}
+			rollout, err := NewShadowRolloutExecutor(baseline, candidate, provider, evidence, &metricCapture{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			executors := NewExecutorRegistry()
+			if err := executors.Register(rollout); err != nil {
+				t.Fatal(err)
+			}
+			initial := []InputArtifact{{ArtifactID: "art_contract", Version: 1, ArtifactType: "contract",
+				ContentHash: contentHash([]byte("contract")), MediaType: "application/json", ContentRef: "memory://contract"}}
+			orchestrator := &Orchestrator{Store: store, Capabilities: capabilities, Executors: executors,
+				State: NewStateMachine(store), Checkpoints: &memoryCheckpoints{}, Initial: fixedInitialProvider(initial),
+				Materials: store, Now: func() time.Time { return now }}
+			out, err := orchestrator.Execute(context.Background(), runID)
+			if err != nil || out.State != StateCompleted || len(out.CompletedNodes) != 1 {
+				t.Fatalf("out=%#v err=%v", out, err)
+			}
+			persisted, err := store.ListRunArtifacts(context.Background(), runID)
+			if err != nil || len(persisted) != 1 {
+				t.Fatalf("artifacts=%#v err=%v", persisted, err)
+			}
+			if persisted[0].Status != "provisional" || IsShadowContentRef(persisted[0].ContentRef) {
+				t.Fatalf("canonical artifact came from the shadow namespace: %#v", persisted[0])
+			}
+			if canonical.stages != 0 {
+				t.Fatalf("canonical gateway received %d shadow stage calls", canonical.stages)
+			}
+			sinkKeys := shadowGateway.writes.(*MemoryShadowContentSink).Keys()
+			if len(sinkKeys) == 0 {
+				t.Fatal("shadow sink is empty; candidate output never staged")
+			}
+			comparisonSeen := false
+			for _, record := range evidence.Records() {
+				if record.Kind == "shadow_comparison" {
+					comparisonSeen = true
+				}
+			}
+			if !comparisonSeen {
+				t.Fatal("shadow comparison evidence missing")
+			}
+		})
 	}
 }
 
@@ -167,7 +297,8 @@ func executeScenario(t *testing.T, scenario scenarioDefinition) (RunOutcome, *fa
 			ArtifactType: artifactType, ContentHash: hash, MediaType: "application/json", ContentRef: "memory://" + string(artifactType)})
 	}
 	orchestrator := &Orchestrator{Store: store, Capabilities: capabilities, Executors: executors,
-		State: NewStateMachine(store), Checkpoints: &memoryCheckpoints{}, Initial: fixedInitialProvider(initial), Now: func() time.Time { return now }}
+		State: NewStateMachine(store), Checkpoints: &memoryCheckpoints{}, Initial: fixedInitialProvider(initial),
+		Materials: store, Now: func() time.Time { return now }}
 	out, err := orchestrator.Execute(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)

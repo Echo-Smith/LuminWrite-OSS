@@ -143,7 +143,7 @@ func TestShadowLaneCandidateNeverTouchesCanonicalGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidateRunner := &fakeLegacyRunner{usage: LegacyUsage{Measured: true}, outputs: []LegacyPayload{{OutputKey: "draft", ArtifactType: "full_draft", MediaType: "text/markdown", Body: []byte("candidate"), Provenance: map[string]any{}, SourceRefs: []string{}}}}
-	candidate, err := NewLegacyExecutorAdapter(AdapterFamilyEngine,
+	candidate, err := NewShadowIsolatedExecutorAdapter(AdapterFamilyEngine,
 		ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
 		request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, shadowGateway, candidateRunner)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestShadowLaneCandidateNeverTouchesCanonicalGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor, err := NewRolloutExecutor(baseline, candidate, provider, &MemoryRolloutEvidenceStore{}, &metricCapture{})
+	executor, err := NewShadowRolloutExecutor(baseline, candidate, provider, &MemoryRolloutEvidenceStore{}, &metricCapture{})
 	if err != nil {
 		t.Fatal(err)
 	}

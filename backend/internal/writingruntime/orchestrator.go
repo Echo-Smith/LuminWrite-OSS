@@ -38,6 +38,15 @@ type RuntimeStore interface {
 	CompleteNodeAttempt(context.Context, writingstore.AttemptCompletion) error
 }
 
+// MaterialSnapshotRepository persists the run-level initial material manifest.
+// A run owns exactly one immutable snapshot: captured at first dispatch,
+// reused on every resume, so later source edits cannot re-snapshot a paused
+// run into a different hash/ref lineage.
+type MaterialSnapshotRepository interface {
+	SaveInitialMaterialSnapshot(context.Context, string, []writingstore.MaterialSnapshotArtifact) (writingstore.MaterialSnapshotRecord, bool, error)
+	LoadInitialMaterialSnapshot(context.Context, string) (writingstore.MaterialSnapshotRecord, error)
+}
+
 type InitialArtifactProvider interface {
 	InitialArtifacts(context.Context, writingstore.RuntimeRun, writingstore.PlanRecord) ([]InputArtifact, error)
 }
@@ -147,8 +156,12 @@ type Orchestrator struct {
 	State        *StateMachine
 	Checkpoints  CheckpointRepository
 	Initial      InitialArtifactProvider
+	Materials    MaterialSnapshotRepository
 	Telemetry    RuntimeTelemetry
 	Now          func() time.Time
+	// Subject resolves the rollout audience (user/tenant) for allowlist and
+	// percentage routing. Nil means executions route by run id.
+	Subject func(writingstore.RuntimeRun) string
 
 	mu       sync.Mutex
 	controls map[string]*runControl
@@ -173,7 +186,7 @@ type RunOutcome struct {
 }
 
 func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (RunOutcome, error) {
-	if orchestrator == nil || orchestrator.Store == nil || orchestrator.Capabilities == nil || orchestrator.Executors == nil || orchestrator.State == nil || orchestrator.Checkpoints == nil || orchestrator.Initial == nil {
+	if orchestrator == nil || orchestrator.Store == nil || orchestrator.Capabilities == nil || orchestrator.Executors == nil || orchestrator.State == nil || orchestrator.Checkpoints == nil || orchestrator.Initial == nil || orchestrator.Materials == nil {
 		return RunOutcome{}, ErrRuntimeNotReady
 	}
 	if orchestrator.Now == nil {
@@ -202,7 +215,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		(plan.Status != writingplan.PlanValidated && plan.Status != writingplan.PlanApproved && plan.Status != writingplan.PlanLocked) {
 		return RunOutcome{}, fmt.Errorf("writingruntime: active plan is not dispatch-valid")
 	}
-	initial, err := orchestrator.Initial.InitialArtifacts(ctx, run, planRecord)
+	initial, err := orchestrator.initialArtifacts(ctx, run, planRecord)
 	if err != nil {
 		return RunOutcome{}, fmt.Errorf("load initial artifacts: %w", err)
 	}
@@ -307,6 +320,9 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			NodeID: node.NodeID, Attempt: attemptNumber, IdempotencyKey: key,
 			ContractRef: planRecord.Envelope.IntentPlan.ContractRef, Node: node,
 			Inputs: inputs, Permissions: append([]writingplan.Permission(nil), run.Permissions...)}
+		if orchestrator.Subject != nil {
+			request.Subject = orchestrator.Subject(run)
+		}
 		if err := request.Validate(); err != nil {
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
 		}
@@ -394,6 +410,50 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		return RunOutcome{}, err
 	}
 	return outcome(runID, StateCompleted, completed, artifacts, spentCost), nil
+}
+
+// initialArtifacts returns the run's immutable initial artifact set. The
+// first dispatch captures the provider output into the RunLedger; every later
+// dispatch — including resumes after pause — loads that persisted snapshot and
+// never re-reads source materials.
+func (orchestrator *Orchestrator) initialArtifacts(ctx context.Context, run writingstore.RuntimeRun, planRecord writingstore.PlanRecord) ([]InputArtifact, error) {
+	saved, err := orchestrator.Materials.LoadInitialMaterialSnapshot(ctx, run.RunID)
+	if err == nil {
+		artifacts := make([]InputArtifact, 0, len(saved.Artifacts))
+		for _, artifact := range saved.Artifacts {
+			candidate := InputArtifact{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
+				ArtifactType: writingplan.ArtifactType(artifact.ArtifactType), ContentHash: artifact.ContentHash,
+				MediaType: artifact.MediaType, ContentRef: artifact.ContentRef}
+			if err := validateInitialArtifact(candidate); err != nil {
+				return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+					"persisted material snapshot failed validation", err)
+			}
+			artifacts = append(artifacts, candidate)
+		}
+		return artifacts, nil
+	}
+	if !errors.Is(err, writingstore.ErrNotFound) {
+		return nil, err
+	}
+	artifacts, err := orchestrator.Initial.InitialArtifacts(ctx, run, planRecord)
+	if err != nil {
+		return nil, err
+	}
+	manifest := make([]writingstore.MaterialSnapshotArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		manifest = append(manifest, writingstore.MaterialSnapshotArtifact{ArtifactID: artifact.ArtifactID,
+			Version: artifact.Version, ArtifactType: string(artifact.ArtifactType), ContentHash: artifact.ContentHash,
+			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef})
+	}
+	_, created, err := orchestrator.Materials.SaveInitialMaterialSnapshot(ctx, run.RunID, manifest)
+	if err != nil {
+		return nil, runtimeError(CodeSourceSnapshotFailed, RetrySafe, "orchestrator could not persist the material snapshot", err)
+	}
+	if !created {
+		// A concurrent dispatch captured first; adopt its snapshot verbatim.
+		return orchestrator.initialArtifacts(ctx, run, planRecord)
+	}
+	return artifacts, nil
 }
 
 func (orchestrator *Orchestrator) completeAttempt(ctx context.Context, executorID, capability string, completion writingstore.AttemptCompletion) error {

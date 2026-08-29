@@ -82,6 +82,8 @@ func ErrorCodeOf(err error) ErrorCode {
 		return CodeExecutorUsageUnmeasured
 	case errors.Is(err, ErrLegacyContentIntegrity):
 		return CodeMaterialIntegrityFailed
+	case errors.Is(err, ErrLegacyEmitterUnsafe):
+		return CodeLegacyWriteViolation
 	case errors.Is(err, ErrShadowContentLeak):
 		return CodeArtifactCommitFailed
 	default:
