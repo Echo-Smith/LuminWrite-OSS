@@ -21,6 +21,7 @@ var (
 	ErrLegacyUsageMissing     = errors.New("writingruntime: legacy executor usage is not measured")
 	ErrLegacyOutputMissing    = errors.New("writingruntime: legacy executor output missing")
 	ErrLegacyHarnessUnsafe    = errors.New("writingruntime: Harness.Run cannot be adapted before its session-writing core is extracted")
+	ErrLegacyDAGUnsafe        = errors.New("writingruntime: DAGExecutor cannot be adapted before its store and status writes are extracted")
 )
 
 type ContentGateway interface {
@@ -53,6 +54,7 @@ type LegacyNodeRunner interface {
 
 type LegacyExecutor struct {
 	descriptor                      ExecutorDescriptor
+	policy                          AdapterPolicy
 	capabilityID, capabilityVersion string
 	requiredPermissions             []writingplan.Permission
 	content                         ContentGateway
@@ -61,26 +63,54 @@ type LegacyExecutor struct {
 }
 
 func NewLegacyExecutor(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, runner LegacyNodeRunner) (*LegacyExecutor, error) {
+	return NewLegacyExecutorAdapter(adapterFamilyForExecutor(descriptor.ExecutorID), descriptor, capabilityID, capabilityVersion, required, content, runner)
+}
+
+func NewLegacyExecutorAdapter(family AdapterFamily, descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, runner LegacyNodeRunner) (*LegacyExecutor, error) {
 	if err := descriptor.Validate(); err != nil {
 		return nil, err
 	}
+	policy := OfflineAdapterPolicy(family)
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
 	if descriptor.Cancellable {
-		return nil, fmt.Errorf("%w: legacy adapters remain non-cancellable until every nested tool propagates context", ErrExecutorMismatch)
+		return nil, runtimeError(CodeExecutorCancelUnsupported, RetryNever, "legacy adapters remain non-cancellable until every nested tool propagates context", ErrExecutorMismatch)
 	}
 	if strings.TrimSpace(capabilityID) == "" || strings.TrimSpace(capabilityVersion) == "" || required == nil || content == nil || runner == nil {
 		return nil, ErrRuntimeNotReady
 	}
-	return &LegacyExecutor{descriptor: descriptor, capabilityID: capabilityID, capabilityVersion: capabilityVersion,
+	return &LegacyExecutor{descriptor: descriptor, policy: policy, capabilityID: capabilityID, capabilityVersion: capabilityVersion,
 		requiredPermissions: append([]writingplan.Permission(nil), required...), content: content, runner: runner,
 		now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 func (executor *LegacyExecutor) Descriptor() ExecutorDescriptor { return executor.descriptor }
+func (executor *LegacyExecutor) AdapterPolicy() AdapterPolicy   { return executor.policy }
+
+func (executor *LegacyExecutor) Prepare(_ context.Context, request ExecutionRequest) (ExecutionRequest, error) {
+	if err := executor.policy.Validate(); err != nil {
+		return ExecutionRequest{}, err
+	}
+	if err := request.Validate(); err != nil {
+		return ExecutionRequest{}, err
+	}
+	return request, nil
+}
+
+func (executor *LegacyExecutor) NormalizeResult(request ExecutionRequest, result ExecutionResult) (ExecutionResult, error) {
+	if err := result.Validate(request); err != nil {
+		return ExecutionResult{}, runtimeError(CodeExecutorOutputInvalid, RetryNever, "legacy output does not satisfy governed result contract", err)
+	}
+	return result, nil
+}
 
 func (executor *LegacyExecutor) Execute(ctx context.Context, request ExecutionRequest) (ExecutionResult, error) {
-	if err := request.Validate(); err != nil {
+	prepared, err := executor.Prepare(ctx, request)
+	if err != nil {
 		return ExecutionResult{}, err
 	}
+	request = prepared
 	if request.Node.Capability != executor.capabilityID || request.Node.CapabilityVersion != executor.capabilityVersion || !supportsNodeKind(executor.descriptor, request.Node.Kind) || !permissionsContain(request.Permissions, executor.requiredPermissions) {
 		return ExecutionResult{}, ErrExecutorMismatch
 	}
@@ -138,10 +168,18 @@ func (executor *LegacyExecutor) Execute(ctx context.Context, request ExecutionRe
 	}
 	result.CompletedAt = executor.now()
 	result.Usage.DurationMS = result.CompletedAt.Sub(started).Milliseconds()
-	if err := result.Validate(request); err != nil {
-		return ExecutionResult{}, err
+	return executor.NormalizeResult(request, result)
+}
+
+func adapterFamilyForExecutor(executorID string) AdapterFamily {
+	switch {
+	case strings.HasPrefix(executorID, "editorial."):
+		return AdapterFamilyEditorial
+	case strings.HasPrefix(executorID, "harness."):
+		return AdapterFamilyHarness
+	default:
+		return AdapterFamilyEngine
 	}
-	return result, nil
 }
 
 type EngineStepRunner struct {
@@ -234,7 +272,16 @@ func mapLegacyArtifact(kind editorial.ArtifactType) (writingplan.ArtifactType, b
 // NewHarnessExecutorAdapter intentionally fails closed. Harness.Run persists
 // conversation/session history and emits terminal status, so wrapping it would
 // create a second authority beside the governed runtime.
-func NewHarnessExecutorAdapter() (Executor, error) { return nil, ErrLegacyHarnessUnsafe }
+func NewHarnessExecutorAdapter() (Executor, error) {
+	return nil, runtimeError(CodeLegacyWriteViolation, RetryNever, "Harness.Run still owns session and terminal writes", ErrLegacyHarnessUnsafe)
+}
+
+// NewEditorialDAGExecutorAdapter intentionally fails closed. The pure
+// EditorialRoleNodeRunner is testable offline, but DAGExecutor still owns task,
+// artifact, decision, and event persistence.
+func NewEditorialDAGExecutorAdapter() (Executor, error) {
+	return nil, runtimeError(CodeLegacyWriteViolation, RetryNever, "DAGExecutor still owns authoritative editorial writes", ErrLegacyDAGUnsafe)
+}
 
 type EditorialRoleInvoker interface {
 	Run(context.Context, editorial.RoleRunConfig) (*editorial.RoleRunResult, error)

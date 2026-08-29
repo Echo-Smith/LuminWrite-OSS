@@ -42,6 +42,85 @@ type InitialArtifactProvider interface {
 	InitialArtifacts(context.Context, writingstore.RuntimeRun, writingstore.PlanRecord) ([]InputArtifact, error)
 }
 
+type CompositeInitialArtifactProvider struct {
+	providers []InitialArtifactProvider
+}
+
+func NewCompositeInitialArtifactProvider(providers ...InitialArtifactProvider) (*CompositeInitialArtifactProvider, error) {
+	if len(providers) == 0 {
+		return nil, ErrRuntimeNotReady
+	}
+	for _, provider := range providers {
+		if provider == nil {
+			return nil, ErrRuntimeNotReady
+		}
+	}
+	return &CompositeInitialArtifactProvider{providers: append([]InitialArtifactProvider(nil), providers...)}, nil
+}
+
+func (provider *CompositeInitialArtifactProvider) InitialArtifacts(ctx context.Context, run writingstore.RuntimeRun, plan writingstore.PlanRecord) ([]InputArtifact, error) {
+	if provider == nil || len(provider.providers) == 0 {
+		return nil, ErrRuntimeNotReady
+	}
+	result := []InputArtifact{}
+	seen := map[string]InputArtifact{}
+	for _, child := range provider.providers {
+		artifacts, err := child.InitialArtifacts(ctx, run, plan)
+		if err != nil {
+			return nil, err
+		}
+		for _, artifact := range artifacts {
+			if err := validateInitialArtifact(artifact); err != nil {
+				return nil, err
+			}
+			identity := artifactIdentity(artifact.ArtifactID, artifact.Version)
+			if prior, duplicate := seen[identity]; duplicate {
+				if prior != artifact {
+					return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "initial artifact identity has conflicting content", nil)
+				}
+				continue
+			}
+			seen[identity] = artifact
+			result = append(result, artifact)
+		}
+	}
+	return result, nil
+}
+
+func validateInitialArtifact(artifact InputArtifact) error {
+	if !hasIDPrefix(artifact.ArtifactID, "art_") || artifact.Version < 1 || strings.TrimSpace(string(artifact.ArtifactType)) == "" || !executionHashPattern.MatchString(artifact.ContentHash) || !validExecutionMediaType(artifact.MediaType) || strings.TrimSpace(artifact.ContentRef) == "" {
+		return runtimeError(CodeMaterialIntegrityFailed, RetryNever, "invalid initial artifact", ErrInvalidExecutionRequest)
+	}
+	return nil
+}
+
+type RunMaterialSelectionSource interface {
+	MaterialsForRun(context.Context, writingstore.RuntimeRun, writingstore.PlanRecord) (MaterialSnapshotRequest, error)
+}
+
+type MaterialArtifactProvider struct {
+	Adapter   *MaterialAdapter
+	Selection RunMaterialSelectionSource
+}
+
+func (provider MaterialArtifactProvider) InitialArtifacts(ctx context.Context, run writingstore.RuntimeRun, plan writingstore.PlanRecord) ([]InputArtifact, error) {
+	if provider.Adapter == nil || provider.Selection == nil {
+		return nil, ErrRuntimeNotReady
+	}
+	request, err := provider.Selection.MaterialsForRun(ctx, run, plan)
+	if err != nil {
+		return nil, err
+	}
+	if request.RunID != run.RunID {
+		return nil, runtimeError(CodeExecutorContractMismatch, RetryNever, "material selection is bound to a different run", nil)
+	}
+	bundle, err := provider.Adapter.Snapshot(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return []InputArtifact{bundle.Artifact}, nil
+}
+
 type ContractArtifactSource interface {
 	GetContract(context.Context, string, int) (writingstore.ContractRecord, error)
 }
@@ -268,7 +347,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		}
 		if executeErr != nil {
 			_ = orchestrator.Store.CompleteNodeAttempt(ctx, writingstore.AttemptCompletion{RunID: runID,
-				NodeID: node.NodeID, Attempt: attemptNumber, Status: "failed", ErrorCode: "EXECUTION_FAILED",
+				NodeID: node.NodeID, Attempt: attemptNumber, Status: "failed", ErrorCode: string(ErrorCodeOf(executeErr)),
 				ErrorMessage: executeErr.Error(), Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
 			nextAttempts[node.NodeID] = attemptNumber + 1
 			if manifest.Idempotency == writingplan.IdempotencySafe && attemptNumber < node.Bounds.MaxAttempts {
@@ -296,7 +375,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			CostUSD: result.Usage.CostUSD, InputTokens: result.Usage.InputTokens,
 			OutputTokens: result.Usage.OutputTokens, DurationMS: result.Usage.DurationMS,
 			Trace: runtimeTrace(node.Capability), CompletedAt: result.CompletedAt}); err != nil {
-			return RunOutcome{}, err
+			return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not commit node artifacts", err)
 		}
 		completed[node.NodeID] = attemptNumber
 		nextAttempts[node.NodeID] = attemptNumber + 1

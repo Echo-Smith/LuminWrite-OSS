@@ -1030,6 +1030,17 @@ type UserMaterial struct {
 	Status         string    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	Governance     *MaterialGovernance `json:"governance,omitempty"`
+}
+
+// MaterialGovernance truthfully describes whether a library item can be
+// captured by MaterialAdapter. It is not itself a Run Artifact.
+type MaterialGovernance struct {
+	Eligible        bool   `json:"eligible"`
+	ArtifactType    string `json:"artifact_type"`
+	SnapshotStatus  string `json:"snapshot_status"`
+	IntegrityStatus string `json:"integrity_status"`
+	SourceRef       string `json:"source_ref,omitempty"`
 }
 
 // MaterialFolder represents a user's material folder for organization.

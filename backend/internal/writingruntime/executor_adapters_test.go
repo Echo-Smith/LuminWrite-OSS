@@ -97,8 +97,57 @@ func legacyRequest(body []byte) ExecutionRequest {
 }
 
 func TestHarnessAdapterIsExplicitlyUnavailable(t *testing.T) {
-	if _, err := NewHarnessExecutorAdapter(); !errors.Is(err, ErrLegacyHarnessUnsafe) {
+	if _, err := NewHarnessExecutorAdapter(); !errors.Is(err, ErrLegacyHarnessUnsafe) || ErrorCodeOf(err) != CodeLegacyWriteViolation {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEditorialDAGAdapterIsExplicitlyUnavailable(t *testing.T) {
+	if _, err := NewEditorialDAGExecutorAdapter(); !errors.Is(err, ErrLegacyDAGUnsafe) || ErrorCodeOf(err) != CodeLegacyWriteViolation {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestLegacyAdapterFamiliesShareOfflineConformanceContract(t *testing.T) {
+	families := []AdapterFamily{AdapterFamilyEngine, AdapterFamilyEditorial, AdapterFamilyHarness}
+	for _, family := range families {
+		t.Run(string(family), func(t *testing.T) {
+			body := []byte("contract")
+			gateway := &memoryGateway{body: body}
+			runner := &fakeLegacyRunner{usage: LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 1}, outputs: []LegacyPayload{{OutputKey: "draft", ArtifactType: "full_draft", MediaType: "text/markdown", Body: []byte("draft"), Provenance: map[string]any{"family": family}, SourceRefs: []string{}}}}
+			executor, err := NewLegacyExecutorAdapter(family, ExecutorDescriptor{ExecutorID: "legacy." + string(family), Version: "adapter-1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}}, "core.draft.generate", "1.0.0", []writingplan.Permission{"model.invoke"}, gateway, runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := legacyRequest(body)
+			request.Node.Capability = "core.draft.generate"
+			if _, err := executor.Execute(context.Background(), request); err != nil {
+				t.Fatalf("offline conformance execution: %v", err)
+			}
+			if executor.AdapterPolicy().TrafficMode != AdapterTrafficOffline {
+				t.Fatalf("policy=%#v", executor.AdapterPolicy())
+			}
+			registry := NewExecutorRegistry()
+			if err := registry.Register(executor); !errors.Is(err, ErrExecutorTrafficDisabled) {
+				t.Fatalf("production registration error=%v", err)
+			}
+		})
+	}
+}
+
+func TestAdapterPolicyRejectsAuthoritativeWrites(t *testing.T) {
+	policy := OfflineAdapterPolicy(AdapterFamilyEngine)
+	policy.Authority.DocumentWrite = true
+	if err := policy.Validate(); ErrorCodeOf(err) != CodeLegacyWriteViolation {
+		t.Fatalf("error=%v code=%s", err, ErrorCodeOf(err))
+	}
+}
+
+func TestExecutionIdentityBindsCanonicalAttempt(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	identity := request.Identity()
+	if err := identity.Validate(); err != nil || identity.IdempotencyKey != "run_legacy:node_write:1" || identity.ContractRef != request.ContractRef {
+		t.Fatalf("identity=%#v error=%v", identity, err)
 	}
 }
 

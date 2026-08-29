@@ -27,6 +27,9 @@
 - [x] Task 7b：Executor typed input/output、能力版本绑定、候选 Artifact 与完整 lineage 校验已完成。
 - [x] Task 7：ExecutorRegistry、事务状态事件、依赖调度、预算/权限/审批门禁、暂停/取消/同 Plan 恢复、完整检查点和受限旧执行链适配已完成；Harness/DAG 继续 fail closed，直至其权威写副作用被拆出。
 - [x] Task 8：Candidate/Accepted/Verified 质量门禁、不可豁免 BLOCKER、版本与快照闭环、验证器注册表、等价/非等价降级和同源用户/审计投影已完成。
+- [x] Task 9：V2 Contract、Document、Run、Quality、Audit 与 durable event API 已完成。
+- [x] Task 10：文档优先四区域工作台、用户布局状态、运行投影和三级质量界面已完成。
+- [x] Task 11：MaterialAdapter、typed material/source Artifact、Orchestrator 单一提交、B2 契约与三类旧算子离线适配测试已完成；生产流量保持 fail-closed。
 
 ---
 

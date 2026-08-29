@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrExecutorNotFound      = errors.New("writingruntime: executor not found")
-	ErrExecutorAlreadyExists = errors.New("writingruntime: executor already registered")
-	ErrExecutorMismatch      = errors.New("writingruntime: executor binding mismatch")
+	ErrExecutorNotFound        = errors.New("writingruntime: executor not found")
+	ErrExecutorAlreadyExists   = errors.New("writingruntime: executor already registered")
+	ErrExecutorMismatch        = errors.New("writingruntime: executor binding mismatch")
+	ErrExecutorTrafficDisabled = errors.New("writingruntime: executor traffic is disabled")
 )
 
 // ExecutorRegistry is the runtime dispatch table. Capability metadata remains
@@ -32,6 +33,15 @@ func (registry *ExecutorRegistry) Register(executor Executor) error {
 	descriptor := executor.Descriptor()
 	if err := descriptor.Validate(); err != nil {
 		return err
+	}
+	if adapter, ok := executor.(ExecutorAdapter); ok {
+		policy := adapter.AdapterPolicy()
+		if err := policy.Validate(); err != nil {
+			return err
+		}
+		if policy.TrafficMode != AdapterTrafficEnabled {
+			return fmt.Errorf("%w: %s", ErrExecutorTrafficDisabled, descriptor.ExecutorID)
+		}
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -58,7 +68,7 @@ func (registry *ExecutorRegistry) Resolve(manifest writingplan.CapabilityManifes
 	}
 	if descriptor.Cancellable {
 		if _, ok := executor.(CancellableExecutor); !ok {
-			return nil, fmt.Errorf("%w: %s declares cancellation without Cancel", ErrExecutorMismatch, descriptor.ExecutorID)
+			return nil, runtimeError(CodeExecutorCancelUnsupported, RetryNever, descriptor.ExecutorID+" declares cancellation without Cancel", ErrExecutorMismatch)
 		}
 	}
 	return executor, nil

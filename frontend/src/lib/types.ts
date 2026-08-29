@@ -122,6 +122,8 @@ export interface AgentStartPayload {
   agent_mode?: "harness" | "pipeline" | "editorial";
   session_id?: string;
   user_materials?: string[];
+  /** Task11: server-resolved material identities; the browser never treats previews as authoritative content. */
+  material_refs?: Array<{ material_id: string; source_ref: string; title?: string }>;
   word_limit?: number;
   /** 热搜选题原始链接（用于后端抓取事件背景增强写作叙事） */
   topic_url?: string;

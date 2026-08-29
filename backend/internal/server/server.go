@@ -1643,6 +1643,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		slog.Error("failed to parse agent.start payload", "error", err)
 		return
 	}
+	if len(p.MaterialRefs) > 0 {
+		resolved, err := s.resolveLegacyMaterialReferences(context.Background(), userID, p.MaterialRefs)
+		if err != nil {
+			client.SendDirect(&websocket.ServerMessage{Type: websocket.MsgAgentError, Payload: map[string]interface{}{"code": "MATERIAL_ACCESS_DENIED", "message": "所选材料不可用或已发生变化，请重新选择"}})
+			return
+		}
+		p.UserMaterials = append(p.UserMaterials, resolved...)
+	}
 
 	// Guest write limit: guests can only complete 1 article
 	if userRole == "guest" && s.adminRepo != nil && s.adminRepo.DB() != nil {
@@ -2084,6 +2092,43 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 	// Run in background
 	go s.runAgent(agentRunner, execCtx, emitter, traceID, styleProfile)
+}
+
+// resolveLegacyMaterialReferences preserves the current writing experience
+// while governed legacy executors remain traffic-disabled in Task11. The
+// browser sends identities only; tenant-scoped material content is read here.
+// Task12 replaces this projection with MaterialArtifactProvider.
+func (s *Server) resolveLegacyMaterialReferences(parent context.Context, userID string, refs []websocket.MaterialReference) ([]string, error) {
+	if s.kbMgr == nil || strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("material store unavailable")
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	result := make([]string, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.MaterialID) == "" {
+			return nil, fmt.Errorf("material id is required")
+		}
+		if _, duplicate := seen[ref.MaterialID]; duplicate {
+			continue
+		}
+		seen[ref.MaterialID] = struct{}{}
+		material, err := s.kbMgr.GetMaterial(ctx, userID, ref.MaterialID)
+		if err != nil || material == nil || material.Status != "active" || material.DocID == "" {
+			return nil, fmt.Errorf("material not found")
+		}
+		expectedRef := "kb://documents/" + material.DocID
+		if ref.SourceRef != "" && ref.SourceRef != expectedRef {
+			return nil, fmt.Errorf("material source reference changed")
+		}
+		document, err := s.kbMgr.GetDocument(ctx, userID, material.DocID)
+		if err != nil || document == nil || strings.TrimSpace(document.Content) == "" {
+			return nil, fmt.Errorf("material content unavailable")
+		}
+		result = append(result, fmt.Sprintf("[material_ref:%s source:%s title:%s]\n%s", material.ID, expectedRef, material.Title, document.Content))
+	}
+	return result, nil
 }
 
 // runAgent runs the agent in a background goroutine with pause-aware cleanup.

@@ -30,6 +30,27 @@ type ExecutorDescriptor struct {
 	Cancellable        bool
 }
 
+type ExecutionIdentity struct {
+	RunID          string
+	PlanID         string
+	PlanVersion    int
+	NodeID         string
+	Attempt        int
+	IdempotencyKey string
+	ContractRef    writingplan.ObjectRef
+}
+
+func (identity ExecutionIdentity) Validate() error {
+	if !hasIDPrefix(identity.RunID, "run_") || !hasIDPrefix(identity.PlanID, "plan_") || identity.PlanVersion < 1 || !hasIDPrefix(identity.NodeID, "node_") {
+		return runtimeError(CodeExecutorContractMismatch, RetryNever, "invalid execution identity", ErrInvalidExecutionRequest)
+	}
+	expected, err := writingstore.NodeAttemptKey(identity.RunID, identity.NodeID, identity.Attempt)
+	if err != nil || identity.IdempotencyKey != expected || !hasIDPrefix(identity.ContractRef.ID, "ctr_") || identity.ContractRef.Version < 1 || !executionHashPattern.MatchString(identity.ContractRef.Hash) {
+		return runtimeError(CodeExecutorContractMismatch, RetryNever, "execution identity is not canonically bound", ErrInvalidExecutionRequest)
+	}
+	return nil
+}
+
 func (descriptor ExecutorDescriptor) Validate() error {
 	if strings.TrimSpace(descriptor.ExecutorID) == "" || strings.TrimSpace(descriptor.Version) == "" || len(descriptor.SupportedNodeKinds) == 0 {
 		return fmt.Errorf("%w: executor id, version, and node kinds are required", ErrInvalidExecutorDescriptor)
@@ -53,6 +74,58 @@ func (descriptor ExecutorDescriptor) Validate() error {
 type Executor interface {
 	Descriptor() ExecutorDescriptor
 	Execute(context.Context, ExecutionRequest) (ExecutionResult, error)
+}
+
+type AdapterFamily string
+
+const (
+	AdapterFamilyEngine    AdapterFamily = "engine"
+	AdapterFamilyEditorial AdapterFamily = "editorial"
+	AdapterFamilyHarness   AdapterFamily = "harness"
+)
+
+type AdapterTrafficMode string
+
+const (
+	AdapterTrafficOffline AdapterTrafficMode = "offline_only"
+	AdapterTrafficEnabled AdapterTrafficMode = "enabled"
+)
+
+type AuthorityScope struct {
+	DocumentWrite bool
+	QualityWrite  bool
+	RunWrite      bool
+	ArtifactWrite bool
+}
+
+type AdapterPolicy struct {
+	Family      AdapterFamily
+	TrafficMode AdapterTrafficMode
+	Authority   AuthorityScope
+}
+
+func OfflineAdapterPolicy(family AdapterFamily) AdapterPolicy {
+	return AdapterPolicy{Family: family, TrafficMode: AdapterTrafficOffline}
+}
+
+func (policy AdapterPolicy) Validate() error {
+	if policy.Family != AdapterFamilyEngine && policy.Family != AdapterFamilyEditorial && policy.Family != AdapterFamilyHarness {
+		return runtimeError(CodeExecutorContractMismatch, RetryNever, "unknown adapter family", ErrExecutorMismatch)
+	}
+	if policy.TrafficMode != AdapterTrafficOffline && policy.TrafficMode != AdapterTrafficEnabled {
+		return runtimeError(CodeExecutorContractMismatch, RetryNever, "invalid adapter traffic mode", ErrExecutorMismatch)
+	}
+	if policy.Authority.DocumentWrite || policy.Authority.QualityWrite || policy.Authority.RunWrite || policy.Authority.ArtifactWrite {
+		return runtimeError(CodeLegacyWriteViolation, RetryNever, "executor adapter requested authoritative writes", nil)
+	}
+	return nil
+}
+
+type ExecutorAdapter interface {
+	Executor
+	AdapterPolicy() AdapterPolicy
+	Prepare(context.Context, ExecutionRequest) (ExecutionRequest, error)
+	NormalizeResult(ExecutionRequest, ExecutionResult) (ExecutionResult, error)
 }
 
 type CancellableExecutor interface {
@@ -90,16 +163,8 @@ type ExecutionRequest struct {
 }
 
 func (request ExecutionRequest) Validate() error {
-	if !hasIDPrefix(request.RunID, "run_") || !hasIDPrefix(request.PlanID, "plan_") ||
-		request.PlanVersion < 1 || !hasIDPrefix(request.NodeID, "node_") {
-		return fmt.Errorf("%w: invalid run, plan, or node identity", ErrInvalidExecutionRequest)
-	}
-	expectedKey, err := writingstore.NodeAttemptKey(request.RunID, request.NodeID, request.Attempt)
-	if err != nil || request.IdempotencyKey != expectedKey {
-		return fmt.Errorf("%w: invalid node-attempt identity", ErrInvalidExecutionRequest)
-	}
-	if !hasIDPrefix(request.ContractRef.ID, "ctr_") || request.ContractRef.Version < 1 || !executionHashPattern.MatchString(request.ContractRef.Hash) {
-		return fmt.Errorf("%w: invalid contract reference", ErrInvalidExecutionRequest)
+	if err := request.Identity().Validate(); err != nil {
+		return err
 	}
 	if request.Node.NodeID != request.NodeID || !validExecutionNodeKind(request.Node.Kind) ||
 		strings.TrimSpace(request.Node.Capability) == "" || strings.TrimSpace(request.Node.CapabilityVersion) == "" {
@@ -134,6 +199,10 @@ func (request ExecutionRequest) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (request ExecutionRequest) Identity() ExecutionIdentity {
+	return ExecutionIdentity{RunID: request.RunID, PlanID: request.PlanID, PlanVersion: request.PlanVersion, NodeID: request.NodeID, Attempt: request.Attempt, IdempotencyKey: request.IdempotencyKey, ContractRef: request.ContractRef}
 }
 
 func (request ExecutionRequest) Handle() ExecutionHandle {

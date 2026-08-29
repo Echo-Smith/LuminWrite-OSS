@@ -52,6 +52,9 @@ func (s *Server) handleUserMaterialList(w http.ResponseWriter, r *http.Request) 
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list materials")
 		return
 	}
+	for _, material := range materials {
+		projectMaterialGovernance(material)
+	}
 
 	response.OK(w, map[string]any{
 		"materials": materials,
@@ -292,8 +295,23 @@ func (s *Server) handleUserMaterialGet(w http.ResponseWriter, r *http.Request) {
 		response.Err(w, http.StatusNotFound, "not_found", "material not found")
 		return
 	}
+	projectMaterialGovernance(mat)
 
 	response.OK(w, mat)
+}
+
+func projectMaterialGovernance(material *services.UserMaterial) {
+	if material == nil {
+		return
+	}
+	eligible := material.Status == "active" && material.DocID != ""
+	status, integrity, sourceRef := "source_unavailable", "unverified", ""
+	if eligible {
+		status = "pending_run_snapshot"
+		integrity = "source_registered"
+		sourceRef = "kb://documents/" + material.DocID
+	}
+	material.Governance = &services.MaterialGovernance{Eligible: eligible, ArtifactType: "materials", SnapshotStatus: status, IntegrityStatus: integrity, SourceRef: sourceRef}
 }
 
 // handleUserMaterialDelete deletes a material (from local KB + metadata).

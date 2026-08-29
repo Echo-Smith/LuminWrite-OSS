@@ -89,6 +89,32 @@ func TestOrchestratorPauseCancelsActiveExecutorAndCheckpoints(t *testing.T) {
 	}
 }
 
+func TestCompositeInitialProviderSuppliesContractAndGovernedMaterials(t *testing.T) {
+	contract := InputArtifact{ArtifactID: "art_contract", Version: 1, ArtifactType: "contract", ContentHash: hashForTest("contract"), MediaType: "application/json", ContentRef: "memory://contract"}
+	materials := InputArtifact{ArtifactID: "art_materials", Version: 1, ArtifactType: "materials", ContentHash: hashForTest("materials"), MediaType: "application/json", ContentRef: "memory://materials"}
+	provider, err := NewCompositeInitialArtifactProvider(fixedInitialProvider{contract}, fixedInitialProvider{materials})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := provider.InitialArtifacts(context.Background(), writingstore.RuntimeRun{RunID: "run_runtime"}, writingstore.PlanRecord{})
+	if err != nil || len(artifacts) != 2 || artifacts[0].ArtifactType != "contract" || artifacts[1].ArtifactType != "materials" {
+		t.Fatalf("artifacts=%#v error=%v", artifacts, err)
+	}
+}
+
+func TestOrchestratorPersistsStableExecutorErrorCode(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	fixture.executor.failures = 1
+	fixture.executor.failErr = runtimeError(CodeSourceSnapshotFailed, RetrySafe, "snapshot unavailable", errors.New("storage down"))
+	_, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID)
+	if ErrorCodeOf(err) != CodeSourceSnapshotFailed {
+		t.Fatalf("error=%v code=%s", err, ErrorCodeOf(err))
+	}
+	if len(fixture.store.completions) == 0 || fixture.store.completions[0].ErrorCode != string(CodeSourceSnapshotFailed) || len(fixture.store.artifacts) != 0 {
+		t.Fatalf("completions=%#v artifacts=%#v", fixture.store.completions, fixture.store.artifacts)
+	}
+}
+
 type orchestratorFixture struct {
 	orchestrator *Orchestrator
 	store        *fakeRuntimeStore
@@ -155,6 +181,7 @@ type fakeRuntimeStore struct {
 	plan        writingstore.PlanRecord
 	attempts    []writingstore.NodeAttempt
 	artifacts   []writingstore.ArtifactRecord
+	completions []writingstore.AttemptCompletion
 	transitions []TransitionRecord
 }
 
@@ -194,6 +221,7 @@ func (store *fakeRuntimeStore) CompleteNodeAttempt(_ context.Context, completion
 		}
 	}
 	store.artifacts = append(store.artifacts, completion.Artifacts...)
+	store.completions = append(store.completions, completion)
 	return nil
 }
 func (store *fakeRuntimeStore) RecordTransition(_ context.Context, record TransitionRecord) error {
@@ -232,6 +260,7 @@ type fakeGovernedExecutor struct {
 	calls, failures, cancelCalls int
 	block                        chan struct{}
 	started                      chan struct{}
+	failErr                      error
 }
 
 func (executor *fakeGovernedExecutor) Descriptor() ExecutorDescriptor { return executor.descriptor }
@@ -254,6 +283,9 @@ func (executor *fakeGovernedExecutor) Execute(ctx context.Context, request Execu
 		}
 	}
 	if call <= failures {
+		if executor.failErr != nil {
+			return ExecutionResult{}, executor.failErr
+		}
 		return ExecutionResult{}, errors.New("transient")
 	}
 	parents := make([]writingstore.ArtifactRef, len(request.Inputs))

@@ -195,9 +195,16 @@ type AgentStartPayload struct {
 	AgentMode     string   `json:"agent_mode,omitempty"` // "pipeline" | "unified" — overrides server default
 	SessionID     string   `json:"session_id,omitempty"`
 	UserMaterials []string `json:"user_materials,omitempty"`
+	MaterialRefs  []MaterialReference `json:"material_refs,omitempty"`
 	WordLimit     int      `json:"word_limit,omitempty"`
 	TopicURL      string   `json:"topic_url,omitempty"`  // 热搜选题原始链接，用于抓取事件背景
 	KBEnabled     *bool    `json:"kb_enabled,omitempty"` // 知识库搜索开关（nil=默认开启）
+}
+
+type MaterialReference struct {
+	MaterialID string `json:"material_id"`
+	SourceRef  string `json:"source_ref"`
+	Title      string `json:"title,omitempty"`
 }
 
 // AgentControlPayload is the payload for pause/resume/cancel.
