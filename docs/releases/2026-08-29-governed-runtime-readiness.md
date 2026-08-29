@@ -68,6 +68,17 @@ off → shadow → allowlist → percentage → enabled
 
 验证：双仓全量 `go test ./...`、race、真实库上的材料快照并发/幂等/回滚测试、095 down 阻断实测全部通过。
 
+## 2026-08-29 第三轮加固（复审后）
+
+复审发现 shadow 候选会被 Orchestrator 的 Execute 后取消连带取消（baseline 较快完成时 shadow 样本大量变成取消/超时）。本轮修正（OSS `88e77b8` / Commercial `6672293`）：
+
+1. **shadow 生命周期与 baseline 解耦**：shadow 候选在 `context.WithoutCancel` 之上叠加 supervisor deadline 运行——Orchestrator 在 Execute 返回后立即取消执行 context 的行为不再波及 in-flight shadow 样本。回归测试使用 context-aware 候选：baseline 返回后立即取消，候选仍须跑完并产出成功比较证据。
+2. **PurgeRun 前缀碰撞修复**：清理前缀带显式分隔符，`run_fresh` 不再误删 `run_fresh2` 的 shadow 内容（测试覆盖）。
+3. **隔离证明不可伪造**：`ShadowIsolatedCandidate` 增加包内不可导出的 seal 方法，外部适配器无法仅靠暴露非 nil gateway 伪造隔离证明。
+4. **重复 parent 拒绝**：lineage 校验在全覆盖之外增加 parent 去重检查，`[A, B, B]` 不再通过。
+
+验证：双仓全量 `go test ./...` 与 race 全部通过。
+
 ## 当前就绪结论（取代早前表述）
 
 - **local shadow：ready（开发验证用途）**——双份实现字节级一致，全部防御与真实纵向链路在本地验证通过。
