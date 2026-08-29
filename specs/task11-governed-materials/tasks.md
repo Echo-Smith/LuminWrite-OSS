@@ -27,6 +27,6 @@
   - 展示治理状态，从材料发起写作时只传 material_refs。
   - _Requirements: R5_
 
-- [ ] 7. 双版本验证与提交
+- [x] 7. 双版本验证与提交
   - 运行 Go、前端测试、lint、build 和树一致性检查。
   - _Requirements: R1-R5_
