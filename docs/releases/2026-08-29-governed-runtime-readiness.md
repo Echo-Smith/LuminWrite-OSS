@@ -55,13 +55,34 @@ off → shadow → allowlist → percentage → enabled
 
 验证：双仓全量 `go test ./...`、race（writingruntime / writingstore / agent）、writingstore 集成测试（全新 ParadeDB 实例）与 095 up/down/up 循环全部通过；前端未改动，沿用前次结论。
 
+## 2026-08-29 第二轮加固（外部复审后）
+
+复审指出第一轮仍存在“依赖调用方正确接线”与“shadow 可影响 baseline”两类问题，本轮全部收敛为系统级强制（OSS `4d393ff` / Commercial `9cad05b`）。**更正**：第一轮 readiness 中“三场景各新增 adapter-level 集成测试”的表述不准确——当时的测试仅覆盖单节点三家族冒烟路径；真实的纵向验收以本轮为准。
+
+1. **模式交叉封死**：candidate-authoritative 执行器现在拒绝 shadow mode（shadow 流量只能来自 shadow 执行器）；shadow 执行器拒绝 candidate lane。shadow 与权威模式只能通过重建不同执行器切换，且执行期校验 gateway 绑定的 policy hash 与当前 policy 一致，policy 轮换后旧 namespace 无法继续使用（`stale_shadow_namespace` 拒绝）。
+2. **shadow supervisor**：shadow lane 在独立 goroutine 中运行，带独立截止时间（2× 节点超时）、panic recovery（候选崩溃不再波及进程）与三次失败熔断（熔断后停止派发 shadow lane，只跑 baseline）。baseline 结果同步返回，shadow 执行、比较与 validator 汇总全部异步 finalize——**baseline 调用方永远不等待 shadow lane**；忽略 context 的 legacy runner 只会泄漏一个 goroutine 并产生 `shadow_timeout` 比较证据。
+3. **validator summary 进入 shadow evidence**：比较证据现在携带候选质量报告中真实校验器（writingquality registry）的 ID/版本/状态，符合规格对 evidence 内容的要求。
+4. **lineage 完整性**：ExecutionResult 校验升级为“parents 集合必须等于全部执行输入”+“InputHashes 去重集合必须等于 parent 内容哈希集合”；不同 parent 共享内容时 lineage 去重记录。
+5. **095 回滚保护**：down 迁移在存在治理证据时显式拒绝（RAISE 异常，约束不动）。实测另发现 `writing_run_events` 表本身有 append-only 触发器——DELETE 在数据库层即被禁止，“回滚不回写审计证据”由 schema 强制；降级在证据存在时事实上不可逆，必须先走受认可的导出流程。
+6. **真实纵向场景**：长文创作（outline → draft → quality）、多材料综合（真实 MaterialAdapter 快照 → source pack → synthesis → quality → 真实冲突检测）、忠实改写（materials → rewrite → 真实 semantic preservation 校验器 + 确定性 checker）全部经真实 MaterialArtifactProvider、真实 B2 适配器、shadow gateway 与真实 writingquality 校验器注册表/FinalizeReport 门禁跑通；校验器结果进入 shadow evidence。内容为确定性生成，无 LLM。
+
+验证：双仓全量 `go test ./...`、race、真实库上的材料快照并发/幂等/回滚测试、095 down 阻断实测全部通过。
+
+## 当前就绪结论（取代早前表述）
+
+- **local shadow：ready（开发验证用途）**——双份实现字节级一致，全部防御与真实纵向链路在本地验证通过。
+- **Task12 不宣布“完整完成”**：剩余验收项见下。
+- **allowlist：not ready**。剩余前置：durable evidence/sink 生产接线（仍为内存实现）；evidence 健康度晋升门禁的运维流程固化；真实 LLM 内容的纵向验收（当前内容为确定性生成，仅验证治理链路而非模型质量）。
+- **percentage / production：not authorized**，不执行。
+
 ## 解锁下一级的前置条件
 
 ### allowlist（解锁前必须完成）
 
 - **durable evidence 接线**：生产组合根提供持久化 `RolloutEvidenceStore` 与 `ShadowContentSink`（当前 local shadow 使用内存实现，代码内已注明该边界）。**仍待完成。**
-- **晋升门禁**：design 约定“evidence 存储失败的 policy 不得晋升为 candidate-authoritative”。构造器强制化已覆盖“shadow 执行器无法产生 candidate 流量”，但 evidence 健康度与晋升检查仍是运维纪律。**部分完成。**
-- **candidate-authoritative 接线规程**：已由构造器强制（`NewRolloutExecutor` 只接受 canonical 候选、拒绝隔离候选），接线规程需写入运行手册。**结构上已强制，文档待补。**
+- **晋升门禁**：模式交叉与 namespace 新鲜度已由代码强制；evidence 健康度与晋升审批仍是运维纪律，需固化为 checklist。**部分完成。**
+- **candidate-authoritative 接线规程**：已由构造器强制（`NewRolloutExecutor` 只接受 canonical 候选、拒绝隔离候选；shadow 执行器无法产生任何 candidate/shadow 交叉流量），接线规程需写入运行手册。**结构上已强制，文档待补。**
+- **真实 LLM 纵向验收**：以真实模型内容重跑三条纵向场景，确认 shadow 对比与质量门在非确定性内容下的行为。**待完成。**
 - 放量前重跑一次双版本全量回归。
 
 ### percentage（当前不开放）

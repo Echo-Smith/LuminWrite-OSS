@@ -33,3 +33,8 @@
   - 分别运行 Go、前端测试、lint、build；检查共同文件一致性。
   - 记录 shadow-ready 证据，不执行生产放量。
   - _Requirements: R1-R6_
+
+- [ ] 8. 真实 LLM 纵向验收（放量前）
+  - 以真实模型内容重跑长文、多材料综合、忠实改写三条纵向场景。
+  - 确认 shadow 对比、熔断与质量门在非确定性内容下的行为，随后才允许 allowlist 放量。
+  - _Requirements: R1-R6_
