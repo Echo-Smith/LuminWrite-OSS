@@ -167,10 +167,17 @@ func (executor *LegacyExecutor) Execute(ctx context.Context, request ExecutionRe
 		return ExecutionResult{}, ErrLegacyUsageMissing
 	}
 	parents := make([]writingstore.ArtifactRef, len(request.Inputs))
-	inputHashes := make([]string, len(request.Inputs))
+	inputHashSet := make(map[string]struct{}, len(request.Inputs))
+	inputHashes := make([]string, 0, len(request.Inputs))
 	for index, input := range request.Inputs {
 		parents[index] = writingstore.ArtifactRef{ArtifactID: input.ArtifactID, Version: input.Version}
-		inputHashes[index] = input.ContentHash
+		if _, duplicate := inputHashSet[input.ContentHash]; duplicate {
+			// Distinct inputs may share content; the lineage records each
+			// content hash once.
+			continue
+		}
+		inputHashSet[input.ContentHash] = struct{}{}
+		inputHashes = append(inputHashes, input.ContentHash)
 	}
 	result := ExecutionResult{Artifacts: make([]OutputArtifactDraft, 0, len(outputs)), StartedAt: started,
 		Usage: ExecutionUsage{CostUSD: usage.CostUSD, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}

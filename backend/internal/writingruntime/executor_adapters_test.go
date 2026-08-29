@@ -3,6 +3,7 @@ package writingruntime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,8 +19,8 @@ func TestLegacyExecutorVerifiesContentBeforeCallingRunner(t *testing.T) {
 	if _, err := executor.Execute(context.Background(), request); !errors.Is(err, ErrLegacyContentIntegrity) {
 		t.Fatalf("integrity error=%v", err)
 	}
-	if runner.calls != 0 {
-		t.Fatalf("runner calls=%d", runner.calls)
+	if runner.callCount() != 0 {
+		t.Fatalf("runner calls=%d", runner.callCount())
 	}
 }
 
@@ -71,15 +72,24 @@ func (gateway *memoryGateway) Stage(_ context.Context, key, _ string, body []byt
 }
 
 type fakeLegacyRunner struct {
+	mu      sync.Mutex
 	calls   int
 	outputs []LegacyPayload
 	usage   LegacyUsage
 	err     error
 }
 
-func (runner *fakeLegacyRunner) Run(context.Context, LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
+func (runner *fakeLegacyRunner) Run(_ context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
+	runner.mu.Lock()
 	runner.calls++
+	runner.mu.Unlock()
 	return runner.outputs, runner.usage, runner.err
+}
+
+func (runner *fakeLegacyRunner) callCount() int {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	return runner.calls
 }
 
 func mustLegacyExecutor(t *testing.T, gateway ContentGateway, runner LegacyNodeRunner) *LegacyExecutor {

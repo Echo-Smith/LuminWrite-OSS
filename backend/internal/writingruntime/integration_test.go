@@ -187,6 +187,10 @@ func TestTask12ScenariosRouteRealB2AdaptersThroughShadowRollout(t *testing.T) {
 			if persisted[0].Status != "provisional" || IsShadowContentRef(persisted[0].ContentRef) {
 				t.Fatalf("canonical artifact came from the shadow namespace: %#v", persisted[0])
 			}
+			eventually(t, 2*time.Second, "shadow lane staged and comparison recorded", func() bool {
+				return canonical.stages == 0 && len(shadowGateway.writes.(*MemoryShadowContentSink).Keys()) > 0 &&
+					len(evidence.Records()) >= 4
+			})
 			if canonical.stages != 0 {
 				t.Fatalf("canonical gateway received %d shadow stage calls", canonical.stages)
 			}
@@ -312,9 +316,15 @@ func (executor *scenarioExecutor) Descriptor() ExecutorDescriptor { return execu
 func (executor *scenarioExecutor) Execute(_ context.Context, request ExecutionRequest) (ExecutionResult, error) {
 	now := time.Now().UTC()
 	parents := make([]writingstore.ArtifactRef, len(request.Inputs))
-	hashes := make([]string, len(request.Inputs))
+	hashSet := make(map[string]struct{}, len(request.Inputs))
+	hashes := make([]string, 0, len(request.Inputs))
 	for index, input := range request.Inputs {
-		parents[index], hashes[index] = writingstore.ArtifactRef{ArtifactID: input.ArtifactID, Version: input.Version}, input.ContentHash
+		parents[index] = writingstore.ArtifactRef{ArtifactID: input.ArtifactID, Version: input.Version}
+		if _, duplicate := hashSet[input.ContentHash]; duplicate {
+			continue
+		}
+		hashSet[input.ContentHash] = struct{}{}
+		hashes = append(hashes, input.ContentHash)
 	}
 	artifacts := make([]OutputArtifactDraft, 0, len(request.Node.OutputArtifactTypes))
 	for _, artifactType := range request.Node.OutputArtifactTypes {

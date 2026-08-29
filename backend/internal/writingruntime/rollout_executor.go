@@ -2,10 +2,13 @@ package writingruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
 
@@ -20,6 +23,9 @@ type RolloutExecutor struct {
 	evidence   RolloutEvidenceStore
 	telemetry  RuntimeTelemetry
 	now        func() time.Time
+
+	shadowFailures     atomic.Int64
+	shadowCircuitOpen  atomic.Bool
 }
 
 // NewRolloutExecutor builds the candidate-authoritative rollout executor.
@@ -125,6 +131,31 @@ func (executor *RolloutExecutor) Execute(ctx context.Context, request ExecutionR
 		return executor.executeLane(ctx, LaneBaseline, executor.baseline, request, RolloutOff)
 	}
 	if decision.RunShadow {
+		if !executor.shadowOnly {
+			// Only a shadow rollout executor may run the shadow lane: an
+			// authoritative executor's candidate stages through the canonical
+			// gateway, so shadow traffic would leak into canonical storage.
+			return executor.rejectRoute(ctx, request, policy, decision,
+				"shadow_mode_unavailable", CodeExecutorTrafficDisabled)
+		}
+		gateway := executor.shadowGateway()
+		if gateway == nil || gateway.PolicyHash() != policy.PolicyHash {
+			// The policy provider can rotate while the isolated gateway is
+			// pinned to one policy namespace: refuse to stage into a stale
+			// namespace until the executor is rebuilt.
+			return executor.rejectRoute(ctx, request, policy, decision,
+				"stale_shadow_namespace", CodeRolloutPolicyInvalid)
+		}
+		if executor.shadowCircuitOpen.Load() {
+			observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison,
+				Family: policy.Family, ExecutorID: policy.ExecutorID, Capability: request.Node.Capability,
+				Mode: policy.Mode, Lane: LaneShadow, Status: "circuit_open"})
+			_ = executor.record(ctx, RuntimeEvidence{Kind: "route_decision", Identity: request.Identity(),
+				Adapter: executor.candidate.AdapterPolicy(), PolicyHash: policy.PolicyHash,
+				PolicyVersion: policy.PolicyVersion, Mode: policy.Mode, Lane: LaneShadow,
+				Decision: decision, Status: "shadow_circuit_open", ErrorCode: CodeExecutionFailed})
+			return executor.executeLane(ctx, LaneBaseline, executor.baseline, request, policy.Mode)
+		}
 		return executor.executeShadow(ctx, request, policy, decision)
 	}
 	if executor.shadowOnly && decision.Lane == LaneCandidate {
@@ -151,41 +182,166 @@ func (executor *RolloutExecutor) Execute(ctx context.Context, request ExecutionR
 	return result, executeErr
 }
 
+func (executor *RolloutExecutor) shadowGateway() *ShadowContentGateway {
+	if isolated, ok := executor.candidate.(ShadowIsolatedCandidate); ok {
+		return isolated.ShadowGateway()
+	}
+	return nil
+}
+
+// rejectRoute records an authority violation and serves the baseline lane:
+// route-level policy/engineering mismatches never reach either lane's code.
+func (executor *RolloutExecutor) rejectRoute(ctx context.Context, request ExecutionRequest, policy AdapterRolloutPolicy, decision RouteDecision, status string, code ErrorCode) (ExecutionResult, error) {
+	observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricAuthorityViolation,
+		Family: policy.Family, ExecutorID: policy.ExecutorID, Capability: request.Node.Capability,
+		Mode: policy.Mode, Lane: decision.Lane, Status: status, ErrorCode: code})
+	_ = executor.record(ctx, RuntimeEvidence{Kind: "route_decision", Identity: request.Identity(),
+		Adapter: executor.candidate.AdapterPolicy(), PolicyHash: policy.PolicyHash,
+		PolicyVersion: policy.PolicyVersion, Mode: policy.Mode, Lane: decision.Lane,
+		Decision: decision, Status: status, ErrorCode: code})
+	return executor.executeLane(ctx, LaneBaseline, executor.baseline, request, RolloutOff)
+}
+
 type laneResult struct {
 	result ExecutionResult
 	err    error
 }
 
+// The shadow lane runs under a supervisor so a misbehaving candidate can
+// never change the baseline business outcome: it gets its own deadline
+// (double the node's own timeout), its panics are contained, and repeated
+// failures open a circuit that stops dispatching the lane entirely.
+const shadowSupervisorMultiplier = 2
+
+const shadowCircuitBreakerThreshold = 3
+
+func (executor *RolloutExecutor) shadowPatience(request ExecutionRequest) time.Duration {
+	return time.Duration(request.Node.Bounds.TimeoutMS) * shadowSupervisorMultiplier * time.Millisecond
+}
+
+// executeShadow runs the baseline synchronously on the caller's goroutine and
+// the shadow lane under supervision. Baseline evidence is recorded on the
+// critical path; the shadow result, comparison, and validator summary are
+// finalized asynchronously so baseline callers never wait for the shadow lane.
 func (executor *RolloutExecutor) executeShadow(ctx context.Context, request ExecutionRequest, policy AdapterRolloutPolicy, decision RouteDecision) (ExecutionResult, error) {
-	baselineCh, shadowCh := make(chan laneResult, 1), make(chan laneResult, 1)
-	go func() {
-		result, err := executor.executeLane(ctx, LaneBaseline, executor.baseline, request, policy.Mode)
-		baselineCh <- laneResult{result: result, err: err}
+	shadowCh := make(chan laneResult, 1)
+	go executor.runSupervisedShadow(ctx, request, policy.Mode, shadowCh)
+	baseline, baselineErr := executor.executeLane(ctx, LaneBaseline, executor.baseline, request, policy.Mode)
+	baselineEvidenceErr := executor.recordExecution(ctx, request, policy, decision, LaneBaseline, baseline, baselineErr)
+	if baselineEvidenceErr != nil {
+		observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison,
+			Family: policy.Family, ExecutorID: policy.ExecutorID, Capability: request.Node.Capability,
+			Mode: policy.Mode, Lane: LaneBaseline, Status: "evidence_failed", ErrorCode: CodeRolloutEvidenceFailed})
+	}
+	// The orchestrator cancels the execution context as soon as Execute
+	// returns; the finalize path must outlive that cancellation.
+	finalizeCtx := context.WithoutCancel(ctx)
+	go executor.finalizeShadowComparison(finalizeCtx, request, policy, decision,
+		laneResult{result: baseline, err: baselineErr}, shadowCh)
+	return baseline, baselineErr
+}
+
+func (executor *RolloutExecutor) runSupervisedShadow(ctx context.Context, request ExecutionRequest, mode RolloutMode, shadowCh chan<- laneResult) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			shadowCh <- laneResult{err: runtimeError(CodeExecutionFailed, RetryNever,
+				"shadow candidate panicked", fmt.Errorf("%v", recovered))}
+		}
 	}()
-	go func() {
-		result, err := executor.executeLane(ctx, LaneShadow, executor.candidate, request, policy.Mode)
-		shadowCh <- laneResult{result: result, err: err}
-	}()
-	baseline, shadow := <-baselineCh, <-shadowCh
-	baselineEvidenceErr := executor.recordExecution(ctx, request, policy, decision, LaneBaseline, baseline.result, baseline.err)
+	shadowCtx, cancel := context.WithTimeout(ctx, executor.shadowPatience(request))
+	defer cancel()
+	result, err := executor.executeLane(shadowCtx, LaneShadow, executor.candidate, request, mode)
+	shadowCh <- laneResult{result: result, err: err}
+}
+
+func (executor *RolloutExecutor) finalizeShadowComparison(ctx context.Context, request ExecutionRequest, policy AdapterRolloutPolicy, decision RouteDecision, baseline laneResult, shadowCh <-chan laneResult) {
+	timer := time.NewTimer(executor.shadowPatience(request))
+	defer timer.Stop()
+	var shadow laneResult
+	timedOut := false
+	select {
+	case outcome := <-shadowCh:
+		shadow = outcome
+	case <-timer.C:
+		timedOut = true
+		shadow = laneResult{err: runtimeError(CodeExecutionFailed, RetryNever,
+			"shadow candidate exceeded supervisor patience", context.DeadlineExceeded)}
+	}
 	shadowEvidenceErr := executor.recordExecution(ctx, request, policy, decision, LaneShadow, shadow.result, shadow.err)
 	comparison := compareLaneResults(baseline, shadow)
+	comparison.ValidatorSummary = executor.shadowValidatorSummary(ctx, shadow.result)
 	comparisonStatus := "different"
-	if comparison.ContractMatch && comparison.ContentMatch && comparison.BaselineError == "" && comparison.CandidateError == "" {
+	if timedOut {
+		comparisonStatus = "shadow_timeout"
+	} else if comparison.ContractMatch && comparison.ContentMatch && comparison.BaselineError == "" && comparison.CandidateError == "" {
 		comparisonStatus = "equivalent"
 	}
-	observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison, Family: policy.Family,
-		ExecutorID: policy.ExecutorID, Capability: request.Node.Capability, Mode: policy.Mode,
-		Lane: LaneShadow, Status: comparisonStatus, ErrorCode: comparison.CandidateError})
-	comparisonEvidenceErr := executor.record(ctx, RuntimeEvidence{Kind: "shadow_comparison", Identity: request.Identity(),
-		Adapter: executor.candidate.AdapterPolicy(), PolicyHash: policy.PolicyHash, PolicyVersion: policy.PolicyVersion,
+	observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison,
+		Family: policy.Family, ExecutorID: policy.ExecutorID, Capability: request.Node.Capability,
+		Mode: policy.Mode, Lane: LaneShadow, Status: comparisonStatus, ErrorCode: comparison.CandidateError})
+	comparisonEvidenceErr := executor.record(ctx, RuntimeEvidence{Kind: "shadow_comparison",
+		Identity: request.Identity(), Adapter: executor.candidate.AdapterPolicy(),
+		PolicyHash: policy.PolicyHash, PolicyVersion: policy.PolicyVersion,
 		Mode: policy.Mode, Lane: LaneShadow, Decision: decision, Status: comparisonStatus, Comparison: &comparison})
-	if baselineEvidenceErr != nil || shadowEvidenceErr != nil || comparisonEvidenceErr != nil {
-		observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison, Family: policy.Family,
-			ExecutorID: policy.ExecutorID, Capability: request.Node.Capability, Mode: policy.Mode,
-			Lane: LaneShadow, Status: "evidence_failed", ErrorCode: CodeRolloutEvidenceFailed})
+	if shadowEvidenceErr != nil || comparisonEvidenceErr != nil {
+		observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison,
+			Family: policy.Family, ExecutorID: policy.ExecutorID, Capability: request.Node.Capability,
+			Mode: policy.Mode, Lane: LaneShadow, Status: "evidence_failed", ErrorCode: CodeRolloutEvidenceFailed})
+		executor.noteShadowFailure()
+		return
 	}
-	return baseline.result, baseline.err
+	if timedOut || shadow.err != nil {
+		executor.noteShadowFailure()
+		return
+	}
+	executor.shadowFailures.Store(0)
+}
+
+// noteShadowFailure counts consecutive shadow lane failures (crash, timeout,
+// or evidence loss) and opens the shadow circuit once the threshold is hit.
+// An open circuit stops dispatching the shadow lane until the executor is
+// rebuilt; the specification forbids promoting such a policy anyway.
+func (executor *RolloutExecutor) noteShadowFailure() {
+	if executor.shadowCircuitOpen.Load() {
+		return
+	}
+	if failures := executor.shadowFailures.Add(1); failures >= shadowCircuitBreakerThreshold {
+		if executor.shadowCircuitOpen.CompareAndSwap(false, true) {
+			observeRuntime(context.Background(), executor.telemetry, RuntimeMetric{Kind: MetricShadowComparison,
+				Family: executor.candidate.AdapterPolicy().Family, ExecutorID: executor.candidate.Descriptor().ExecutorID,
+				Lane: LaneShadow, Status: "circuit_opened", ErrorCode: CodeExecutionFailed})
+		}
+	}
+}
+
+// shadowValidatorSummary extracts real validator results from quality report
+// outputs the shadow candidate staged, so promotion decisions see actual
+// validator statuses rather than only content hashes.
+func (executor *RolloutExecutor) shadowValidatorSummary(ctx context.Context, result ExecutionResult) []ValidatorSummaryLine {
+	gateway := executor.shadowGateway()
+	if gateway == nil {
+		return nil
+	}
+	lines := make([]ValidatorSummaryLine, 0)
+	for _, artifact := range result.Artifacts {
+		if artifact.ArtifactType != "quality_report" {
+			continue
+		}
+		body, err := gateway.LoadShadow(ctx, artifact.ContentRef)
+		if err != nil {
+			continue
+		}
+		var report writingkernel.QualityReport
+		if json.Unmarshal(body, &report) != nil {
+			continue
+		}
+		for _, validator := range report.Validators {
+			lines = append(lines, ValidatorSummaryLine{ValidatorID: validator.ValidatorID,
+				Version: validator.Version, Status: string(validator.Status)})
+		}
+	}
+	sort.Slice(lines, func(i, j int) bool { return lines[i].ValidatorID < lines[j].ValidatorID })
+	return lines
 }
 
 func (executor *RolloutExecutor) executeLane(ctx context.Context, lane ExecutionLane, target Executor, request ExecutionRequest, mode RolloutMode) (ExecutionResult, error) {

@@ -1,9 +1,19 @@
--- Runtime evidence rows violate the restored pre-Task12 constraints, so a
--- downgrade with existing evidence would fail: remove the governed evidence
--- records before restoring the old checks. Export any audit data before
--- running this downgrade.
-DELETE FROM writing_run_events
-WHERE event_type IN ('runtime.route_decided', 'runtime.execution_observed', 'runtime.shadow_compared');
+-- The governed runtime records audit evidence in this table, and the design
+-- forbids rollbacks from rewriting audit history. This downgrade therefore
+-- refuses to run while governed evidence exists. Note the append-only
+-- trigger on writing_run_events also forbids deleting the rows outright:
+-- archival must go through the sanctioned evidence export path first.
+DO $downgrade_guard$
+DECLARE evidence_rows bigint;
+BEGIN
+    SELECT count(*) INTO evidence_rows
+      FROM writing_run_events
+     WHERE event_type IN ('runtime.route_decided', 'runtime.execution_observed', 'runtime.shadow_compared');
+    IF evidence_rows > 0 THEN
+        RAISE EXCEPTION 'cannot downgrade migration 095: % governed runtime evidence rows are still present; archive and remove them first', evidence_rows;
+    END IF;
+END
+$downgrade_guard$;
 
 ALTER TABLE writing_run_events
     DROP CONSTRAINT chk_writing_event_type,

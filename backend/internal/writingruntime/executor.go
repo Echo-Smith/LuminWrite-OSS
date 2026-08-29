@@ -285,21 +285,32 @@ func (result ExecutionResult) Validate(request ExecutionRequest) error {
 		if artifact.Parents == nil || artifact.InputHashes == nil || artifact.Provenance == nil || artifact.SourceRefs == nil {
 			return fmt.Errorf("%w: artifact lineage and provenance must be present", ErrInvalidExecutionResult)
 		}
+		parents := make(map[string]struct{}, len(artifact.Parents))
 		lineageHashes := make(map[string]struct{}, len(artifact.Parents))
 		for _, parent := range artifact.Parents {
-			input, exists := inputs[artifactIdentity(parent.ArtifactID, parent.Version)]
+			identity := artifactIdentity(parent.ArtifactID, parent.Version)
+			input, exists := inputs[identity]
 			if !exists {
 				return fmt.Errorf("%w: artifact parent is not an execution input", ErrInvalidExecutionResult)
 			}
+			parents[identity] = struct{}{}
 			lineageHashes[input.ContentHash] = struct{}{}
 		}
-		if len(lineageHashes) != len(artifact.InputHashes) {
-			return fmt.Errorf("%w: parent and input hash lineage differ", ErrInvalidExecutionResult)
+		if len(parents) != len(inputs) {
+			return fmt.Errorf("%w: artifact parents do not cover every execution input", ErrInvalidExecutionResult)
 		}
+		if len(artifact.InputHashes) != len(lineageHashes) {
+			return fmt.Errorf("%w: input hash lineage differs from parent content", ErrInvalidExecutionResult)
+		}
+		seenInputHashes := make(map[string]struct{}, len(artifact.InputHashes))
 		for _, inputHash := range artifact.InputHashes {
 			if !executionHashPattern.MatchString(inputHash) {
 				return fmt.Errorf("%w: invalid input hash", ErrInvalidExecutionResult)
 			}
+			if _, duplicate := seenInputHashes[inputHash]; duplicate {
+				return fmt.Errorf("%w: duplicate input hash", ErrInvalidExecutionResult)
+			}
+			seenInputHashes[inputHash] = struct{}{}
 			if _, exists := lineageHashes[inputHash]; !exists {
 				return fmt.Errorf("%w: input hash has no parent binding", ErrInvalidExecutionResult)
 			}

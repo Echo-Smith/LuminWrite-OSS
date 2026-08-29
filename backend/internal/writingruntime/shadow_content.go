@@ -113,6 +113,31 @@ func (gateway *ShadowContentGateway) PurgeRun(ctx context.Context, runID string)
 	return gateway.writes.DeletePrefix(ctx, gateway.policyHash+"/"+runID)
 }
 
+// PolicyHash reports the full policy hash this gateway stages into. Rollout
+// executors compare it against the live policy so a rotated policy can never
+// stage content into a stale namespace.
+func (gateway *ShadowContentGateway) PolicyHash() string {
+	return "sha256:" + gateway.policyHash
+}
+
+// LoadShadow reads a body back from this gateway's own shadow namespace by
+// ref. Reading a canonical ref, a foreign policy namespace, or a sink without
+// read support fails closed.
+func (gateway *ShadowContentGateway) LoadShadow(ctx context.Context, ref string) ([]byte, error) {
+	if !IsShadowContentRef(ref) {
+		return nil, fmt.Errorf("%w: shadow reads require a shadow content ref", ErrInvalidExecutionRequest)
+	}
+	key := strings.TrimPrefix(ref, ShadowContentScheme)
+	if !strings.HasPrefix(key, gateway.policyHash+"/") {
+		return nil, fmt.Errorf("%w: shadow ref belongs to a different policy namespace", ErrInvalidExecutionRequest)
+	}
+	reader, ok := gateway.writes.(ShadowContentReader)
+	if !ok {
+		return nil, fmt.Errorf("%w: shadow sink does not support reads", ErrInvalidExecutionRequest)
+	}
+	return reader.Get(ctx, key)
+}
+
 func shadowPathSegment(key string) string {
 	mapped := strings.Map(func(r rune) rune {
 		switch {
@@ -135,6 +160,12 @@ func containsShadowContentRef(artifacts []OutputArtifactDraft) bool {
 		}
 	}
 	return false
+}
+
+// ShadowContentReader is an optional sink capability: reading shadow bodies
+// back by key, used to lift validator summaries out of quality reports.
+type ShadowContentReader interface {
+	Get(ctx context.Context, key string) ([]byte, error)
 }
 
 type memoryShadowEntry struct {
@@ -201,6 +232,19 @@ func (sink *MemoryShadowContentSink) DeleteBefore(_ context.Context, cutoff time
 		}
 	}
 	return removed, nil
+}
+
+func (sink *MemoryShadowContentSink) Get(_ context.Context, key string) ([]byte, error) {
+	if sink == nil {
+		return nil, ErrRuntimeNotReady
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	entry, ok := sink.entries[key]
+	if !ok {
+		return nil, ErrRuntimeNotReady
+	}
+	return append([]byte(nil), entry.body...), nil
 }
 
 func (sink *MemoryShadowContentSink) Keys() []string {

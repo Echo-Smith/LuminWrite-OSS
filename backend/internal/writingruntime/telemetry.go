@@ -91,16 +91,26 @@ type OutputManifest struct {
 	SourceCount  int    `json:"source_count"`
 }
 
+// ValidatorSummaryLine carries one real validator result from a quality
+// report output into the shadow evidence, per the specification's evidence
+// contents (validator summary alongside manifest, usage, and error codes).
+type ValidatorSummaryLine struct {
+	ValidatorID string `json:"validator_id"`
+	Version     string `json:"version,omitempty"`
+	Status      string `json:"status"`
+}
+
 type ShadowComparison struct {
-	BaselineStatus  string    `json:"baseline_status"`
-	CandidateStatus string    `json:"candidate_status"`
-	ContractMatch   bool      `json:"contract_match"`
-	ContentMatch    bool      `json:"content_match"`
-	SourceDelta     int       `json:"source_delta"`
-	CostDeltaUSD    float64   `json:"cost_delta_usd"`
-	DurationDeltaMS int64     `json:"duration_delta_ms"`
-	BaselineError   ErrorCode `json:"baseline_error,omitempty"`
-	CandidateError  ErrorCode `json:"candidate_error,omitempty"`
+	BaselineStatus   string                `json:"baseline_status"`
+	CandidateStatus  string                `json:"candidate_status"`
+	ContractMatch    bool                  `json:"contract_match"`
+	ContentMatch     bool                  `json:"content_match"`
+	SourceDelta      int                   `json:"source_delta"`
+	CostDeltaUSD     float64               `json:"cost_delta_usd"`
+	DurationDeltaMS  int64                 `json:"duration_delta_ms"`
+	BaselineError    ErrorCode             `json:"baseline_error,omitempty"`
+	CandidateError   ErrorCode             `json:"candidate_error,omitempty"`
+	ValidatorSummary []ValidatorSummaryLine `json:"validator_summary,omitempty"`
 }
 
 type RolloutEvidenceStore interface {

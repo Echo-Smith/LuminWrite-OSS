@@ -403,10 +403,15 @@ func (executor *fakeGovernedExecutor) Execute(ctx context.Context, request Execu
 		return ExecutionResult{}, errors.New("transient")
 	}
 	parents := make([]writingstore.ArtifactRef, len(request.Inputs))
-	hashes := make([]string, len(request.Inputs))
+	hashSet := make(map[string]struct{}, len(request.Inputs))
+	hashes := make([]string, 0, len(request.Inputs))
 	for index, input := range request.Inputs {
 		parents[index] = writingstore.ArtifactRef{ArtifactID: input.ArtifactID, Version: input.Version}
-		hashes[index] = input.ContentHash
+		if _, duplicate := hashSet[input.ContentHash]; duplicate {
+			continue
+		}
+		hashSet[input.ContentHash] = struct{}{}
+		hashes = append(hashes, input.ContentHash)
 	}
 	contentRef := executor.contentRef
 	if contentRef == "" {

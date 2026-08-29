@@ -42,8 +42,117 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestNodeAttemptKeyIsExactAndDeterministic(t *testing.T) {
-	key, err := NodeAttemptKey("run_test", "node_draft", 2)
+// TestMaterialSnapshotRepositoryOnRealDatabase exercises the run-level
+// material snapshot against PostgreSQL: load-miss, first-writer-wins,
+// round-trip, concurrent capture, and no partial state on failure.
+func TestMaterialSnapshotRepositoryOnRealDatabase(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	manifestA := []MaterialSnapshotArtifact{{ArtifactID: "art_contract", Version: 1, ArtifactType: "contract",
+		ContentHash: testHash("matsnap-contract"), MediaType: "application/json", ContentRef: "db://writing_contracts/1"},
+		{ArtifactID: "art_materials", Version: 1, ArtifactType: "materials", ContentHash: testHash("matsnap-materials"),
+			MediaType: "application/json", ContentRef: "memory://materials"}}
+	if _, err := store.LoadInitialMaterialSnapshot(ctx, fixture.runID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("fresh run load err=%v", err)
+	}
+	saved, created, err := store.SaveInitialMaterialSnapshot(ctx, fixture.runID, manifestA)
+	if err != nil || !created || len(saved.Artifacts) != 2 {
+		t.Fatalf("save=%#v created=%v err=%v", saved, created, err)
+	}
+	manifestB := []MaterialSnapshotArtifact{{ArtifactID: "art_other", Version: 1, ArtifactType: "contract",
+		ContentHash: testHash("matsnap-other"), MediaType: "application/json", ContentRef: "memory://other"}}
+	replay, created, err := store.SaveInitialMaterialSnapshot(ctx, fixture.runID, manifestB)
+	if err != nil || created {
+		t.Fatalf("second save must be first-writer-wins: created=%v err=%v", created, err)
+	}
+	if replay.Artifacts[0].ArtifactID != "art_contract" {
+		t.Fatalf("replay returned a different snapshot: %#v", replay)
+	}
+	loaded, err := store.LoadInitialMaterialSnapshot(ctx, fixture.runID)
+	if err != nil || len(loaded.Artifacts) != 2 || loaded.Artifacts[0].ContentHash != testHash("matsnap-contract") {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+
+	// Concurrent first capture on a fresh run: exactly one writer wins and
+	// every loser observes the winning manifest.
+	concurrentRun := RunRecord{RunID: fixture.runID + "_concurrent", DocumentID: fixture.documentID,
+		ContractID: fixture.contract.ContractID, ContractVersion: fixture.contract.Version,
+		ContractHash: fixture.contract.ContractHash, Status: "planned", ApprovalMode: writingkernel.ApprovalModeAuto,
+		RequestedAssurance: writingkernel.AssuranceLevelStandard,
+		Budget:             writingplan.PlanBudget{MaxCostUSD: 10, MaxDurationMS: 10000, MaxConcurrency: 1, MaxNodes: 2, MaxItems: 1},
+		Permissions:        []writingplan.Permission{"model.invoke"}, Trace: testTrace()}
+	if err := store.CreateRun(ctx, concurrentRun); err != nil {
+		t.Fatal(err)
+	}
+	const racers = 8
+	createdCount := make(chan bool, racers)
+	results := make(chan MaterialSnapshotRecord, racers)
+	for index := 0; index < racers; index++ {
+		artifact := MaterialSnapshotArtifact{ArtifactID: fmt.Sprintf("art_cand_%d", index), Version: 1,
+			ArtifactType: "contract", ContentHash: testHash(fmt.Sprintf("matsnap-cand-%d", index)),
+			MediaType: "application/json", ContentRef: fmt.Sprintf("memory://cand-%d", index)}
+		go func(candidate MaterialSnapshotArtifact) {
+			record, created, err := store.SaveInitialMaterialSnapshot(ctx, concurrentRun.RunID, []MaterialSnapshotArtifact{candidate})
+			if err == nil {
+				createdCount <- created
+				results <- record
+			} else {
+				createdCount <- false
+				results <- MaterialSnapshotRecord{}
+			}
+		}(artifact)
+	}
+	winners := 0
+	for index := 0; index < racers; index++ {
+		if <-createdCount {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("%d concurrent writers claimed the snapshot", winners)
+	}
+	winner := <-results
+	for index := 1; index < racers; index++ {
+		loser := <-results
+		if len(loser.Artifacts) > 0 && loser.Artifacts[0].ArtifactID != winner.Artifacts[0].ArtifactID {
+			t.Fatalf("loser observed a different snapshot: %#v vs %#v", loser, winner)
+		}
+	}
+	loaded, err = store.LoadInitialMaterialSnapshot(ctx, concurrentRun.RunID)
+	if err != nil || loaded.Artifacts[0].ArtifactID != winner.Artifacts[0].ArtifactID {
+		t.Fatalf("persisted winner=%#v loaded=%#v err=%v", winner, loaded, err)
+	}
+
+	// A save for a nonexistent run fails and leaves no partial snapshot.
+	if _, _, err := store.SaveInitialMaterialSnapshot(ctx, "run_missing_snapshot", manifestA); err == nil {
+		t.Fatal("save for a missing run must fail")
+	}
+	if _, err := store.LoadInitialMaterialSnapshot(ctx, "run_missing_snapshot"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("failed save left partial state: err=%v", err)
+	}
+}
+
+// TestSeedRuntimeEvidenceForDowngradeCheck leaves one governed runtime
+// evidence row behind so migration downgrade guards can be exercised against
+// real data. Run it alone: any later fixture call truncates the table.
+func TestSeedRuntimeEvidenceForDowngradeCheck(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	if _, _, err := store.StartNodeAttempt(ctx, fixture.nodeAttempt(), testTrace()); err != nil {
+		t.Fatal(err)
+	}
+	idempotencyKey, err := NodeAttemptKey(fixture.runID, fixture.nodeID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := RunEvent{RunID: fixture.runID, EventType: "runtime.route_decided", NodeID: fixture.nodeID,
+		Attempt: 1, IdempotencyKey: idempotencyKey,
+		EntityKind: "rollout_evidence", EntityID: "evt_downgrade_probe",
+		Payload: map[string]any{"probe": true}, Trace: testTrace()}
+	appendTestEvent(t, store, event)
+}
+
+func TestNodeAttemptKeyIsExactAndDeterministic(t *testing.T) {	key, err := NodeAttemptKey("run_test", "node_draft", 2)
 	if err != nil {
 		t.Fatal(err)
 	}

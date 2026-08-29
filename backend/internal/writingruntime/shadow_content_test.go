@@ -164,11 +164,11 @@ func TestShadowLaneCandidateNeverTouchesCanonicalGateway(t *testing.T) {
 	if result.Artifacts[0].ContentRef != "memory://draft" || result.Artifacts[0].ContentHash != hashForTest("draft") {
 		t.Fatalf("shadow run returned non-baseline result: %#v", result.Artifacts[0])
 	}
+	eventually(t, 2*time.Second, "shadow lane staged into the sink", func() bool {
+		return canonical.stages == 0 && len(sink.Keys()) > 0
+	})
 	if canonical.stages != 0 {
 		t.Fatalf("canonical gateway received %d shadow stage calls", canonical.stages)
-	}
-	if len(sink.Keys()) == 0 {
-		t.Fatal("shadow sink is empty; candidate did not stage into the shadow namespace")
 	}
 	policyHash := strings.TrimPrefix(shadowPolicyForTest().PolicyHash, "sha256:")
 	for _, key := range sink.Keys() {
