@@ -19,6 +19,7 @@ const (
 	MaterialSourceFile      MaterialSourceKind = "file"
 	MaterialSourceURL       MaterialSourceKind = "url"
 	MaterialSourceKnowledge MaterialSourceKind = "knowledge"
+	MaterialSourceManifest  MaterialSourceKind = "manifest"
 )
 
 type MaterialDescriptor struct {
@@ -98,9 +99,10 @@ type ClaimMap struct {
 }
 
 type MaterialAdapter struct {
-	source  MaterialContentSource
-	content ContentGateway
-	now     func() time.Time
+	source    MaterialContentSource
+	content   ContentGateway
+	telemetry RuntimeTelemetry
+	now       func() time.Time
 }
 
 func NewMaterialAdapter(source MaterialContentSource, content ContentGateway) (*MaterialAdapter, error) {
@@ -108,6 +110,13 @@ func NewMaterialAdapter(source MaterialContentSource, content ContentGateway) (*
 		return nil, ErrRuntimeNotReady
 	}
 	return &MaterialAdapter{source: source, content: content, now: func() time.Time { return time.Now().UTC() }}, nil
+}
+
+func (adapter *MaterialAdapter) WithTelemetry(telemetry RuntimeTelemetry) *MaterialAdapter {
+	if adapter != nil {
+		adapter.telemetry = telemetry
+	}
+	return adapter
 }
 
 func (adapter *MaterialAdapter) Snapshot(ctx context.Context, request MaterialSnapshotRequest) (MaterialBundle, error) {
@@ -131,19 +140,24 @@ func (adapter *MaterialAdapter) Snapshot(ctx context.Context, request MaterialSn
 		seen[material.MaterialID] = struct{}{}
 		loaded, err := adapter.source.LoadMaterial(ctx, request.OwnerID, material)
 		if err != nil {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeMaterialAccessDenied)
 			return MaterialBundle{}, runtimeError(CodeMaterialAccessDenied, RetryNever, "material cannot be read", err)
 		}
 		if len(loaded.Body) == 0 {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeMaterialIntegrityFailed)
 			return MaterialBundle{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material body is empty", nil)
 		}
 		hash := contentHash(loaded.Body)
 		ref, stagedHash, err := adapter.content.Stage(ctx, request.RunID+":material:"+material.MaterialID+":"+hash, material.MediaType, loaded.Body)
 		if err != nil {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeSourceSnapshotFailed)
 			return MaterialBundle{}, runtimeError(CodeSourceSnapshotFailed, RetrySafe, "material snapshot could not be persisted", err)
 		}
 		if stagedHash != hash || strings.TrimSpace(ref) == "" {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeMaterialIntegrityFailed)
 			return MaterialBundle{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "staged material hash differs", nil)
 		}
+		adapter.observeMaterial(ctx, material.SourceKind, "passed", "")
 		refs := canonicalStrings(append(append([]string(nil), loaded.SourceRefs...), material.SourceRef))
 		manifest.Materials = append(manifest.Materials, MaterialSnapshot{MaterialID: material.MaterialID, Title: material.Title, SourceKind: material.SourceKind, SourceRef: material.SourceRef, MediaType: material.MediaType, ContentRef: ref, ContentHash: hash, SourceRefs: refs, UpdatedAt: material.UpdatedAt.UTC()})
 		if manifest.CapturedAt.Before(material.UpdatedAt) {
@@ -160,40 +174,59 @@ func (adapter *MaterialAdapter) Snapshot(ctx context.Context, request MaterialSn
 	hash := contentHash(payload)
 	ref, stagedHash, err := adapter.content.Stage(ctx, request.RunID+":materials:"+hash, "application/json", payload)
 	if err != nil {
+		adapter.observeMaterial(ctx, MaterialSourceManifest, "failed", CodeSourceSnapshotFailed)
 		return MaterialBundle{}, runtimeError(CodeSourceSnapshotFailed, RetrySafe, "material manifest could not be persisted", err)
 	}
 	if stagedHash != hash || strings.TrimSpace(ref) == "" {
+		adapter.observeMaterial(ctx, MaterialSourceManifest, "failed", CodeMaterialIntegrityFailed)
 		return MaterialBundle{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "staged manifest hash differs", nil)
 	}
+	adapter.observeMaterial(ctx, MaterialSourceManifest, "passed", "")
 	artifact := InputArtifact{ArtifactID: writingstore.StableID("art_", request.RunID, "materials", hash), Version: 1, ArtifactType: "materials", ContentHash: hash, MediaType: "application/json", ContentRef: ref}
 	return MaterialBundle{Artifact: artifact, Manifest: manifest}, nil
 }
 
 func (adapter *MaterialAdapter) Verify(ctx context.Context, artifact InputArtifact) error {
 	if artifact.ArtifactType != "materials" || artifact.MediaType != "application/json" {
+		adapter.observeMaterial(ctx, MaterialSourceManifest, "failed", CodeMaterialIntegrityFailed)
 		return runtimeError(CodeMaterialIntegrityFailed, RetryNever, "artifact is not a material manifest", nil)
 	}
 	payload, err := adapter.content.Load(ctx, artifact)
 	if err != nil {
+		adapter.observeMaterial(ctx, MaterialSourceManifest, "failed", CodeSourceSnapshotFailed)
 		return runtimeError(CodeSourceSnapshotFailed, RetrySafe, "material manifest cannot be loaded", err)
 	}
 	if contentHash(payload) != artifact.ContentHash {
+		adapter.observeMaterial(ctx, MaterialSourceManifest, "failed", CodeMaterialIntegrityFailed)
 		return runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material manifest was modified", nil)
 	}
 	var manifest MaterialManifest
 	if err := json.Unmarshal(payload, &manifest); err != nil {
+		adapter.observeMaterial(ctx, MaterialSourceManifest, "failed", CodeMaterialIntegrityFailed)
 		return runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material manifest is invalid", err)
 	}
 	for _, material := range manifest.Materials {
 		body, err := adapter.content.Load(ctx, InputArtifact{ArtifactID: writingstore.StableID("art_", manifest.RunID, material.MaterialID, material.ContentHash), Version: 1, ArtifactType: "materials", ContentHash: material.ContentHash, MediaType: material.MediaType, ContentRef: material.ContentRef})
 		if err != nil {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeSourceSnapshotFailed)
 			return runtimeError(CodeSourceSnapshotFailed, RetrySafe, "material snapshot cannot be loaded", err)
 		}
 		if contentHash(body) != material.ContentHash {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeMaterialIntegrityFailed)
 			return runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material snapshot was modified", nil)
 		}
+		adapter.observeMaterial(ctx, material.SourceKind, "passed", "")
 	}
+	adapter.observeMaterial(ctx, MaterialSourceManifest, "passed", "")
 	return nil
+}
+
+func (adapter *MaterialAdapter) observeMaterial(ctx context.Context, kind MaterialSourceKind, status string, code ErrorCode) {
+	if adapter == nil {
+		return
+	}
+	observeRuntime(ctx, adapter.telemetry, RuntimeMetric{Kind: MetricMaterialIntegrity,
+		Capability: "materials.snapshot", Status: status, ErrorCode: code, MaterialSourceKind: kind})
 }
 
 // StageTypedResult normalizes material-derived executor output without making

@@ -108,6 +108,32 @@ func TestMaterialAdapterStagesTypedSourceArtifactsWithoutCommitting(t *testing.T
 	}
 }
 
+func TestMaterialAdapterEmitsIntegrityTelemetryWithoutIdentityLabels(t *testing.T) {
+	source := &materialSourceStub{bodies: map[string][]byte{"mat_a": []byte("source")}}
+	gateway := newSnapshotGateway()
+	adapter := mustMaterialAdapter(t, source, gateway)
+	metrics := &metricCapture{}
+	adapter.WithTelemetry(metrics)
+	request := MaterialSnapshotRequest{RunID: "run_materials", OwnerID: "user_owner", ConflictHandling: "ask_user",
+		Materials: []MaterialDescriptor{{MaterialID: "mat_a", OwnerID: "user_owner", Title: "A",
+			SourceKind: MaterialSourceText, SourceRef: "kb://a", MediaType: "text/plain", UpdatedAt: fixedMaterialTime()}}}
+	bundle, err := adapter.Snapshot(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Verify(context.Background(), bundle.Artifact); err != nil {
+		t.Fatal(err)
+	}
+	if !metrics.has(MetricMaterialIntegrity, "passed") {
+		t.Fatalf("metrics=%#v", metrics.metrics)
+	}
+	for _, metric := range metrics.metrics {
+		if metric.ExecutorID != "" || metric.Reason != "" {
+			t.Fatalf("material identity leaked into metric dimensions: %#v", metric)
+		}
+	}
+}
+
 type materialSourceStub struct {
 	bodies map[string][]byte
 	loads  int

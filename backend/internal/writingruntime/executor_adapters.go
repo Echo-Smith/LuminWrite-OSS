@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -189,6 +190,10 @@ type EngineStepRunner struct {
 	Usage       func(*engine.ExecutionContext) (LegacyUsage, error)
 }
 
+func NewEngineStepExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, runner EngineStepRunner) (*LegacyExecutor, error) {
+	return NewLegacyExecutorAdapter(AdapterFamilyEngine, descriptor, capabilityID, capabilityVersion, required, content, runner)
+}
+
 func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
 	if runner.StepFactory == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
@@ -296,6 +301,10 @@ type EditorialRoleNodeRunner struct {
 	Usage   func(*editorial.RoleRunResult) (LegacyUsage, error)
 }
 
+func NewEditorialRoleExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, runner EditorialRoleNodeRunner) (*LegacyExecutor, error) {
+	return NewLegacyExecutorAdapter(AdapterFamilyEditorial, descriptor, capabilityID, capabilityVersion, required, content, runner)
+}
+
 func (runner EditorialRoleNodeRunner) Run(ctx context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
 	if runner.Invoker == nil || runner.Config == nil || runner.Usage == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
@@ -379,6 +388,186 @@ func editorialRoleOutput(kind writingplan.ArtifactType, result *editorial.RoleRu
 		return LegacyPayload{}, false
 	}
 	return base, true
+}
+
+// HarnessCoreRequest contains only immutable governed inputs. It intentionally
+// has no WritingSession, SessionStore, terminal status callback, or canonical
+// article handle, so an implementation cannot become a second authority.
+type HarnessCoreRequest struct {
+	Identity            ExecutionIdentity
+	Capability          string
+	Artifacts           map[writingplan.ArtifactType][][]byte
+	Permissions         []writingplan.Permission
+	MaxItems            int
+	MaxCostUSD          float64
+	TimeoutMS           int64
+	OutputArtifactTypes []writingplan.ArtifactType
+}
+
+type HarnessCoreResult struct {
+	Outputs []LegacyPayload
+	Usage   LegacyUsage
+}
+
+type HarnessCoreInvoker interface {
+	RunCore(context.Context, HarnessCoreRequest) (HarnessCoreResult, error)
+}
+
+// HarnessCoreNodeRunner is the governed seam for the Harness tool loop. The
+// existing Harness.Run remains unavailable because it loads/saves sessions and
+// owns terminal article state.
+type HarnessCoreNodeRunner struct {
+	Invoker HarnessCoreInvoker
+}
+
+func (runner HarnessCoreNodeRunner) Run(ctx context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
+	if runner.Invoker == nil {
+		return nil, LegacyUsage{}, ErrRuntimeNotReady
+	}
+	payloads := make(map[writingplan.ArtifactType][][]byte, len(input.Payloads))
+	for artifactType, values := range input.Payloads {
+		payloads[artifactType] = make([][]byte, len(values))
+		for index, value := range values {
+			payloads[artifactType][index] = append([]byte(nil), value...)
+		}
+	}
+	result, err := runner.Invoker.RunCore(ctx, HarnessCoreRequest{Identity: input.Request.Identity(),
+		Capability: input.Request.Node.Capability, Artifacts: payloads,
+		Permissions: append([]writingplan.Permission(nil), input.Request.Permissions...),
+		MaxItems:    input.Request.Node.Bounds.MaxItems, MaxCostUSD: input.Request.Node.Bounds.MaxCostUSD,
+		TimeoutMS:           input.Request.Node.Bounds.TimeoutMS,
+		OutputArtifactTypes: append([]writingplan.ArtifactType(nil), input.Request.Node.OutputArtifactTypes...)})
+	if err != nil {
+		return nil, LegacyUsage{}, err
+	}
+	if !result.Usage.Measured {
+		return nil, LegacyUsage{}, ErrLegacyUsageMissing
+	}
+	declared := make(map[writingplan.ArtifactType]bool, len(input.Request.Node.OutputArtifactTypes))
+	for _, artifactType := range input.Request.Node.OutputArtifactTypes {
+		declared[artifactType] = true
+	}
+	seen := make(map[writingplan.ArtifactType]bool, len(result.Outputs))
+	for index := range result.Outputs {
+		output := &result.Outputs[index]
+		if !declared[output.ArtifactType] || seen[output.ArtifactType] || len(output.Body) == 0 {
+			return nil, LegacyUsage{}, fmt.Errorf("%w: harness core output %q", ErrLegacyOutputMissing, output.ArtifactType)
+		}
+		seen[output.ArtifactType] = true
+		if output.Provenance == nil {
+			output.Provenance = map[string]any{}
+		}
+		output.Provenance["adapter"] = "harness_core"
+		if output.SourceRefs == nil {
+			output.SourceRefs = []string{}
+		}
+	}
+	for artifactType := range declared {
+		if !seen[artifactType] {
+			return nil, LegacyUsage{}, fmt.Errorf("%w: harness core missing %q", ErrLegacyOutputMissing, artifactType)
+		}
+	}
+	return result.Outputs, result.Usage, nil
+}
+
+func NewHarnessCoreExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, invoker HarnessCoreInvoker) (*LegacyExecutor, error) {
+	return NewLegacyExecutorAdapter(AdapterFamilyHarness, descriptor, capabilityID, capabilityVersion, required, content, HarnessCoreNodeRunner{Invoker: invoker})
+}
+
+type AgentHarnessCore interface {
+	RunCore(context.Context, *engine.ExecutionContext, *agent.WritingSession) (agent.HarnessCoreOutput, error)
+}
+
+// AgentHarnessCoreBridge adapts the real Harness tool loop after RunCore has
+// removed session persistence and terminal event side effects.
+type AgentHarnessCoreBridge struct {
+	Core  AgentHarnessCore
+	Seed  engine.CompatibilityInput
+	Usage func(agent.HarnessCoreOutput) (LegacyUsage, error)
+}
+
+func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request HarnessCoreRequest) (HarnessCoreResult, error) {
+	if bridge.Core == nil || bridge.Usage == nil {
+		return HarnessCoreResult{}, ErrRuntimeNotReady
+	}
+	execCtx := engine.NewCompatibilityExecutionContext(bridge.Seed)
+	execCtx.TraceID = request.Identity.IdempotencyKey
+	session := agent.NewWritingSession("", bridge.Seed.UserID, bridge.Seed.StyleSlug)
+	for artifactType, values := range request.Artifacts {
+		for _, value := range values {
+			switch artifactType {
+			case "contract":
+				execCtx.UserInput = string(value)
+			case "materials":
+				execCtx.UserMaterials = append(execCtx.UserMaterials, string(value))
+				session.UserMaterials = append(session.UserMaterials, string(value))
+			case "outline":
+				var outline engine.OutlineData
+				if err := json.Unmarshal(value, &outline); err != nil {
+					return HarnessCoreResult{}, err
+				}
+				execCtx.Outline, session.Outline = &outline, &outline
+			case "full_draft":
+				execCtx.Article, session.CurrentArticle = string(value), string(value)
+			case "source_pack":
+				var wrapper struct {
+					Results []engine.SearchResult `json:"results"`
+				}
+				if json.Unmarshal(value, &wrapper) == nil {
+					execCtx.SearchResults = append(execCtx.SearchResults, wrapper.Results...)
+					session.SearchResults = append(session.SearchResults, wrapper.Results...)
+				}
+			}
+		}
+	}
+	output, err := bridge.Core.RunCore(ctx, execCtx, session)
+	if err != nil {
+		return HarnessCoreResult{}, err
+	}
+	usage, err := bridge.Usage(output)
+	if err != nil {
+		return HarnessCoreResult{}, err
+	}
+	result := HarnessCoreResult{Usage: usage, Outputs: make([]LegacyPayload, 0, len(request.OutputArtifactTypes))}
+	for _, artifactType := range request.OutputArtifactTypes {
+		payload := LegacyPayload{OutputKey: string(artifactType), ArtifactType: artifactType,
+			Provenance: map[string]any{"adapter": "harness_core", "core": "agent.Harness.RunCore"}, SourceRefs: []string{}}
+		switch artifactType {
+		case "full_draft":
+			if strings.TrimSpace(output.Article) == "" {
+				return HarnessCoreResult{}, fmt.Errorf("%w: harness core article", ErrLegacyOutputMissing)
+			}
+			payload.MediaType, payload.Body = "text/markdown", []byte(output.Article)
+		case "source_pack":
+			body, marshalErr := json.Marshal(map[string]any{"results": output.SearchResults})
+			if marshalErr != nil {
+				return HarnessCoreResult{}, marshalErr
+			}
+			payload.MediaType, payload.Body = "application/json", body
+			for _, source := range output.SearchResults {
+				if source.URL != "" {
+					payload.SourceRefs = append(payload.SourceRefs, source.URL)
+				}
+			}
+		case "quality_report", "review_report":
+			if output.ReviewResult == nil {
+				return HarnessCoreResult{}, fmt.Errorf("%w: harness core review", ErrLegacyOutputMissing)
+			}
+			body, marshalErr := json.Marshal(output.ReviewResult)
+			if marshalErr != nil {
+				return HarnessCoreResult{}, marshalErr
+			}
+			payload.MediaType, payload.Body = "application/json", body
+		default:
+			return HarnessCoreResult{}, fmt.Errorf("%w: harness core type %q", ErrLegacyOutputMissing, artifactType)
+		}
+		result.Outputs = append(result.Outputs, payload)
+	}
+	return result, nil
+}
+
+func NewAgentHarnessCoreExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, bridge AgentHarnessCoreBridge) (*LegacyExecutor, error) {
+	return NewHarnessCoreExecutorAdapter(descriptor, capabilityID, capabilityVersion, required, content, bridge)
 }
 
 func contentHash(body []byte) string {

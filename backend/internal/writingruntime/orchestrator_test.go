@@ -115,6 +115,32 @@ func TestOrchestratorPersistsStableExecutorErrorCode(t *testing.T) {
 	}
 }
 
+func TestOrchestratorEmitsCanonicalCommitBoundaryMetrics(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	metrics := &metricCapture{}
+	fixture.orchestrator.Telemetry = metrics
+	if _, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if !metrics.has(MetricCanonicalCommit, "started") || !metrics.has(MetricCanonicalCommit, "succeeded") {
+		t.Fatalf("metrics=%#v", metrics.metrics)
+	}
+}
+
+func TestCanonicalCommitFailureIsStableAndProducesNoArtifact(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	fixture.store.completionErr = errors.New("database unavailable")
+	metrics := &metricCapture{}
+	fixture.orchestrator.Telemetry = metrics
+	_, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID)
+	if ErrorCodeOf(err) != CodeArtifactCommitFailed || len(fixture.store.artifacts) != 0 {
+		t.Fatalf("error=%v code=%s artifacts=%#v", err, ErrorCodeOf(err), fixture.store.artifacts)
+	}
+	if !metrics.has(MetricCanonicalCommit, "failed") {
+		t.Fatalf("metrics=%#v", metrics.metrics)
+	}
+}
+
 type orchestratorFixture struct {
 	orchestrator *Orchestrator
 	store        *fakeRuntimeStore
@@ -176,13 +202,14 @@ func (provider fixedInitialProvider) InitialArtifacts(context.Context, writingst
 }
 
 type fakeRuntimeStore struct {
-	mu          sync.Mutex
-	run         writingstore.RuntimeRun
-	plan        writingstore.PlanRecord
-	attempts    []writingstore.NodeAttempt
-	artifacts   []writingstore.ArtifactRecord
-	completions []writingstore.AttemptCompletion
-	transitions []TransitionRecord
+	mu            sync.Mutex
+	run           writingstore.RuntimeRun
+	plan          writingstore.PlanRecord
+	attempts      []writingstore.NodeAttempt
+	artifacts     []writingstore.ArtifactRecord
+	completions   []writingstore.AttemptCompletion
+	transitions   []TransitionRecord
+	completionErr error
 }
 
 func (store *fakeRuntimeStore) LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error) {
@@ -213,6 +240,9 @@ func (store *fakeRuntimeStore) StartNodeAttempt(_ context.Context, attempt writi
 func (store *fakeRuntimeStore) CompleteNodeAttempt(_ context.Context, completion writingstore.AttemptCompletion) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if store.completionErr != nil {
+		return store.completionErr
+	}
 	for index := range store.attempts {
 		if store.attempts[index].NodeID == completion.NodeID && store.attempts[index].Attempt == completion.Attempt {
 			store.attempts[index].Status = completion.Status
@@ -261,6 +291,7 @@ type fakeGovernedExecutor struct {
 	block                        chan struct{}
 	started                      chan struct{}
 	failErr                      error
+	contentRef                   string
 }
 
 func (executor *fakeGovernedExecutor) Descriptor() ExecutorDescriptor { return executor.descriptor }
@@ -294,8 +325,12 @@ func (executor *fakeGovernedExecutor) Execute(ctx context.Context, request Execu
 		parents[index] = writingstore.ArtifactRef{ArtifactID: input.ArtifactID, Version: input.Version}
 		hashes[index] = input.ContentHash
 	}
+	contentRef := executor.contentRef
+	if contentRef == "" {
+		contentRef = "memory://draft"
+	}
 	now := time.Now().UTC()
-	return ExecutionResult{StartedAt: now.Add(-time.Millisecond), CompletedAt: now, Usage: ExecutionUsage{CostUSD: 1, DurationMS: 1}, Artifacts: []OutputArtifactDraft{{OutputKey: "draft", ArtifactType: "full_draft", ContentHash: hashForTest("draft"), MediaType: "text/markdown", ContentRef: "memory://draft", Parents: parents, Producer: request.Node.Capability, CapabilityVersion: request.Node.CapabilityVersion, InputHashes: hashes, Provenance: map[string]any{"test": true}, SourceRefs: []string{}}}}, nil
+	return ExecutionResult{StartedAt: now.Add(-time.Millisecond), CompletedAt: now, Usage: ExecutionUsage{CostUSD: 1, DurationMS: 1}, Artifacts: []OutputArtifactDraft{{OutputKey: "draft", ArtifactType: "full_draft", ContentHash: hashForTest("draft"), MediaType: "text/markdown", ContentRef: contentRef, Parents: parents, Producer: request.Node.Capability, CapabilityVersion: request.Node.CapabilityVersion, InputHashes: hashes, Provenance: map[string]any{"test": true}, SourceRefs: []string{}}}}, nil
 }
 func (executor *fakeGovernedExecutor) Cancel(context.Context, ExecutionHandle) error {
 	executor.mu.Lock()

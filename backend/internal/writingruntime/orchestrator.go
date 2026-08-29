@@ -147,6 +147,7 @@ type Orchestrator struct {
 	State        *StateMachine
 	Checkpoints  CheckpointRepository
 	Initial      InitialArtifactProvider
+	Telemetry    RuntimeTelemetry
 	Now          func() time.Time
 
 	mu       sync.Mutex
@@ -333,7 +334,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		cancel()
 		clearActiveExecution(control)
 		if intent := controlIntent(control); intent != "" {
-			_ = orchestrator.Store.CompleteNodeAttempt(ctx, writingstore.AttemptCompletion{RunID: runID,
+			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 				NodeID: node.NodeID, Attempt: attemptNumber, Status: map[string]string{"pause": "paused", "cancel": "cancelled"}[intent],
 				ErrorCode: "CONTROL_" + strings.ToUpper(intent), ErrorMessage: intent,
 				Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
@@ -345,8 +346,12 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		if executeErr == nil && (result.Usage.CostUSD > node.Bounds.MaxCostUSD || spentCost+result.Usage.CostUSD > run.Budget.MaxCostUSD || result.Usage.DurationMS > node.Bounds.TimeoutMS || spentDuration+result.Usage.DurationMS > run.Budget.MaxDurationMS) {
 			executeErr = ErrRuntimeBudget
 		}
+		if executeErr == nil && containsShadowContentRef(result.Artifacts) {
+			executeErr = runtimeError(CodeArtifactCommitFailed, RetryNever,
+				"canonical artifacts cannot reference shadow content", ErrShadowContentLeak)
+		}
 		if executeErr != nil {
-			_ = orchestrator.Store.CompleteNodeAttempt(ctx, writingstore.AttemptCompletion{RunID: runID,
+			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 				NodeID: node.NodeID, Attempt: attemptNumber, Status: "failed", ErrorCode: string(ErrorCodeOf(executeErr)),
 				ErrorMessage: executeErr.Error(), Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
 			nextAttempts[node.NodeID] = attemptNumber + 1
@@ -370,7 +375,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 				Version: 1, ArtifactType: draft.ArtifactType, ContentHash: draft.ContentHash,
 				MediaType: draft.MediaType, ContentRef: draft.ContentRef})
 		}
-		if err := orchestrator.Store.CompleteNodeAttempt(ctx, writingstore.AttemptCompletion{RunID: runID,
+		if err := orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 			NodeID: node.NodeID, Attempt: attemptNumber, Status: "succeeded", Artifacts: storedArtifacts,
 			CostUSD: result.Usage.CostUSD, InputTokens: result.Usage.InputTokens,
 			OutputTokens: result.Usage.OutputTokens, DurationMS: result.Usage.DurationMS,
@@ -389,6 +394,21 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		return RunOutcome{}, err
 	}
 	return outcome(runID, StateCompleted, completed, artifacts, spentCost), nil
+}
+
+func (orchestrator *Orchestrator) completeAttempt(ctx context.Context, executorID, capability string, completion writingstore.AttemptCompletion) error {
+	metric := RuntimeMetric{Kind: MetricCanonicalCommit, ExecutorID: executorID, Capability: capability,
+		Lane: LaneBaseline, Status: "started", Reason: completion.Status, DurationMS: completion.DurationMS,
+		CostUSD: completion.CostUSD, InputTokens: completion.InputTokens, OutputTokens: completion.OutputTokens}
+	observeRuntime(ctx, orchestrator.Telemetry, metric)
+	if err := orchestrator.Store.CompleteNodeAttempt(ctx, completion); err != nil {
+		metric.Status, metric.ErrorCode = "failed", CodeArtifactCommitFailed
+		observeRuntime(ctx, orchestrator.Telemetry, metric)
+		return err
+	}
+	metric.Status = "succeeded"
+	observeRuntime(ctx, orchestrator.Telemetry, metric)
+	return nil
 }
 
 // Resume is the only entry point that advances a paused run. It reloads the

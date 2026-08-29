@@ -1,0 +1,16 @@
+{
+  "scenario_id": "multi_material_synthesis",
+  "title": "多材料综合",
+  "initial_artifacts": ["contract", "materials"],
+  "stages": [
+    {"id": "research", "outputs": ["source_pack"]},
+    {"id": "claims", "outputs": ["claim_map"]},
+    {"id": "synthesis", "outputs": ["full_draft"]},
+    {"id": "evidence", "outputs": ["evidence_report"]},
+    {"id": "quality", "outputs": ["quality_report"]},
+    {"id": "finalize", "outputs": ["revision_set"]}
+  ],
+  "required_validators": ["core.evidence", "core.contract.consistency", "core.artifact.hash"],
+  "allowed_quality_states": ["candidate_draft", "accepted_draft", "verified_deliverable"],
+  "blocking_cases": ["material_integrity_failed", "source_conflict_requires_decision", "evidence_unavailable"]
+}

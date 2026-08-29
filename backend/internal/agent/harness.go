@@ -76,7 +76,38 @@ func (h *Harness) SetToolSettleFunc(fn ToolSettleFunc) {
 // Run 执行单次写作/对话请求。
 // execCtx 持有本次请求的输入和状态，session 持有跨轮的会话状态。
 func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) error {
+	return h.run(ctx, execCtx, session, true)
+}
+
+// HarnessCoreOutput is provisional. RunCore never reads or writes session
+// history and never emits terminal/UI events, allowing writingruntime to own
+// every authoritative commit.
+type HarnessCoreOutput struct {
+	Article       string
+	ArticleTitle  string
+	TotalTokens   int
+	SearchResults []engine.SearchResult
+	ReviewResult  *engine.ReviewResult
+}
+
+func (h *Harness) RunCore(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) (HarnessCoreOutput, error) {
+	if h == nil || execCtx == nil || session == nil {
+		return HarnessCoreOutput{}, fmt.Errorf("harness core requires execution context and isolated session")
+	}
+	if err := h.run(ctx, execCtx, session, false); err != nil {
+		return HarnessCoreOutput{}, err
+	}
+	return HarnessCoreOutput{Article: execCtx.Article, ArticleTitle: execCtx.ArticleTitle,
+		TotalTokens: execCtx.TotalTokens, SearchResults: append([]engine.SearchResult(nil), session.SearchResults...),
+		ReviewResult: session.ReviewResult}, nil
+}
+
+func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession, persistent bool) error {
 	execCtx.Status = engine.StatusRunning
+	var emitter engine.EventEmitter
+	if persistent {
+		emitter = h.emitter
+	}
 
 	slog.Info("harness started",
 		"trace_id", execCtx.TraceID,
@@ -87,10 +118,12 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	)
 
 	// 1. 加载对话历史
-	session.LoadHistory(ctx, h.sessionStore, 50)
+	if persistent {
+		session.LoadHistory(ctx, h.sessionStore, 50)
+	}
 
 	// 1b. 主动检索记忆（如果 SessionStore 实现了 MemoryRetriever）
-	if session.MemoryContext == nil {
+	if persistent && session.MemoryContext == nil {
 		h.retrieveMemory(ctx, execCtx, session)
 	}
 
@@ -113,7 +146,9 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 
 	// 3b. 对话历史压缩（借鉴 dsh compaction 模式）
 	// 在构建消息前检查是否需要压缩历史，避免 token 溢出
-	h.maybeCompact(ctx, execCtx, session, intent)
+	if persistent {
+		h.maybeCompact(ctx, execCtx, session, intent)
+	}
 
 	// 4. 构建消息
 	messages := h.buildMessages(execCtx, session, intent, isGuided)
@@ -129,7 +164,7 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		KBSearcher: h.kbSearcher,
 		Session:    session,
 		ExecCtx:    execCtx,
-		Emitter:    h.emitter,
+		Emitter:    emitter,
 		Profile:    h.profile,
 		LLM:        h.llm,
 		MaxCalls:   defaultMaxCalls(intent),
@@ -162,8 +197,8 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	// streamBody 同时写入最终正文缓冲区并转发给前端。
 	streamBody := func(text string) {
 		bodyBuf.WriteString(text)
-		if h.emitter != nil {
-			h.emitter.StreamDelta(text)
+		if emitter != nil {
+			emitter.StreamDelta(text)
 		}
 	}
 
@@ -181,8 +216,8 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			OnTitle: func(title string) {
 				articleTitle = title
 				execCtx.ArticleTitle = title
-				if h.emitter != nil {
-					h.emitter.ArticleTitle(title)
+				if emitter != nil {
+					emitter.ArticleTitle(title)
 				}
 			},
 			OnBody: streamBody,
@@ -212,8 +247,8 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	}
 
 	onReasoning := func(delta string) {
-		if h.emitter != nil {
-			h.emitter.ReasoningDelta(delta)
+		if emitter != nil {
+			emitter.ReasoningDelta(delta)
 		}
 	}
 
@@ -241,8 +276,8 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		// StreamReset 清空前端所有 streaming text parts。
 		// 不发 StreamDone，避免中间版本的正文被标记为 streaming:false 留在消息中。
 		// 最终的 StreamDone 在 Run 收尾时发送一次，确保前端只有一篇最终文章。
-		if h.emitter != nil {
-			h.emitter.StreamReset()
+		if emitter != nil {
+			emitter.StreamReset()
 		}
 	}
 
@@ -275,17 +310,29 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			"buffered_chars", bodyBuf.Len(),
 		)
 		execCtx.Status = engine.StatusPaused
-		if h.emitter != nil {
-			h.emitter.PausedWithReason(engine.StepName("streaming"), nil, "disconnect")
+		if emitter != nil {
+			emitter.PausedWithReason(engine.StepName("streaming"), nil, "disconnect")
 		}
 		return nil
+	}
+
+	// 流式客户端在读取中断（取消/超时/断连）时返回部分文本和 nil error。
+	// 交互路径可以容忍截断输出，但 governed Core 必须稳定失败，
+	// 否则被取消或超时的节点会以截断正文走完 canonical 提交。
+	if !persistent {
+		if coreErr := streamCtx.Err(); coreErr != nil {
+			execCtx.Status = engine.StatusFailed
+			return fmt.Errorf("harness core stream cancelled: %w", coreErr)
+		}
 	}
 
 	if err != nil {
 		// 配额/断路器检查
 		errMsg := strings.ToLower(err.Error())
 		if strings.Contains(errMsg, "quota") || strings.Contains(errMsg, "402") {
-			h.emitter.Error("quota_exceeded", "AI 模型服务额度不足", execCtx.CurrentStep)
+			if emitter != nil {
+				emitter.Error("quota_exceeded", "AI 模型服务额度不足", execCtx.CurrentStep)
+			}
 			execCtx.Status = engine.StatusFailed
 			return engine.ErrQuotaExceeded
 		}
@@ -361,27 +408,27 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	}
 
 	// 流式完成
-	if h.emitter != nil {
-		h.emitter.StreamDone(articleBody)
+	if emitter != nil {
+		emitter.StreamDone(articleBody)
 	}
 
-	// 存储 user 消息
-	session.StoreMessage(ctx, h.sessionStore, "user", execCtx.UserInput, "text")
-
-	// 存储 assistant 消息
-	contentType := "text"
-	if articleIntent {
-		contentType = "article"
+	if persistent {
+		// 交互路径继续存储对话；governed Core 只返回 provisional value。
+		session.StoreMessage(ctx, h.sessionStore, "user", execCtx.UserInput, "text")
+		contentType := "text"
+		if articleIntent {
+			contentType = "article"
+		}
+		session.StoreMessage(ctx, h.sessionStore, "assistant", articleBody, contentType)
 	}
-	session.StoreMessage(ctx, h.sessionStore, "assistant", articleBody, contentType)
 
 	// 发送 completed 事件
-	if h.emitter != nil {
+	if emitter != nil {
 		var review interface{}
 		if session.ReviewResult != nil {
 			review = session.ReviewResult
 		}
-		h.emitter.Completed(
+		emitter.Completed(
 			articleBody,
 			execCtx.ArticleTitle,
 			review,

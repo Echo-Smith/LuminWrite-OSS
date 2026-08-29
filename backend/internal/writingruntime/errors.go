@@ -20,6 +20,8 @@ const (
 	CodeSourceSnapshotFailed           ErrorCode = "SOURCE_SNAPSHOT_FAILED"
 	CodeSourceConflictRequiresDecision ErrorCode = "SOURCE_CONFLICT_REQUIRES_DECISION"
 	CodeArtifactCommitFailed           ErrorCode = "ARTIFACT_COMMIT_FAILED"
+	CodeRolloutPolicyInvalid           ErrorCode = "ROLLOUT_POLICY_INVALID"
+	CodeRolloutEvidenceFailed          ErrorCode = "ROLLOUT_EVIDENCE_FAILED"
 	CodeExecutionFailed                ErrorCode = "EXECUTION_FAILED"
 )
 
@@ -80,6 +82,8 @@ func ErrorCodeOf(err error) ErrorCode {
 		return CodeExecutorUsageUnmeasured
 	case errors.Is(err, ErrLegacyContentIntegrity):
 		return CodeMaterialIntegrityFailed
+	case errors.Is(err, ErrShadowContentLeak):
+		return CodeArtifactCommitFailed
 	default:
 		return CodeExecutionFailed
 	}

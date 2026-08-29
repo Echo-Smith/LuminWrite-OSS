@@ -241,6 +241,43 @@ type AttemptCompletion struct {
 	CompletedAt                           time.Time
 }
 
+type RuntimeEvidenceRecord struct {
+	EvidenceID string
+	RunID      string
+	NodeID     string
+	Attempt    int
+	Kind       string
+	Payload    map[string]any
+	OccurredAt time.Time
+}
+
+func (s *Store) RecordRuntimeEvidence(ctx context.Context, record RuntimeEvidenceRecord) error {
+	if s == nil || strings.TrimSpace(record.EvidenceID) == "" || record.Payload == nil {
+		return fmt.Errorf("%w: runtime evidence identity and payload are required", ErrInvalidRecord)
+	}
+	eventType := map[string]string{
+		"route_decision":    "runtime.route_decided",
+		"execution":         "runtime.execution_observed",
+		"shadow_comparison": "runtime.shadow_compared",
+	}[record.Kind]
+	if eventType == "" {
+		return fmt.Errorf("%w: unsupported runtime evidence kind %q", ErrInvalidRecord, record.Kind)
+	}
+	key, err := NodeAttemptKey(record.RunID, record.NodeID, record.Attempt)
+	if err != nil {
+		return err
+	}
+	return s.InTransaction(ctx, func(tx *Tx) error {
+		_, err := tx.AppendRunEvent(ctx, RunEvent{EventID: record.EvidenceID, RunID: record.RunID,
+			EventType: eventType, NodeID: record.NodeID, Attempt: record.Attempt,
+			IdempotencyKey: key, EntityKind: "rollout_evidence", EntityID: record.EvidenceID,
+			Payload: record.Payload, OccurredAt: record.OccurredAt,
+			Trace: TraceContext{Provenance: map[string]any{"runtime": "governed", "evidence_kind": record.Kind},
+				SourceRefs: []string{}, Actor: Actor{Type: ActorPolicy, ID: "writingruntime.rollout"}}})
+		return err
+	})
+}
+
 func (s *Store) StartNodeAttempt(ctx context.Context, attempt NodeAttempt, trace TraceContext) (NodeAttempt, bool, error) {
 	var saved NodeAttempt
 	var dispatch bool

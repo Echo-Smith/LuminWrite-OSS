@@ -1,0 +1,14 @@
+{
+  "scenario_id": "faithful_rewrite",
+  "title": "忠实改写",
+  "initial_artifacts": ["contract", "materials"],
+  "stages": [
+    {"id": "meaning", "outputs": ["brief"]},
+    {"id": "rewrite", "outputs": ["full_draft"]},
+    {"id": "semantic_validation", "outputs": ["quality_report"]},
+    {"id": "finalize", "outputs": ["revision_set"]}
+  ],
+  "required_validators": ["core.semantic.preservation", "core.contract.consistency", "core.style"],
+  "allowed_quality_states": ["candidate_draft", "accepted_draft", "verified_deliverable"],
+  "blocking_cases": ["new_fact", "meaning_changed", "locked_block_modified"]
+}

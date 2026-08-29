@@ -31,13 +31,13 @@ type ExecutorDescriptor struct {
 }
 
 type ExecutionIdentity struct {
-	RunID          string
-	PlanID         string
-	PlanVersion    int
-	NodeID         string
-	Attempt        int
-	IdempotencyKey string
-	ContractRef    writingplan.ObjectRef
+	RunID          string                `json:"run_id"`
+	PlanID         string                `json:"plan_id"`
+	PlanVersion    int                   `json:"plan_version"`
+	NodeID         string                `json:"node_id"`
+	Attempt        int                   `json:"attempt"`
+	IdempotencyKey string                `json:"idempotency_key"`
+	ContractRef    writingplan.ObjectRef `json:"contract_ref"`
 }
 
 func (identity ExecutionIdentity) Validate() error {
@@ -92,16 +92,16 @@ const (
 )
 
 type AuthorityScope struct {
-	DocumentWrite bool
-	QualityWrite  bool
-	RunWrite      bool
-	ArtifactWrite bool
+	DocumentWrite bool `json:"document_write"`
+	QualityWrite  bool `json:"quality_write"`
+	RunWrite      bool `json:"run_write"`
+	ArtifactWrite bool `json:"artifact_write"`
 }
 
 type AdapterPolicy struct {
-	Family      AdapterFamily
-	TrafficMode AdapterTrafficMode
-	Authority   AuthorityScope
+	Family      AdapterFamily      `json:"family"`
+	TrafficMode AdapterTrafficMode `json:"traffic_mode"`
+	Authority   AuthorityScope     `json:"authority"`
 }
 
 func OfflineAdapterPolicy(family AdapterFamily) AdapterPolicy {
@@ -227,10 +227,10 @@ type OutputArtifactDraft struct {
 }
 
 type ExecutionUsage struct {
-	CostUSD      float64
-	InputTokens  int64
-	OutputTokens int64
-	DurationMS   int64
+	CostUSD      float64 `json:"cost_usd"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	DurationMS   int64   `json:"duration_ms"`
 }
 
 type ExecutionResult struct {

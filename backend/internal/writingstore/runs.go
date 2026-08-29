@@ -293,12 +293,15 @@ var validRunEventTypes = map[string]bool{
 	"snapshot.created": true, "run.transitioned": true,
 	"document.committed":      true,
 	"run.transition_rejected": true, "node.paused": true,
-	"node.cancelled": true,
+	"node.cancelled":        true,
+	"runtime.route_decided": true, "runtime.execution_observed": true,
+	"runtime.shadow_compared": true,
 }
 
 var validRunEventEntityKinds = map[string]bool{
 	"run": true, "node": true, "artifact": true,
 	"document_version": true, "quality_report": true, "snapshot": true,
+	"rollout_evidence": true,
 }
 
 func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, error) {
@@ -312,7 +315,7 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 	if err != nil {
 		return RunEvent{}, err
 	}
-	nodeScoped := event.EventType == "node.started" || event.EventType == "node.completed" || event.EventType == "node.failed" || event.EventType == "node.paused" || event.EventType == "node.cancelled" || event.EventType == "artifact.created"
+	nodeScoped := event.EventType == "node.started" || event.EventType == "node.completed" || event.EventType == "node.failed" || event.EventType == "node.paused" || event.EventType == "node.cancelled" || event.EventType == "artifact.created" || event.EventType == "runtime.route_decided" || event.EventType == "runtime.execution_observed" || event.EventType == "runtime.shadow_compared"
 	transitionScoped := event.EventType == "run.transitioned" || event.EventType == "run.transition_rejected"
 	if nodeScoped {
 		expected, err := NodeAttemptKey(event.RunID, event.NodeID, event.Attempt)

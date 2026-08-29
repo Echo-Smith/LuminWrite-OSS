@@ -243,6 +243,35 @@ func TestRunTransitionAtomicallyAuditsProjectionAndStaleCommands(t *testing.T) {
 	}
 }
 
+func TestRuntimeEvidenceIsAppendOnlyAndBoundToNodeAttempt(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	if _, dispatch, err := store.StartNodeAttempt(ctx, fixture.nodeAttempt(), testTrace()); err != nil || !dispatch {
+		t.Fatalf("start attempt dispatch=%v error=%v", dispatch, err)
+	}
+	record := RuntimeEvidenceRecord{EvidenceID: "evt_rollout_route", RunID: fixture.runID,
+		NodeID: fixture.nodeID, Attempt: 1, Kind: "route_decision",
+		Payload:    map[string]any{"mode": "shadow", "lane": "baseline", "policy_hash": testHash("policy")},
+		OccurredAt: time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)}
+	if err := store.RecordRuntimeEvidence(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRuntimeEvidence(ctx, record); err != nil {
+		t.Fatalf("identical evidence replay failed: %v", err)
+	}
+	var count int
+	var eventType, entityKind string
+	if err := integrationDB.QueryRowContext(ctx, `
+		SELECT COUNT(*), MIN(event_type), MIN(entity_kind)
+		FROM writing_run_events WHERE run_id=$1 AND event_id=$2
+	`, fixture.runID, record.EvidenceID).Scan(&count, &eventType, &entityKind); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || eventType != "runtime.route_decided" || entityKind != "rollout_evidence" {
+		t.Fatalf("count=%d type=%s entity=%s", count, eventType, entityKind)
+	}
+}
+
 func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {
 	store, fixture := newIntegrationFixture(t, true)
 	ctx := context.Background()
