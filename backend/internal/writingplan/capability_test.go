@@ -43,6 +43,26 @@ func TestCapabilityRegistryRejectsUnknownExecutor(t *testing.T) {
 	}
 }
 
+func TestCapabilityRegistryEnablesOnlyAfterCompatibleExecutorBinding(t *testing.T) {
+	registry := NewCapabilityRegistry("registry-enable")
+	manifest := capabilityManifest()
+	manifest.Available = false
+	if err := registry.Declare(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enable(manifest.ID); err == nil || !strings.Contains(err.Error(), "UNKNOWN_EXECUTOR") {
+		t.Fatalf("enable without executor err=%v", err)
+	}
+	registerTestExecutor(t, registry, manifest.Executor, []ArtifactType{"prompt"}, []ArtifactType{"draft"})
+	if err := registry.Enable(manifest.ID); err != nil {
+		t.Fatal(err)
+	}
+	enabled, ok := registry.Get(manifest.ID)
+	if !ok || !enabled.Available || len(registry.ByClass(manifest.Class)) != 1 {
+		t.Fatalf("enabled=%#v ok=%v", enabled, ok)
+	}
+}
+
 func TestCapabilityRegistryRejectsDuplicateIDsAndExecutors(t *testing.T) {
 	registry := NewCapabilityRegistry("registry-test")
 	registerTestExecutor(t, registry, "draft", []ArtifactType{"prompt"}, []ArtifactType{"draft"})

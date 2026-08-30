@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -94,7 +95,7 @@ func (s *IntentStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 
 	// LLM-first intent classification
 	if s.llm != nil {
-		llmIntent, err := s.classifyWithLLM(ctx, normalized)
+		llmIntent, err := s.classifyWithLLM(ctx, execCtx, normalized)
 		if err == nil && llmIntent != nil {
 			execCtx.TaskIntent = llmIntent
 			return nil
@@ -143,7 +144,7 @@ func (s *IntentStep) fallbackClassify(normalized string) *engine.TaskIntent {
 	}
 }
 
-func (s *IntentStep) classifyWithLLM(ctx context.Context, message string) (*engine.TaskIntent, error) {
+func (s *IntentStep) classifyWithLLM(ctx context.Context, execCtx *engine.ExecutionContext, message string) (*engine.TaskIntent, error) {
 	systemMsg := "你是中文写作产品的意图分类器。只返回 JSON，不要解释。taskMode 只能是 chat、writing、polish、shorten、expand、extract_points。confidence 是 0.35-0.96 的数字。"
 	userMsg := fmt.Sprintf(`请判断用户本轮真实意图，尤其要容忍语音识别错字。
 
@@ -161,12 +162,15 @@ func (s *IntentStep) classifyWithLLM(ctx context.Context, message string) (*engi
 返回格式：
 {"taskMode":"writing","confidence":0.9,"reason":"..."}`, message)
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0), tools.WithThinking(false), tools.WithJSONResponse())
 	if err != nil {
 		return nil, err
+	}
+	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
+		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
 	}
 
 	jsonStr := tools.ExtractJSONObject(resp)
@@ -306,12 +310,15 @@ func (s *QueryPlanStep) planWithLLM(ctx context.Context, execCtx *engine.Executi
 
 	userMsg := fmt.Sprintf("用户请求：\n%s", execCtx.NormalizedInput)
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0.1))
 	if err != nil {
 		return nil, fmt.Errorf("LLM query planning failed: %w", err)
+	}
+	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
+		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
 	}
 
 	jsonStr := tools.ExtractJSONObject(resp)
@@ -971,11 +978,14 @@ type 字段说明：用于标注该要点的段落角色，由你根据文章体
 }`, execCtx.WritingTask.Topic)
 	}
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
 	}, tools.WithInstructions(systemMsg), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
+	}
+	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
+		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
 	}
 
 	jsonStr := tools.ExtractJSONObject(resp)
@@ -1275,6 +1285,17 @@ type PostReviewStep struct {
 	profile        *profile.StyleProfile
 	search         *tools.SearchClient   // optional, enables fact-checking via web search
 	jiaozhen       *tools.JiaozhenClient // optional, enables rumor fact-checking
+	strict         bool                  // governed validators never auto-pass infrastructure/format failures
+}
+
+// RequireSuccess turns infrastructure and response-format failures into step
+// errors. Interactive legacy pipelines keep their existing degraded behavior;
+// governed validation uses this mode so a required validator cannot be waived.
+func (s *PostReviewStep) RequireSuccess() *PostReviewStep {
+	if s != nil {
+		s.strict = true
+	}
+	return s
 }
 
 func NewPostReviewStep(llm *tools.LLMClient) *PostReviewStep {
@@ -1307,7 +1328,7 @@ func NewPostReviewStepWithSearchAndJiaozhen(llm *tools.LLMClient, sc engine.Sens
 func (s *PostReviewStep) Name() engine.StepName  { return engine.StepPostReview }
 func (s *PostReviewStep) CanPause() bool         { return false }
 func (s *PostReviewStep) Timeout() time.Duration { return 60 * time.Second }
-func (s *PostReviewStep) Critical() bool         { return false }
+func (s *PostReviewStep) Critical() bool         { return s != nil && s.strict }
 
 // ShouldSkip returns true for chat intent or when review already passed.
 // Chat responses don't need review. If review already passed (e.g. after
@@ -1325,6 +1346,9 @@ func (s *PostReviewStep) ShouldSkip(execCtx *engine.ExecutionContext) bool {
 
 func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
 	if s.llm == nil || execCtx.Article == "" {
+		if s.strict {
+			return errors.New("post review requires a model client and article")
+		}
 		// No article to review
 		execCtx.ReviewResult = &engine.ReviewResult{
 			Scores: map[string]float64{},
@@ -1404,10 +1428,16 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
   "passed": true
 }`, execCtx.Article, profileRules.String(), factCheckSection)
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
 	}, tools.WithInstructions(systemMsg), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
+	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
+		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
+	}
 	if err != nil {
+		if s.strict {
+			return fmt.Errorf("post review LLM call failed: %w", err)
+		}
 		// If review fails, pass by default (graceful degradation) but add a warning
 		slog.Warn("post review LLM call failed, skipping review (graceful degradation)",
 			"trace_id", execCtx.TraceID,
@@ -1428,6 +1458,9 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 	jsonStr := tools.ExtractJSONObject(resp)
 	if jsonStr == "" {
+		if s.strict {
+			return errors.New("post review response did not contain JSON")
+		}
 		slog.Warn("post review: no JSON in response, skipping review",
 			"trace_id", execCtx.TraceID)
 		execCtx.ReviewResult = &engine.ReviewResult{
@@ -1446,6 +1479,9 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 
 	var review engine.ReviewResult
 	if err := json.Unmarshal([]byte(jsonStr), &review); err != nil {
+		if s.strict {
+			return fmt.Errorf("post review response could not be parsed: %w", err)
+		}
 		slog.Warn("post review: failed to parse review JSON, skipping review",
 			"trace_id", execCtx.TraceID,
 			"error", err)
@@ -1494,6 +1530,9 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 				}
 			}
 		} else if titleErr != nil {
+			if s.strict {
+				return fmt.Errorf("title review failed: %w", titleErr)
+			}
 			slog.Warn("title review failed, falling back to rule-based title check only",
 				"trace_id", execCtx.TraceID,
 				"error", titleErr)

@@ -339,16 +339,14 @@ type verticalRewriteStep struct{}
 func (*verticalRewriteStep) Name() engine.StepName { return engine.StepName("vertical_rewrite") }
 func (*verticalRewriteStep) CanPause() bool        { return false }
 func (*verticalRewriteStep) Execute(_ context.Context, execCtx *engine.ExecutionContext, _ engine.EventEmitter) error {
-	var manifest MaterialManifest
-	for _, material := range execCtx.UserMaterials {
-		if err := json.Unmarshal([]byte(material), &manifest); err != nil {
-			return err
-		}
-	}
 	var builder strings.Builder
 	builder.WriteString("# 忠实改写\n")
-	for _, material := range manifest.Materials {
-		builder.WriteString("\n## " + material.Title + "\n\n忠实保留 " + material.Title + " 的原意与全部要点，仅调整表述。\n")
+	for _, material := range execCtx.UserMaterials {
+		title := "来源材料"
+		if firstLine, _, ok := strings.Cut(material, "\n"); ok && strings.HasPrefix(firstLine, "[材料: ") {
+			title = strings.TrimSuffix(strings.TrimPrefix(firstLine, "[材料: "), "]")
+		}
+		builder.WriteString("\n## " + title + "\n\n" + material + "\n\n以上内容仅调整表述，不改变原意。\n")
 	}
 	execCtx.Article = builder.String()
 	return nil
@@ -405,7 +403,7 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 		capability := "core.vertical." + name + "." + node.name
 		plan.Nodes = append(plan.Nodes, writingplan.PlanNode{NodeID: "node_" + node.name, Kind: node.kind,
 			Capability: capability, CapabilityVersion: capabilityVersion, DependsOn: dependencies,
-			InputArtifactTypes: append([]writingplan.ArtifactType(nil), node.inputs...),
+			InputArtifactTypes:  append([]writingplan.ArtifactType(nil), node.inputs...),
 			OutputArtifactTypes: []writingplan.ArtifactType{node.output},
 			Bounds:              writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 5, TimeoutMS: 2000},
 			FailurePath:         writingplan.FailureFail})
@@ -420,6 +418,13 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 	}
 	canonical := newVerticalGateway(map[string][]byte{"memory://contract": contractBytes})
 	sink := NewMemoryShadowContentSink()
+	var materialAdapter *MaterialAdapter
+	if withMaterials {
+		materialAdapter, err = NewMaterialAdapter(fakeMaterialSource{bodies: map[string]MaterialContent{"mat_forest": {Body: []byte("森林深处的狐狸在晨雾中活动，狐狸是森林生态的重要成员。"), SourceRefs: []string{"https://vertical.example.com/forest"}}}}, canonical)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	store := &fakeRuntimeStore{run: writingstore.RuntimeRun{RunID: runID, DocumentID: documentID,
 		ContractID: "ctr_vertical_" + name, ContractVersion: 1, ContractHash: hashForTest("contract"),
 		Status: string(StatePlanned), ActivePlanID: plan.PlanID, ActivePlanVersion: 1,
@@ -460,6 +465,10 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 			t.Fatal(err)
 		}
 		runner := node.runner(t, documentID)
+		if engineRunner, ok := runner.(EngineStepRunner); ok && materialAdapter != nil {
+			engineRunner.Materials = materialAdapter
+			runner = engineRunner
+		}
 		baseline, err := NewLegacyExecutorAdapter(AdapterFamilyEngine,
 			ExecutorDescriptor{ExecutorID: bindingID, Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction, writingplan.NodeValidate}},
 			capability, capabilityVersion, []writingplan.Permission{"model.invoke", "materials.read"}, canonical, runner)
@@ -488,11 +497,7 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 	providers := []InitialArtifactProvider{fixedInitialProvider{{ArtifactID: "art_" + runID + "_contract", Version: 1,
 		ArtifactType: "contract", ContentHash: contentHash(contractBytes), MediaType: "application/json", ContentRef: "memory://contract"}}}
 	if withMaterials {
-		adapter, err := NewMaterialAdapter(fakeMaterialSource{bodies: map[string]MaterialContent{"mat_forest": {Body: []byte("森林深处的狐狸在晨雾中活动，狐狸是森林生态的重要成员。"), SourceRefs: []string{"https://vertical.example.com/forest"}}}}, canonical)
-		if err != nil {
-			t.Fatal(err)
-		}
-		providers = append(providers, &MaterialArtifactProvider{Adapter: adapter,
+		providers = append(providers, &MaterialArtifactProvider{Adapter: materialAdapter,
 			Selection: verticalMaterialSelection{materials: []MaterialDescriptor{{MaterialID: "mat_forest",
 				OwnerID: "user_vertical", Title: "森林狐狸观察", SourceKind: MaterialSourceText,
 				SourceRef: "mem://forest", MediaType: "text/plain", UpdatedAt: now}}}})
@@ -555,7 +560,9 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 func verticalEngineRunner(step engine.Step) func(t *testing.T, documentID string) LegacyNodeRunner {
 	return func(t *testing.T, documentID string) LegacyNodeRunner {
 		return EngineStepRunner{StepFactory: func() engine.Step { return step },
-			Usage: func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 5, OutputTokens: 5}, nil }}
+			Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
+				return LegacyUsage{Measured: true, InputTokens: 5, OutputTokens: 5}, nil
+			}}
 	}
 }
 

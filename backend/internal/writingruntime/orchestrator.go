@@ -36,6 +36,7 @@ type RuntimeStore interface {
 	ListRunArtifacts(context.Context, string) ([]writingstore.ArtifactRecord, error)
 	StartNodeAttempt(context.Context, writingstore.NodeAttempt, writingstore.TraceContext) (writingstore.NodeAttempt, bool, error)
 	CompleteNodeAttempt(context.Context, writingstore.AttemptCompletion) error
+	PutArtifact(context.Context, writingstore.ArtifactRecord) error
 }
 
 // MaterialSnapshotRepository persists the run-level initial material manifest.
@@ -219,6 +220,22 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if err != nil {
 		return RunOutcome{}, fmt.Errorf("load initial artifacts: %w", err)
 	}
+	// Persist the initial artifacts (contract, material snapshots) as real
+	// writing_artifacts rows under the node_initial pseudo node: downstream
+	// lineage edges reference parents by FK, so every input of the plan graph
+	// must exist in the artifact table. Idempotent per artifact id+version.
+	for _, artifact := range initial {
+		record := writingstore.ArtifactRecord{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
+			RunID: run.RunID, PlanID: plan.PlanID, PlanVersion: planRecord.PlanVersion,
+			NodeID: "node_initial", Attempt: 1, OutputKey: string(artifact.ArtifactType),
+			ArtifactType: string(artifact.ArtifactType), Status: "provisional", ContentHash: artifact.ContentHash,
+			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef, Parents: []writingstore.ArtifactRef{},
+			InputHashes: []string{}, Producer: "writingruntime.initial", CapabilityVersion: "initial-1",
+			Trace: runtimeTrace(string(artifact.ArtifactType)), CreatedAt: orchestrator.Now()}
+		if err := orchestrator.Store.PutArtifact(ctx, record); err != nil {
+			return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not persist initial artifacts", err)
+		}
+	}
 	if planRecord.Envelope.StrategyDecision.ApprovalRequired && planRecord.ApprovalStatus != "approved" {
 		if RunState(run.Status) == StatePlanned {
 			_, _ = orchestrator.transition(ctx, runID, StatePlanned, StateAwaitingApproval, "approval_required")
@@ -267,6 +284,11 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		return RunOutcome{}, err
 	}
 	for _, artifact := range persisted {
+		// The node_initial rows mirror the in-memory initial artifacts; skip
+		// them here so downstream inputs never see duplicates.
+		if artifact.NodeID == "node_initial" {
+			continue
+		}
 		artifacts = append(artifacts, InputArtifact{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
 			ArtifactType: writingplan.ArtifactType(artifact.ArtifactType), ContentHash: artifact.ContentHash,
 			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef})

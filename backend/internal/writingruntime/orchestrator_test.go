@@ -23,6 +23,9 @@ func TestOrchestratorCompletesReadyNodeAndPersistsCheckpoint(t *testing.T) {
 	if len(fixture.store.artifacts) != 1 || len(fixture.checkpoints.saved) != 1 {
 		t.Fatalf("artifacts=%#v checkpoints=%#v", fixture.store.artifacts, fixture.checkpoints.saved)
 	}
+	if len(fixture.store.initialArtifacts) != 1 || fixture.store.initialArtifacts[0].NodeID != "node_initial" {
+		t.Fatalf("initial artifacts were not persisted for lineage: %#v", fixture.store.initialArtifacts)
+	}
 }
 
 func TestOrchestratorDoesNotDispatchBeforeRequiredApproval(t *testing.T) {
@@ -202,16 +205,29 @@ func (provider fixedInitialProvider) InitialArtifacts(context.Context, writingst
 }
 
 type fakeRuntimeStore struct {
-	mu            sync.Mutex
-	run           writingstore.RuntimeRun
-	plan          writingstore.PlanRecord
-	attempts      []writingstore.NodeAttempt
-	artifacts     []writingstore.ArtifactRecord
-	completions   []writingstore.AttemptCompletion
-	transitions   []TransitionRecord
-	completionErr error
+	mu               sync.Mutex
+	run              writingstore.RuntimeRun
+	plan             writingstore.PlanRecord
+	attempts         []writingstore.NodeAttempt
+	artifacts        []writingstore.ArtifactRecord
+	initialArtifacts []writingstore.ArtifactRecord
+	completions      []writingstore.AttemptCompletion
+	transitions      []TransitionRecord
+	completionErr    error
 
 	materialSnapshots map[string]writingstore.MaterialSnapshotRecord
+}
+
+func (store *fakeRuntimeStore) PutArtifact(_ context.Context, artifact writingstore.ArtifactRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, existing := range store.initialArtifacts {
+		if existing.ArtifactID == artifact.ArtifactID && existing.Version == artifact.Version {
+			return nil
+		}
+	}
+	store.initialArtifacts = append(store.initialArtifacts, artifact)
+	return nil
 }
 
 func (store *fakeRuntimeStore) LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error) {

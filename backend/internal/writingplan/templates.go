@@ -83,20 +83,20 @@ func DefaultTemplateRegistry() *TemplateRegistry {
 		}
 	}
 	common("tpl_fast_v1", writingkernel.OrchestrationModeFast, []TemplateNode{
-		templateNode("node_draft", NodeAction, "writing.draft", nil, []ArtifactType{"contract"}, []ArtifactType{"full_draft"}),
+		templateNode("node_draft", NodeAction, "writing.draft", nil, []ArtifactType{"contract", "materials"}, []ArtifactType{"full_draft"}),
 		templateNode("node_quality", NodeValidate, "validation.quality", []string{"node_draft"}, []ArtifactType{"full_draft"}, []ArtifactType{"quality_report"}),
 		templateNode("node_finalize", NodeAction, "document.finalize", []string{"node_draft", "node_quality"}, []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}),
 	}, "core.validation.quality")
 	common("tpl_outline_first_v1", writingkernel.OrchestrationModeOutlineFirst, []TemplateNode{
-		templateNode("node_outline", NodeAction, "writing.outline", nil, []ArtifactType{"contract"}, []ArtifactType{"outline"}),
-		templateNode("node_draft", NodeAction, "writing.draft", []string{"node_outline"}, []ArtifactType{"contract", "outline"}, []ArtifactType{"full_draft"}),
+		templateNode("node_outline", NodeAction, "writing.outline", nil, []ArtifactType{"contract", "materials"}, []ArtifactType{"outline"}),
+		templateNode("node_draft", NodeAction, "writing.draft", []string{"node_outline"}, []ArtifactType{"contract", "materials", "outline"}, []ArtifactType{"full_draft"}),
 		templateNode("node_quality", NodeValidate, "validation.quality", []string{"node_draft"}, []ArtifactType{"full_draft"}, []ArtifactType{"quality_report"}),
 		templateNode("node_finalize", NodeAction, "document.finalize", []string{"node_draft", "node_quality"}, []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}),
 	}, "core.validation.quality")
 	common("tpl_sourced_v1", writingkernel.OrchestrationModeSourced, []TemplateNode{
 		templateNode("node_research", NodeAction, "research.collect", nil, []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}),
 		templateNode("node_outline", NodeAction, "writing.outline", []string{"node_research"}, []ArtifactType{"contract", "source_pack"}, []ArtifactType{"outline"}),
-		templateNode("node_draft", NodeAction, "writing.draft", []string{"node_research", "node_outline"}, []ArtifactType{"contract", "source_pack", "outline"}, []ArtifactType{"full_draft"}),
+		templateNode("node_draft", NodeAction, "writing.draft", []string{"node_research", "node_outline"}, []ArtifactType{"contract", "materials", "source_pack", "outline"}, []ArtifactType{"full_draft"}),
 		templateNode("node_evidence", NodeValidate, "validation.evidence", []string{"node_research", "node_draft"}, []ArtifactType{"source_pack", "full_draft"}, []ArtifactType{"evidence_report"}),
 		templateNode("node_quality", NodeValidate, "validation.quality", []string{"node_draft", "node_evidence"}, []ArtifactType{"full_draft", "evidence_report"}, []ArtifactType{"quality_report"}),
 		templateNode("node_finalize", NodeAction, "document.finalize", []string{"node_draft", "node_quality"}, []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}),
@@ -104,7 +104,7 @@ func DefaultTemplateRegistry() *TemplateRegistry {
 	common("tpl_strict_research_v1", writingkernel.OrchestrationModeStrictResearch, []TemplateNode{
 		templateNode("node_research", NodeAction, "research.strict", nil, []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}),
 		templateNode("node_outline", NodeAction, "writing.outline", []string{"node_research"}, []ArtifactType{"contract", "source_pack"}, []ArtifactType{"outline"}),
-		templateNode("node_draft", NodeAction, "writing.draft", []string{"node_research", "node_outline"}, []ArtifactType{"contract", "source_pack", "outline"}, []ArtifactType{"full_draft"}),
+		templateNode("node_draft", NodeAction, "writing.draft", []string{"node_research", "node_outline"}, []ArtifactType{"contract", "materials", "source_pack", "outline"}, []ArtifactType{"full_draft"}),
 		templateNode("node_factcheck", NodeValidate, "validation.fact", []string{"node_research", "node_draft"}, []ArtifactType{"source_pack", "full_draft"}, []ArtifactType{"fact_report"}),
 		templateNode("node_evidence", NodeValidate, "validation.evidence", []string{"node_research", "node_draft"}, []ArtifactType{"source_pack", "full_draft"}, []ArtifactType{"evidence_report"}),
 		templateNode("node_quality", NodeValidate, "validation.quality", []string{"node_draft", "node_factcheck", "node_evidence"}, []ArtifactType{"full_draft", "fact_report", "evidence_report"}, []ArtifactType{"quality_report"}),

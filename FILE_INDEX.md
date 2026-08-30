@@ -10,6 +10,12 @@
 - `backend/internal/writingplan/`：IntentPlan、ExecutablePlan、能力注册和静态验证。
 - `backend/internal/database/migrations/095_governed_rollout_evidence.*.sql`：在 append-only RunLedger 中持久化 Task12 路由、执行和 shadow 对比证据。
 - `backend/internal/database/migrations/096_shadow_content.*.sql`：独立持久化、可过期且回滚受保护的 shadow candidate 正文。
+- `backend/internal/database/migrations/097_canonical_content.*.sql`：持久化 canonical Artifact 正文，支持重启恢复、不可变重放和逐次 hash 校验。
+- `backend/internal/server/governed_runtime.go`：Task13 生产组合根；统一装配 writingstore、能力注册、调度/恢复、材料正文解析及 off/shadow rollout。
+- `backend/internal/server/governed_runtime_test.go`：固定组合失败时的 pre-persistence fail-closed 行为。
+- `backend/internal/writingruntime/store_canonical_content.go`、`backend/internal/writingstore/canonical_content.go`：canonical ContentGateway 与唯一事实源实现。
+- `backend/internal/engine/steps/post_review_test.go`：固定 required validator 在模型或格式失败时不可自动放行。
+- `backend/cmd/writingacceptance/main.go`：通过生产 HTTP API 执行长文、多材料综合和忠实改写验收链路。
 - `backend/internal/tools/search.go`、`search_stubs.go`：Task13 OSS 检索能力边界；共享接口保留，但商业 Provider 不注册且显式返回未安装。
 - `backend/internal/tools/url_fetcher.go`：两版共享的有界本地网页抓取与正文抽取实现。
 - `backend/internal/tools/search_capability_test.go`：验证 OSS 不暴露或假注册付费搜索源。

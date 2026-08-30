@@ -42,6 +42,40 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func TestListRecoverableRunIDsExcludesPausedRuns(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	runIDs, err := store.ListRecoverableRunIDs(ctx, 10)
+	if err != nil || !containsTestString(runIDs, fixture.runID) {
+		t.Fatalf("recoverable=%v err=%v", runIDs, err)
+	}
+	if _, err := store.RecordRunTransition(ctx, RunTransitionCommand{RunID: fixture.runID,
+		ExpectedFrom: "running", RequestedTo: "pausing", RuleAccepted: true,
+		Cause: "test", ReasonCode: "test_pause", Summary: "pause for recovery test",
+		IdempotencyKey: fixture.runID + ":transition:pause", Trace: testTrace()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordRunTransition(ctx, RunTransitionCommand{RunID: fixture.runID,
+		ExpectedFrom: "pausing", RequestedTo: "paused", RuleAccepted: true,
+		Cause: "test", ReasonCode: "test_paused", Summary: "paused for recovery test",
+		IdempotencyKey: fixture.runID + ":transition:paused", Trace: testTrace()}); err != nil {
+		t.Fatal(err)
+	}
+	runIDs, err = store.ListRecoverableRunIDs(ctx, 10)
+	if err != nil || containsTestString(runIDs, fixture.runID) {
+		t.Fatalf("paused run remained recoverable=%v err=%v", runIDs, err)
+	}
+}
+
+func containsTestString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 // TestMaterialSnapshotRepositoryOnRealDatabase exercises the run-level
 // material snapshot against PostgreSQL: load-miss, first-writer-wins,
 // round-trip, concurrent capture, and no partial state on failure.
@@ -152,7 +186,8 @@ func TestSeedRuntimeEvidenceForDowngradeCheck(t *testing.T) {
 	appendTestEvent(t, store, event)
 }
 
-func TestNodeAttemptKeyIsExactAndDeterministic(t *testing.T) {	key, err := NodeAttemptKey("run_test", "node_draft", 2)
+func TestNodeAttemptKeyIsExactAndDeterministic(t *testing.T) {
+	key, err := NodeAttemptKey("run_test", "node_draft", 2)
 	if err != nil {
 		t.Fatal(err)
 	}

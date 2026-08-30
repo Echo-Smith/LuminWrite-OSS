@@ -45,6 +45,41 @@ func TestMaterialAdapterCreatesDeterministicGovernedBundle(t *testing.T) {
 	}
 }
 
+func TestMaterialAdapterResolvesSnapshottedBodiesAndEmptyManifest(t *testing.T) {
+	gateway := newSnapshotGateway()
+	adapter := mustMaterialAdapter(t, &materialSourceStub{bodies: map[string][]byte{"mat_a": []byte("完整材料正文")}}, gateway)
+	bundle, err := adapter.Snapshot(context.Background(), MaterialSnapshotRequest{
+		RunID: "run_resolve", OwnerID: "user_owner", ConflictHandling: "ask_user",
+		Materials: []MaterialDescriptor{{MaterialID: "mat_a", OwnerID: "user_owner", Title: "材料 A",
+			SourceKind: MaterialSourceText, SourceRef: "kb://a", MediaType: "text/plain", UpdatedAt: fixedMaterialTime()}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBody := gateway.bodies[bundle.Artifact.ContentRef]
+	resolved, err := adapter.ResolveMaterialSnapshots(context.Background(), manifestBody)
+	if err != nil || len(resolved) != 1 || string(resolved[0]) != "[材料: 材料 A]\n来源: kb://a\n\n完整材料正文" {
+		t.Fatalf("resolved=%q err=%v", resolved, err)
+	}
+
+	empty, err := adapter.Snapshot(context.Background(), MaterialSnapshotRequest{
+		RunID: "run_empty", OwnerID: "user_owner", ConflictHandling: "ask_user", Materials: []MaterialDescriptor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyResolved, err := adapter.ResolveMaterialSnapshots(context.Background(), gateway.bodies[empty.Artifact.ContentRef])
+	if err != nil || len(emptyResolved) != 0 {
+		t.Fatalf("empty resolved=%q err=%v", emptyResolved, err)
+	}
+
+	materialRef := bundle.Manifest.Materials[0].ContentRef
+	gateway.bodies[materialRef] = []byte("tampered")
+	if _, err := adapter.ResolveMaterialSnapshots(context.Background(), manifestBody); ErrorCodeOf(err) != CodeMaterialIntegrityFailed {
+		t.Fatalf("tampered snapshot err=%v code=%s", err, ErrorCodeOf(err))
+	}
+}
+
 func TestMaterialAdapterRejectsTenantMismatchBeforeReading(t *testing.T) {
 	source := &materialSourceStub{bodies: map[string][]byte{"mat_other": []byte("secret")}}
 	adapter := mustMaterialAdapter(t, source, newSnapshotGateway())

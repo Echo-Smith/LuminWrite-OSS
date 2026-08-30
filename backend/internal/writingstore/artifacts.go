@@ -246,3 +246,15 @@ func nullVersion(version int) any {
 	}
 	return version
 }
+
+// PutArtifact persists one governed artifact row (idempotent per
+// artifact_id + version). Used by the orchestrator to persist the run's
+// initial artifacts so downstream lineage edges can reference them.
+func (s *Store) PutArtifact(ctx context.Context, artifact ArtifactRecord) error {
+	if s == nil {
+		return fmt.Errorf("%w: store is required", ErrInvalidRecord)
+	}
+	return s.InTransaction(ctx, func(tx *Tx) error {
+		return tx.PutArtifact(ctx, artifact)
+	})
+}

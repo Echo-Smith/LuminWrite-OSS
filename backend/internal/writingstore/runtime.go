@@ -33,6 +33,42 @@ type RuntimeRun struct {
 	LastSnapshotVersion int                      `json:"last_snapshot_version,omitempty"`
 }
 
+// ListRecoverableRunIDs returns runs that were dispatchable when a previous
+// process stopped. Awaiting-approval and paused runs are deliberately absent:
+// recovery must never bypass a user gate.
+func (s *Store) ListRecoverableRunIDs(ctx context.Context, limit int) ([]string, error) {
+	if s == nil {
+		return nil, fmt.Errorf("%w: store is required", ErrInvalidRecord)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT run_id
+		FROM writing_runs
+		WHERE status IN ('planned','running')
+		  AND active_plan_id IS NOT NULL AND active_plan_version IS NOT NULL
+		ORDER BY created_at, run_id
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recoverable writing runs: %w", err)
+	}
+	defer rows.Close()
+	result := make([]string, 0)
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			return nil, fmt.Errorf("scan recoverable writing run: %w", err)
+		}
+		result = append(result, runID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recoverable writing runs: %w", err)
+	}
+	return result, nil
+}
+
 func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, error) {
 	if err := validateID(runID, "run_", "run_id"); err != nil {
 		return RuntimeRun{}, err

@@ -51,7 +51,11 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 	// Fail closed before the service layer touches persistence: a runtime
 	// that cannot dispatch must never create a zombie planned run.
 	if s.governedRuntime != nil && !s.governedRuntime.Ready() {
-		s.writeWritingError(w, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, s.governedRuntime.BlockedCode()))
+		blockedCode := "WRITING_RUNTIME_NOT_READY"
+		if s.governedRuntime != nil && s.governedRuntime.BlockedCode() != "" {
+			blockedCode = s.governedRuntime.BlockedCode()
+		}
+		s.writeWritingError(w, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, blockedCode))
 		return
 	}
 	key, err := writingIdempotencyKey(r)

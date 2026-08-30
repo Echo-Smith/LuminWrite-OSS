@@ -232,6 +232,7 @@ type EngineStepRunner struct {
 	StepFactory func() engine.Step
 	Emitter     engine.EventEmitter
 	Seed        engine.CompatibilityInput
+	Materials   MaterialSnapshotResolver
 	Usage       func(*engine.ExecutionContext) (LegacyUsage, error)
 }
 
@@ -257,21 +258,21 @@ type GovernedStepEmitter struct{}
 
 func NewGovernedStepEmitter() *GovernedStepEmitter { return &GovernedStepEmitter{} }
 
-func (*GovernedStepEmitter) StepStart(engine.StepName, int)                  {}
-func (*GovernedStepEmitter) StepComplete(engine.StepName, interface{}, int64) {}
-func (*GovernedStepEmitter) StreamDelta(string)                              {}
-func (*GovernedStepEmitter) StreamReset()                                    {}
-func (*GovernedStepEmitter) ReasoningDelta(string)                           {}
-func (*GovernedStepEmitter) ArticleTitle(string)                             {}
-func (*GovernedStepEmitter) StreamDone(string)                               {}
+func (*GovernedStepEmitter) StepStart(engine.StepName, int)                              {}
+func (*GovernedStepEmitter) StepComplete(engine.StepName, interface{}, int64)            {}
+func (*GovernedStepEmitter) StreamDelta(string)                                          {}
+func (*GovernedStepEmitter) StreamReset()                                                {}
+func (*GovernedStepEmitter) ReasoningDelta(string)                                       {}
+func (*GovernedStepEmitter) ArticleTitle(string)                                         {}
+func (*GovernedStepEmitter) StreamDone(string)                                           {}
 func (*GovernedStepEmitter) AwaitInput(engine.StepName, interface{}, []string, int, int) {}
-func (*GovernedStepEmitter) Paused(engine.StepName, interface{})             {}
-func (*GovernedStepEmitter) PausedWithReason(engine.StepName, interface{}, string) {}
-func (*GovernedStepEmitter) Resumed(engine.StepName)                         {}
-func (*GovernedStepEmitter) Error(string, string, engine.StepName)           {}
-func (*GovernedStepEmitter) Completed(string, string, interface{}, interface{}) {}
-func (*GovernedStepEmitter) Cancelled()                                      {}
-func (*GovernedStepEmitter) Compaction(int, int, string, uint64, string)     {}
+func (*GovernedStepEmitter) Paused(engine.StepName, interface{})                         {}
+func (*GovernedStepEmitter) PausedWithReason(engine.StepName, interface{}, string)       {}
+func (*GovernedStepEmitter) Resumed(engine.StepName)                                     {}
+func (*GovernedStepEmitter) Error(string, string, engine.StepName)                       {}
+func (*GovernedStepEmitter) Completed(string, string, interface{}, interface{})          {}
+func (*GovernedStepEmitter) Cancelled()                                                  {}
+func (*GovernedStepEmitter) Compaction(int, int, string, uint64, string)                 {}
 
 func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
 	if runner.StepFactory == nil {
@@ -294,7 +295,17 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 			case "contract":
 				execCtx.UserInput = string(payload)
 			case "materials":
-				execCtx.UserMaterials = append(execCtx.UserMaterials, string(payload))
+				if runner.Materials == nil {
+					return nil, LegacyUsage{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+						"engine material manifest has no resolver", ErrRuntimeNotReady)
+				}
+				resolved, err := runner.Materials.ResolveMaterialSnapshots(ctx, payload)
+				if err != nil {
+					return nil, LegacyUsage{}, err
+				}
+				for _, body := range resolved {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, string(body))
+				}
 			case "source_pack":
 				var wrapper struct {
 					Results []engine.SearchResult `json:"results"`
@@ -569,9 +580,10 @@ type AgentHarnessCore interface {
 // AgentHarnessCoreBridge adapts the real Harness tool loop after RunCore has
 // removed session persistence and terminal event side effects.
 type AgentHarnessCoreBridge struct {
-	Core  AgentHarnessCore
-	Seed  engine.CompatibilityInput
-	Usage func(agent.HarnessCoreOutput) (LegacyUsage, error)
+	Core      AgentHarnessCore
+	Seed      engine.CompatibilityInput
+	Materials MaterialSnapshotResolver
+	Usage     func(agent.HarnessCoreOutput) (LegacyUsage, error)
 }
 
 func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request HarnessCoreRequest) (HarnessCoreResult, error) {
@@ -587,8 +599,18 @@ func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request Harnes
 			case "contract":
 				execCtx.UserInput = string(value)
 			case "materials":
-				execCtx.UserMaterials = append(execCtx.UserMaterials, string(value))
-				session.UserMaterials = append(session.UserMaterials, string(value))
+				if bridge.Materials == nil {
+					return HarnessCoreResult{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+						"harness material manifest has no resolver", ErrRuntimeNotReady)
+				}
+				resolved, err := bridge.Materials.ResolveMaterialSnapshots(ctx, value)
+				if err != nil {
+					return HarnessCoreResult{}, err
+				}
+				for _, body := range resolved {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, string(body))
+					session.UserMaterials = append(session.UserMaterials, string(body))
+				}
 			case "outline":
 				var outline engine.OutlineData
 				if err := json.Unmarshal(value, &outline); err != nil {

@@ -140,7 +140,16 @@ type persistentWritingAPI struct {
 }
 
 func newPersistentWritingAPI(store *writingstore.Store, runtime *GovernedRuntime) *persistentWritingAPI {
-	return &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(),
+	var capabilities *writingplan.CapabilityRegistry
+	if runtime != nil {
+		capabilities = runtime.capabilities
+	}
+	if capabilities == nil {
+		// Runtime composition failed; keep the declared registry so plan
+		// compilation reports the missing capabilities instead of panicking.
+		capabilities = writingplan.DefaultCapabilityRegistry()
+	}
+	return &persistentWritingAPI{store: store, capabilities: capabilities,
 		templates: writingplan.DefaultTemplateRegistry(), controller: runtime, runtime: runtime}
 }
 
@@ -261,14 +270,17 @@ func (service *persistentWritingAPI) CompilePlan(ctx context.Context, access wri
 	if document.CurrentVersionID != command.BaseVersionID {
 		return writingPlanPreview{}, errWritingVersionConflict
 	}
-	if len(command.InitialArtifactTypes) > 0 && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) {
+	serverInitialArtifacts := []writingplan.ArtifactType{"contract", "materials"}
+	if len(command.InitialArtifactTypes) > 0 &&
+		!sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) &&
+		!sameArtifactTypes(command.InitialArtifactTypes, serverInitialArtifacts) {
 		return writingPlanPreview{}, fmt.Errorf("%w: initial artifacts must be backed by persisted server references", writingstore.ErrInvalidRecord)
 	}
 	if command.RequiredFinalArtifact != "" && command.RequiredFinalArtifact != "revision_set" {
 		return writingPlanPreview{}, fmt.Errorf("%w: governed writing plans must produce revision_set", writingstore.ErrInvalidRecord)
 	}
 	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel), command.RequiredValidators)
-	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
+	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: serverInitialArtifacts, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
 	envelope := writingplan.WritingPlanEnvelope{SchemaVersion: writingplan.SchemaVersion, IntentPlan: command.IntentPlan, ExecutablePlan: result.Plan, StrategyDecision: result.Decision}
 	permissions := permissionsForPlan(result.Plan, service.capabilities)
 	preview := writingPlanPreview{Envelope: envelope, Budget: command.Budget, Permissions: permissions, BaseVersionID: command.BaseVersionID}
@@ -307,7 +319,7 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 		return writingstore.RuntimeRun{}, errWritingApprovalScope
 	}
 	validators := writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel)
-	validation := writingplan.ValidationContext{Registry: service.capabilities, InitialArtifactTypes: []writingplan.ArtifactType{"contract"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: validators, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: contract.Contract.MaterialPolicy.AllowExternalResearch}
+	validation := writingplan.ValidationContext{Registry: service.capabilities, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: validators, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: contract.Contract.MaterialPolicy.AllowExternalResearch}
 	if err := command.Plan.ValidateForDispatch(validation); err != nil {
 		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %v", errWritingPlanRequired, err)
 	}
@@ -316,8 +328,12 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	}
 	// Fail closed before any persistence: a runtime that cannot dispatch must
 	// never leave an unexplained planned run behind.
-	if service.runtime != nil && !service.runtime.Ready() {
-		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, service.runtime.BlockedCode())
+	if service.runtime == nil || !service.runtime.Ready() {
+		blockedCode := "WRITING_RUNTIME_NOT_READY"
+		if service.runtime != nil && service.runtime.BlockedCode() != "" {
+			blockedCode = service.runtime.BlockedCode()
+		}
+		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, blockedCode)
 	}
 	runID := writingstore.StableID("run_", access.UserID, command.IdempotencyKey)
 	status := "planned"
@@ -346,6 +362,7 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 				Trace: writingTrace(access, "run.dispatch_rejected")}); recordErr != nil {
 				slog.Error("governed run dispatch rejection could not be recorded", "run_id", created.RunID, "error", recordErr)
 			}
+			return writingstore.RuntimeRun{}, fmt.Errorf("%w: dispatch failed", errWritingRuntimeNotReady)
 		}
 	}
 	return created, nil
@@ -391,6 +408,9 @@ func (service *persistentWritingAPI) ApproveRun(ctx context.Context, access writ
 	if run.ActivePlanID != command.PlanID || run.ActivePlanVersion != command.PlanVersion || !sameWritingPermissions(run.Permissions, command.Permissions) {
 		return writingstore.RuntimeRun{}, errWritingApprovalScope
 	}
+	if service.runtime == nil || !service.runtime.Ready() {
+		return writingstore.RuntimeRun{}, errWritingRuntimeNotReady
+	}
 	approvalKey := command.RunID + ":approval:" + access.UserID + ":" + command.IdempotencyKey
 	err = service.store.ApprovePlan(ctx, writingstore.PlanApprovalCommand{RunID: command.RunID, PlanID: command.PlanID, PlanVersion: command.PlanVersion, PlanHash: command.PlanHash, Permissions: command.Permissions, IdempotencyKey: approvalKey, Actor: writingstore.Actor{Type: writingstore.ActorUser, ID: access.UserID}})
 	if errors.Is(err, writingstore.ErrConflict) || errors.Is(err, writingstore.ErrIdempotencyConflict) {
@@ -405,9 +425,18 @@ func (service *persistentWritingAPI) ApproveRun(ctx context.Context, access writ
 	}
 	// Approval-gated runs dispatch only after the approval transaction has
 	// committed and the run reached the planned state.
-	if approved.Status == "planned" && service.runtime != nil && service.runtime.Ready() {
+	if approved.Status == "planned" {
 		if err := service.runtime.Dispatch(approved.RunID); err != nil {
-			slog.Warn("governed run could not be dispatched after approval", "run_id", approved.RunID, "error", err)
+			if _, recordErr := service.store.RecordRunTransition(ctx, writingstore.RunTransitionCommand{
+				RunID: approved.RunID, ExpectedFrom: "planned", RequestedTo: "running",
+				RuleAccepted: false, Cause: "dispatch_failed", ReasonCode: "WRITING_RUNTIME_NOT_READY",
+				Summary:        "governed runtime could not schedule the approved run",
+				IdempotencyKey: approved.RunID + ":transition:approval_dispatch_failed",
+				Trace:          writingTrace(access, "run.approval_dispatch_rejected"),
+			}); recordErr != nil {
+				slog.Error("approved run dispatch rejection could not be recorded", "run_id", approved.RunID, "error", recordErr)
+			}
+			return writingstore.RuntimeRun{}, fmt.Errorf("%w: dispatch failed after approval", errWritingRuntimeNotReady)
 		}
 	}
 	return approved, nil

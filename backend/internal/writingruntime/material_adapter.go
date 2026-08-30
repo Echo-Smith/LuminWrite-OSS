@@ -41,6 +41,14 @@ type MaterialContentSource interface {
 	LoadMaterial(context.Context, string, MaterialDescriptor) (MaterialContent, error)
 }
 
+// MaterialSnapshotResolver dereferences the immutable material manifest that
+// travels through the plan graph. Legacy writing seams receive the snapshotted
+// bodies, never a JSON list of pointers and never a fresh read of mutable user
+// material state.
+type MaterialSnapshotResolver interface {
+	ResolveMaterialSnapshots(context.Context, []byte) ([][]byte, error)
+}
+
 type MaterialSnapshotRequest struct {
 	RunID            string
 	OwnerID          string
@@ -120,7 +128,7 @@ func (adapter *MaterialAdapter) WithTelemetry(telemetry RuntimeTelemetry) *Mater
 }
 
 func (adapter *MaterialAdapter) Snapshot(ctx context.Context, request MaterialSnapshotRequest) (MaterialBundle, error) {
-	if adapter == nil || adapter.source == nil || adapter.content == nil || !hasIDPrefix(request.RunID, "run_") || strings.TrimSpace(request.OwnerID) == "" || len(request.Materials) == 0 || strings.TrimSpace(request.ConflictHandling) == "" {
+	if adapter == nil || adapter.source == nil || adapter.content == nil || !hasIDPrefix(request.RunID, "run_") || strings.TrimSpace(request.OwnerID) == "" || strings.TrimSpace(request.ConflictHandling) == "" {
 		return MaterialBundle{}, runtimeError(CodeExecutorContractMismatch, RetryNever, "invalid material snapshot request", ErrInvalidExecutionRequest)
 	}
 	materials := append([]MaterialDescriptor(nil), request.Materials...)
@@ -184,6 +192,53 @@ func (adapter *MaterialAdapter) Snapshot(ctx context.Context, request MaterialSn
 	adapter.observeMaterial(ctx, MaterialSourceManifest, "passed", "")
 	artifact := InputArtifact{ArtifactID: writingstore.StableID("art_", request.RunID, "materials", hash), Version: 1, ArtifactType: "materials", ContentHash: hash, MediaType: "application/json", ContentRef: ref}
 	return MaterialBundle{Artifact: artifact, Manifest: manifest}, nil
+}
+
+// ResolveMaterialSnapshots loads every body named by a persisted manifest and
+// verifies the declared hash before handing it to a writing implementation.
+// The returned payloads include a stable title/source header so multi-material
+// prompts preserve attribution without trusting current database metadata.
+func (adapter *MaterialAdapter) ResolveMaterialSnapshots(ctx context.Context, payload []byte) ([][]byte, error) {
+	if adapter == nil || adapter.content == nil || len(payload) == 0 {
+		return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material manifest is unavailable", ErrInvalidExecutionRequest)
+	}
+	var manifest MaterialManifest
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material manifest is invalid", err)
+	}
+	if manifest.SchemaVersion != writingplan.SchemaVersion || !hasIDPrefix(manifest.RunID, "run_") ||
+		strings.TrimSpace(manifest.OwnerID) == "" || strings.TrimSpace(manifest.ConflictHandling) == "" || manifest.CapturedAt.IsZero() {
+		return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material manifest contract is invalid", nil)
+	}
+	result := make([][]byte, 0, len(manifest.Materials))
+	seen := map[string]struct{}{}
+	for _, material := range manifest.Materials {
+		if strings.TrimSpace(material.MaterialID) == "" || strings.TrimSpace(material.Title) == "" ||
+			strings.TrimSpace(material.ContentRef) == "" || !executionHashPattern.MatchString(material.ContentHash) ||
+			!validExecutionMediaType(material.MediaType) || material.UpdatedAt.IsZero() {
+			return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material snapshot contract is invalid", nil)
+		}
+		if _, duplicate := seen[material.MaterialID]; duplicate {
+			return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material manifest contains duplicate snapshots", nil)
+		}
+		seen[material.MaterialID] = struct{}{}
+		body, err := adapter.content.Load(ctx, InputArtifact{
+			ArtifactID: writingstore.StableID("art_", manifest.RunID, material.MaterialID, material.ContentHash),
+			Version:    1, ArtifactType: "materials", ContentHash: material.ContentHash,
+			MediaType: material.MediaType, ContentRef: material.ContentRef,
+		})
+		if err != nil || contentHash(body) != material.ContentHash {
+			adapter.observeMaterial(ctx, material.SourceKind, "failed", CodeMaterialIntegrityFailed)
+			return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "material snapshot body failed integrity verification", err)
+		}
+		header := "[材料: " + material.Title + "]"
+		if material.SourceRef != "" {
+			header += "\n来源: " + material.SourceRef
+		}
+		result = append(result, []byte(header+"\n\n"+string(body)))
+		adapter.observeMaterial(ctx, material.SourceKind, "passed", "")
+	}
+	return result, nil
 }
 
 func (adapter *MaterialAdapter) Verify(ctx context.Context, artifact InputArtifact) error {

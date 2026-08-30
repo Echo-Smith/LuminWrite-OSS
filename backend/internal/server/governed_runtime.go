@@ -38,6 +38,11 @@ const (
 	governedCostPerTokenUSD = 2e-6
 
 	governedDraftCapability = "core.draft.generate"
+
+	// Each dispatched run is detached from its creating HTTP request, but it
+	// is never unbounded. Node deadlines remain the tighter limit; this ceiling
+	// also bounds persistence/recovery work between nodes.
+	governedDispatchTimeout = 2 * time.Hour
 )
 
 var errWritingRuntimeNotReady = errors.New("governed writing runtime is not ready")
@@ -54,17 +59,40 @@ type GovernedRuntimeDeps struct {
 }
 
 type GovernedRuntime struct {
+	store        *writingstore.Store
 	orchestrator *writingruntime.Orchestrator
 	registry     *writingruntime.ExecutorRegistry
 	evidence     *writingruntime.StoreRolloutEvidence
 	shadow       writingruntime.ShadowContentSink
 	canonical    *writingruntime.StoreContentGateway
 	policies     map[string]*writingruntime.MutableRolloutPolicyProvider
+	capabilities *writingplan.CapabilityRegistry
 	metrics      *MetricsRegistry
 
 	ready       atomic.Bool
 	blockedCode string
 	dispatches  atomic.Int64
+}
+
+// RecoverPending schedules runs whose durable state proves they were already
+// dispatchable before this process started. Approval and pause gates remain
+// authoritative because the store query excludes those states.
+func (runtime *GovernedRuntime) RecoverPending(ctx context.Context) (int, error) {
+	if !runtime.Ready() || runtime.store == nil {
+		return 0, errWritingRuntimeNotReady
+	}
+	runIDs, err := runtime.store.ListRecoverableRunIDs(ctx, 1000)
+	if err != nil {
+		return 0, err
+	}
+	dispatched := 0
+	for _, runID := range runIDs {
+		if err := runtime.Dispatch(runID); err != nil {
+			return dispatched, err
+		}
+		dispatched++
+	}
+	return dispatched, nil
 }
 
 // Ready reports whether governed runs may be created and dispatched.
@@ -97,11 +125,17 @@ func (runtime *GovernedRuntime) Dispatch(runID string) error {
 	}
 	runtime.dispatches.Add(1)
 	go func() {
-		// The run outlives the HTTP request that created it: node timeouts and
-		// the plan budget bound execution, not the request lifecycle.
-		ctx := context.WithoutCancel(context.Background())
+		// The run outlives the HTTP request that created it, while the process
+		// ceiling prevents database or recovery work from becoming immortal.
+		ctx, cancel := context.WithTimeout(context.Background(), governedDispatchTimeout)
+		defer cancel()
 		if _, err := runtime.orchestrator.Execute(ctx, runID); err != nil {
-			slog.Warn("governed run finished with error", "run_id", runID, "error", err)
+			causes := []string{err.Error()}
+			for unwrapped := errors.Unwrap(err); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+				causes = append(causes, unwrapped.Error())
+			}
+			slog.Warn("governed run finished with error", "run_id", runID,
+				"error", err, "cause_chain", strings.Join(causes, " ← "))
 		}
 	}()
 	return nil
@@ -141,8 +175,8 @@ func (runtime *GovernedRuntime) Cancel(ctx context.Context, runID, commandID str
 func ComposeGovernedRuntime(deps GovernedRuntimeDeps, capabilities *writingplan.CapabilityRegistry) *GovernedRuntime {
 	runtime := &GovernedRuntime{blockedCode: "WRITING_RUNTIME_NOT_READY",
 		policies: map[string]*writingruntime.MutableRolloutPolicyProvider{}, metrics: deps.Metrics}
-	if deps.Store == nil || deps.LLM == nil {
-		slog.Warn("governed runtime not composed: store or model client missing", "edition", deps.Edition)
+	if deps.Store == nil || deps.DB == nil || deps.LLM == nil || capabilities == nil {
+		slog.Warn("governed runtime not composed: store, database, model client, or capability registry missing", "edition", deps.Edition)
 		return runtime
 	}
 	evidence, err := writingruntime.NewStoreRolloutEvidence(deps.Store)
@@ -169,7 +203,7 @@ func ComposeGovernedRuntime(deps GovernedRuntimeDeps, capabilities *writingplan.
 	initial, err := writingruntime.NewCompositeInitialArtifactProvider(
 		&governedContractProvider{store: deps.Store, gateway: canonical},
 		&governedMaterialInitialProvider{provider: &writingruntime.MaterialArtifactProvider{Adapter: materialAdapter,
-			Selection: governedMaterialSelection{store: deps.Store}}},
+			Selection: governedMaterialSelection{store: deps.Store, db: deps.DB}}},
 	)
 	if err != nil {
 		slog.Warn("governed runtime not composed: initial artifact providers unavailable", "error", err)
@@ -181,89 +215,91 @@ func ComposeGovernedRuntime(deps GovernedRuntimeDeps, capabilities *writingplan.
 		Initial:     initial, Materials: deps.Store, Telemetry: governedRuntimeTelemetry(deps.Metrics)}
 
 	register := func(capabilityID string, family writingruntime.AdapterFamily, runner writingruntime.LegacyNodeRunner) error {
-		return runtime.registerBaselineAdapter(capabilities, registry, canonical, capabilityID, family, runner)
+		return runtime.registerGovernedCapability(capabilities, registry, canonical, shadow, evidence,
+			capabilityID, family, runner, family, runner)
 	}
-	mustRegister := func(capabilityID string, family writingruntime.AdapterFamily, runner writingruntime.LegacyNodeRunner) {
+	mustRegister := func(capabilityID string, family writingruntime.AdapterFamily, runner writingruntime.LegacyNodeRunner) bool {
 		if err := register(capabilityID, family, runner); err != nil {
 			slog.Warn("governed adapter not registered", "capability", capabilityID, "error", err)
+			return false
+		}
+		return true
+	}
+	// Engine family: real pipeline prefixes, one governed node each. The
+	// prefix ends with the node's own artifact producer.
+	if deps.Search != nil && deps.Search.HasSources() {
+		if !mustRegister("core.retrieval.search", writingruntime.AdapterFamilyEngine,
+			engineStepRunner(&governedSequentialStep{name: "governed_search", steps: []engine.Step{
+				steps.NewQueryPlanStep(deps.LLM), steps.NewSearchStep(deps.LLM, deps.Search),
+			}}, materialAdapter)) {
+			return runtime
 		}
 	}
-	// Engine family: real pipeline steps, one governed node each.
-	mustRegister("core.retrieval.search", writingruntime.AdapterFamilyEngine,
-		engineStepRunner(steps.NewSearchStep(deps.LLM, deps.Search)))
-	mustRegister("core.outline.generate", writingruntime.AdapterFamilyEngine,
-		engineStepRunner(steps.NewOutlineStepWithProfile(deps.LLM, deps.Profile)))
-	mustRegister("core.validation.quality", writingruntime.AdapterFamilyEngine,
-		engineStepRunner(steps.NewPostReviewStepWithSearchAndJiaozhen(deps.LLM, nil, deps.Profile, deps.Search, nil)))
+	if !mustRegister("core.outline.generate", writingruntime.AdapterFamilyEngine,
+		engineStepRunner(&governedSequentialStep{name: "governed_outline", steps: []engine.Step{
+			&governedConfirmTimeoutStep{timeout: time.Millisecond},
+			steps.NewIntentStep(deps.LLM), &governedModeOverrideStep{mode: "guided"},
+			steps.NewQueryPlanStep(deps.LLM), steps.NewOutlineStepWithProfile(deps.LLM, deps.Profile),
+		}}, materialAdapter)) {
+		return runtime
+	}
+	if !mustRegister("core.validation.quality", writingruntime.AdapterFamilyEngine,
+		engineStepRunner(&governedSequentialStep{name: "governed_quality", steps: []engine.Step{
+			steps.NewPostReviewStepWithSearchAndJiaozhen(deps.LLM, nil, deps.Profile, deps.Search, nil).RequireSuccess(),
+		}}, materialAdapter)) {
+		return runtime
+	}
 	// Engine baseline + Harness shadow candidate for the draft capability:
-	// the harness tool loop is the first governed candidate and stays
-	// offline until an explicit shadow policy is installed.
-	draftRunner := engineStepRunner(steps.NewWriteStepWithKB(deps.LLM, deps.Profile, deps.Search, deps.KB))
-	harnessRunner := writingruntime.HarnessCoreNodeRunner{Invoker: &writingruntime.AgentHarnessCoreBridge{
-		Core: agent.NewHarness(deps.LLM, deps.Search, deps.KB, deps.Profile, nil, nil),
-		Usage: func(output agent.HarnessCoreOutput) (writingruntime.LegacyUsage, error) {
-			return writingruntime.LegacyUsage{Measured: true, InputTokens: int64(output.TotalTokens)}, nil
-		},
-	}}
-	if err := runtime.registerRolloutCapability(capabilities, registry, canonical, shadow, evidence,
-		governedDraftCapability, writingruntime.AdapterFamilyEngine, draftRunner,
-		writingruntime.AdapterFamilyHarness, harnessRunner); err != nil {
+	// the harness tool loop is the first governed cross-implementation
+	// candidate and stays offline until an explicit shadow policy is installed.
+	if err := runtime.registerGovernedCapability(capabilities, registry, canonical, shadow, evidence,
+		governedDraftCapability, writingruntime.AdapterFamilyEngine,
+		engineStepRunner(&governedSequentialStep{name: "governed_draft", steps: []engine.Step{
+			steps.NewWriteStepWithKB(deps.LLM, deps.Profile, deps.Search, deps.KB),
+		}}, materialAdapter), writingruntime.AdapterFamilyHarness,
+		writingruntime.HarnessCoreNodeRunner{Invoker: &writingruntime.AgentHarnessCoreBridge{
+			Core:      agent.NewHarness(deps.LLM, deps.Search, deps.KB, deps.Profile, nil, nil),
+			Materials: materialAdapter,
+			Usage: func(output agent.HarnessCoreOutput) (writingruntime.LegacyUsage, error) {
+				return writingruntime.LegacyUsage{Measured: true, InputTokens: int64(output.TotalTokens)}, nil
+			},
+		}}); err != nil {
 		slog.Warn("governed draft rollout not registered", "error", err)
+		return runtime
 	}
 	// Editorial family: the finalize role produces the revision set.
-	mustRegister("core.document.finalize", writingruntime.AdapterFamilyEditorial,
+	if !mustRegister("core.document.finalize", writingruntime.AdapterFamilyEditorial,
 		&writingruntime.EditorialRoleNodeRunner{
 			Invoker: editorial.NewRoleAgentRunner(deps.LLM, deps.Search, deps.KB, deps.Profile, nil, nil),
 			Config:  &editorial.AgentConfig{ID: "governed-finalize", Name: "Governed Finalizer", Role: string(editorial.RoleWriting)},
 			Usage: func(result *editorial.RoleRunResult) (writingruntime.LegacyUsage, error) {
 				return writingruntime.LegacyUsage{Measured: true, InputTokens: int64(result.Tokens)}, nil
 			},
-		})
+		}) {
+		return runtime
+	}
 
 	runtime.orchestrator = orchestrator
+	runtime.store = deps.Store
 	runtime.registry = registry
 	runtime.evidence = evidence
 	runtime.shadow = shadow
 	runtime.canonical = canonical
+	runtime.capabilities = capabilities
 	runtime.ready.Store(true)
 	slog.Info("governed runtime composed", "edition", deps.Edition,
-		"capabilities", len(runtime.policies)+4)
+		"capabilities", len(runtime.policies))
 	return runtime
 }
 
-func (runtime *GovernedRuntime) registerBaselineAdapter(capabilities *writingplan.CapabilityRegistry,
-	registry *writingruntime.ExecutorRegistry, canonical *writingruntime.StoreContentGateway,
-	capabilityID string, family writingruntime.AdapterFamily, runner writingruntime.LegacyNodeRunner) error {
-	manifest, ok := capabilities.Get(capabilityID)
-	if !ok {
-		return fmt.Errorf("unknown governed capability %s", capabilityID)
-	}
-	if err := capabilities.RegisterExecutor(writingplan.ExecutorBinding{ID: manifest.Executor,
-		AcceptedInputTypes: append([]writingplan.ArtifactType(nil), manifest.InputTypes...),
-		ProducedOutputTypes: append([]writingplan.ArtifactType(nil), manifest.OutputTypes...),
-		Dispatch: func(context.Context, writingplan.ExecutionRequest) (writingplan.ExecutionResult, error) {
-			return writingplan.ExecutionResult{}, nil
-		}}); err != nil {
-		return err
-	}
-	available := manifest
-	available.Available = true
-	if err := capabilities.Register(available); err != nil {
-		return err
-	}
-	baseline, err := writingruntime.NewLegacyExecutorAdapter(family,
-		writingruntime.ExecutorDescriptor{ExecutorID: manifest.Executor, Version: "governed-1",
-			SupportedNodeKinds: manifest.SupportedNodeKinds},
-		capabilityID, manifest.Version, manifest.Permissions, canonical, runner)
-	if err != nil {
-		return err
-	}
-	return registry.Register(baseline)
-}
-
-// registerRolloutCapability pairs an authoritative baseline adapter with a
-// shadow-isolated candidate behind a default-off rollout policy.
-func (runtime *GovernedRuntime) registerRolloutCapability(capabilities *writingplan.CapabilityRegistry,
+// registerGovernedCapability wires one capability into the governed runtime:
+// an authoritative baseline adapter (canonical gateway) paired with a
+// shadow-isolated candidate behind a default-off rollout policy. The
+// executor registry only accepts rollout executors, so offline adapters can
+// never bypass the rollout boundary. candidateRunner may equal baselineRunner
+// (isolation-equivalent comparisons) or a different real implementation
+// (cross-implementation shadow comparisons, e.g. Harness vs Engine draft).
+func (runtime *GovernedRuntime) registerGovernedCapability(capabilities *writingplan.CapabilityRegistry,
 	registry *writingruntime.ExecutorRegistry, canonical *writingruntime.StoreContentGateway,
 	shadow writingruntime.ShadowContentSink, evidence *writingruntime.StoreRolloutEvidence,
 	capabilityID string, baselineFamily writingruntime.AdapterFamily, baselineRunner writingruntime.LegacyNodeRunner,
@@ -272,28 +308,14 @@ func (runtime *GovernedRuntime) registerRolloutCapability(capabilities *writingp
 	if !ok {
 		return fmt.Errorf("unknown governed capability %s", capabilityID)
 	}
-	bindingID := manifest.Executor
-	if err := capabilities.RegisterExecutor(writingplan.ExecutorBinding{ID: bindingID,
-		AcceptedInputTypes: append([]writingplan.ArtifactType(nil), manifest.InputTypes...),
-		ProducedOutputTypes: append([]writingplan.ArtifactType(nil), manifest.OutputTypes...),
-		Dispatch: func(context.Context, writingplan.ExecutionRequest) (writingplan.ExecutionResult, error) {
-			return writingplan.ExecutionResult{}, nil
-		}}); err != nil {
-		return err
-	}
-	available := manifest
-	available.Available = true
-	if err := capabilities.Register(available); err != nil {
-		return err
-	}
 	baseline, err := writingruntime.NewLegacyExecutorAdapter(baselineFamily,
-		writingruntime.ExecutorDescriptor{ExecutorID: bindingID, Version: "governed-1",
+		writingruntime.ExecutorDescriptor{ExecutorID: manifest.Executor, Version: "governed-1",
 			SupportedNodeKinds: manifest.SupportedNodeKinds},
 		capabilityID, manifest.Version, manifest.Permissions, canonical, baselineRunner)
 	if err != nil {
 		return err
 	}
-	candidateID := bindingID + ".harness_candidate"
+	candidateID := manifest.Executor + ".shadow_candidate"
 	nodePolicy := governedOffPolicy(candidateID, candidateFamily, capabilityID, manifest.Version)
 	nodeGateway, err := writingruntime.NewShadowContentGateway(canonical, shadow, nodePolicy)
 	if err != nil {
@@ -310,12 +332,24 @@ func (runtime *GovernedRuntime) registerRolloutCapability(capabilities *writingp
 	if err != nil {
 		return err
 	}
-	rollout, err := writingruntime.NewRolloutExecutor(baseline, candidate, nodeProvider, evidence,
+	rollout, err := writingruntime.NewShadowRolloutExecutor(baseline, candidate, nodeProvider, evidence,
 		governedRuntimeTelemetry(runtime.metrics))
 	if err != nil {
 		return err
 	}
 	if err := registry.Register(rollout); err != nil {
+		return err
+	}
+	acceptedInputs := append(append([]writingplan.ArtifactType(nil), manifest.InputTypes...), manifest.OptionalInputTypes...)
+	if err := capabilities.RegisterExecutor(writingplan.ExecutorBinding{ID: manifest.Executor,
+		AcceptedInputTypes:  acceptedInputs,
+		ProducedOutputTypes: append([]writingplan.ArtifactType(nil), manifest.OutputTypes...),
+		Dispatch: func(context.Context, writingplan.ExecutionRequest) (writingplan.ExecutionResult, error) {
+			return writingplan.ExecutionResult{}, nil
+		}}); err != nil {
+		return err
+	}
+	if err := capabilities.Enable(capabilityID); err != nil {
 		return err
 	}
 	runtime.policies[capabilityID] = nodeProvider
@@ -330,8 +364,70 @@ func governedOffPolicy(executorID string, family writingruntime.AdapterFamily, c
 	return policy
 }
 
-func engineStepRunner(step engine.Step) writingruntime.LegacyNodeRunner {
-	return writingruntime.EngineStepRunner{StepFactory: func() engine.Step { return step },
+// governedSequentialStep runs a pipeline prefix as one governed node. The
+// real pipeline steps have ordering dependencies (IntentStep classifies the
+// task, QueryPlanStep produces the WritingTask that OutlineStep renders), so
+// capability nodes execute the prefix that ends with their own artifact.
+type governedSequentialStep struct {
+	name  engine.StepName
+	steps []engine.Step
+}
+
+func (step *governedSequentialStep) Name() engine.StepName { return step.name }
+func (step *governedSequentialStep) CanPause() bool        { return false }
+func (step *governedSequentialStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) error {
+	for _, subStep := range step.steps {
+		if skipper, ok := subStep.(engine.Skipper); ok && skipper.ShouldSkip(execCtx) {
+			continue
+		}
+		if err := subStep.Execute(ctx, execCtx, emitter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// governedModeOverrideStep switches the compatibility context's mode between
+// pipeline prefixes: IntentStep classifies deterministically in "writing"
+// mode, while OutlineStep only renders outlines in "guided" mode.
+type governedModeOverrideStep struct {
+	mode string
+}
+
+func (step *governedModeOverrideStep) Name() engine.StepName {
+	return engine.StepName("governed_mode_" + step.mode)
+}
+func (step *governedModeOverrideStep) CanPause() bool { return false }
+func (step *governedModeOverrideStep) Execute(_ context.Context, execCtx *engine.ExecutionContext, _ engine.EventEmitter) error {
+	execCtx.Mode = step.mode
+	return nil
+}
+
+// governedConfirmTimeoutStep caps the interactive outline confirmation wait:
+// governed batch runs auto-confirm the outline (the no-op emitter never
+// delivers confirmations), so the wait must release immediately instead of
+// burning the node deadline.
+type governedConfirmTimeoutStep struct {
+	timeout time.Duration
+}
+
+func (step *governedConfirmTimeoutStep) Name() engine.StepName {
+	return engine.StepName("governed_confirm_timeout")
+}
+func (step *governedConfirmTimeoutStep) CanPause() bool { return false }
+func (step *governedConfirmTimeoutStep) Execute(_ context.Context, execCtx *engine.ExecutionContext, _ engine.EventEmitter) error {
+	execCtx.ConfirmTimeout = step.timeout
+	return nil
+}
+
+func engineStepRunner(step engine.Step, materials writingruntime.MaterialSnapshotResolver) writingruntime.LegacyNodeRunner {
+	return writingruntime.EngineStepRunner{
+		// Governed nodes are writing nodes: the compatibility context pins the
+		// mode so intent classification never downgrades a contract-driven run
+		// into chat.
+		Seed:        engine.CompatibilityInput{Mode: "writing"},
+		Materials:   materials,
+		StepFactory: func() engine.Step { return step },
 		Usage: func(execCtx *engine.ExecutionContext) (writingruntime.LegacyUsage, error) {
 			if execCtx == nil || execCtx.TotalTokens <= 0 {
 				return writingruntime.LegacyUsage{}, writingruntime.ErrLegacyUsageMissing
@@ -374,6 +470,7 @@ func (provider *governedContractProvider) InitialArtifacts(ctx context.Context, 
 // material provider is skipped entirely for runs without materials.
 type governedMaterialSelection struct {
 	store *writingstore.Store
+	db    *sql.DB
 }
 
 func (selection governedMaterialSelection) MaterialsForRun(ctx context.Context, run writingstore.RuntimeRun, _ writingstore.PlanRecord) (writingruntime.MaterialSnapshotRequest, error) {
@@ -381,25 +478,22 @@ func (selection governedMaterialSelection) MaterialsForRun(ctx context.Context, 
 	if err != nil {
 		return writingruntime.MaterialSnapshotRequest{}, err
 	}
-	descriptors := governedMaterialDescriptors(document.Metadata, document.OwnerUserID)
+	descriptors, err := governedMaterialDescriptors(ctx, selection.db, document.Metadata, document.OwnerUserID)
+	if err != nil {
+		return writingruntime.MaterialSnapshotRequest{}, err
+	}
 	return writingruntime.MaterialSnapshotRequest{RunID: run.RunID, OwnerID: document.OwnerUserID,
 		ConflictHandling: "ask_user", Materials: descriptors}, nil
 }
 
-// governedMaterialInitialProvider skips material snapshotting for runs that
-// selected no materials instead of failing the whole run.
+// governedMaterialInitialProvider always emits the typed materials manifest.
+// An empty selection becomes an immutable empty manifest, which keeps the
+// plan's initial artifact contract uniform without inventing source content.
 type governedMaterialInitialProvider struct {
 	provider *writingruntime.MaterialArtifactProvider
 }
 
 func (provider *governedMaterialInitialProvider) InitialArtifacts(ctx context.Context, run writingstore.RuntimeRun, plan writingstore.PlanRecord) ([]writingruntime.InputArtifact, error) {
-	request, err := provider.provider.Selection.MaterialsForRun(ctx, run, plan)
-	if err != nil {
-		return nil, err
-	}
-	if len(request.Materials) == 0 {
-		return nil, nil
-	}
 	return provider.provider.InitialArtifacts(ctx, run, plan)
 }
 
@@ -413,10 +507,11 @@ func (source governedMaterialSource) LoadMaterial(ctx context.Context, ownerID s
 	if source.db == nil {
 		return writingruntime.MaterialContent{}, fmt.Errorf("%w: material database unavailable", writingruntime.ErrLegacyContentIntegrity)
 	}
-	var preview, sourceURL sql.NullString
+	var preview, sourceURL, documentID sql.NullString
 	err := source.db.QueryRowContext(ctx, `
-		SELECT content_preview, source_url FROM user_materials WHERE id::text=$1 AND user_id=$2
-	`, descriptor.MaterialID, ownerID).Scan(&preview, &sourceURL)
+		SELECT content_preview, source_url, doc_id::text
+		FROM user_materials WHERE id::text=$1 AND user_id=$2 AND status='active'
+	`, descriptor.MaterialID, ownerID).Scan(&preview, &sourceURL, &documentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return writingruntime.MaterialContent{}, fmt.Errorf("%w: material %s", writingstore.ErrNotFound, descriptor.MaterialID)
 	}
@@ -430,9 +525,27 @@ func (source governedMaterialSource) LoadMaterial(ctx context.Context, ownerID s
 	if sourceURL.Valid && sourceURL.String != "" {
 		refs = append(refs, sourceURL.String)
 	}
-	body := strings.TrimSpace(preview.String)
+	body := ""
+	if documentID.Valid && documentID.String != "" {
+		var chunks sql.NullString
+		if err := source.db.QueryRowContext(ctx, `
+			SELECT string_agg(kc.content, E'\n\n' ORDER BY kc.chunk_index)
+			FROM knowledge_chunks kc
+			JOIN knowledge_base kb ON kb.id=kc.doc_id
+			WHERE kc.doc_id::text=$1 AND (kb.user_id=$2 OR kc.user_id=$2)
+		`, documentID.String, ownerID).Scan(&chunks); err != nil {
+			return writingruntime.MaterialContent{}, fmt.Errorf("load material chunks: %w", err)
+		}
+		body = strings.TrimSpace(chunks.String)
+		if body != "" {
+			refs = append(refs, "kb://"+documentID.String)
+		}
+	}
 	if body == "" {
-		body = descriptor.Title
+		body = strings.TrimSpace(preview.String)
+	}
+	if body == "" {
+		return writingruntime.MaterialContent{}, fmt.Errorf("%w: material %s has no persisted body", writingruntime.ErrLegacyContentIntegrity, descriptor.MaterialID)
 	}
 	return writingruntime.MaterialContent{Body: []byte(body), SourceRefs: refs}, nil
 }
@@ -445,10 +558,13 @@ func governedRuntimeTrace() writingstore.TraceContext {
 // governedMaterialDescriptors decodes the material references the frontend
 // attached to the document (identities only; bodies are loaded at snapshot
 // time through governedMaterialSource).
-func governedMaterialDescriptors(metadata map[string]any, ownerID string) []writingruntime.MaterialDescriptor {
+func governedMaterialDescriptors(ctx context.Context, db *sql.DB, metadata map[string]any, ownerID string) ([]writingruntime.MaterialDescriptor, error) {
+	if db == nil {
+		return nil, fmt.Errorf("%w: material database unavailable", writingruntime.ErrRuntimeNotReady)
+	}
 	raw, ok := metadata["material_refs"].([]any)
 	if !ok {
-		return []writingruntime.MaterialDescriptor{}
+		return []writingruntime.MaterialDescriptor{}, nil
 	}
 	descriptors := make([]writingruntime.MaterialDescriptor, 0, len(raw))
 	for _, entry := range raw {
@@ -460,20 +576,30 @@ func governedMaterialDescriptors(metadata map[string]any, ownerID string) []writ
 		if strings.TrimSpace(materialID) == "" {
 			continue
 		}
-		title, _ := item["title"].(string)
-		sourceKind, _ := item["source_kind"].(string)
-		sourceRef, _ := item["source_ref"].(string)
-		if sourceRef == "" {
-			sourceRef = materialID
+		var title, sourceKind string
+		var sourceURL, documentID sql.NullString
+		var updatedAt time.Time
+		err := db.QueryRowContext(ctx, `
+			SELECT title, source_type, source_url, doc_id::text, updated_at
+			FROM user_materials WHERE id::text=$1 AND user_id=$2 AND status='active'
+		`, materialID, ownerID).Scan(&title, &sourceKind, &sourceURL, &documentID, &updatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: material %s is unavailable to this document owner", writingstore.ErrNotFound, materialID)
 		}
-		if sourceKind == "" {
-			sourceKind = string(writingruntime.MaterialSourceText)
+		if err != nil {
+			return nil, fmt.Errorf("load material descriptor: %w", err)
+		}
+		sourceRef := materialID
+		if sourceURL.Valid && sourceURL.String != "" {
+			sourceRef = sourceURL.String
+		} else if documentID.Valid && documentID.String != "" {
+			sourceRef = "kb://" + documentID.String
 		}
 		descriptors = append(descriptors, writingruntime.MaterialDescriptor{MaterialID: materialID,
 			OwnerID: ownerID, Title: title, SourceKind: writingruntime.MaterialSourceKind(sourceKind),
-			SourceRef: sourceRef, MediaType: "text/plain", UpdatedAt: time.Now().UTC()})
+			SourceRef: sourceRef, MediaType: "text/plain", UpdatedAt: updatedAt.UTC()})
 	}
-	return descriptors
+	return descriptors, nil
 }
 
 // governedRuntimeTelemetry bridges runtime metrics onto the bounded

@@ -126,6 +126,33 @@ func (r *CapabilityRegistry) Declare(manifest CapabilityManifest) error {
 	return r.registerLocked(manifest)
 }
 
+// Enable flips a declared (unavailable) capability to available once a real
+// executor binding has been registered that covers the manifest's input and
+// output contract. This is how the governed composition root activates
+// declared capabilities after wiring their production adapters.
+func (r *CapabilityRegistry) Enable(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	manifest, ok := r.manifests[id]
+	if !ok {
+		return fmt.Errorf("UNKNOWN_CAPABILITY: %s", id)
+	}
+	if manifest.Available {
+		return nil
+	}
+	binding, ok := r.executors[manifest.Executor]
+	if !ok || binding.Dispatch == nil {
+		return fmt.Errorf("UNKNOWN_EXECUTOR: %s", manifest.Executor)
+	}
+	acceptedInputs := append(append([]ArtifactType(nil), manifest.InputTypes...), manifest.OptionalInputTypes...)
+	if !artifactSubset(acceptedInputs, binding.AcceptedInputTypes) || !artifactSubset(manifest.OutputTypes, binding.ProducedOutputTypes) {
+		return fmt.Errorf("EXECUTOR_TYPE_MISMATCH: %s", manifest.Executor)
+	}
+	manifest.Available = true
+	r.manifests[id] = manifest
+	return nil
+}
+
 func (r *CapabilityRegistry) registerLocked(manifest CapabilityManifest) error {
 	if _, exists := r.manifests[manifest.ID]; exists {
 		return fmt.Errorf("DUPLICATE_CAPABILITY: %s", manifest.ID)
@@ -237,10 +264,10 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 			Idempotency: IdempotencyRequired}
 	}
 	outline := base("core.outline.generate", "writing.outline", "engine.step.outline", []ArtifactType{"contract"}, []ArtifactType{"outline"}, []Permission{"model.invoke", "materials.read"}, false)
-	outline.OptionalInputTypes = []ArtifactType{"source_pack"}
+	outline.OptionalInputTypes = []ArtifactType{"materials", "source_pack"}
 	register(outline)
 	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"full_draft"}, []Permission{"model.invoke", "materials.read"}, false)
-	draft.OptionalInputTypes = []ArtifactType{"outline", "source_pack"}
+	draft.OptionalInputTypes = []ArtifactType{"materials", "outline", "source_pack"}
 	register(draft)
 	quality := base("core.validation.quality", "validation.quality", "engine.step.post_review", []ArtifactType{"full_draft"}, []ArtifactType{"quality_report"}, []Permission{"model.invoke", "validation.run"}, true)
 	quality.OptionalInputTypes = []ArtifactType{"evidence_report", "fact_report"}
