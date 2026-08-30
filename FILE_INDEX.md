@@ -15,6 +15,7 @@
 - `backend/internal/server/readiness.go`、`readiness_test.go`：区分 installed/configured/reachable/ready，并为生产流量提供 fail-closed `/ready`。
 - `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
 - `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
+- `backend/internal/writingruntime/store_evidence.go`、`store_evidence_test.go`：将 rollout evidence 严格校验后写入 writingstore 唯一 RunLedger。
 
 ## Specifications and plans
 
