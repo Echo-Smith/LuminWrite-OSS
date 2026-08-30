@@ -103,6 +103,10 @@ type Server struct {
 	// Governed writing API. Nil only when persistence is unavailable.
 	writingAPI writingAPIService
 
+	// Deployment readiness is stricter than liveness: configured external
+	// dependencies remain unready until a bounded probe succeeds.
+	readiness *ReadinessRegistry
+
 	// Billing
 billingRepo *database.BillingRepo
 pointCalc    *services.PointCalculator
@@ -483,6 +487,7 @@ func New(cfg *config.Config) (*Server, error) {
 		redTeamRepo:   redTeamRepo,
 		evidenceRepo:  evidenceRepo,
 		sessionEvents: sessionEventRepo,
+		db:            db,
 	}
 
 	// ── User custom styles & AI builder ──
@@ -712,6 +717,8 @@ func New(cfg *config.Config) (*Server, error) {
 		)
 	}
 
+	s.initializeReadiness(time.Now())
+
 	return s, nil
 }
 
@@ -728,6 +735,7 @@ func (s *Server) Router() http.Handler {
 
 	// Health check
 	r.Get("/health", s.handleHealth)
+	r.Get("/ready", s.handleReady)
 
 	// Prometheus metrics
 	r.Get("/metrics", s.handleMetrics)
@@ -1292,8 +1300,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":              "ok",
 		"version":             "v2",
 		"instance_id":         s.instanceID,
-		"llm_configured":      s.llm != nil,
-		"search_configured":   s.search != nil && s.search.HasSources(),
+		"llm_configured":      s.llm != nil && s.llm.IsConfigured(),
+		"search_configured":   s.search != nil && s.search.HasExternalSources(),
 		"db_configured":       s.dbAvail,
 		"embedding_configured": embeddingConfigured,
 		"active_sessions":     activeSessions,

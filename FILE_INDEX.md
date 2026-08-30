@@ -12,6 +12,8 @@
 - `backend/internal/tools/search.go`、`search_stubs.go`：Task13 OSS 检索能力边界；共享接口保留，但商业 Provider 不注册且显式返回未安装。
 - `backend/internal/tools/url_fetcher.go`：两版共享的有界本地网页抓取与正文抽取实现。
 - `backend/internal/tools/search_capability_test.go`：验证 OSS 不暴露或假注册付费搜索源。
+- `backend/internal/server/readiness.go`、`readiness_test.go`：区分 installed/configured/reachable/ready，并为生产流量提供 fail-closed `/ready`。
+- `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
 
 ## Specifications and plans
 

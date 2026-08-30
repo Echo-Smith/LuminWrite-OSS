@@ -30,27 +30,27 @@ type LLMClient struct {
 	model             string
 	maxTokens         int
 	temperature       float64
-	reasoningEffort   string             // default reasoning effort: low | medium | high | max (thinking mode only)
+	reasoningEffort   string // default reasoning effort: low | medium | high | max (thinking mode only)
 	httpClient        *http.Client
-	responsesAPIRatio float64           // 0.0~1.0, proportion of traffic routed to Responses API
-	abMetrics         *ABMetrics        // A/B test metrics collector (nil if A/B disabled)
+	responsesAPIRatio float64    // 0.0~1.0, proportion of traffic routed to Responses API
+	abMetrics         *ABMetrics // A/B test metrics collector (nil if A/B disabled)
 	metrics           LLMMetricsRecorder
 	customHeaders     map[string]string // custom HTTP headers added to every request
 }
 
 // LLMMessage represents a single message in the conversation.
 type LLMMessage struct {
-	Role             string `json:"role"`
-	Content          string `json:"content"`
-	ReasoningContent string `json:"reasoning_content,omitempty"` // thinking mode: must be preserved for tool-call turns
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"` // thinking mode: must be preserved for tool-call turns
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string `json:"tool_call_id,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall represents a function tool call returned by the model.
 type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
 }
 
@@ -62,16 +62,16 @@ type ToolCallFunction struct {
 
 // LLMRequest is the request body for the chat completions API.
 type LLMRequest struct {
-	Model            string          `json:"model"`
-	Messages         []LLMMessage    `json:"messages"`
-	Stream           bool            `json:"stream"`
-	Temperature      float64         `json:"temperature,omitempty"`
-	MaxTokens        int             `json:"max_tokens"`
-	Thinking         *Thinking       `json:"thinking,omitempty"`
-	ReasoningEffort  string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
-	Tools            []ToolDef       `json:"tools,omitempty"`
-	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`
-	Instructions     string          `json:"-"` // Static system prompt for Responses API (higher cache hit rate)
+	Model           string          `json:"model"`
+	Messages        []LLMMessage    `json:"messages"`
+	Stream          bool            `json:"stream"`
+	Temperature     float64         `json:"temperature,omitempty"`
+	MaxTokens       int             `json:"max_tokens"`
+	Thinking        *Thinking       `json:"thinking,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
+	Tools           []ToolDef       `json:"tools,omitempty"`
+	ResponseFormat  *ResponseFormat `json:"response_format,omitempty"`
+	Instructions    string          `json:"-"` // Static system prompt for Responses API (higher cache hit rate)
 }
 
 // ResponseFormat controls the output format of the model.
@@ -87,15 +87,15 @@ type Thinking struct {
 // LLMResponse is the response from the chat completions API.
 type LLMResponse struct {
 	Choices []struct {
-		Message         LLMMessage `json:"message"`
-		FinishReason    string     `json:"finish_reason"`
+		Message      LLMMessage `json:"message"`
+		FinishReason string     `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens          int `json:"prompt_tokens"`
-		CompletionTokens      int `json:"completion_tokens"`
-		TotalTokens           int `json:"total_tokens"`
-		CacheHitTokens        int `json:"prompt_cache_hit_tokens"`
-		CacheMissTokens       int `json:"prompt_cache_miss_tokens"`
+		PromptTokens            int `json:"prompt_tokens"`
+		CompletionTokens        int `json:"completion_tokens"`
+		TotalTokens             int `json:"total_tokens"`
+		CacheHitTokens          int `json:"prompt_cache_hit_tokens"`
+		CacheMissTokens         int `json:"prompt_cache_miss_tokens"`
 		CompletionTokensDetails struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
@@ -104,7 +104,7 @@ type LLMResponse struct {
 
 // ToolDef defines a tool that the model can call.
 type ToolDef struct {
-	Type     string         `json:"type"` // always "function"
+	Type     string          `json:"type"` // always "function"
 	Function ToolDefFunction `json:"function"`
 }
 
@@ -139,11 +139,11 @@ type StreamChunk struct {
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens          int `json:"prompt_tokens"`
-		CompletionTokens      int `json:"completion_tokens"`
-		TotalTokens           int `json:"total_tokens"`
-		CacheHitTokens        int `json:"prompt_cache_hit_tokens"`
-		CacheMissTokens       int `json:"prompt_cache_miss_tokens"`
+		PromptTokens            int `json:"prompt_tokens"`
+		CompletionTokens        int `json:"completion_tokens"`
+		TotalTokens             int `json:"total_tokens"`
+		CacheHitTokens          int `json:"prompt_cache_hit_tokens"`
+		CacheMissTokens         int `json:"prompt_cache_miss_tokens"`
 		CompletionTokensDetails struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
@@ -162,6 +162,24 @@ func NewLLMClient(baseURL, apiKey, model string, maxTokens int, temperature floa
 		httpClient:      &http.Client{Timeout: timeout},
 		customHeaders:   nil,
 	}
+}
+
+// IsConfigured reports whether the client has a non-placeholder credential.
+// It intentionally does not imply that the provider has been probed or is
+// reachable; deployment readiness tracks that separately.
+func (c *LLMClient) IsConfigured() bool {
+	if c == nil {
+		return false
+	}
+	apiKey := strings.ToLower(strings.TrimSpace(c.apiKey))
+	if apiKey == "" {
+		return false
+	}
+	switch apiKey {
+	case "your-api-key", "your-deepseek-api-key", "placeholder":
+		return false
+	}
+	return !strings.HasPrefix(apiKey, "your-")
 }
 
 // SetReasoningEffort sets the default reasoning effort for this client.
@@ -516,7 +534,7 @@ func (c *LLMClient) chatStreamRound(
 	var reasoningBuf strings.Builder
 	totalTokens := 0
 	cacheHitTokens := 0 // prompt cache 命中 token 数
-	finishReason := ""   // 追踪本轮的 finish_reason
+	finishReason := ""  // 追踪本轮的 finish_reason
 
 	// Accumulate tool calls by index (OpenAI streams them as fragments)
 	toolCallMap := make(map[int]*ToolCall)
@@ -524,8 +542,8 @@ func (c *LLMClient) chatStreamRound(
 	// Optimistic streaming state: track whether content has been pushed
 	// and whether tool calls have started arriving.
 	contentStreamed := false // true once we've pushed any content to onDelta
-	toolCallStarted := false  // true once the first tool_call delta arrives
-	resetCalled := false      // true after onReset has been invoked for this round
+	toolCallStarted := false // true once the first tool_call delta arrives
+	resetCalled := false     // true after onReset has been invoked for this round
 
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
@@ -555,61 +573,61 @@ func (c *LLMClient) chatStreamRound(
 					continue
 				}
 
-			for _, choice := range chunk.Choices {
-				// 追踪 finish_reason（检测 length 截断）
-				if choice.FinishReason != "" {
-					finishReason = choice.FinishReason
-				}
-				// Stream reasoning_content in real-time
-				if choice.Delta.ReasoningContent != "" {
-					reasoningBuf.WriteString(choice.Delta.ReasoningContent)
-					if onReasoning != nil {
-						onReasoning(choice.Delta.ReasoningContent)
+				for _, choice := range chunk.Choices {
+					// 追踪 finish_reason（检测 length 截断）
+					if choice.FinishReason != "" {
+						finishReason = choice.FinishReason
 					}
-				}
-				// Stream content in real-time AND buffer it for the returned message.
-				// Optimistic: push to onDelta immediately. If tool_calls arrive
-				// later in this same round, onReset will be called to roll back.
-				if choice.Delta.Content != "" {
-					contentBuf.WriteString(choice.Delta.Content)
-					if onDelta != nil && !toolCallStarted && !resetCalled {
-						onDelta(choice.Delta.Content)
-						contentStreamed = true
-					}
-				}
-				// Accumulate tool call deltas by index
-				for _, tcDelta := range choice.Delta.ToolCalls {
-					if !toolCallStarted {
-						toolCallStarted = true
-						// If content was already streamed, this is an intermediate
-						// round — invoke rollback so the caller can discard it.
-						if contentStreamed && onReset != nil && !resetCalled {
-							onReset()
-							resetCalled = true
+					// Stream reasoning_content in real-time
+					if choice.Delta.ReasoningContent != "" {
+						reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+						if onReasoning != nil {
+							onReasoning(choice.Delta.ReasoningContent)
 						}
 					}
-					tc, exists := toolCallMap[tcDelta.Index]
-					if !exists {
-						tc = &ToolCall{}
-						toolCallMap[tcDelta.Index] = tc
+					// Stream content in real-time AND buffer it for the returned message.
+					// Optimistic: push to onDelta immediately. If tool_calls arrive
+					// later in this same round, onReset will be called to roll back.
+					if choice.Delta.Content != "" {
+						contentBuf.WriteString(choice.Delta.Content)
+						if onDelta != nil && !toolCallStarted && !resetCalled {
+							onDelta(choice.Delta.Content)
+							contentStreamed = true
+						}
 					}
-					if tcDelta.ID != "" {
-						tc.ID = tcDelta.ID
+					// Accumulate tool call deltas by index
+					for _, tcDelta := range choice.Delta.ToolCalls {
+						if !toolCallStarted {
+							toolCallStarted = true
+							// If content was already streamed, this is an intermediate
+							// round — invoke rollback so the caller can discard it.
+							if contentStreamed && onReset != nil && !resetCalled {
+								onReset()
+								resetCalled = true
+							}
+						}
+						tc, exists := toolCallMap[tcDelta.Index]
+						if !exists {
+							tc = &ToolCall{}
+							toolCallMap[tcDelta.Index] = tc
+						}
+						if tcDelta.ID != "" {
+							tc.ID = tcDelta.ID
+						}
+						if tcDelta.Type != "" {
+							tc.Type = tcDelta.Type
+						}
+						if tcDelta.Function.Name != "" {
+							tc.Function.Name = tcDelta.Function.Name
+						}
+						tc.Function.Arguments += tcDelta.Function.Arguments
 					}
-					if tcDelta.Type != "" {
-						tc.Type = tcDelta.Type
-					}
-					if tcDelta.Function.Name != "" {
-						tc.Function.Name = tcDelta.Function.Name
-					}
-					tc.Function.Arguments += tcDelta.Function.Arguments
-				}
 				}
 
-			if chunk.Usage != nil {
-				totalTokens = chunk.Usage.TotalTokens
-				cacheHitTokens = chunk.Usage.CacheHitTokens
-			}
+				if chunk.Usage != nil {
+					totalTokens = chunk.Usage.TotalTokens
+					cacheHitTokens = chunk.Usage.CacheHitTokens
+				}
 			}
 		}
 		if err != nil {
@@ -810,14 +828,14 @@ func (c *LLMClient) doStreamRequest(ctx context.Context, req *LLMRequest) (io.Re
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	c.applyCustomHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("LLM API stream request failed: %w", err)
+	if err != nil {
+		return nil, fmt.Errorf("LLM API stream request failed: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
