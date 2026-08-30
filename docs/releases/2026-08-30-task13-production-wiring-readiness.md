@@ -1,28 +1,79 @@
-# Task13 生产接线验收记录 — 2026-08-30
+# Task13 生产接线门禁记录 — 2026-08-30
 
-## 已完成并验证（OSS `4509b97` / Commercial `75965ba`）
+## 结论
 
-1. **canonical 内容存储与恢复边界**：`writing_canonical_content`（migration 097）按 key 幂等存储治理产物正文，Load 逐次校验声明哈希（篡改/漂移 → `MATERIAL_INTEGRITY_FAILED`），重启恢复读同一行。down 迁移在有工件引用时拒绝执行。
-2. **Governed Runtime 组合根**：`server/governed_runtime.go` 是唯一组装点——writingstore 持久化、durable rollout evidence、durable shadow sink（migration 096 + TTL）、canonical gateway、持久化 checkpoint、真实材料源（user_materials）全部从生产依赖构造。模型或存储缺失时整组 fail-closed。
-3. **三类真实 adapter 注册**：Engine 家族挂真实管线步骤（SearchStep/OutlineStep/WriteStepWithKB/PostReview）、Editorial 家族挂 RoleAgentRunner（finalize → revision_set）、Harness 家族的 AgentHarnessCoreBridge 作为 draft 能力的 shadow-isolated candidate——与 Engine baseline 组成 rollout pair，默认 rollout 为 off。
-4. **普通任务自动调度**：CreateRun 事务提交后立即在服务端自有 context 上派发（HTTP 请求生命周期不约束 run）。
-5. **批准后调度**：approval 提交并使 run 进入 planned 后派发。
-6. **WRITING_RUNTIME_NOT_READY**：组合不完整时创建接口在**任何持久化之前**返回 503 + 稳定错误码（HTTP 边界与服务层双重守卫），僵尸 planned run 从结构上不可能；调度本身失败时记录 run.transition_rejected 审计事件。
+**代码与构建门禁通过；真实供应商与生产流量门禁未通过。**
 
-单元与 race 测试全部通过；两栈已在本地 compose 部署并通过冒烟（health db/redis/llm、前端 200、096/097 表在位）。
+当前两版可以进入“带真实凭证的隔离 staging 验收”，不能据此直接声明已经生产上线，也不能开启 allowlist、percentage 或全量流量。默认 rollout 继续保持 `off/shadow`。
 
-## 部署验收现状
+本记录取代此前“两个 compose 栈已运行且 Task13 已闭环”的结论。那一结论混合了旧镜像运行状态、单元测试和尚未执行的真实 Provider 验收，证据不足。
 
-- 双栈运行 Task13 构建：OSS（:8080/:3002，全新库）与 Commercial（:8081/:3003，全新库）全部容器 healthy。
-- readiness 分层（installed/configured/reachable/ready）与 provider preflight 已在 Task 2/3 交付，`/health` 不再因对象已构造而报告可用。
+## 本轮纳入的实现
 
-## 待真实凭证后执行的最终验收（item 7 剩余部分）
+### 受治理写作运行时
 
-当前 `.env.docker` 中 `AI_API_KEY` 为占位符（`your-deepseek-api-key`），Commercial 付费检索源未配置真实凭证。以下验收在填入真实凭证后执行：
+- writingstore 是 Contract、Plan、Run、Artifact、Decision、Ledger、canonical/shadow 内容的唯一事实源。
+- 生产组合根统一装配 capability registry、MaterialAdapter、ExecutorAdapter、调度、恢复、质量验证与 rollout。
+- 初始 `contract/materials`、中间产物和最终正文均进入 typed Artifact/lineage；canonical body 持久化后逐次校验 hash。
+- 服务重启只恢复 `planned/running`，不会越过 `awaiting_approval/paused`。
+- required validator 失败时 fail-closed，不能自动生成通过结论。
+- rollout 默认关闭；shadow candidate 使用独立 namespace/TTL，不进入 canonical 文档。
 
-1. OSS：`AI_API_KEY=<真实 DeepSeek key>` → 重启 backend → 长文创作链路（research 跳过、outline → draft → quality → finalize）真实 LLM 端到端；
-2. Commercial：`AI_API_KEY` + `TAVILY_API_KEY`（或对应付费源）→ 多材料综合与忠实改写链路，含真实外部检索与冲突处理；
-3. 三条链路验收点：Candidate/Accepted/Verified 状态迁移、引用与材料快照、cost/token evidence、pause/cancel、shadow 隔离（显式安装 shadow policy 后候选不进 canonical）；
-4. 重启 backend：验证 evidence/shadow/审计记录在重启后仍可读、可清理。
+### Provider、MCP 与版本边界
 
-**凭证就绪后**，重跑本文件的部署验收节即可闭环 Task13；allowlist 放量仍需基于 durable evidence 的单独决策。
+- `/health` 仅表示进程存活；`/ready` 按 `installed/configured/reachable/ready` 判断生产依赖。
+- 管理员可显式执行 `POST /api/v2/admin/provider-preflight`；自动预检默认关闭，所有探测有界且只返回稳定错误码。
+- MCP 连接状态进入 readiness；SSE endpoint 与 JSON-RPC 响应写入已串行化，消除跨 handler 的 ResponseWriter 数据竞争。
+- OSS 只保留通用检索契约、本地知识检索和共享网页抓取；商业搜索 Provider 不注册、凭证变量不公开，运行镜像不包含付费信息源 CLI。
+- Commercial 保留 Tavily、知乎、微博 OpenAPI、Bing、AnySearch 等显式付费源入口；热榜类来源不能冒充受治理写作检索能力。
+- MCP 框架与通用检索接口共享，但两版不共享付费搜索源实现和配置。
+
+## 已执行门禁
+
+| 门禁 | OSS | Commercial | 结果 |
+|---|---:|---:|---|
+| `go test ./... -count=1`（仓库根挂载，Go 1.25） | 通过 | 通过 | PASS |
+| `go vet ./...` | 通过 | 通过 | PASS |
+| `go test -race ./internal/writingruntime ./internal/writingstore ./internal/mcp ./internal/server -count=1` | 通过 | 通过 | PASS |
+| 空库 migration 与幂等校验 | 通过 | 通过 | PASS |
+| writingstore PostgreSQL 集成测试（含 canonical/shadow/recovery） | 通过 | 通过 | PASS |
+| `docker compose config --quiet` | 通过 | 通过（含本地 override） | PASS |
+| 当前分支 backend 镜像构建 | 通过 | 通过 | PASS |
+| OSS 最终镜像付费 CLI 扫描 | 无 `tencent-news-cli` | 不适用 | PASS |
+
+数据库测试必须先执行 migration 包，再执行 writingstore 包；两个独立 `go test` 进程同时对同一个空库创建 `schema_migrations` 会产生测试编排竞争，不应并行共享数据库。
+
+本轮 race 门禁最初稳定发现 MCP SSE 并发写；修复后两版完整选定包 race 测试通过。相关提交：
+
+- OSS：`fa5ab96`（运行时生产缺口）、`08031b1` + `8f2e94b`（Provider preflight）、`2a5966e`（MCP SSE 并发）、`bef6f45`（移除付费 CLI）。
+- Commercial：`95e2648`（运行时生产缺口）、`6a8eb86`（Provider preflight 与付费检索边界）、`9d53b2b`（MCP SSE 并发）。
+
+## 尚未通过的生产门禁
+
+当前没有可用于本轮隔离验收的真实 LLM、Embedding 和 Commercial 付费搜索凭证，因此以下证据尚不存在：
+
+1. LLM 与 Embedding 的真实 preflight 成功快照；
+2. Commercial 至少一个付费写作检索 Provider 的真实成功快照、费用与限流行为；
+3. 通过生产 HTTP API 完成的长文创作、多材料综合、忠实改写三条真实模型链路；
+4. 三条链路的 Candidate Draft → Accepted Draft → Verified Deliverable 状态、引用/快照、token/cost、pause/cancel 与 BLOCKER 证据；
+5. 使用当前 Task13 分支镜像进行的隔离 staging 部署、重启恢复和回滚演练；
+6. 基于持久化 evidence 作出的 allowlist/percentage 放量决定。
+
+旧环境中正在运行的容器没有被本轮替换，也不作为当前提交的部署证据。
+
+## 凭证就绪后的执行顺序
+
+1. 在隔离 staging 注入真实凭证，不把密钥写入仓库、日志或验收文档。
+2. 保持 `PROVIDER_PREFLIGHT_ENABLED=false`，由管理员手动执行一次 preflight；确认 LLM/Embedding 和 Commercial 搜索 readiness。
+3. 部署当前两版候选镜像，验证 `/health` 与 `/ready` 的预期差异。
+4. 运行 `cmd/writingacceptance` 的三条写作场景，检查完整 Artifact、Decision、Ledger、质量报告和费用证据。
+5. 在 run 进行中重启 backend，验证只恢复允许恢复的状态；测试 pause/cancel。
+6. 仅开启 shadow，验证 candidate 隔离、TTL 清理、canonical 不受污染。
+7. 完成回滚演练并归档证据后，另行评审 allowlist；percentage 和全量放量仍需独立决策。
+
+## 发布判定
+
+- 本地开发/继续集成：**允许**。
+- 隔离 staging + 真实凭证验收：**允许**。
+- 生产部署：**暂不批准**。
+- 生产写作流量、allowlist、percentage：**保持关闭**。
