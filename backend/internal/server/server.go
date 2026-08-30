@@ -110,7 +110,8 @@ type Server struct {
 
 	// Deployment readiness is stricter than liveness: configured external
 	// dependencies remain unready until a bounded probe succeeds.
-	readiness *ReadinessRegistry
+	readiness         *ReadinessRegistry
+	providerPreflight *ProviderPreflight
 
 	// Billing
 	billingRepo *database.BillingRepo
@@ -741,6 +742,8 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	s.initializeReadiness(time.Now())
+	s.providerPreflight = NewProviderPreflight(cfg, s.readiness, s.search, s.updateMCPReadiness)
+	s.providerPreflight.Start(context.Background())
 
 	return s, nil
 }
@@ -1003,6 +1006,8 @@ func (s *Server) Router() http.Handler {
 			r.Get("/stats", s.handleAdminStats)
 			r.Get("/exit-stats", s.handleAdminExitStats)
 			r.Get("/routes", s.handleAdminRoutes)
+			r.Get("/provider-preflight", s.handleAdminGetProviderPreflight)
+			r.Post("/provider-preflight", s.handleAdminRunProviderPreflight)
 
 			// Traces (audit.view)
 			r.Group(func(r chi.Router) {

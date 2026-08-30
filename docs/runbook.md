@@ -73,6 +73,29 @@ curl -s http://localhost:8080/metrics | grep -E "agent_executions_total|websocke
 docker exec writing-agent-pg pg_isready -U postgres -d writing_agent_v2
 ```
 
+### 2.1.1 Task13 生产 readiness 与 Provider Preflight
+
+`GET /health` 只表示进程存活；接收受治理写作流量前必须检查 `GET /ready`。readiness 将 `installed / configured / reachable / ready` 分开，LLM、Embedding、商业检索或 MCP 不能因“对象已创建”而被视为可达。
+
+```bash
+# 查看当前缓存的 readiness（不会触发外部请求或付费检索）
+curl -s http://localhost:8080/ready | jq .
+
+# 显式执行一次有界凭证探测（Admin Token；可能产生 Provider 请求费用）
+curl -s -X POST http://localhost:8080/api/v2/admin/provider-preflight \
+  -H "Authorization: Bearer $ADMIN_TOKEN" | jq .
+
+# 查看最近一次探测证据；结果只含稳定码，不回显 URL、密钥或响应正文
+curl -s http://localhost:8080/api/v2/admin/provider-preflight \
+  -H "Authorization: Bearer $ADMIN_TOKEN" | jq .
+```
+
+自动探测默认关闭。仅在明确接受调用成本后设置 `PROVIDER_PREFLIGHT_ENABLED=true`；间隔小于 5 分钟会被强制提升到 5 分钟。OSS 不注册、也不探测 Commercial 的付费搜索源。
+
+稳定错误码：`PROVIDER_AUTH_REJECTED`、`PROVIDER_RATE_LIMITED`、`PROVIDER_TIMEOUT`、`PROVIDER_MALFORMED_RESPONSE`、`PROVIDER_UNAVAILABLE`。凭证修复后重新执行 preflight，成功结果会覆盖旧错误。
+
+受治理 run 的 `planned/running` 状态、checkpoint、canonical/shadow 内容与 rollout evidence 都持久化；后端重启会恢复可调度 run，但不会越过 `awaiting_approval` 或 `paused`。回滚 migration 096/097 前必须先确认没有被引用的 shadow/canonical 内容，保护性 down migration 拒绝破坏性降级。
+
 ### 2.2 关键指标告警阈值
 
 | 指标 | 告警阈值 | 严重级别 | 处理方式 |

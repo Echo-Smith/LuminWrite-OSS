@@ -20,6 +20,8 @@
 - `backend/internal/tools/url_fetcher.go`：两版共享的有界本地网页抓取与正文抽取实现。
 - `backend/internal/tools/search_capability_test.go`：验证 OSS 不暴露或假注册付费搜索源。
 - `backend/internal/server/readiness.go`、`readiness_test.go`：区分 installed/configured/reachable/ready，并为生产流量提供 fail-closed `/ready`。
+- `backend/internal/server/provider_preflight.go`、`provider_preflight_test.go`：显式或 opt-in 的有界 Provider 凭证探测、稳定错误码与脱敏证据。
+- `backend/.env.example`、`docker-compose.yml`、`docs/runbook.md`：Task13 双端点健康检查、preflight 开关和回滚运维说明；OSS 示例不含付费搜索凭证。
 - `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
 - `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
 - `backend/internal/writingruntime/store_evidence.go`、`store_evidence_test.go`：将 rollout evidence 严格校验后写入 writingstore 唯一 RunLedger。

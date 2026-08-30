@@ -33,6 +33,14 @@ type SearchCapability struct {
 	Configured bool   `json:"configured"`
 }
 
+// SearchProbeResult is credential-free operational evidence. Provider IDs are
+// edition-owned: OSS returns no paid provider results.
+type SearchProbeResult struct {
+	ProviderID string
+	Reachable  bool
+	ErrorCode  string
+}
+
 // KnowledgeSearcher is the interface for local knowledge base search.
 // It replaces the concrete WeKnoraClient, allowing the search pipeline
 // to use the local KbManager (in services package) without circular imports.
@@ -109,6 +117,11 @@ func (c *SearchClient) HasExternalSources() bool {
 // contract is public; concrete paid sources are a Commercial responsibility.
 func (c *SearchClient) Capabilities() []SearchCapability {
 	return []SearchCapability{}
+}
+
+// ProbeExternalSources never performs paid calls in OSS.
+func (c *SearchClient) ProbeExternalSources(context.Context) []SearchProbeResult {
+	return []SearchProbeResult{}
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.

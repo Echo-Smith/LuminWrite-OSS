@@ -103,7 +103,11 @@ func (r *ReadinessRegistry) Snapshot(now time.Time) ReadinessSnapshot {
 }
 
 func (s *Server) initializeReadiness(now time.Time) {
-	registry := NewReadinessRegistry(time.Minute)
+	staleAfter := 30 * time.Minute
+	if s.cfg != nil && s.cfg.ProviderPreflight.Interval > 0 {
+		staleAfter = 2 * s.cfg.ProviderPreflight.Interval
+	}
+	registry := NewReadinessRegistry(staleAfter)
 
 	registry.Set("database", CapabilityReadiness{
 		Required: true, Installed: true, Configured: s.dbAvail,
@@ -140,16 +144,23 @@ func (s *Server) initializeReadiness(now time.Time) {
 	s.readiness = registry
 	s.updateMCPReadiness(now)
 
-	// These three capabilities become ready only after Task13's production
-	// composition root and durable shadow/evidence adapters are connected.
+	runtimeReady := s.governedRuntime != nil && s.governedRuntime.Ready()
 	registry.Set("writing_runtime", CapabilityReadiness{
-		Required: true, Installed: s.writingAPI != nil, ErrorCode: readinessCodeNotWired,
+		Required: true, Installed: s.governedRuntime != nil, Configured: runtimeReady,
+		Reachable: runtimeReady, ErrorCode: readinessError(runtimeReady, "", readinessCodeNotWired),
+		LastCheckedAt: checkedAt(runtimeReady, now),
 	})
+	evidenceReady := runtimeReady && s.governedRuntime.evidence != nil
 	registry.Set("evidence_store", CapabilityReadiness{
-		Required: true, Installed: s.writingAPI != nil, ErrorCode: readinessCodeNotWired,
+		Required: true, Installed: s.governedRuntime != nil, Configured: evidenceReady,
+		Reachable: evidenceReady, ErrorCode: readinessError(evidenceReady, "", readinessCodeNotWired),
+		LastCheckedAt: checkedAt(evidenceReady, now),
 	})
+	shadowReady := runtimeReady && s.governedRuntime.shadow != nil
 	registry.Set("shadow_content", CapabilityReadiness{
-		Required: true, ErrorCode: readinessCodeNotWired,
+		Required: true, Installed: s.governedRuntime != nil, Configured: shadowReady,
+		Reachable: shadowReady, ErrorCode: readinessError(shadowReady, "", readinessCodeNotWired),
+		LastCheckedAt: checkedAt(shadowReady, now),
 	})
 
 }
