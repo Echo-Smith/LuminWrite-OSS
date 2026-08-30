@@ -18,7 +18,7 @@ func NewTavilyClient(apiKey, endpoint string, timeout time.Duration) *TavilyClie
 }
 
 func (c *TavilyClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type ZhihuClient struct{}
@@ -28,7 +28,7 @@ func NewZhihuClient(baseURL, accessSecret string, timeout time.Duration) *ZhihuC
 }
 
 func (c *ZhihuClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type TencentNewsClient struct{}
@@ -38,11 +38,11 @@ func NewTencentNewsClient(baseURL string, timeout time.Duration) *TencentNewsCli
 }
 
 func (c *TencentNewsClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 func (c *TencentNewsClient) FetchHotTopics(ctx context.Context, limit int) ([]map[string]interface{}, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type TencentNewsCLIClient struct{}
@@ -54,11 +54,11 @@ func NewTencentNewsCLIClient(cliPath string, timeout time.Duration) *TencentNews
 func (c *TencentNewsCLIClient) IsConfigured() bool { return false }
 
 func (c *TencentNewsCLIClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 func (c *TencentNewsCLIClient) FetchHot(ctx context.Context, limit int) ([]map[string]interface{}, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type WeiboClient struct{}
@@ -69,13 +69,13 @@ func NewWeiboClient(appID, appSecret, tokenEndpoint, baseURL string, timeout tim
 }
 
 func (c *WeiboClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 func (c *WeiboClient) HasOpenAPI() bool { return false }
 
 func (c *WeiboClient) FetchHotTopics(ctx context.Context, limit int) ([]map[string]interface{}, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type ExtraHotClient struct{}
@@ -85,7 +85,7 @@ func NewExtraHotClient(_ string, timeout time.Duration) *ExtraHotClient {
 }
 
 func (c *ExtraHotClient) FetchHotTopics(ctx context.Context, limit int) ([]map[string]interface{}, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type BingClient struct{}
@@ -95,7 +95,7 @@ func NewBingClient(baseURL string, timeout time.Duration) *BingClient {
 }
 
 func (c *BingClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 type AnySearchClient struct{}
@@ -105,29 +105,12 @@ func NewAnySearchClient(apiKey, endpoint string, timeout time.Duration) *AnySear
 }
 
 func (c *AnySearchClient) Search(ctx context.Context, query string, maxResults int) ([]engine.SearchResult, error) {
-	return nil, nil
+	return nil, ErrProviderNotInstalled
 }
 
 // Extract — stub returns empty, real implementation in commercial edition.
 func (c *AnySearchClient) Extract(ctx context.Context, targetURL string) (title, content string, err error) {
-	return "", "", nil
-}
-
-// URLFetcher — stub for URL content fetching.
-type URLFetcher struct{}
-
-type URLFetchResult struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
-	URL     string `json:"url"`
-}
-
-func NewURLFetcher() *URLFetcher {
-	return &URLFetcher{}
-}
-
-func (f *URLFetcher) FetchContent(ctx context.Context, url string) (*URLFetchResult, error) {
-	return nil, nil
+	return "", "", ErrProviderNotInstalled
 }
 
 // JiaozhenClient — fact-checking client stub.

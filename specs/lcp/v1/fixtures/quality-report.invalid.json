@@ -1,0 +1,33 @@
+{
+  "schema_version": "lcp/1.0",
+  "report_id": "qr_verified",
+  "run_id": "run_demo",
+  "document_versions": {
+    "candidate_version_id": "ver_1",
+    "validated_version_id": "ver_1",
+    "committed_version_id": "ver_1",
+    "version_consistent": true
+  },
+  "requested_assurance": "sourced",
+  "achieved_assurance": "sourced",
+  "assurance_satisfied": false,
+  "quality_state": "verified_deliverable",
+  "validators": [],
+  "degradations": [],
+  "findings": [
+    {
+      "finding_id": "finding_1",
+      "severity": "BLOCKER",
+      "category": "contract",
+      "code": "CONTRACT_MISMATCH",
+      "message": "候选稿遗漏必需观点",
+      "validator_id": "contract",
+      "status": "open",
+      "waiver_decision_id": null
+    }
+  ],
+  "decision_records": [],
+  "snapshot_manifest_id": null,
+  "snapshot_persisted": false,
+  "created_at": "2026-08-27T00:00:00Z"
+}

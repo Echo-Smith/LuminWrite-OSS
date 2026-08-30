@@ -17,16 +17,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/mcp"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/mcp"
+	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
-	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
@@ -34,45 +36,45 @@ import (
 
 // Server holds all application dependencies.
 type Server struct {
-	cfg           *config.Config
-	hub           *websocket.Hub
-	sseHub        *SSEHub
-	rateLimiter   *RateLimiter
-	llm           *tools.LLMClient
-	llmSvc        *services.LLMService
-	search        *tools.SearchClient
-	embedding     *tools.EmbeddingClient
-	profiles      *profile.Loader
-	traces        *database.TraceRepo
-	feedback      *database.FeedbackRepo
-	evalRepo      *database.EvaluationRepo
-	wabenchRepo   *database.WABenchRepo
-	adminRepo     *database.AdminRepo
-	kbRepo        *database.KnowledgeBaseRepo
-	evalSvc       *services.EvaluationService
-	wabenchSvc    *services.WABenchEvaluationService
-	reputationSvc *services.ReputationService
-	dbAvail       bool
-	sessions      sync.Map // traceID → *engine.ExecutionContext
-	cronScheduler *services.CronScheduler
-	metrics       *MetricsRegistry
-	webauthn      *WebAuthnService
+	cfg               *config.Config
+	hub               *websocket.Hub
+	sseHub            *SSEHub
+	rateLimiter       *RateLimiter
+	llm               *tools.LLMClient
+	llmSvc            *services.LLMService
+	search            *tools.SearchClient
+	embedding         *tools.EmbeddingClient
+	profiles          *profile.Loader
+	traces            *database.TraceRepo
+	feedback          *database.FeedbackRepo
+	evalRepo          *database.EvaluationRepo
+	wabenchRepo       *database.WABenchRepo
+	adminRepo         *database.AdminRepo
+	kbRepo            *database.KnowledgeBaseRepo
+	evalSvc           *services.EvaluationService
+	wabenchSvc        *services.WABenchEvaluationService
+	reputationSvc     *services.ReputationService
+	dbAvail           bool
+	sessions          sync.Map // traceID → *engine.ExecutionContext
+	cronScheduler     *services.CronScheduler
+	metrics           *MetricsRegistry
+	webauthn          *WebAuthnService
 	passkeyChallenges *passkeyChallengeStore
-	sensitiveSvc  *services.SensitiveCheckService
-	jiaozhen      *tools.JiaozhenClient
-	memorySvc     *memsvc.Service
-	mcpRegistry   *mcp.Registry
-	mcpServer     *mcp.MCPServer
-	toolRegistry  *engine.ToolRegistry
-	editorialSvc  *editorial.Service
-	editorialHdlr *editorial.Handlers
-	planner       *editorial.Planner
-	dagExecutor   *editorial.DAGExecutor
-	redTeamRepo    *database.RedTeamRepo
-	evidenceRepo   *database.EvidenceRepo
-	sessionEvents  *database.SessionEventRepo
+	sensitiveSvc      *services.SensitiveCheckService
+	jiaozhen          *tools.JiaozhenClient
+	memorySvc         *memsvc.Service
+	mcpRegistry       *mcp.Registry
+	mcpServer         *mcp.MCPServer
+	toolRegistry      *engine.ToolRegistry
+	editorialSvc      *editorial.Service
+	editorialHdlr     *editorial.Handlers
+	planner           *editorial.Planner
+	dagExecutor       *editorial.DAGExecutor
+	redTeamRepo       *database.RedTeamRepo
+	evidenceRepo      *database.EvidenceRepo
+	sessionEvents     *database.SessionEventRepo
 
-	userStyleStore  *database.UserStyleStore
+	userStyleStore *database.UserStyleStore
 	styleBuilder   *services.StyleBuilderService
 
 	// Knowledge Manager (operates directly on local PG)
@@ -99,14 +101,26 @@ type Server struct {
 	// Raw database handle (for queries without a dedicated repo)
 	db *database.DB
 
+	// Governed writing API. Nil only when persistence is unavailable.
+	writingAPI writingAPIService
+
+	// Governed runtime composition (Task13). Present whenever persistence is
+	// available; readiness decides whether runs may be created.
+	governedRuntime *GovernedRuntime
+
+	// Deployment readiness is stricter than liveness: configured external
+	// dependencies remain unready until a bounded probe succeeds.
+	readiness         *ReadinessRegistry
+	providerPreflight *ProviderPreflight
+
 	// Billing
-billingRepo *database.BillingRepo
-pointCalc    *services.PointCalculator
-alipaySvc    *AlipayService
+	billingRepo *database.BillingRepo
+	pointCalc   *services.PointCalculator
+	alipaySvc   *AlipayService
 
 	// Email verification (commercial feature)
-	emailSvc     *EmailService
-	redisClient  *RedisClient
+	emailSvc    *EmailService
+	redisClient *RedisClient
 }
 
 // New creates a new Server.
@@ -479,6 +493,7 @@ func New(cfg *config.Config) (*Server, error) {
 		redTeamRepo:   redTeamRepo,
 		evidenceRepo:  evidenceRepo,
 		sessionEvents: sessionEventRepo,
+		db:            db,
 	}
 
 	// ── User custom styles & AI builder ──
@@ -518,6 +533,31 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		slog.Info("billing system initialized", "db_available", true)
 	}
+	if dbAvail && db != nil {
+		governedStore, err := writingstore.New(db)
+		if err != nil {
+			return nil, fmt.Errorf("initialize governed writing store: %w", err)
+		}
+		var governedKB tools.KnowledgeSearcher
+		if s.kbMgr != nil {
+			governedKB = services.NewKbSearchAdapter(s.kbMgr)
+		}
+		s.governedRuntime = ComposeGovernedRuntime(GovernedRuntimeDeps{Store: governedStore, DB: db.DB,
+			LLM: llm, Search: searchClient, KB: governedKB, Metrics: s.metrics},
+			writingplan.DefaultCapabilityRegistry())
+		s.writingAPI = newPersistentWritingAPI(governedStore, s.governedRuntime)
+		if s.governedRuntime.Ready() {
+			go func(runtime *GovernedRuntime) {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if recovered, err := runtime.RecoverPending(ctx); err != nil {
+					slog.Error("governed runtime recovery scan failed", "error", err)
+				} else if recovered > 0 {
+					slog.Info("governed runtime recovered pending runs", "count", recovered)
+				}
+			}(s.governedRuntime)
+		}
+	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
 		// Wire LLM metrics (Prometheus instrumentation)
@@ -530,11 +570,11 @@ func New(cfg *config.Config) (*Server, error) {
 		if s.db != nil {
 			s.evolutionSvc.SetDB(s.db)
 		}
-	slog.Info("self-evolution service initialized")
+		slog.Info("self-evolution service initialized")
 
-	// ── Canary Health Monitor (auto-rollback) ──
-	s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
-	s.canaryMonitor.Start()
+		// ── Canary Health Monitor (auto-rollback) ──
+		s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
+		s.canaryMonitor.Start()
 	}
 
 	// ── MCP Security Sandbox ──
@@ -566,9 +606,9 @@ func New(cfg *config.Config) (*Server, error) {
 		s.kbMgr = services.NewKbManager(adminRepo.DB().DB, embeddingClient)
 
 		// Wire GraphRAG — entity extraction + relation graph (replaces WeKnora's graph pipeline)
-	if llm != nil {
-		// Use defaultLLM (DB-backed) for GraphRAG instead of static llm
-		graphRAG := services.NewGraphRAGManager(adminRepo.DB().DB, embeddingClient, defaultLLM)
+		if llm != nil {
+			// Use defaultLLM (DB-backed) for GraphRAG instead of static llm
+			graphRAG := services.NewGraphRAGManager(adminRepo.DB().DB, embeddingClient, defaultLLM)
 			s.kbMgr.SetGraphRAG(graphRAG)
 			slog.Info("GraphRAG entity extraction wired into knowledge base",
 				"entity_types", "person/organization/location/event/concept/product",
@@ -582,9 +622,9 @@ func New(cfg *config.Config) (*Server, error) {
 			"chunk_overlap", cfg.Kb.ChunkOverlap,
 		)
 
-	// KB is now a standalone tool (search_knowledge), not mixed into SearchClient.
-	// The KbSearchAdapter is passed to Harness directly via NewHarness().
-	slog.Info("local knowledge base initialized (standalone search_knowledge tool)")
+		// KB is now a standalone tool (search_knowledge), not mixed into SearchClient.
+		// The KbSearchAdapter is passed to Harness directly via NewHarness().
+		slog.Info("local knowledge base initialized (standalone search_knowledge tool)")
 
 		// Wire KB manager and user style store into Style Builder for tool calls
 		if s.styleBuilder != nil {
@@ -701,6 +741,10 @@ func New(cfg *config.Config) (*Server, error) {
 		)
 	}
 
+	s.initializeReadiness(time.Now())
+	s.providerPreflight = NewProviderPreflight(cfg, s.readiness, s.search, s.updateMCPReadiness)
+	s.providerPreflight.Start(context.Background())
+
 	return s, nil
 }
 
@@ -717,6 +761,7 @@ func (s *Server) Router() http.Handler {
 
 	// Health check
 	r.Get("/health", s.handleHealth)
+	r.Get("/ready", s.handleReady)
 
 	// Prometheus metrics
 	r.Get("/metrics", s.handleMetrics)
@@ -726,6 +771,7 @@ func (s *Server) Router() http.Handler {
 
 	// API v2
 	r.Route("/api/v2", func(r chi.Router) {
+		s.registerWritingRoutes(r)
 		// Styles (jwtOptional: logged-in users see global + their private styles)
 		r.With(s.jwtOptionalMiddleware).Get("/styles", s.handleListStylesWithUserStyles)
 		r.With(s.jwtOptionalMiddleware).Get("/styles/{slug}", s.handleGetStyle)
@@ -771,7 +817,7 @@ func (s *Server) Router() http.Handler {
 		r.Post("/topics", s.handleCreateTopic)
 		r.Post("/topics/hot", s.handleFetchHotTopics)
 		r.Delete("/topics/{id}", s.handleDeleteTopic)
-r.Put("/topics/{id}", s.handleUpdateTopic)
+		r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/topics/recommend", s.handleTopicRecommend)
 		r.Get("/topics/favorites", s.handleListFavoriteTopics)
 		r.Get("/topics/platforms", s.handlePlatformStats)
@@ -781,25 +827,25 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.With(s.jwtAuthMiddleware).Post("/topics/{id}/favorite", s.handleFavoriteTopic)
 		r.With(s.jwtAuthMiddleware).Delete("/topics/{id}/favorite", s.handleUnfavoriteTopic)
 
-	// Feedback
-	r.Post("/feedback", s.handleFeedback)
-	r.Get("/feedback/aggregation", s.handleListAggregations)
-	r.Get("/feedback/aggregation/{style}/{version}", s.handleGetAggregation)
-	r.Post("/feedback/aggregate", s.handleAggregateFeedback)
-	r.Post("/feedback/suggestions/{style}/{version}", s.handleGenerateSuggestions)
+		// Feedback
+		r.Post("/feedback", s.handleFeedback)
+		r.Get("/feedback/aggregation", s.handleListAggregations)
+		r.Get("/feedback/aggregation/{style}/{version}", s.handleGetAggregation)
+		r.Post("/feedback/aggregate", s.handleAggregateFeedback)
+		r.Post("/feedback/suggestions/{style}/{version}", s.handleGenerateSuggestions)
 
-	// Memory (requires auth — user identity from JWT, guests excluded)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories", s.handleListMemories)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories", s.handleCreateMemory)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/memories/{id}", s.handleDeleteMemory)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/{id}/dismiss", s.handleDismissMemory)
+		// Memory (requires auth — user identity from JWT, guests excluded)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories", s.handleListMemories)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories", s.handleCreateMemory)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/memories/{id}", s.handleDeleteMemory)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/{id}/dismiss", s.handleDismissMemory)
 
-	// Memory Files (Markdown memory layer — guests excluded)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/file", s.handleGetMemoryFile)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/export", s.handleExportMemoryFile)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/import", s.handleImportMemoryFile)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/global", s.handleGetGlobalMemory)
-	r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/memories/global", s.handleUpdateGlobalMemory)
+		// Memory Files (Markdown memory layer — guests excluded)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/file", s.handleGetMemoryFile)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/export", s.handleExportMemoryFile)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/import", s.handleImportMemoryFile)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/global", s.handleGetGlobalMemory)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/memories/global", s.handleUpdateGlobalMemory)
 
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
@@ -900,7 +946,6 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 		r.Get("/sse/stats", s.handleSSEStats)
 		r.Post("/sse/test-notify", s.handleSSETestNotification) // user-scoped test notification
 
-
 		// Editorial (编辑部系统) — JWT-protected
 		if s.editorialHdlr != nil {
 			r.Group(func(r chi.Router) {
@@ -909,19 +954,19 @@ r.Put("/topics/{id}", s.handleUpdateTopic)
 			})
 		}
 
-// Auth (JWT)
-r.Post("/auth/login", s.handleLogin)
-r.Post("/auth/register", s.handleRegister)
-r.Post("/auth/guest", s.handleGuestLogin)
-r.Post("/auth/refresh", s.handleRefreshToken)
+		// Auth (JWT)
+		r.Post("/auth/login", s.handleLogin)
+		r.Post("/auth/register", s.handleRegister)
+		r.Post("/auth/guest", s.handleGuestLogin)
+		r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/auth/verify", s.handleVerifyToken)
 
 		// Passkey / WebAuthn
 		// register/begin uses optional JWT — if the user is logged in (e.g. from personal center),
 		// the user_id is resolved from the JWT context. If not (e.g. from the login page),
 		// user_id is taken from the request body.
-	r.With(s.jwtOptionalMiddleware).Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
-	r.With(s.jwtOptionalMiddleware).Post("/auth/passkey/register/complete", s.handlePasskeyRegisterComplete)
+		r.With(s.jwtOptionalMiddleware).Post("/auth/passkey/register/begin", s.handlePasskeyRegisterBegin)
+		r.With(s.jwtOptionalMiddleware).Post("/auth/passkey/register/complete", s.handlePasskeyRegisterComplete)
 		r.Post("/auth/passkey/login/begin", s.handlePasskeyLoginBegin)
 		r.Post("/auth/passkey/login/complete", s.handlePasskeyLoginComplete)
 		r.With(s.jwtAuthMiddleware).Get("/auth/passkey/list", s.handlePasskeyList)
@@ -940,10 +985,10 @@ r.Post("/auth/refresh", s.handleRefreshToken)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/plan", s.handleGetSessionPlan)
 		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/plan", s.handleUpdateSessionPlan)
 		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}/plan", s.handleDeleteSessionPlan)
-r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
-r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
-r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
-r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions)
+		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
+		r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
+		r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
+		r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions)
 
 		// Email verification (commercial feature)
 		r.Post("/auth/send-code", s.handleSendVerificationCode)
@@ -961,6 +1006,8 @@ r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions
 			r.Get("/stats", s.handleAdminStats)
 			r.Get("/exit-stats", s.handleAdminExitStats)
 			r.Get("/routes", s.handleAdminRoutes)
+			r.Get("/provider-preflight", s.handleAdminGetProviderPreflight)
+			r.Post("/provider-preflight", s.handleAdminRunProviderPreflight)
 
 			// Traces (audit.view)
 			r.Group(func(r chi.Router) {
@@ -1166,7 +1213,7 @@ r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions
 			// SSE Notifications (admin test — any admin)
 			r.Post("/sse/notify", s.handleSSESendNotification)
 		})
-    })
+	})
 
 	// Walk chi router to discover all routes and populate metadata
 	s.registerRoutesFromChi(r)
@@ -1216,14 +1263,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	go func() {
-	<-ctx.Done()
-	slog.Info("shutting down server...")
-	if s.mcpServer != nil {
-		s.mcpServer.Close()
-	}
-	if s.canaryMonitor != nil {
-		s.canaryMonitor.Stop()
-	}
+		<-ctx.Done()
+		slog.Info("shutting down server...")
+		if s.mcpServer != nil {
+			s.mcpServer.Close()
+		}
+		if s.canaryMonitor != nil {
+			s.canaryMonitor.Stop()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.WriteTimeout)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
@@ -1277,15 +1324,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 
 	response.OK(w, map[string]interface{}{
-		"status":              "ok",
-		"version":             "v2",
-		"instance_id":         s.instanceID,
-		"llm_configured":      s.llm != nil,
-		"search_configured":   s.search != nil && s.search.HasSources(),
-		"db_configured":       s.dbAvail,
+		"status":               "ok",
+		"version":              "v2",
+		"instance_id":          s.instanceID,
+		"llm_configured":       s.llm != nil && s.llm.IsConfigured(),
+		"search_configured":    s.search != nil && s.search.HasExternalSources(),
+		"db_configured":        s.dbAvail,
 		"embedding_configured": embeddingConfigured,
-		"active_sessions":     activeSessions,
-		"redis_enabled":       s.cfg.Redis.Enabled,
+		"active_sessions":      activeSessions,
+		"redis_enabled":        s.cfg.Redis.Enabled,
 	})
 }
 
@@ -1591,37 +1638,37 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClientMessage(client *websocket.Client, userID, userRole string) func(*websocket.ClientMessage) {
 	return func(msg *websocket.ClientMessage) {
-	switch msg.Type {
-	case websocket.MsgAgentStart:
-		s.handleAgentStart(client, msg.Payload, userID, userRole)
-	case websocket.MsgAgentPause:
-		s.handleAgentControl(client, msg.Payload, "pause")
-	case websocket.MsgAgentResume:
-		s.handleAgentControl(client, msg.Payload, "resume")
-	case websocket.MsgAgentCancel:
-		s.handleAgentControl(client, msg.Payload, "cancel")
-	case websocket.MsgAgentConfirm:
-		s.handleAgentConfirm(client, msg.Payload)
-	case websocket.MsgAgentEdit:
-		s.handleAgentEdit(client, msg.Payload)
-	case websocket.MsgSessionResume:
-		s.handleSessionResume(client, msg.Payload)
+		switch msg.Type {
+		case websocket.MsgAgentStart:
+			s.handleAgentStart(client, msg.Payload, userID, userRole)
+		case websocket.MsgAgentPause:
+			s.handleAgentControl(client, msg.Payload, "pause")
+		case websocket.MsgAgentResume:
+			s.handleAgentControl(client, msg.Payload, "resume")
+		case websocket.MsgAgentCancel:
+			s.handleAgentControl(client, msg.Payload, "cancel")
+		case websocket.MsgAgentConfirm:
+			s.handleAgentConfirm(client, msg.Payload)
+		case websocket.MsgAgentEdit:
+			s.handleAgentEdit(client, msg.Payload)
+		case websocket.MsgSessionResume:
+			s.handleSessionResume(client, msg.Payload)
 
-	// Beta: 编辑部模式 DAG 工作流消息
-	case websocket.MsgWorkflowStart:
-		s.handleWorkflowStart(client, msg.Payload, userID, userRole)
-	case websocket.MsgWorkflowEdit:
-		s.handleWorkflowEdit(client, msg.Payload, userID, userRole)
-	case websocket.MsgWorkflowPause:
-		s.handleWorkflowControl(client, msg.Payload, "pause")
-	case websocket.MsgWorkflowResume:
-		s.handleWorkflowControl(client, msg.Payload, "resume")
-	case websocket.MsgWorkflowCancel:
-		s.handleWorkflowControl(client, msg.Payload, "cancel")
+		// Beta: 编辑部模式 DAG 工作流消息
+		case websocket.MsgWorkflowStart:
+			s.handleWorkflowStart(client, msg.Payload, userID, userRole)
+		case websocket.MsgWorkflowEdit:
+			s.handleWorkflowEdit(client, msg.Payload, userID, userRole)
+		case websocket.MsgWorkflowPause:
+			s.handleWorkflowControl(client, msg.Payload, "pause")
+		case websocket.MsgWorkflowResume:
+			s.handleWorkflowControl(client, msg.Payload, "resume")
+		case websocket.MsgWorkflowCancel:
+			s.handleWorkflowControl(client, msg.Payload, "cancel")
 
-	default:
-		slog.Warn("unknown message type", "type", msg.Type)
-	}
+		default:
+			slog.Warn("unknown message type", "type", msg.Type)
+		}
 	}
 }
 
@@ -1630,6 +1677,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	if err := json.Unmarshal(payload, &p); err != nil {
 		slog.Error("failed to parse agent.start payload", "error", err)
 		return
+	}
+	if len(p.MaterialRefs) > 0 {
+		resolved, err := s.resolveLegacyMaterialReferences(context.Background(), userID, p.MaterialRefs)
+		if err != nil {
+			client.SendDirect(&websocket.ServerMessage{Type: websocket.MsgAgentError, Payload: map[string]interface{}{"code": "MATERIAL_ACCESS_DENIED", "message": "所选材料不可用或已发生变化，请重新选择"}})
+			return
+		}
+		p.UserMaterials = append(p.UserMaterials, resolved...)
 	}
 
 	// Guest write limit: guests can only complete 1 article
@@ -1901,10 +1956,10 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 		// 构造 Task 对象用于后续 editorial 操作
 		edTask := &editorial.Task{
-			ID:       traceID,
-			Title:    p.Message,
-			OwnerID:  userID,
-			Status:   editorial.StatusDraft,
+			ID:      traceID,
+			Title:   p.Message,
+			OwnerID: userID,
+			Status:  editorial.StatusDraft,
 		}
 
 		// 2. 创建选题卡 Artifact 并自动批准
@@ -1933,14 +1988,14 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		if err := s.editorialSvc.AdvanceTask(context.Background(), edTask.ID, editorial.AdvanceTaskInput{
 			TargetStatus: editorial.StatusPendingApproval,
 			DecidedBy:    userID,
-			Rationale:   "编辑部模式自动提交审批",
+			Rationale:    "编辑部模式自动提交审批",
 		}); err != nil {
 			slog.Error("editorial: failed to advance to pending_approval", "error", err, "task_id", edTask.ID)
 		}
 		if err := s.editorialSvc.AdvanceTask(context.Background(), edTask.ID, editorial.AdvanceTaskInput{
 			TargetStatus: editorial.StatusResearch,
 			DecidedBy:    userID,
-			Rationale:   "编辑部模式自动批准立项",
+			Rationale:    "编辑部模式自动批准立项",
 		}); err != nil {
 			slog.Error("editorial: failed to advance to research", "error", err, "task_id", edTask.ID)
 		}
@@ -2074,6 +2129,43 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	go s.runAgent(agentRunner, execCtx, emitter, traceID, styleProfile)
 }
 
+// resolveLegacyMaterialReferences preserves the current writing experience
+// while governed legacy executors remain traffic-disabled in Task11. The
+// browser sends identities only; tenant-scoped material content is read here.
+// Task12 replaces this projection with MaterialArtifactProvider.
+func (s *Server) resolveLegacyMaterialReferences(parent context.Context, userID string, refs []websocket.MaterialReference) ([]string, error) {
+	if s.kbMgr == nil || strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("material store unavailable")
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	result := make([]string, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.MaterialID) == "" {
+			return nil, fmt.Errorf("material id is required")
+		}
+		if _, duplicate := seen[ref.MaterialID]; duplicate {
+			continue
+		}
+		seen[ref.MaterialID] = struct{}{}
+		material, err := s.kbMgr.GetMaterial(ctx, userID, ref.MaterialID)
+		if err != nil || material == nil || material.Status != "active" || material.DocID == "" {
+			return nil, fmt.Errorf("material not found")
+		}
+		expectedRef := "kb://documents/" + material.DocID
+		if ref.SourceRef != "" && ref.SourceRef != expectedRef {
+			return nil, fmt.Errorf("material source reference changed")
+		}
+		document, err := s.kbMgr.GetDocument(ctx, userID, material.DocID)
+		if err != nil || document == nil || strings.TrimSpace(document.Content) == "" {
+			return nil, fmt.Errorf("material content unavailable")
+		}
+		result = append(result, fmt.Sprintf("[material_ref:%s source:%s title:%s]\n%s", material.ID, expectedRef, material.Title, document.Content))
+	}
+	return result, nil
+}
+
 // runAgent runs the agent in a background goroutine with pause-aware cleanup.
 //
 // Cloud-server model: when the agent pauses due to client disconnect,
@@ -2186,7 +2278,7 @@ func (s *Server) runAgent(
 				topic = execCtx.WritingTask.Topic
 			}
 			s.sseHub.Broadcast(&SSEEvent{
-				Event: "article:completed",
+				Event:  "article:completed",
 				UserID: execCtx.UserID,
 				Data: map[string]interface{}{
 					"trace_id":      traceID,
@@ -2399,9 +2491,9 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 					))
 				}
 				engineSteps = append(engineSteps, steps.NewChatStep(llmClient))
-			if execCtx.Mode == "guided" {
-				engineSteps = append(engineSteps, steps.NewOutlineStepWithProfile(llmClient, styleProfile))
-			}
+				if execCtx.Mode == "guided" {
+					engineSteps = append(engineSteps, steps.NewOutlineStepWithProfile(llmClient, styleProfile))
+				}
 				engineSteps = append(engineSteps,
 					steps.NewWriteStepWithKB(llmClient, styleProfile, s.search, resumeKBSearcher),
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
@@ -2486,9 +2578,9 @@ func (s *Server) handleAgentEdit(client *websocket.Client, payload json.RawMessa
 		client.SendDirect(&websocket.ServerMessage{
 			Type: websocket.MsgAgentError,
 			Payload: map[string]interface{}{
-				"code":      "session_not_found",
-				"trace_id":   p.TraceID,
-				"message":   "session not found or expired",
+				"code":     "session_not_found",
+				"trace_id": p.TraceID,
+				"message":  "session not found or expired",
 			},
 		})
 		return
@@ -2667,16 +2759,16 @@ func (s *Server) handleSessionResume(client *websocket.Client, payload json.RawM
 			}
 
 			respPayload := websocket.SessionResumedPayload{
-				TraceID:        traceID,
-				Status:         status,
-				Article:        getStr(trace, "article"),
-				ArticleTitle:   getStr(trace, "article_title"),
-				TaskName:       getStr(trace, "task_name"),
-				Style:          getStr(trace, "style_slug"),
-				Mode:           getStr(trace, "mode"),
-				UserInput:      getStr(trace, "user_input"),
-				StepHistory:    trace["step_history"],
-				Review:         trace["review"],
+				TraceID:          traceID,
+				Status:           status,
+				Article:          getStr(trace, "article"),
+				ArticleTitle:     getStr(trace, "article_title"),
+				TaskName:         getStr(trace, "task_name"),
+				Style:            getStr(trace, "style_slug"),
+				Mode:             getStr(trace, "mode"),
+				UserInput:        getStr(trace, "user_input"),
+				StepHistory:      trace["step_history"],
+				Review:           trace["review"],
 				ReasoningContent: getStr(trace, "reasoning_content"),
 				// ConversationID: not stored in DB trace, client can use traceID
 				ConversationID: traceID,
@@ -2813,9 +2905,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  nil,
-			Repeatable:  false,
-			Terminal:    false,
-			Category:    "planning",
+			Repeatable: false,
+			Terminal:   false,
+			Category:   "planning",
 		},
 	)
 
@@ -2828,9 +2920,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 			),
 			engine.ToolDescriptor{
 				DependsOn:  nil,
-				Repeatable:  false,
-				Terminal:    false,
-				Category:    "memory",
+				Repeatable: false,
+				Terminal:   false,
+				Category:   "memory",
 			},
 		)
 	}
@@ -2843,9 +2935,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  nil,
-			Repeatable:  true,
-			Terminal:    true,
-			Category:    "writing",
+			Repeatable: true,
+			Terminal:   true,
+			Category:   "writing",
 		},
 	)
 
@@ -2857,9 +2949,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  nil,
-			Repeatable:  false,
-			Terminal:    false,
-			Category:    "retrieval",
+			Repeatable: false,
+			Terminal:   false,
+			Category:   "retrieval",
 		},
 	)
 
@@ -2871,9 +2963,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  []string{"query_plan"},
-			Repeatable:  true,
-			Terminal:    false,
-			Category:    "retrieval",
+			Repeatable: true,
+			Terminal:   false,
+			Category:   "retrieval",
 		},
 	)
 
@@ -2885,9 +2977,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  []string{"search"},
-			Repeatable:  true,
-			Terminal:    false,
-			Category:    "retrieval",
+			Repeatable: true,
+			Terminal:   false,
+			Category:   "retrieval",
 		},
 	)
 
@@ -2899,9 +2991,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  []string{"relevance"},
-			Repeatable:  true,
-			Terminal:    false,
-			Category:    "retrieval",
+			Repeatable: true,
+			Terminal:   false,
+			Category:   "retrieval",
 		},
 	)
 
@@ -2914,9 +3006,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 			),
 			engine.ToolDescriptor{
 				DependsOn:  nil,
-				Repeatable:  false,
-				Terminal:    false,
-				Category:    "planning",
+				Repeatable: false,
+				Terminal:   false,
+				Category:   "planning",
 			},
 		)
 	}
@@ -2935,9 +3027,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  nil,
-			Repeatable:  true,
-			Terminal:    true,
-			Category:    "writing",
+			Repeatable: true,
+			Terminal:   true,
+			Category:   "writing",
 		},
 	)
 
@@ -2949,9 +3041,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  nil,
-			Repeatable:  true,
-			Terminal:    false,
-			Category:    "review",
+			Repeatable: true,
+			Terminal:   false,
+			Category:   "review",
 		},
 	)
 
@@ -2963,9 +3055,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 		),
 		engine.ToolDescriptor{
 			DependsOn:  []string{"post_review"},
-			Repeatable:  true,
-			Terminal:    false,
-			Category:    "review",
+			Repeatable: true,
+			Terminal:   false,
+			Category:   "review",
 		},
 	)
 
@@ -2978,9 +3070,9 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 			),
 			engine.ToolDescriptor{
 				DependsOn:  nil,
-				Repeatable:  false,
-				Terminal:    false,
-				Category:    "memory",
+				Repeatable: false,
+				Terminal:   false,
+				Category:   "memory",
 			},
 		)
 	}
@@ -3015,12 +3107,12 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 
 	// Filter to active only and return minimal info
 	type modelInfo struct {
-		ID            string  `json:"id"`
-		ModelName     string  `json:"model_name"`
-		DisplayName   string  `json:"display_name"`
-		Provider      string  `json:"provider"`
-		IsDefault     bool    `json:"is_default"`
-		HasAPIKey     bool    `json:"has_api_key"`
+		ID              string  `json:"id"`
+		ModelName       string  `json:"model_name"`
+		DisplayName     string  `json:"display_name"`
+		Provider        string  `json:"provider"`
+		IsDefault       bool    `json:"is_default"`
+		HasAPIKey       bool    `json:"has_api_key"`
 		PointsPerKToken float64 `json:"points_per_k_token"`
 		CostLevel       string  `json:"cost_level"`
 	}

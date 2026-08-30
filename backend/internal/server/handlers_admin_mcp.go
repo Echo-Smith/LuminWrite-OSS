@@ -24,23 +24,16 @@ import (
 func (s *Server) handleAdminMCPStatus(w http.ResponseWriter, r *http.Request) {
 	status := map[string]any{
 		"in_process": map[string]any{
-			"enabled":   s.mcpServer != nil,
-			"config":    s.cfg.MCPServer,
+			"enabled": s.mcpServer != nil,
+			"config":  s.cfg.MCPServer,
 		},
 		"external_servers": []any{},
 	}
 
 	// External MCP servers
 	if s.mcpRegistry != nil {
-		servers := s.mcpRegistry.ServerNames()
-		extServers := make([]any, 0, len(servers))
-		for _, name := range servers {
-			extServers = append(extServers, map[string]any{
-				"name":   name,
-				"status": "connected",
-			})
-		}
-		status["external_servers"] = extServers
+		servers := s.mcpRegistry.Statuses()
+		status["external_servers"] = servers
 		status["external_count"] = len(servers)
 	}
 
@@ -211,7 +204,8 @@ func (s *Server) handleAdminUpdateMCPServer(w http.ResponseWriter, r *http.Reque
 		s.connectMCPServer(r.Context(), updated)
 	} else if s.mcpRegistry != nil {
 		// If deactivated, disconnect
-		s.mcpRegistry.Disconnect(updated.Name)
+		_ = s.mcpRegistry.Disconnect(updated.Name)
+		s.updateMCPReadiness(time.Now())
 		s.adminRepo.UpdateMCPServerStatus(r.Context(), id, "disconnected", "")
 	}
 	response.OK(w, updated)
@@ -239,7 +233,9 @@ func (s *Server) handleAdminDeleteMCPServer(w http.ResponseWriter, r *http.Reque
 	}
 	// Disconnect if currently connected
 	if serverName != "" && s.mcpRegistry != nil {
-		s.mcpRegistry.Disconnect(serverName)
+		_ = s.mcpRegistry.Disconnect(serverName)
+		s.mcpRegistry.Forget(serverName)
+		s.updateMCPReadiness(time.Now())
 	}
 	response.OK(w, map[string]any{"message": "mcp server deleted"})
 }
@@ -306,4 +302,5 @@ func (s *Server) connectMCPServer(ctx context.Context, cfg *database.MCPServerCo
 			s.mcpRegistry.RegisterTools(s.toolRegistry)
 		}
 	}
+	s.updateMCPReadiness(time.Now())
 }

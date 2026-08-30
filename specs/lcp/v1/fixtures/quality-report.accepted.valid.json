@@ -1,0 +1,50 @@
+{
+  "schema_version": "lcp/1.0",
+  "report_id": "qr_accepted",
+  "run_id": "run_demo",
+  "document_versions": {
+    "candidate_version_id": "ver_1",
+    "validated_version_id": "ver_1",
+    "committed_version_id": "ver_1",
+    "version_consistent": true
+  },
+  "requested_assurance": "sourced",
+  "achieved_assurance": "sourced",
+  "assurance_satisfied": true,
+  "quality_state": "accepted_draft",
+  "validators": [
+    {
+      "validator_id": "contract",
+      "version": "1.0.0",
+      "required": true,
+      "status": "passed",
+      "equivalence": "primary"
+    }
+  ],
+  "degradations": [],
+  "findings": [
+    {
+      "finding_id": "finding_warning",
+      "severity": "WARNING",
+      "category": "readability",
+      "code": "LONG_SENTENCE",
+      "message": "存在较长句子",
+      "validator_id": "style",
+      "status": "waived",
+      "waiver_decision_id": "decision_warning"
+    }
+  ],
+  "decision_records": [
+    {
+      "decision_id": "decision_warning",
+      "decision_type": "accept",
+      "reason_code": "editorial_choice",
+      "summary": "编辑接受该表达",
+      "decided_by": "user",
+      "decided_at": "2026-08-27T00:00:00Z"
+    }
+  ],
+  "snapshot_manifest_id": null,
+  "snapshot_persisted": false,
+  "created_at": "2026-08-27T00:00:00Z"
+}

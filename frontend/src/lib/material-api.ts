@@ -24,6 +24,15 @@ export interface UserMaterial {
   status: string;
   created_at: string;
   updated_at: string;
+  governance?: MaterialGovernance;
+}
+
+export interface MaterialGovernance {
+  eligible: boolean;
+  artifact_type: "materials";
+  snapshot_status: "pending_run_snapshot" | "source_unavailable";
+  integrity_status: "source_registered" | "unverified";
+  source_ref?: string;
 }
 
 export interface MaterialSearchResult {

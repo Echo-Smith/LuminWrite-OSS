@@ -1443,7 +1443,7 @@ function ArtifactContent({ content, type }: { content: string; type: string }) {
 
 function ArticlePreview({ content }: { content: string }) {
   let title = "";
-  let body = "";
+  let body: string;
   let wordCount = 0;
 
   try {

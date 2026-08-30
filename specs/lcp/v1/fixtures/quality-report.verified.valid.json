@@ -1,0 +1,30 @@
+{
+  "schema_version": "lcp/1.0",
+  "report_id": "qr_verified",
+  "run_id": "run_demo",
+  "document_versions": {
+    "candidate_version_id": "ver_1",
+    "validated_version_id": "ver_1",
+    "committed_version_id": "ver_1",
+    "version_consistent": true
+  },
+  "requested_assurance": "sourced",
+  "achieved_assurance": "sourced",
+  "assurance_satisfied": true,
+  "quality_state": "verified_deliverable",
+  "validators": [
+    {
+      "validator_id": "contract",
+      "version": "1.0.0",
+      "required": true,
+      "status": "passed",
+      "equivalence": "primary"
+    }
+  ],
+  "degradations": [],
+  "findings": [],
+  "decision_records": [],
+  "snapshot_manifest_id": "snap_1",
+  "snapshot_persisted": true,
+  "created_at": "2026-08-27T00:00:00Z"
+}

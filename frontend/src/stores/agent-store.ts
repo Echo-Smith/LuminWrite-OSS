@@ -557,7 +557,7 @@ articleTitle: d.article_title,
               mode: requestPayload.mode || sess.mode,
               status: "running",
               messages: [...sess.messages, userMessage, assistantMessage],
-              injectedMaterials: requestPayload.user_materials,
+              injectedMaterials: requestPayload.material_refs?.map((material) => material.title || material.material_id) ?? requestPayload.user_materials,
             }
           : sess
       ),

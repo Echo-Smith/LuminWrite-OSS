@@ -56,16 +56,6 @@ RUN mkdir -p /app/certs
 COPY --link --from=builder /bin/server /app/server
 COPY --link --from=builder /build/.env.example /app/.env.example
 
-# Copy CLI init script
-COPY --link scripts/init-cli.sh /app/init-cli.sh
-RUN chmod +x /app/init-cli.sh
-
-# ── Install tencent-news-cli (for news search + jiaozhen fact-checking) ──
-RUN curl -fsSL https://mat1.gtimg.com/qqcdn/qqnews/cli/hub/tencent-news/setup.sh | sh || \
-    echo "WARN: tencent-news-cli setup failed, CLI features will be disabled"
-
-ENV PATH="${PATH}:/root/.tencent-news-cli/bin"
-
 # OCI labels for image metadata
 LABEL org.opencontainers.image.title="luminbuddy-v2-backend" \
       org.opencontainers.image.description="LuminBuddy V2 — Backend (Go)" \
@@ -77,5 +67,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
-# Startup: init CLI API key → start server
-CMD ["/bin/sh", "-c", "/app/init-cli.sh && /app/server"]
+# Paid information-source CLIs are deliberately excluded from the OSS image.
+CMD ["/app/server"]

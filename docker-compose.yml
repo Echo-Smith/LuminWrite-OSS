@@ -90,6 +90,10 @@ services:
       # Redis (for verification codes + session sharing)
       REDIS_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
+      # Credential-bearing provider probes are disabled unless explicitly opted in.
+      PROVIDER_PREFLIGHT_ENABLED: ${PROVIDER_PREFLIGHT_ENABLED:-false}
+      PROVIDER_PREFLIGHT_INTERVAL: ${PROVIDER_PREFLIGHT_INTERVAL:-30m}
+      PROVIDER_PREFLIGHT_TIMEOUT: ${PROVIDER_PREFLIGHT_TIMEOUT:-8s}
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     volumes:

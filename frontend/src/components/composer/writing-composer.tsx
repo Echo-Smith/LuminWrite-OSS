@@ -21,6 +21,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
+import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
 import { listMaterials, getMaterialContent, type UserMaterial } from "@/lib/material-api";
 
@@ -34,7 +35,7 @@ export interface WritingComposerHandle {
   insertText: (text: string) => void;
 }
 
-export const WritingComposer = forwardRef<WritingComposerHandle>(function WritingComposer(_, ref) {
+export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boolean }>(function WritingComposer({ compact = false }, ref) {
   const [message, setMessage] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
   const [materials, setMaterials] = useState<string[]>([]);
@@ -83,6 +84,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
   });
   const [mode, setMode] = useState<WriteMode>(sessionMode);
   const [style, setStyle] = useState(sessionStyle);
+  const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("auto");
+  const [assuranceLevel, setAssuranceLevel] = useState<AssuranceLevel>("standard");
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("conditional");
 
   // Update local state when session changes (e.g. new session from topic center)
   useEffect(() => { setMode(sessionMode); }, [sessionMode]);
@@ -151,7 +155,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       const { setUserInput, setRunStatus } = useWorkflowStore.getState();
       setUserInput(currentText.trim());
       setRunStatus("planning");
-      sendWS("workflow.start", { user_input: currentText.trim(), kb_enabled: kbEnabled, style_slug: style });
+      sendWS("workflow.start", { user_input: currentText.trim(), kb_enabled: kbEnabled, style_slug: style, orchestration_mode: orchestrationMode, assurance_level: assuranceLevel, approval_mode: approvalMode });
       editorRef.current?.clear();
       setMessage("");
       return;
@@ -168,11 +172,14 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       agent_mode: agentMode,
       user_materials: materials.length > 0 ? materials : undefined,
       kb_enabled: kbEnabled,
+      orchestration_mode: orchestrationMode,
+      assurance_level: assuranceLevel,
+      approval_mode: approvalMode,
     });
 
     editorRef.current?.clear();
     setMessage("");
-  }, [isRunning, style, mode, model, materials, startWriting, agentMode, sendWS, kbEnabled]);
+  }, [isRunning, style, mode, model, materials, startWriting, agentMode, sendWS, kbEnabled, orchestrationMode, assuranceLevel, approvalMode]);
 
   const handleAddMaterial = () => {
     if (materialInput.trim()) {
@@ -198,7 +205,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
       });
       const json = await res.json();
       if (json.success && json.data) {
-        const tag = `📎 ${file.name}`;
+        const tag = `文件：${file.name}`;
         setMaterials([...materials, tag]);
       }
     } catch (err) {
@@ -236,7 +243,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     } catch {
       // use preview
     }
-    const tag = `📎 ${mat.title}: ${content}`;
+    const tag = `素材：${mat.title}: ${content}`;
     setMaterials((prev) => [...prev, tag]);
     setShowMaterialPicker(false);
     toast.success("已注入素材", mat.title);
@@ -246,7 +253,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     <div className="relative">
       {/* 顶部渐变遮罩 — 从透明过渡到背景色，实现悬浮效果 */}
       <div className="pointer-events-none absolute -top-8 left-0 right-0 h-8 bg-gradient-to-t from-surface to-transparent z-10" />
-      <div className="relative z-20 px-4 pb-4 pt-2">
+      <div className={cn("relative z-20", compact ? "px-3 pb-3 pt-1" : "px-4 pb-4 pt-2")}>
       {/* ── Composer 圆角矩形容器 ── */}
       <div
         key={`composer-${shakeKey}`}
@@ -433,7 +440,16 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
           </button>
 
           {/* 左侧：引导模式 */}
-          <ModePicker value={mode} onChange={handleModeChange} />
+          <ModePicker
+            value={mode}
+            onChange={handleModeChange}
+            orchestrationValue={orchestrationMode}
+            onOrchestrationChange={setOrchestrationMode}
+            assuranceValue={assuranceLevel}
+            onAssuranceChange={setAssuranceLevel}
+            approvalValue={approvalMode}
+            onApprovalChange={setApprovalMode}
+          />
 
           {/* 左侧：风格选择（紧挨模式右侧） */}
           <StylePicker value={style} onChange={handleStyleChange} />
@@ -494,5 +510,3 @@ export const WritingComposer = forwardRef<WritingComposerHandle>(function Writin
     </div>
   );
 });
-
-

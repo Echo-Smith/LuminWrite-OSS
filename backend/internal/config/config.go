@@ -41,6 +41,16 @@ type Config struct {
 	Evaluation EvaluationConfig
 	MCPServers []MCPServerConfig
 	MCPServer  InProcessMCPServerConfig
+	ProviderPreflight ProviderPreflightConfig
+}
+
+// ProviderPreflightConfig controls credential-bearing network probes. Startup
+// validation remains local; probes run only through the admin action or this
+// explicit opt-in loop.
+type ProviderPreflightConfig struct {
+	Enabled  bool
+	Interval time.Duration
+	Timeout  time.Duration
 }
 
 type WebAuthnConfig struct {
@@ -403,6 +413,11 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			Enabled:  getEnvBool("MCP_SERVER_ENABLED", false),
 			HTTPAddr: getEnv("MCP_SERVER_HTTP_ADDR", ":9090"),
 			Stdio:    getEnvBool("MCP_SERVER_STDIO", false),
+		},
+		ProviderPreflight: ProviderPreflightConfig{
+			Enabled: getEnvBool("PROVIDER_PREFLIGHT_ENABLED", false),
+			Interval: getEnvDuration("PROVIDER_PREFLIGHT_INTERVAL", 30*time.Minute),
+			Timeout: getEnvDuration("PROVIDER_PREFLIGHT_TIMEOUT", 8*time.Second),
 		},
 	}
 }

@@ -14,6 +14,17 @@
 
 **当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。
 
+### 治理型写作运行时：目标架构与迁移边界
+
+V2 后续演进以 [治理型写作运行时](docs/19-governed-writing-runtime.md) 为唯一目标架构和协议基线，并按[实施计划](docs/plans/2026-08-27-governed-writing-runtime-implementation.md)逐步落地。新能力必须绑定版本化的 WritingContract、ExecutablePlan、Artifact、质量状态和 Snapshot；文档是主对象，聊天只负责修改合约、解释决策和控制执行。
+
+迁移期间，现有 Harness、Pipeline 和 Editorial DAG 继续作为执行器或兼容适配入口：
+
+- `agent.start` 与 `workflow.start` 暂时保持 wire 兼容，但不构成两套并行权威内核。
+- 旧 `mode` 与 `agent_mode` 不等同于新的 `task_mode`、`orchestration_mode` 和 `assurance_level`，不得复用旧字段承载新语义。
+- `agent.completed` 与 `workflow.completed` 只表示当前执行路径结束，不表示内容已经 Accepted、Verified 或正式提交。
+- Article Output Contract 只规定模型输出的流式 Markdown 解析边界；解析成功不等于 LCP 校验、Document AST 构建、版本提交或质量验收成功。
+
 ---
 
 ## 解决了什么问题

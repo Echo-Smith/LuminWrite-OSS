@@ -628,7 +628,7 @@ func executeSearchWeb(cfg ToolExecutorConfig, arguments string) (string, error) 
 				cfg.Emitter.StepComplete("search_web", map[string]any{
 					"query":   args.Query,
 					"results": 0,
-					"reason":   "all duplicates",
+					"reason":  "all duplicates",
 				}, int64(time.Since(start).Milliseconds()))
 			}
 			return fmt.Sprintf("搜索「%s」的所有结果与已有结果重复（已有 %d 条）。请使用 read_source 读取已有结果，或换一个更具体的关键词。", args.Query, len(cfg.Session.SearchResults)), nil
@@ -773,7 +773,7 @@ func executeWriteArticle(cfg ToolExecutorConfig, arguments string) (string, erro
 		cfg.Emitter.StepComplete("write_article", map[string]any{"topic": args.Topic}, int64(time.Since(start).Milliseconds()))
 	}
 
-	return "好的，请直接输出文章内容（Markdown格式，以##开头作为标题）。文章会实时展示给用户。", nil
+	return "好的，请直接输出完整文章。文章会实时展示给用户。\n\n" + profile.MarkdownArticleOutputReminder, nil
 }
 
 // executeReviewArticle 对文章进行质量评审。
@@ -833,7 +833,7 @@ func executeReviseSection(cfg ToolExecutorConfig, arguments string) (string, err
 		styleConstraints = cfg.Profile.RenderWritingConstraints("writing", false, 0)
 	}
 
-	return fmt.Sprintf("请修改「%s」：%s。\n直接输出修改后的完整文章。\n%s", args.SectionHint, args.Instruction, styleConstraints), nil
+	return fmt.Sprintf("请修改「%s」：%s。\n直接输出修改后的完整文章。\n%s\n\n%s", args.SectionHint, args.Instruction, styleConstraints, profile.MarkdownArticleOutputReminder), nil
 }
 
 // executeWordCountCheck 检查文章字数是否符合风格要求。

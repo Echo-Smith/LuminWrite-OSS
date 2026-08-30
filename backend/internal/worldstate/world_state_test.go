@@ -203,6 +203,21 @@ func TestWorldStateVersion(t *testing.T) {
 	}
 }
 
+func TestWritingInstructionsUseMarkdownArticleContract(t *testing.T) {
+	for _, guided := range []bool{false, true} {
+		fragment := NewTaskInstructionsSection("writing", guided).RenderDiff(nil)
+		if fragment == nil {
+			t.Fatalf("guided=%v returned no instructions", guided)
+		}
+		if !strings.Contains(fragment.Body, "## 文章标题") {
+			t.Fatalf("guided=%v missing Markdown contract: %q", guided, fragment.Body)
+		}
+		if strings.Contains(fragment.Body, "---ARTICLE---") || strings.Contains(fragment.Body, `{"title"`) {
+			t.Fatalf("guided=%v still generates legacy protocol: %q", guided, fragment.Body)
+		}
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

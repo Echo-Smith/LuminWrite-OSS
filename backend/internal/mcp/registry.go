@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,20 +28,46 @@ import (
 
 // Registry manages multiple MCP server connections.
 type Registry struct {
-	mu      sync.RWMutex
-	clients map[string]*MCPClient // server name → client
+	mu       sync.RWMutex
+	clients  map[string]*MCPClient // server name → client
+	statuses map[string]ServerStatus
+}
+
+const (
+	MCPErrorConfigInvalid = "MCP_CONFIG_INVALID"
+	MCPErrorConnectFailed = "MCP_CONNECT_FAILED"
+	MCPErrorDisconnected  = "MCP_DISCONNECTED"
+)
+
+// ServerStatus is the credential-free, operator-facing state retained for
+// both successful and failed configured MCP servers.
+type ServerStatus struct {
+	Name        string    `json:"name"`
+	Transport   string    `json:"transport"`
+	Connected   bool      `json:"connected"`
+	ToolCount   int       `json:"tool_count"`
+	ErrorCode   string    `json:"error_code,omitempty"`
+	LastChecked time.Time `json:"last_checked_at,omitempty"`
 }
 
 // NewRegistry creates an empty MCP registry.
 func NewRegistry() *Registry {
-	return &Registry{clients: make(map[string]*MCPClient)}
+	return &Registry{
+		clients:  make(map[string]*MCPClient),
+		statuses: make(map[string]ServerStatus),
+	}
 }
 
 // Connect connects to an MCP server and discovers its tools.
 // If connection fails, logs a warning and continues (non-fatal).
 func (r *Registry) Connect(ctx context.Context, cfg MCPClientConfig) error {
+	if err := validateMCPClientConfig(cfg); err != nil {
+		r.recordFailure(cfg, MCPErrorConfigInvalid)
+		return err
+	}
 	client, err := NewMCPClient(ctx, cfg)
 	if err != nil {
+		r.recordFailure(cfg, MCPErrorConnectFailed)
 		slog.Warn("MCP server connection failed, skipping",
 			"server", cfg.Name,
 			"transport", cfg.Transport,
@@ -49,15 +76,70 @@ func (r *Registry) Connect(ctx context.Context, cfg MCPClientConfig) error {
 		return err
 	}
 
-	r.mu.Lock()
-	r.clients[cfg.Name] = client
-	r.mu.Unlock()
+	r.recordConnected(cfg, client)
 
 	slog.Info("MCP server registered",
 		"server", cfg.Name,
 		"tools", len(client.Tools()),
 	)
 	return nil
+}
+
+func validateMCPClientConfig(cfg MCPClientConfig) error {
+	if strings.TrimSpace(cfg.Name) == "" {
+		return fmt.Errorf("MCP server name is required")
+	}
+	switch cfg.Transport {
+	case "stdio":
+		if strings.TrimSpace(cfg.Command) == "" {
+			return fmt.Errorf("stdio transport requires 'command'")
+		}
+	case "sse":
+		if strings.TrimSpace(cfg.URL) == "" {
+			return fmt.Errorf("sse transport requires 'url'")
+		}
+	default:
+		return fmt.Errorf("unknown transport: %s (use 'stdio' or 'sse')", cfg.Transport)
+	}
+	return nil
+}
+
+func (r *Registry) recordFailure(cfg MCPClientConfig, code string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.statuses[cfg.Name] = ServerStatus{
+		Name: cfg.Name, Transport: cfg.Transport, ErrorCode: code, LastChecked: time.Now().UTC(),
+	}
+}
+
+func (r *Registry) recordConnected(cfg MCPClientConfig, client *MCPClient) {
+	r.mu.Lock()
+	old := r.clients[cfg.Name]
+	r.clients[cfg.Name] = client
+	r.statuses[cfg.Name] = ServerStatus{
+		Name: cfg.Name, Transport: cfg.Transport, Connected: true,
+		ToolCount: len(client.Tools()), LastChecked: time.Now().UTC(),
+	}
+	r.mu.Unlock()
+	if old != nil && old != client {
+		old.Close()
+	}
+}
+
+// Statuses returns a stable, sorted snapshot without configuration values or
+// credentials. Failed configured servers remain visible until forgotten.
+func (r *Registry) Statuses() []ServerStatus {
+	if r == nil {
+		return []ServerStatus{}
+	}
+	r.mu.RLock()
+	statuses := make([]ServerStatus, 0, len(r.statuses))
+	for _, status := range r.statuses {
+		statuses = append(statuses, status)
+	}
+	r.mu.RUnlock()
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
+	return statuses
 }
 
 // RegisterTools registers all MCP tools as AgentTools in the engine.ToolRegistry.
@@ -91,6 +173,12 @@ func (r *Registry) Close() {
 	for name, client := range r.clients {
 		client.Close()
 		delete(r.clients, name)
+		status := r.statuses[name]
+		status.Connected = false
+		status.ToolCount = 0
+		status.ErrorCode = MCPErrorDisconnected
+		status.LastChecked = time.Now().UTC()
+		r.statuses[name] = status
 	}
 }
 
@@ -106,8 +194,24 @@ func (r *Registry) Disconnect(name string) error {
 	}
 	client.Close()
 	delete(r.clients, name)
+	status := r.statuses[name]
+	status.Connected = false
+	status.ToolCount = 0
+	status.ErrorCode = MCPErrorDisconnected
+	status.LastChecked = time.Now().UTC()
+	r.statuses[name] = status
 	slog.Info("MCP server disconnected", "server", name)
 	return nil
+}
+
+// Forget removes the observable status after its configuration is deleted.
+func (r *Registry) Forget(name string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.statuses, name)
+	r.mu.Unlock()
 }
 
 // Reconnect disconnects (if connected) and reconnects to an MCP server.
@@ -215,11 +319,20 @@ func (t *MCPAgentTool) SetSandboxHook(hook SandboxHook) {
 	t.sandbox.Store(&hook)
 }
 
-func (t *MCPAgentTool) Name() string        { return t.name }
-func (t *MCPAgentTool) Description() string  { return t.description }
+func (t *MCPAgentTool) Name() string           { return t.name }
+func (t *MCPAgentTool) Description() string    { return t.description }
 func (t *MCPAgentTool) Schema() map[string]any { return t.schema }
 
 func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx *engine.ExecutionContext, emitter engine.EventEmitter) (*engine.ToolResult, error) {
+	if t.client == nil {
+		return nil, fmt.Errorf("MCP tool %s has no connected client", t.name)
+	}
+	traceID := ""
+	userID := ""
+	if execCtx != nil {
+		traceID = execCtx.TraceID
+		userID = execCtx.UserID
+	}
 	// ── Sandbox: per-session call limit ──
 	current := t.callCount.Add(1)
 	if current > mcpToolMaxCallsPerSession {
@@ -228,28 +341,22 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 			"tool", t.toolName,
 			"call_count", current,
 			"max_calls", mcpToolMaxCallsPerSession,
-			"trace_id", execCtx.TraceID,
+			"trace_id", traceID,
 		)
 		return nil, fmt.Errorf("MCP tool %s 已达到单次会话调用上限 (%d 次)，请减少调用频率或使用内置工具替代", t.name, mcpToolMaxCallsPerSession)
-	}
-
-	// Extract user ID from execCtx (best-effort)
-	userID := ""
-	if execCtx != nil && execCtx.UserID != "" {
-		userID = execCtx.UserID
 	}
 
 	// ── Sandbox: policy-driven pre-execution check ──
 	if hookPtr := t.sandbox.Load(); hookPtr != nil {
 		hook := *hookPtr
-		result := hook.Check(t.client.Name(), t.toolName, args, execCtx.TraceID, userID)
+		result := hook.Check(t.client.Name(), t.toolName, args, traceID, userID)
 		if !result.Allowed {
 			slog.Warn("MCP tool blocked by sandbox policy",
 				"server", t.client.Name(),
 				"tool", t.toolName,
 				"violation", result.ViolationType,
 				"detail", result.Detail,
-				"trace_id", execCtx.TraceID,
+				"trace_id", traceID,
 			)
 			return nil, fmt.Errorf("MCP tool %s 被安全沙箱拦截: %s", t.name, result.Detail)
 		}
@@ -258,8 +365,8 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 	slog.Info("MCP tool executing",
 		"server", t.client.Name(),
 		"tool", t.toolName,
-		"args", args,
-		"trace_id", execCtx.TraceID,
+		"argument_count", len(args),
+		"trace_id", traceID,
 		"call_count", current,
 	)
 
@@ -281,7 +388,7 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 				"server", t.client.Name(),
 				"tool", t.toolName,
 				"timeout", timeout,
-				"trace_id", execCtx.TraceID,
+				"trace_id", traceID,
 			)
 			return nil, fmt.Errorf("MCP tool %s 执行超时 (%v)，请稍后重试或检查外部服务状态", t.name, timeout)
 		}
@@ -307,7 +414,7 @@ func (t *MCPAgentTool) Execute(ctx context.Context, args map[string]any, execCtx
 		"result_length", len(result),
 		"truncated", truncated,
 		"call_count", current,
-		"trace_id", execCtx.TraceID,
+		"trace_id", traceID,
 	)
 
 	return &engine.ToolResult{

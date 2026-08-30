@@ -86,12 +86,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   // ─── 折叠态 ──────────────────────────────────────────────
   if (collapsed) {
     return (
-      <div className="flex h-full w-14 flex-col items-center border-r bg-surface py-3 gap-2 anim-slide-right">
+      <aside className="flex h-full w-14 flex-col items-center border-r bg-surface py-3 gap-2 anim-slide-right" data-panel-state="collapsed" aria-label="全局导航">
         {/* 展开按钮 */}
         <button
           onClick={onToggle}
           className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
           title="展开侧栏"
+          aria-expanded="false"
         >
           <PanelLeftOpen className="h-4 w-4" />
         </button>
@@ -163,13 +164,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             />
           </PopoverContent>
         </Popover>
-      </div>
+      </aside>
     );
   }
 
   // ─── 展开态 ──────────────────────────────────────────────
   return (
-    <div className="flex h-full w-64 flex-col border-r bg-surface anim-slide-right">
+    <aside className="flex h-full w-64 flex-col border-r bg-surface anim-slide-right" data-panel-state="expanded" aria-label="全局导航">
       {/* 顶部品牌区 + 折叠按钮 */}
       <div className="flex items-center gap-2.5 px-3 py-3.5">
         <BrandIcon size="md" showLabel subtitle="V2 · writing agent" />
@@ -177,6 +178,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           onClick={onToggle}
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-ui shrink-0"
           title="收起侧栏"
+          aria-expanded="true"
         >
           <PanelLeftClose className="h-4 w-4" />
         </button>
@@ -352,7 +354,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* 写作任务持续运行通知条 */}
       <RunningSessionBar />
-    </div>
+    </aside>
   );
 }
 

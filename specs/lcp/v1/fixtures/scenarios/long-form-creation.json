@@ -1,0 +1,14 @@
+{
+  "scenario_id": "long_form_creation",
+  "title": "长文创作",
+  "initial_artifacts": ["contract"],
+  "stages": [
+    {"id": "outline", "outputs": ["outline"]},
+    {"id": "draft", "outputs": ["full_draft"]},
+    {"id": "quality", "outputs": ["quality_report"]},
+    {"id": "finalize", "outputs": ["revision_set"]}
+  ],
+  "required_validators": ["core.ast.integrity", "core.contract.consistency", "core.style"],
+  "allowed_quality_states": ["candidate_draft", "accepted_draft", "verified_deliverable"],
+  "blocking_cases": ["missing_contract_point", "required_validator_unavailable", "snapshot_missing"]
+}

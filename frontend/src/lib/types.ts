@@ -122,11 +122,17 @@ export interface AgentStartPayload {
   agent_mode?: "harness" | "pipeline" | "editorial";
   session_id?: string;
   user_materials?: string[];
+  /** Task11: server-resolved material identities; the browser never treats previews as authoritative content. */
+  material_refs?: Array<{ material_id: string; source_ref: string; title?: string }>;
   word_limit?: number;
   /** 热搜选题原始链接（用于后端抓取事件背景增强写作叙事） */
   topic_url?: string;
   /** 是否启用素材库自动检索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
   kb_enabled?: boolean;
+  /** Task10 治理控制：旧入口仅作兼容适配，正式运行以 WritingContract 为准。 */
+  orchestration_mode?: "auto" | "fast" | "outline_first" | "sourced" | "strict_research";
+  assurance_level?: "flexible" | "standard" | "sourced" | "strict";
+  approval_mode?: "conditional" | "always" | "auto";
 }
 
 // ─── 写作结果 ────────────────────────────────────────────

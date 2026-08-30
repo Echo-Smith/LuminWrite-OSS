@@ -340,7 +340,7 @@ function MemoryGateResult({ result }: { result: Record<string, unknown> }) {
 // ─── JSON 格式化展示（可折叠 + 语法高亮） ────────────────
 function highlightJson(jsonStr: string): ReactNode {
   const tokens: ReactNode[] = [];
-  const regex = /("(?:[^"\\]|\\.)*"\s*:)|("(?:[^"\\]|\\.)*")|\b(true|false|null)\b|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([{}\[\],])/g;
+  const regex = /("(?:[^"\\]|\\.)*"\s*:)|("(?:[^"\\]|\\.)*")|\b(true|false|null)\b|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([{}[\],])/g;
   let lastIndex = 0;
   let key = 0;
 

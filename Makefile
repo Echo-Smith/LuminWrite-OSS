@@ -1,7 +1,7 @@
 # ─── Writing Agent V2 — Root Makefile ───────────────────
 # Common Docker commands for development and deployment.
 
-.PHONY: help up down build rebuild logs ps shell clean dev weknora
+.PHONY: help up down build rebuild logs ps shell clean dev weknora verify verify-backend verify-frontend
 
 # Default: show available commands
 help: ## Show this help
@@ -36,6 +36,19 @@ shell: ## Shell into backend container
 
 dev: ## Start with dev overrides (hot reload)
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+# ── Validation ──────────────────────────────────────────
+
+verify: verify-backend verify-frontend ## Run all backend and frontend quality gates
+
+verify-backend: ## Build and test the Go backend serially
+	cd backend && go build ./...
+	cd backend && go test -p 1 -count=1 ./...
+
+verify-frontend: ## Lint, build, and test the frontend
+	cd frontend && npm run lint
+	cd frontend && npm run build
+	cd frontend && npm run test:wabench
 
 # ── WeKnora (optional RAG service) ──────────────────────
 

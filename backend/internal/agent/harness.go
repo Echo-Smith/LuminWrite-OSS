@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"strings"
 
-	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
@@ -47,8 +47,8 @@ type Harness struct {
 	historyVersion uint64 // 对话历史版本号，compaction/rollback 时递增
 
 	// Token 预算追踪（借鉴 Codex TokenBudgetContext）
-	tokenBudget   *worldstate.TokenBudget
-	autoCompact   *worldstate.AutoCompactFallback
+	tokenBudget *worldstate.TokenBudget
+	autoCompact *worldstate.AutoCompactFallback
 }
 
 // NewHarness creates a Harness orchestrator.
@@ -73,10 +73,50 @@ func (h *Harness) SetToolSettleFunc(fn ToolSettleFunc) {
 	h.toolSettleFunc = fn
 }
 
+// settleFuncFor 把扣费限制在持久交互路径。governed Core（persistent=false）
+// 运行在 shadow lane 时绝不能消耗用户积分：扣费属于用户侧副作用。
+func (h *Harness) settleFuncFor(persistent bool) ToolSettleFunc {
+	if persistent {
+		return h.toolSettleFunc
+	}
+	return nil
+}
+
 // Run 执行单次写作/对话请求。
 // execCtx 持有本次请求的输入和状态，session 持有跨轮的会话状态。
 func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) error {
+	return h.run(ctx, execCtx, session, true)
+}
+
+// HarnessCoreOutput is provisional. RunCore never reads or writes session
+// history and never emits terminal/UI events, allowing writingruntime to own
+// every authoritative commit.
+type HarnessCoreOutput struct {
+	Article       string
+	ArticleTitle  string
+	TotalTokens   int
+	SearchResults []engine.SearchResult
+	ReviewResult  *engine.ReviewResult
+}
+
+func (h *Harness) RunCore(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) (HarnessCoreOutput, error) {
+	if h == nil || execCtx == nil || session == nil {
+		return HarnessCoreOutput{}, fmt.Errorf("harness core requires execution context and isolated session")
+	}
+	if err := h.run(ctx, execCtx, session, false); err != nil {
+		return HarnessCoreOutput{}, err
+	}
+	return HarnessCoreOutput{Article: execCtx.Article, ArticleTitle: execCtx.ArticleTitle,
+		TotalTokens: execCtx.TotalTokens, SearchResults: append([]engine.SearchResult(nil), session.SearchResults...),
+		ReviewResult: session.ReviewResult}, nil
+}
+
+func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession, persistent bool) error {
 	execCtx.Status = engine.StatusRunning
+	var emitter engine.EventEmitter
+	if persistent {
+		emitter = h.emitter
+	}
 
 	slog.Info("harness started",
 		"trace_id", execCtx.TraceID,
@@ -87,10 +127,12 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	)
 
 	// 1. 加载对话历史
-	session.LoadHistory(ctx, h.sessionStore, 50)
+	if persistent {
+		session.LoadHistory(ctx, h.sessionStore, 50)
+	}
 
 	// 1b. 主动检索记忆（如果 SessionStore 实现了 MemoryRetriever）
-	if session.MemoryContext == nil {
+	if persistent && session.MemoryContext == nil {
 		h.retrieveMemory(ctx, execCtx, session)
 	}
 
@@ -113,7 +155,9 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 
 	// 3b. 对话历史压缩（借鉴 dsh compaction 模式）
 	// 在构建消息前检查是否需要压缩历史，避免 token 溢出
-	h.maybeCompact(ctx, execCtx, session, intent)
+	if persistent {
+		h.maybeCompact(ctx, execCtx, session, intent)
+	}
 
 	// 4. 构建消息
 	messages := h.buildMessages(execCtx, session, intent, isGuided)
@@ -129,11 +173,11 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		KBSearcher: h.kbSearcher,
 		Session:    session,
 		ExecCtx:    execCtx,
-		Emitter:    h.emitter,
+		Emitter:    emitter,
 		Profile:    h.profile,
 		LLM:        h.llm,
 		MaxCalls:   defaultMaxCalls(intent),
-		SettleFunc: h.toolSettleFunc,
+		SettleFunc: h.settleFuncFor(persistent),
 	}
 	executor := BuildToolExecutor(executorCfg)
 
@@ -142,14 +186,16 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 
 	// 7. 流式状态管理
 	var bodyBuf strings.Builder
-	titleResolved := false
 	var articleTitle string
+	articleIntent := isArticleIntent(intent)
 
 	// savedArticle 保存正文内容。
 	// 当 LLM 输出正文后调用 review_article 等工具时，onReset 会触发，
 	// 此时 bodyBuf 中已有正文。我们在 onReset 中将正文保存到 savedArticle，
 	// 防止后续 LLM 输出的评审说明覆盖正文内容。
 	var savedArticle string
+	var savedTitle string
+	var savedProtocol steps.ArticleOutputProtocol
 
 	// 断线检测：创建可取消的 context，在 onDelta 中检查断线
 	streamCtx, streamCancel := context.WithCancel(ctx)
@@ -157,20 +203,35 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 
 	disconnected := false
 
-	// 标题收集缓冲区：用于 JSON 标题 + 分隔符模式（writing 意图）
-	var titleBuf strings.Builder
-	titleCharCount := 0
-
-	// streamBody 是一个辅助函数：同时写入 bodyBuf 和转发给前端
+	// streamBody 同时写入最终正文缓冲区并转发给前端。
 	streamBody := func(text string) {
 		bodyBuf.WriteString(text)
-		if h.emitter != nil {
-			h.emitter.StreamDelta(text)
+		if emitter != nil {
+			emitter.StreamDelta(text)
 		}
 	}
 
-	// useJSONTitle: writing 意图使用 JSON 标题 + 分隔符模式
-	useJSONTitle := intent == IntentWriting
+	confirmedTitle := strings.TrimSpace(session.ArticleTitle)
+	if session.Outline != nil && strings.TrimSpace(session.Outline.Title) != "" {
+		confirmedTitle = strings.TrimSpace(session.Outline.Title)
+	}
+
+	// 文章类任务统一使用增量解析器：规范输出为 Markdown 标题，旧 JSON
+	// 协议仍可读取。对话回复不经过解析，避免误删普通 Markdown 标题。
+	var articleParser *steps.ArticleStreamParser
+	if articleIntent {
+		articleParser = steps.NewArticleStreamParser(steps.ArticleStreamParserConfig{
+			ConfirmedTitle: confirmedTitle,
+			OnTitle: func(title string) {
+				articleTitle = title
+				execCtx.ArticleTitle = title
+				if emitter != nil {
+					emitter.ArticleTitle(title)
+				}
+			},
+			OnBody: streamBody,
+		})
+	}
 
 	onDelta := func(delta string) {
 		// 检查客户端是否已断开
@@ -187,89 +248,16 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			return // 已断开，丢弃后续 delta
 		}
 
-		// JSON 标题模式：先收集 JSON 标题前缀，找到分隔符后再输出正文
-		if !titleResolved && useJSONTitle {
-			titleBuf.WriteString(delta)
-			titleCharCount += len([]rune(delta))
-			buf := titleBuf.String()
-
-			// 尝试找到分隔符
-			sepIdx := strings.Index(buf, steps.ArticleSeparator)
-			if sepIdx >= 0 {
-				// 找到分隔符 — 从分隔符之前的内容中解析 JSON 标题
-				jsonPart := strings.TrimSpace(buf[:sepIdx])
-				var title string
-				if t, ok := steps.ParseTitleJSON(jsonPart); ok {
-					title = t
-				} else {
-					// JSON 解析失败 — 尝试从 Markdown 中提取
-					title = steps.ExtractTitleFromMarkdown(jsonPart)
-				}
-				if title != "" {
-					articleTitle = title
-					titleResolved = true
-					execCtx.ArticleTitle = title
-					if h.emitter != nil {
-						h.emitter.ArticleTitle(title)
-					}
-				}
-
-				// 分隔符之后的内容作为正文开头
-				after := strings.TrimLeft(buf[sepIdx+len(steps.ArticleSeparator):], "\n\r ")
-				// 去除 LLM 可能重复输出的 ## 标题行
-				after = steps.StripLeadingTitleHeading(after, title)
-				if after != "" {
-					streamBody(after)
-				}
-				titleBuf.Reset()
-				return
-			}
-
-			// 还没找到分隔符 — 检查字符上限，超过则切换为 fallback
-			if titleCharCount > steps.TitleCollectCharLimit {
-				// LLM 没有按格式输出 — 尝试从已收集内容中提取标题
-				title := steps.ExtractTitleFromMarkdown(buf)
-				if title != "" {
-					articleTitle = title
-					titleResolved = true
-					execCtx.ArticleTitle = title
-					if h.emitter != nil {
-						h.emitter.ArticleTitle(title)
-					}
-				}
-				// 过滤掉 JSON 行后输出为正文
-				bodyPart := steps.FilterJSONLines(buf)
-				bodyPart = steps.StripLeadingTitleHeading(bodyPart, title)
-				if bodyPart != "" {
-					streamBody(bodyPart)
-				}
-				titleBuf.Reset()
-				return
-			}
-			// 仍在收集标题前缀，不转发给前端
-			return
-		}
-
-		// 普通流式输出（标题已解析或非 writing 模式）
-		streamBody(delta)
-
-		// 对于 polish/shorten/expand 模式，从流中提取 Markdown 标题
-		if !titleResolved && !useJSONTitle && (intent == IntentPolish || intent == IntentShorten || intent == IntentExpand) {
-			buf := bodyBuf.String()
-			if title := steps.ExtractTitleFromMarkdown(buf); title != "" {
-				articleTitle = title
-				titleResolved = true
-				execCtx.ArticleTitle = title
-				if h.emitter != nil {
-					h.emitter.ArticleTitle(title)
-				}
-			}
+		if articleParser != nil {
+			articleParser.Push(delta)
+		} else {
+			streamBody(delta)
 		}
 	}
 
 	onReasoning := func(delta string) {
-		if h.emitter != nil {
-			h.emitter.ReasoningDelta(delta)
+		if emitter != nil {
+			emitter.ReasoningDelta(delta)
 		}
 	}
 
@@ -279,22 +267,26 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		// 正文不会被后续的评审说明覆盖。
 		if bodyBuf.Len() > 0 {
 			savedArticle = bodyBuf.String()
+			savedTitle = articleTitle
+			if articleParser != nil {
+				savedProtocol = articleParser.Protocol()
+			}
 			slog.Info("harness: saving article body before stream reset",
 				"trace_id", execCtx.TraceID,
 				"article_chars", len([]rune(savedArticle)),
 			)
 		}
 		bodyBuf.Reset()
-		// 重置标题收集状态，下一轮流式输出会重新提取标题
-		titleBuf.Reset()
-		titleCharCount = 0
-		titleResolved = false
+		if articleParser != nil {
+			articleParser.Reset()
+		}
+		// 下一轮流式输出会重新解析标题。
 		articleTitle = ""
 		// StreamReset 清空前端所有 streaming text parts。
 		// 不发 StreamDone，避免中间版本的正文被标记为 streaming:false 留在消息中。
 		// 最终的 StreamDone 在 Run 收尾时发送一次，确保前端只有一篇最终文章。
-		if h.emitter != nil {
-			h.emitter.StreamReset()
+		if emitter != nil {
+			emitter.StreamReset()
 		}
 	}
 
@@ -327,17 +319,29 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			"buffered_chars", bodyBuf.Len(),
 		)
 		execCtx.Status = engine.StatusPaused
-		if h.emitter != nil {
-			h.emitter.PausedWithReason(engine.StepName("streaming"), nil, "disconnect")
+		if emitter != nil {
+			emitter.PausedWithReason(engine.StepName("streaming"), nil, "disconnect")
 		}
 		return nil
+	}
+
+	// 流式客户端在读取中断（取消/超时/断连）时返回部分文本和 nil error。
+	// 交互路径可以容忍截断输出，但 governed Core 必须稳定失败，
+	// 否则被取消或超时的节点会以截断正文走完 canonical 提交。
+	if !persistent {
+		if coreErr := streamCtx.Err(); coreErr != nil {
+			execCtx.Status = engine.StatusFailed
+			return fmt.Errorf("harness core stream cancelled: %w", coreErr)
+		}
 	}
 
 	if err != nil {
 		// 配额/断路器检查
 		errMsg := strings.ToLower(err.Error())
 		if strings.Contains(errMsg, "quota") || strings.Contains(errMsg, "402") {
-			h.emitter.Error("quota_exceeded", "AI 模型服务额度不足", execCtx.CurrentStep)
+			if emitter != nil {
+				emitter.Error("quota_exceeded", "AI 模型服务额度不足", execCtx.CurrentStep)
+			}
 			execCtx.Status = engine.StatusFailed
 			return engine.ErrQuotaExceeded
 		}
@@ -347,6 +351,15 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	// 9. 收尾
 	execCtx.TotalTokens = tokens
 	articleBody := bodyBuf.String()
+	var outputProtocol steps.ArticleOutputProtocol
+	if articleParser != nil {
+		parsed := articleParser.Finalize(fullText)
+		articleBody = parsed.Body
+		articleTitle = parsed.Title
+		outputProtocol = parsed.Protocol
+	} else if articleBody == "" {
+		articleBody = fullText
+	}
 	// 如果 session.Reviewed 为 true 且 savedArticle 有值，
 	// 说明 LLM 在输出正文后调用了 review_article，
 	// onReset 保存了正文到 savedArticle，
@@ -354,38 +367,38 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	// 此时优先使用 savedArticle 作为正文内容。
 	// 但如果 bodyBuf 的内容比 savedArticle 长很多（如 revise_section 后的新文章），
 	// 说明 bodyBuf 是新正文，应该用 bodyBuf。
+	useSavedArticle := false
 	if session.Reviewed && savedArticle != "" {
-		// 简单启发式：如果 bodyBuf 以 ## 开头（Markdown 标题），可能是新文章
-		if strings.HasPrefix(strings.TrimSpace(articleBody), "##") && len([]rune(articleBody)) > 200 {
-			// bodyBuf 看起来是新文章，使用它
+		// 新一轮若重新输出了可识别标题和足量正文，则它是 revise_section
+		// 后的新文章；否则最终一轮通常只是评审说明，应保留 reset 前的正文。
+		if outputProtocol != steps.ArticleProtocolMissingTitle && articleTitle != "" && len([]rune(articleBody)) > 200 {
+			// 当前缓冲区是新文章，使用它。
 		} else {
-			// bodyBuf 不是文章格式，使用 savedArticle
-			articleBody = savedArticle
+			useSavedArticle = true
 		}
 	}
 	if articleBody == "" && savedArticle != "" {
-		articleBody = savedArticle
+		useSavedArticle = true
 	}
-	if articleBody == "" {
+	if useSavedArticle {
+		articleBody = savedArticle
+		articleTitle = savedTitle
+		outputProtocol = savedProtocol
+	}
+	if articleBody == "" && articleParser == nil {
 		articleBody = fullText
 	}
-
-	// JSON 标题模式后处理：如果标题仍未解析，尝试从 fullText 中 fallback
-	if useJSONTitle && !titleResolved {
-		if title := steps.ExtractTitleFromMarkdown(fullText); title != "" {
-			articleTitle = title
-			titleResolved = true
-			execCtx.ArticleTitle = title
-			if h.emitter != nil {
-				h.emitter.ArticleTitle(title)
-			}
-		}
-		// 过滤掉 fullText 中残留的 JSON 标题行
-		articleBody = steps.FilterJSONLines(articleBody)
+	if articleParser != nil {
+		engine.RecordArticleOutputProtocol(execCtx, string(outputProtocol))
+		slog.Info("harness: article output protocol resolved",
+			"trace_id", execCtx.TraceID,
+			"protocol", outputProtocol,
+			"deviated", outputProtocol != steps.ArticleProtocolMarkdown,
+		)
 	}
 
 	// 写作/修改意图：更新文章
-	if intent == IntentWriting || intent == IntentPolish || intent == IntentShorten || intent == IntentExpand {
+	if articleIntent {
 		// 保存旧版本
 		if session.HasArticle() {
 			session.PushArticleVersion(session.CurrentArticle)
@@ -397,17 +410,6 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			execCtx.ArticleTitle = articleTitle
 		} else if session.ArticleTitle != "" {
 			execCtx.ArticleTitle = session.ArticleTitle
-		} else {
-			// Fallback: 流式过程中未提取到标题，且 session 中也没有历史标题，
-			// 在最终正文上再尝试一次（支持 LLM 用 # 或短行作为标题的情况）
-			if title := steps.ExtractTitleFromMarkdown(articleBody); title != "" {
-				articleTitle = title
-				session.ArticleTitle = title
-				execCtx.ArticleTitle = title
-				if h.emitter != nil {
-					h.emitter.ArticleTitle(title)
-				}
-			}
 		}
 	} else {
 		// 对话意图：articleBody 就是对话回复
@@ -415,27 +417,27 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	}
 
 	// 流式完成
-	if h.emitter != nil {
-		h.emitter.StreamDone(articleBody)
+	if emitter != nil {
+		emitter.StreamDone(articleBody)
 	}
 
-	// 存储 user 消息
-	session.StoreMessage(ctx, h.sessionStore, "user", execCtx.UserInput, "text")
-
-	// 存储 assistant 消息
-	contentType := "text"
-	if intent == IntentWriting || intent == IntentPolish || intent == IntentShorten || intent == IntentExpand {
-		contentType = "article"
+	if persistent {
+		// 交互路径继续存储对话；governed Core 只返回 provisional value。
+		session.StoreMessage(ctx, h.sessionStore, "user", execCtx.UserInput, "text")
+		contentType := "text"
+		if articleIntent {
+			contentType = "article"
+		}
+		session.StoreMessage(ctx, h.sessionStore, "assistant", articleBody, contentType)
 	}
-	session.StoreMessage(ctx, h.sessionStore, "assistant", articleBody, contentType)
 
 	// 发送 completed 事件
-	if h.emitter != nil {
+	if emitter != nil {
 		var review interface{}
 		if session.ReviewResult != nil {
 			review = session.ReviewResult
 		}
-		h.emitter.Completed(
+		emitter.Completed(
 			articleBody,
 			execCtx.ArticleTitle,
 			review,
@@ -455,6 +457,15 @@ func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	)
 
 	return nil
+}
+
+func isArticleIntent(intent Intent) bool {
+	switch intent {
+	case IntentWriting, IntentPolish, IntentShorten, IntentExpand:
+		return true
+	default:
+		return false
+	}
 }
 
 // buildMessages 构建 LLM 消息列表。
@@ -492,10 +503,16 @@ func (h *Harness) buildMessages(execCtx *engine.ExecutionContext, session *Writi
 		})
 	}
 
-	// 当前用户输入
+	// 当前用户输入。文章类任务在上下文最末端再次声明输出契约，避免长上下文、
+	// 工具调用或多轮修订后，模型遗忘 system prompt 中较早出现的格式要求。
+	currentInput := execCtx.UserInput
+	switch intent {
+	case IntentWriting, IntentPolish, IntentShorten, IntentExpand:
+		currentInput += "\n\n" + profile.MarkdownArticleOutputReminder
+	}
 	messages = append(messages, tools.LLMMessage{
 		Role:    "user",
-		Content: execCtx.UserInput,
+		Content: currentInput,
 	})
 
 	return messages

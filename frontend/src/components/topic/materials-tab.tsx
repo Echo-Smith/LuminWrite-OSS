@@ -21,7 +21,7 @@ import {
   type UserMaterial,
   type MaterialSearchResult,
   type MaterialFolder,
-  listMaterials, deleteMaterial, searchMaterials, getMaterialContent,
+  listMaterials, deleteMaterial, searchMaterials,
   listFolders, createFolder, updateFolder, deleteFolder, moveMaterial,
 } from "@/lib/material-api";
 import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
@@ -185,17 +185,9 @@ export function MaterialsTab() {
   // ─── 从素材开始写作 ───
 
   const handleStartWriting = async (mat: UserMaterial) => {
-    let fullContent = mat.content_preview || "";
-    try {
-      const detail = await getMaterialContent(mat.id);
-      fullContent = detail.content_preview || fullContent;
-    } catch {
-      // 使用 preview 即可
-    }
-
     createSession();
 
-    const message = `请基于以下素材写一篇文章：\n\n素材标题：${mat.title}\n素材内容：${fullContent}`;
+    const message = `请基于材料「${mat.title}」写一篇文章。材料正文由服务端按引用读取并在运行开始时建立快照。`;
 
     navigate("/write");
 
@@ -203,7 +195,11 @@ export function MaterialsTab() {
       startWriting({
         message,
         mode: "writing",
-        user_materials: [`📎 ${mat.title}: ${fullContent}`],
+        material_refs: [{
+          material_id: mat.id,
+          source_ref: mat.governance?.source_ref || `kb://documents/${mat.doc_id || ""}`,
+          title: mat.title,
+        }],
       });
       toast.success("已注入素材", "正在以该素材为参考开始写作");
     }, 200);
@@ -463,6 +459,13 @@ export function MaterialsTab() {
                             <span className="text-sm font-medium truncate">{mat.title}</span>
                             <Badge variant="outline" className="text-xs">
                               {SOURCE_LABELS[mat.source_type] || mat.source_type}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className={mat.governance?.eligible ? "border-emerald-200 bg-emerald-50 text-emerald-800 text-xs" : "border-amber-200 bg-amber-50 text-amber-800 text-xs"}
+                              title={mat.governance?.eligible ? "运行开始时将建立不可变材料快照" : "材料来源尚未满足治理要求"}
+                            >
+                              {mat.governance?.snapshot_status === "pending_run_snapshot" ? "待运行快照" : "兼容材料"}
                             </Badge>
                           </div>
                           <p className="text-xs text-muted-foreground line-clamp-1">

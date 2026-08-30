@@ -1,0 +1,20 @@
+{
+  "schema_version": "lcp/1.0",
+  "event_id": "evt_1",
+  "run_id": "run_demo",
+  "sequence": 1,
+  "event_type": "node.started",
+  "occurred_at": "2026-08-27T00:00:00Z",
+  "node_id": "node_outline",
+  "attempt": 1,
+  "idempotency_key": "run_demo:node_outline:1",
+  "causation_event_id": null,
+  "entity": {
+    "kind": "node",
+    "id": "node_outline"
+  },
+  "payload": {
+    "plan_id": "plan_demo"
+  },
+  "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

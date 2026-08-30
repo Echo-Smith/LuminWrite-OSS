@@ -54,10 +54,11 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
+            aria-label={`写作风格：${selected?.name ?? "未选择"}`}
             className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
           >
             <span key={`style-icon-${value}`} className="flex items-center anim-fade-scale">
-              <Palette className="h-[18px] w-[18px] text-purple-500" />
+              <Palette className="h-[18px] w-[18px] text-[color:var(--desk-brass)]" />
             </span>
             <span key={`style-label-${selected?.slug ?? 'none'}`} className="hidden sm:inline anim-fade-scale">
               {selected?.name ?? "选择风格"}
@@ -142,7 +143,7 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
                   setOpen(false);
                   setBuilderOpen(true);
                 }}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-purple-600 transition-colors hover:bg-purple-50 dark:hover:bg-purple-950/30"
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
               >
                 <Sparkles className="h-4 w-4" />
                 AI 创建自定义风格

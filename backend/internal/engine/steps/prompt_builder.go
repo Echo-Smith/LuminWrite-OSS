@@ -272,12 +272,12 @@ func (pb *PromptBuilder) AddMemory(execCtx *engine.ExecutionContext) *PromptBuil
 }
 
 // AddOutputFormat appends the output format instruction.
-func (pb *PromptBuilder) AddOutputFormat(p *profile.StyleProfile, taskMode, outlineTitle, separator string) *PromptBuilder {
+func (pb *PromptBuilder) AddOutputFormat(p *profile.StyleProfile, taskMode, outlineTitle string) *PromptBuilder {
 	var formatPrompt string
 	if p != nil {
-		formatPrompt = p.RenderOutputFormat(taskMode, outlineTitle, separator)
+		formatPrompt = p.RenderOutputFormat(taskMode, outlineTitle)
 	} else if taskMode == "writing" {
-		formatPrompt = profile.RenderJSONTitleFormat(outlineTitle, separator)
+		formatPrompt = profile.RenderMarkdownArticleFormat(outlineTitle)
 	}
 	return pb.AddWithPriority("output_format", formatPrompt, priorityCritical)
 }

@@ -71,6 +71,14 @@ func computeChecksum(content string) string {
 	return hex.EncodeToString(h[:])
 }
 
+func verifyMigrationChecksum(version, appliedChecksum, currentChecksum string) error {
+	if appliedChecksum == currentChecksum {
+		return nil
+	}
+	return fmt.Errorf("migration checksum mismatch for %s: applied=%s current=%s",
+		version, appliedChecksum, currentChecksum)
+}
+
 // discoverMigrations 从 embed.FS 自动发现所有迁移文件，按文件名排序
 func discoverMigrations(fs embed.FS) ([]string, error) {
 	entries, err := fs.ReadDir("migrations")
@@ -116,7 +124,6 @@ func runMigration(ctx context.Context, db *DB, version, sqlContent, checksum str
 	// 记录到追踪表
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)
-		ON CONFLICT (version) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = NOW()
 	`, version, checksum); err != nil {
 		return fmt.Errorf("record migration %s: %w", version, err)
 	}
@@ -174,19 +181,8 @@ func MigrateDB(ctx context.Context, db *DB, fs embed.FS) error {
 
 		if existing, ok := applied[version]; ok {
 			// 已应用 — 校验 checksum
-			if existing.Checksum != checksum {
-				// Checksum mismatch: log warning and update the recorded checksum.
-				// This handles cases where migration files are modified after being applied
-				// (e.g., fixing a seed value). The migration itself is NOT re-executed.
-				slog.Warn("migration checksum mismatch — updating recorded checksum (migration NOT re-executed)",
-					"version", version,
-					"old_checksum", existing.Checksum[:12]+"...",
-					"new_checksum", checksum[:12]+"...")
-				if _, err := db.ExecContext(ctx, `
-					UPDATE schema_migrations SET checksum = $1, applied_at = NOW() WHERE version = $2
-				`, checksum, version); err != nil {
-					return fmt.Errorf("update checksum for migration %s: %w", version, err)
-				}
+			if err := verifyMigrationChecksum(version, existing.Checksum, checksum); err != nil {
+				return err
 			}
 			skippedCount++
 			continue

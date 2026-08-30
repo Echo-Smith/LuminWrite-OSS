@@ -1,15 +1,62 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type guardedSSEWriter struct {
+	header     http.Header
+	buffer     bytes.Buffer
+	active     atomic.Int32
+	concurrent atomic.Bool
+}
+
+func (writer *guardedSSEWriter) Header() http.Header {
+	return writer.header
+}
+
+func (writer *guardedSSEWriter) WriteHeader(int) {}
+
+func (writer *guardedSSEWriter) Write(data []byte) (int, error) {
+	if !writer.active.CompareAndSwap(0, 1) {
+		writer.concurrent.Store(true)
+	}
+	defer writer.active.Store(0)
+	time.Sleep(100 * time.Microsecond)
+	return writer.buffer.Write(data)
+}
+
+func (writer *guardedSSEWriter) Flush() {}
+
+func TestSSESessionSerializesConcurrentWrites(t *testing.T) {
+	writer := &guardedSSEWriter{header: make(http.Header)}
+	session := &sseSession{writer: writer, flusher: writer}
+	var wait sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			session.write(&mcpResponse{JSONRPC: "2.0"})
+		}()
+	}
+	wait.Wait()
+	if writer.concurrent.Load() {
+		t.Fatal("SSE response writer was used concurrently")
+	}
+	if count := strings.Count(writer.buffer.String(), "data: "); count != 32 {
+		t.Fatalf("event count=%d want=32", count)
+	}
+}
 
 // TestSSEEndToEnd tests the full SSE transport cycle:
 // 1. Start an in-process MCP HTTP server with SSE support

@@ -1,0 +1,24 @@
+{
+  "schema_version": "lcp/1.0",
+  "document_id": "doc_demo",
+  "version_id": "ver_1",
+  "base_version_id": null,
+  "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "version_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "root": {
+    "block_id": "blk_root",
+    "type": "document",
+    "attrs": {},
+    "children": [
+      {
+        "type": "citation",
+        "attrs": {},
+        "children": [],
+        "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+        "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    ],
+    "origin": { "kind": "model", "ref": "run_demo/node_writer" },
+    "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

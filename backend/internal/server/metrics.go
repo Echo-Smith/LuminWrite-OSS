@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	ws "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 )
 
 // ─── Metric Types ────────────────────────────────────────
@@ -55,9 +57,9 @@ type Histogram struct {
 }
 
 type histogramData struct {
-	count    atomic.Int64
-	sum      atomic.Int64 // sum in nanoseconds, converted to seconds on export
-	buckets  []atomic.Int64
+	count   atomic.Int64
+	sum     atomic.Int64 // sum in nanoseconds, converted to seconds on export
+	buckets []atomic.Int64
 }
 
 // NewHistogram creates a new histogram metric with the given buckets (in seconds).
@@ -132,33 +134,33 @@ type MetricsRegistry struct {
 	mu sync.Mutex
 
 	// HTTP metrics
-	HTTPRequestsTotal    *Counter
-	HTTPRequestDuration  *Histogram
+	HTTPRequestsTotal   *Counter
+	HTTPRequestDuration *Histogram
 
 	// WebSocket metrics
-	WSConnectionsActive  *Gauge
-	WSErrorsTotal        *Counter
+	WSConnectionsActive *Gauge
+	WSErrorsTotal       *Counter
 
 	// Agent metrics
 	AgentExecutionsTotal *Counter
 	AgentDuration        *Histogram
 
 	// LLM metrics
-	LLMCallsTotal        *Counter
-	LLMDuration          *Histogram
-	LLMErrorsTotal       *Counter
+	LLMCallsTotal  *Counter
+	LLMDuration    *Histogram
+	LLMErrorsTotal *Counter
 
 	// Profile cache metrics
-	ProfileCacheHits     *Counter
-	ProfileCacheMisses   *Counter
+	ProfileCacheHits   *Counter
+	ProfileCacheMisses *Counter
 
 	// Evaluation metrics
-	EvalRunsTotal        *Counter
-	EvalRunsActive       *Gauge
+	EvalRunsTotal  *Counter
+	EvalRunsActive *Gauge
 
 	// Database metrics
-	DBQueriesTotal       *Counter
-	DBErrorsTotal       *Counter
+	DBQueriesTotal *Counter
+	DBErrorsTotal  *Counter
 
 	// Grayscale routing metrics
 	GrayscaleRequestsTotal  *Counter
@@ -176,6 +178,18 @@ type MetricsRegistry struct {
 	EmbeddingErrorsTotal *Counter
 	EmbeddingDuration    *Histogram
 
+	// Governed runtime labels are bounded and never contain run/user/artifact
+	// identities, source URLs, prompts, or document content.
+	GovernedRouteDecisionsTotal    *Counter
+	GovernedExecutionsTotal        *Counter
+	GovernedMaterialIntegrityTotal *Counter
+	GovernedShadowComparisonsTotal *Counter
+	GovernedCommitsTotal           *Counter
+	GovernedAuthorityViolations    *Counter
+	GovernedUsageTokensTotal       *Counter
+	GovernedCostMicroUSDTotal      *Counter
+	GovernedExecutionDuration      *Histogram
+
 	// All metrics for export
 	counters   []*Counter
 	histograms []*Histogram
@@ -188,31 +202,49 @@ func NewMetricsRegistry() *MetricsRegistry {
 	llmBuckets := []float64{0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0}
 
 	r := &MetricsRegistry{
-		HTTPRequestsTotal:    NewCounter("http_requests_total", "Total HTTP requests", "method", "path", "status"),
-		HTTPRequestDuration:  NewHistogram("http_request_duration_seconds", "HTTP request duration", defaultBuckets, "method", "path"),
-		WSConnectionsActive:  NewGauge("websocket_connections_active", "Active WebSocket connections"),
-		WSErrorsTotal:        NewCounter("websocket_errors_total", "Total WebSocket errors", "type"),
-		AgentExecutionsTotal: NewCounter("agent_executions_total", "Total agent executions", "style", "status"),
-		AgentDuration:        NewHistogram("agent_execution_duration_seconds", "Agent execution duration", defaultBuckets, "style"),
-		LLMCallsTotal:        NewCounter("llm_calls_total", "Total LLM API calls", "model", "type"),
-		LLMDuration:          NewHistogram("llm_call_duration_seconds", "LLM call duration", llmBuckets, "model"),
-		LLMErrorsTotal:       NewCounter("llm_errors_total", "Total LLM API errors", "model", "error_type"),
-		ProfileCacheHits:     NewCounter("profile_cache_hits_total", "Profile cache hits"),
-		ProfileCacheMisses:   NewCounter("profile_cache_misses_total", "Profile cache misses"),
-		EvalRunsTotal:        NewCounter("evaluation_runs_total", "Total evaluation runs", "status"),
-		EvalRunsActive:       NewGauge("evaluation_runs_active", "Active evaluation runs"),
-		DBQueriesTotal:       NewCounter("db_queries_total", "Total database queries"),
-		DBErrorsTotal:       NewCounter("db_errors_total", "Total database errors"),
+		HTTPRequestsTotal:       NewCounter("http_requests_total", "Total HTTP requests", "method", "path", "status"),
+		HTTPRequestDuration:     NewHistogram("http_request_duration_seconds", "HTTP request duration", defaultBuckets, "method", "path"),
+		WSConnectionsActive:     NewGauge("websocket_connections_active", "Active WebSocket connections"),
+		WSErrorsTotal:           NewCounter("websocket_errors_total", "Total WebSocket errors", "type"),
+		AgentExecutionsTotal:    NewCounter("agent_executions_total", "Total agent executions", "style", "status"),
+		AgentDuration:           NewHistogram("agent_execution_duration_seconds", "Agent execution duration", defaultBuckets, "style"),
+		LLMCallsTotal:           NewCounter("llm_calls_total", "Total LLM API calls", "model", "type"),
+		LLMDuration:             NewHistogram("llm_call_duration_seconds", "LLM call duration", llmBuckets, "model"),
+		LLMErrorsTotal:          NewCounter("llm_errors_total", "Total LLM API errors", "model", "error_type"),
+		ProfileCacheHits:        NewCounter("profile_cache_hits_total", "Profile cache hits"),
+		ProfileCacheMisses:      NewCounter("profile_cache_misses_total", "Profile cache misses"),
+		EvalRunsTotal:           NewCounter("evaluation_runs_total", "Total evaluation runs", "status"),
+		EvalRunsActive:          NewGauge("evaluation_runs_active", "Active evaluation runs"),
+		DBQueriesTotal:          NewCounter("db_queries_total", "Total database queries"),
+		DBErrorsTotal:           NewCounter("db_errors_total", "Total database errors"),
 		GrayscaleRequestsTotal:  NewCounter("grayscale_requests_total", "Total grayscale routing decisions", "slug", "result"),
 		GrayscaleNewVersionHits: NewCounter("grayscale_new_version_hits_total", "Times new version was served", "slug"),
 		GrayscaleFallbackHits:   NewCounter("grayscale_fallback_hits_total", "Times fallback version was served", "slug"),
 		GrayscaleErrors:         NewCounter("grayscale_errors_total", "Grayscale routing errors", "slug", "type"),
-		SearchQueriesTotal: NewCounter("search_queries_total", "Total search queries"),
-		SearchErrorsTotal:  NewCounter("search_errors_total", "Total search errors"),
-		SearchDuration:     NewHistogram("search_duration_seconds", "Search query duration", defaultBuckets),
-		EmbeddingCallsTotal:  NewCounter("embedding_calls_total", "Total embedding API calls"),
-		EmbeddingErrorsTotal: NewCounter("embedding_errors_total", "Total embedding API errors"),
-		EmbeddingDuration:    NewHistogram("embedding_duration_seconds", "Embedding API call duration", defaultBuckets),
+		SearchQueriesTotal:      NewCounter("search_queries_total", "Total search queries"),
+		SearchErrorsTotal:       NewCounter("search_errors_total", "Total search errors"),
+		SearchDuration:          NewHistogram("search_duration_seconds", "Search query duration", defaultBuckets),
+		EmbeddingCallsTotal:     NewCounter("embedding_calls_total", "Total embedding API calls"),
+		EmbeddingErrorsTotal:    NewCounter("embedding_errors_total", "Total embedding API errors"),
+		EmbeddingDuration:       NewHistogram("embedding_duration_seconds", "Embedding API call duration", defaultBuckets),
+		GovernedRouteDecisionsTotal: NewCounter("governed_route_decisions_total", "Governed adapter route decisions",
+			"family", "executor", "capability", "mode", "lane", "status", "reason", "error_code"),
+		GovernedExecutionsTotal: NewCounter("governed_executions_total", "Governed adapter lane executions",
+			"family", "executor", "capability", "mode", "lane", "status", "error_code"),
+		GovernedMaterialIntegrityTotal: NewCounter("governed_material_integrity_total", "Governed material integrity checks",
+			"source_kind", "status", "error_code"),
+		GovernedShadowComparisonsTotal: NewCounter("governed_shadow_comparisons_total", "Governed shadow comparisons",
+			"family", "executor", "capability", "status", "error_code"),
+		GovernedCommitsTotal: NewCounter("governed_canonical_commits_total", "Governed canonical commit boundaries",
+			"executor", "capability", "status", "error_code"),
+		GovernedAuthorityViolations: NewCounter("governed_authority_violations_total", "Rejected adapter authority violations",
+			"family", "executor", "capability", "error_code"),
+		GovernedUsageTokensTotal: NewCounter("governed_usage_tokens_total", "Governed execution token usage",
+			"family", "executor", "capability", "lane", "direction"),
+		GovernedCostMicroUSDTotal: NewCounter("governed_cost_micro_usd_total", "Governed execution cost in micro USD",
+			"family", "executor", "capability", "lane"),
+		GovernedExecutionDuration: NewHistogram("governed_execution_duration_seconds", "Governed execution duration", llmBuckets,
+			"family", "executor", "capability", "lane", "status"),
 	}
 
 	r.counters = []*Counter{
@@ -234,6 +266,14 @@ func NewMetricsRegistry() *MetricsRegistry {
 		r.SearchErrorsTotal,
 		r.EmbeddingCallsTotal,
 		r.EmbeddingErrorsTotal,
+		r.GovernedRouteDecisionsTotal,
+		r.GovernedExecutionsTotal,
+		r.GovernedMaterialIntegrityTotal,
+		r.GovernedShadowComparisonsTotal,
+		r.GovernedCommitsTotal,
+		r.GovernedAuthorityViolations,
+		r.GovernedUsageTokensTotal,
+		r.GovernedCostMicroUSDTotal,
 	}
 
 	r.histograms = []*Histogram{
@@ -242,6 +282,7 @@ func NewMetricsRegistry() *MetricsRegistry {
 		r.LLMDuration,
 		r.SearchDuration,
 		r.EmbeddingDuration,
+		r.GovernedExecutionDuration,
 	}
 
 	r.gauges = []*Gauge{
@@ -384,6 +425,39 @@ func (r *MetricsRegistry) RecordLLMCall(model string, callType string, duration 
 func (r *MetricsRegistry) RecordLLMError(model string, errorType string) {
 	r.LLMErrorsTotal.Inc(model, errorType)
 }
+
+// Observe implements writingruntime.RuntimeTelemetry. RuntimeMetric has no
+// high-cardinality identity fields, so exporters cannot accidentally label by
+// run, user, artifact, source, prompt, or content.
+func (r *MetricsRegistry) Observe(_ context.Context, metric writingruntime.RuntimeMetric) {
+	if r == nil {
+		return
+	}
+	family, executor, capability := string(metric.Family), metric.ExecutorID, metric.Capability
+	mode, lane, status, code := string(metric.Mode), string(metric.Lane), metric.Status, string(metric.ErrorCode)
+	switch metric.Kind {
+	case writingruntime.MetricRouteDecision:
+		r.GovernedRouteDecisionsTotal.Inc(family, executor, capability, mode, lane, status, metric.Reason, code)
+	case writingruntime.MetricExecution:
+		r.GovernedExecutionsTotal.Inc(family, executor, capability, mode, lane, status, code)
+		if status != "started" {
+			r.GovernedExecutionDuration.Observe(time.Duration(metric.DurationMS)*time.Millisecond, family, executor, capability, lane, status)
+			r.GovernedUsageTokensTotal.Add(metric.InputTokens, family, executor, capability, lane, "input")
+			r.GovernedUsageTokensTotal.Add(metric.OutputTokens, family, executor, capability, lane, "output")
+			r.GovernedCostMicroUSDTotal.Add(int64(metric.CostUSD*1_000_000), family, executor, capability, lane)
+		}
+	case writingruntime.MetricMaterialIntegrity:
+		r.GovernedMaterialIntegrityTotal.Inc(string(metric.MaterialSourceKind), status, code)
+	case writingruntime.MetricShadowComparison:
+		r.GovernedShadowComparisonsTotal.Inc(family, executor, capability, status, code)
+	case writingruntime.MetricCanonicalCommit:
+		r.GovernedCommitsTotal.Inc(executor, capability, status, code)
+	case writingruntime.MetricAuthorityViolation:
+		r.GovernedAuthorityViolations.Inc(family, executor, capability, code)
+	}
+}
+
+var _ writingruntime.RuntimeTelemetry = (*MetricsRegistry)(nil)
 
 // ─── HTTP Handler & Middleware ──────────────────────────
 

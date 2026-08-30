@@ -87,6 +87,21 @@ func TestPromptBuilder_DynamicBudget_Truncation(t *testing.T) {
 	}
 }
 
+func TestPromptBuilderKeepsMarkdownOutputContractUnderTinyBudget(t *testing.T) {
+	pb := NewPromptBuilder().
+		WithBudget(1).
+		AddWithPriority("memory", "会被丢弃的长记忆", priorityLow).
+		AddOutputFormat(nil, "writing", "确认标题")
+
+	result := pb.String()
+	if !contains(result, "## 确认标题") {
+		t.Fatalf("critical Markdown contract was dropped: %q", result)
+	}
+	if contains(result, ArticleSeparator) || contains(result, `{"title"`) {
+		t.Fatalf("legacy output contract remains: %q", result)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || (len(s) > len(substr) && (startsWith(s, substr) || contains(s[1:], substr))))
 }

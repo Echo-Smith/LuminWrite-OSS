@@ -1,0 +1,76 @@
+{
+  "schema_version": "lcp/1.0",
+  "contract_id": "ctr_01HZZ000000000000000000001",
+  "version": 1,
+  "contract_hash": "sha256:12062d8a3181118dcb570bae0d97f1a5167b59c5f1ce55f3078fc1ab38cae203",
+  "status": "confirmed",
+  "intent": {
+    "operation": "create",
+    "genre": "industry_analysis",
+    "purpose": "支持 AI 产品架构决策"
+  },
+  "audience": {
+    "role": "AI 产品负责人",
+    "knowledge_level": "professional"
+  },
+  "content": {
+    "topic": "多 Agent 写作治理",
+    "central_question": "如何兼顾自动选择与用户控制",
+    "required_points": [],
+    "prohibited_points": []
+  },
+  "voice": {
+    "tone": "professional",
+    "preserve_user_voice": true
+  },
+  "material_policy": {
+    "user_material_priority": "highest",
+    "allow_external_research": true,
+    "conflict_handling": "ask_user"
+  },
+  "evidence_policy": {
+    "level": "sourced",
+    "unsupported_claims": "prohibit"
+  },
+  "delivery": {
+    "format": "markdown",
+    "language": "zh-CN",
+    "length": {
+      "min": 5000,
+      "max": 7000
+    }
+  },
+  "collaboration": {
+    "task_mode": "guided",
+    "orchestration_mode": "auto",
+    "assurance_level": "sourced",
+    "approval_mode": "conditional"
+  },
+  "source_attributions": [
+    {
+      "field_path": "/collaboration/task_mode",
+      "source": "user",
+      "value_hash": "sha256:bd408650ebb365982c0aeccd65a20f5901e5621d1f5c621c466030e722de6fd4",
+      "recorded_at": "2026-08-27T00:00:00Z"
+    },
+    {
+      "field_path": "/collaboration/orchestration_mode",
+      "source": "user",
+      "value_hash": "sha256:634635a2166efa2ae765abd31d4ae807082287e329a8a7fff42b1fb30f65087e",
+      "recorded_at": "2026-08-27T00:00:00Z"
+    },
+    {
+      "field_path": "/collaboration/assurance_level",
+      "source": "user",
+      "value_hash": "sha256:a8442735d78565ce1d8707f349b49a5cb27f509c77a8bdd876d681c10506dc2a",
+      "recorded_at": "2026-08-27T00:00:00Z"
+    },
+    {
+      "field_path": "/collaboration/approval_mode",
+      "source": "user",
+      "value_hash": "sha256:c1e2aa5c07548e5df4c6ae909941b717e3bc08e407168cba2d01c9d2f9dde7a6",
+      "recorded_at": "2026-08-27T00:00:00Z"
+    }
+  ],
+  "inferences": []
+}

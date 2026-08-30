@@ -90,14 +90,14 @@ func testUser(t *testing.T, db *sql.DB) string {
 	err := db.QueryRow(`
 		INSERT INTO users (uid, provider, name, created_at, updated_at)
 		VALUES (gen_random_uuid(), 'email', 'test_user', NOW(), NOW())
-		RETURNING uid::text
+		RETURNING id::text
 	`).Scan(&userID)
 	if err != nil {
 		// If users table doesn't have these columns, try a simpler insert
 		err = db.QueryRow(`
 			INSERT INTO users (uid, created_at, updated_at)
 			VALUES (gen_random_uuid(), NOW(), NOW())
-			RETURNING uid::text
+			RETURNING id::text
 		`).Scan(&userID)
 		if err != nil {
 			t.Skipf("cannot create test user: %v", err)
@@ -231,7 +231,7 @@ func Test_P0_0_SelectAngleApprovalEntersWriting(t *testing.T) {
 
 	// Manually set status to research (simulating approval)
 	_, err = testDB.ExecContext(ctx, `
-		UPDATE editorial_tasks SET status = 'research' WHERE id = $1
+		UPDATE agent_traces SET editorial_status = 'research' WHERE trace_id = $1
 	`, task.ID)
 	if err != nil {
 		t.Fatalf("failed to set task to research: %v", err)
