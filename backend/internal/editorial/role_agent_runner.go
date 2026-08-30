@@ -86,6 +86,9 @@ type RoleRunResult struct {
 // Run 执行角色化 Agent 循环
 // 返回 LLM 的最终文本输出 + Token 消耗 + 信号工具参数
 func (r *RoleAgentRunner) Run(ctx context.Context, cfg RoleRunConfig) (*RoleRunResult, error) {
+	if r == nil || r.llm == nil || r.toolRegistry == nil || cfg.AgentConfig == nil || cfg.ExecutionContext == nil {
+		return nil, fmt.Errorf("editorial: role runner dependencies are incomplete")
+	}
 	agentCfg := cfg.AgentConfig
 	execCtx := cfg.ExecutionContext
 

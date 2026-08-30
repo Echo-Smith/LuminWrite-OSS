@@ -443,6 +443,38 @@ func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {
 	}
 }
 
+func TestInitialArtifactsCommitWithTheirLineageAttemptAtomically(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	attempt := fixture.nodeAttempt()
+	attempt.NodeID = "node_initial"
+	attempt.CapabilityID = "runtime.initial.artifacts"
+	attempt.CapabilityVersion = "initial-1"
+	attempt.ExecutorID = "writingruntime.initial"
+	attempt.InputHash = testHash("initial-artifacts")
+	attempt.InputArtifactIDs = []string{}
+	artifact := fixture.artifact()
+	artifact.ArtifactID = "art_initial_contract"
+	artifact.NodeID = attempt.NodeID
+	artifact.Attempt = attempt.Attempt
+	artifact.OutputKey = "contract"
+	artifact.ArtifactType = "contract"
+	artifact.ContentRef = "memory://initial-contract"
+	artifact.Producer = "writingruntime.initial"
+	artifact.CapabilityVersion = "initial-1"
+	if err := store.CommitInitialArtifacts(ctx, attempt, []ArtifactRecord{artifact}, testTrace()); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := store.ListRunAttempts(ctx, fixture.runID)
+	if err != nil || len(attempts) != 1 || attempts[0].NodeID != "node_initial" || attempts[0].Status != "succeeded" {
+		t.Fatalf("attempts=%#v err=%v", attempts, err)
+	}
+	artifacts, err := store.ListRunArtifacts(ctx, fixture.runID)
+	if err != nil || len(artifacts) != 1 || artifacts[0].NodeID != "node_initial" {
+		t.Fatalf("artifacts=%#v err=%v", artifacts, err)
+	}
+}
+
 func TestArtifactImmutableReplay(t *testing.T) {
 	store, fixture := newIntegrationFixture(t, true)
 	ctx := context.Background()

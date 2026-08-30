@@ -4,8 +4,8 @@
 
 ## Governed runtime
 
-- `backend/internal/writingruntime/`：WritingContract/Plan 执行、typed Artifact 提交、恢复、材料快照、B2 executor adapter、Task12 rollout、telemetry 与 shadow 内容隔离（`shadow://` namespace + TTL 清理）。
-- `backend/internal/writingstore/`：受治理运行的唯一事实源与事务提交接口。
+- `backend/internal/writingruntime/`：WritingContract/Plan 执行、typed Artifact 提交、恢复、材料快照、B2 executor adapter、Task12 rollout、telemetry 与 shadow 内容隔离（`shadow://` namespace + TTL 清理）；异步调度异常必须进入可审计 failed 终态。
+- `backend/internal/writingstore/`：受治理运行的唯一事实源与事务提交接口；初始 contract/material Artifact 与其 lineage attempt 原子提交，绝不绕过外键。
 - `backend/internal/writingquality/`：Candidate / Accepted / Verified 质量门、validator 与降级策略。
 - `backend/internal/writingplan/`：IntentPlan、ExecutablePlan、能力注册和静态验证。
 - `backend/internal/database/migrations/095_governed_rollout_evidence.*.sql`：在 append-only RunLedger 中持久化 Task12 路由、执行和 shadow 对比证据。
@@ -27,6 +27,7 @@
 - `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
 - `backend/internal/mcp/server.go`、`sse_test.go`：串行化 SSE endpoint/JSON-RPC 响应写入，消除跨 HTTP handler 的 ResponseWriter 数据竞争。
 - `backend/internal/writingruntime/store_evidence.go`、`store_evidence_test.go`：将 rollout evidence 严格校验后写入 writingstore 唯一 RunLedger。
+- `backend/internal/editorial/role_agent_runner.go`、`role_agent_runner_test.go`：角色执行器在依赖缺失时 fail-closed；受治理终稿节点拥有独立注册的内置工具集，不能因 nil registry 令服务进程崩溃。
 - `backend/internal/writingstore/shadow_content.go`、`backend/internal/writingruntime/store_shadow_content.go`：持久化 shadow sink、hash 校验与 policy/run 边界清理。
 
 ## Specifications and plans

@@ -527,6 +527,77 @@ func (s *Store) CompleteNodeAttempt(ctx context.Context, completion AttemptCompl
 	})
 }
 
+// CommitInitialArtifacts atomically records the pseudo attempt that owns a
+// run's immutable contract/material inputs and its output artifacts. Initial
+// artifacts are real lineage roots, not a special-case table: keeping them
+// under node_initial preserves the same FK and RunLedger guarantees as every
+// executor-produced artifact.
+func (s *Store) CommitInitialArtifacts(ctx context.Context, attempt NodeAttempt, artifacts []ArtifactRecord, trace TraceContext) error {
+	if s == nil || attempt.NodeID != "node_initial" || len(artifacts) == 0 {
+		return fmt.Errorf("%w: initial artifact commit requires node_initial and artifacts", ErrInvalidRecord)
+	}
+	return s.InTransaction(ctx, func(tx *Tx) error {
+		// This bookkeeping attempt has no external worker lease. It begins
+		// pending and moves directly to succeeded in this same transaction.
+		attempt.Status = "pending"
+		saved, created, err := tx.EnsureNodeAttempt(ctx, attempt)
+		if err != nil {
+			return err
+		}
+		if !created && saved.Status != "succeeded" {
+			return fmt.Errorf("%w: initial artifact attempt is %s", ErrConflict, saved.Status)
+		}
+		// A completed initial attempt is an atomic replay: all artifacts and
+		// their ledger events were committed together, so it needs no writes.
+		if !created {
+			return nil
+		}
+		key := saved.IdempotencyKey
+		if _, err := tx.AppendRunEvent(ctx, RunEvent{RunID: saved.RunID, EventType: "node.started",
+			NodeID: saved.NodeID, Attempt: saved.Attempt, IdempotencyKey: key,
+			EntityKind: "node", EntityID: saved.NodeID,
+			Payload: map[string]any{"executor_id": saved.ExecutorID}, Trace: trace}); err != nil {
+			return err
+		}
+		outputIDs := make([]string, 0, len(artifacts))
+		for _, artifact := range artifacts {
+			if artifact.RunID != saved.RunID || artifact.NodeID != saved.NodeID || artifact.Attempt != saved.Attempt {
+				return fmt.Errorf("%w: initial artifact and attempt bindings differ", ErrInvalidRecord)
+			}
+			if err := tx.PutArtifact(ctx, artifact); err != nil {
+				return err
+			}
+			outputIDs = append(outputIDs, artifact.ArtifactID)
+			if _, err := tx.AppendRunEvent(ctx, RunEvent{RunID: saved.RunID, EventType: "artifact.created",
+				NodeID: saved.NodeID, Attempt: saved.Attempt, IdempotencyKey: key,
+				EntityKind: "artifact", EntityID: artifact.ArtifactID,
+				Payload: map[string]any{"version": artifact.Version, "output_key": artifact.OutputKey,
+					"artifact_type": artifact.ArtifactType, "content_hash": artifact.ContentHash}, Trace: trace}); err != nil {
+				return err
+			}
+		}
+		outputs, _ := json.Marshal(outputIDs)
+		now := time.Now().UTC()
+		result, err := tx.tx.ExecContext(ctx, `
+			UPDATE writing_node_attempts SET status='succeeded', output_artifact_ids=$1,
+				completed_at=$2, updated_at=$2
+			WHERE idempotency_key=$3 AND status='pending'
+		`, outputs, now, key)
+		if err != nil {
+			return fmt.Errorf("complete initial artifact attempt: %w", err)
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return fmt.Errorf("%w: initial artifact attempt did not complete", ErrConflict)
+		}
+		_, err = tx.AppendRunEvent(ctx, RunEvent{RunID: saved.RunID, EventType: "node.completed",
+			NodeID: saved.NodeID, Attempt: saved.Attempt, IdempotencyKey: key,
+			EntityKind: "node", EntityID: saved.NodeID,
+			Payload: map[string]any{"status": "succeeded", "error_code": "", "cost_usd": 0,
+				"output_artifact_ids": outputIDs}, Trace: trace})
+		return err
+	})
+}
+
 func (s *Store) ListRunAttempts(ctx context.Context, runID string) ([]NodeAttempt, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT attempt_id, run_id, plan_id, plan_version, node_id, attempt,

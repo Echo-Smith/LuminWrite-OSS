@@ -43,6 +43,10 @@ const (
 	// is never unbounded. Node deadlines remain the tighter limit; this ceiling
 	// also bounds persistence/recovery work between nodes.
 	governedDispatchTimeout = 2 * time.Hour
+
+	// Terminalization uses a fresh bounded context after Execute returns; the
+	// execution context may already be cancelled or timed out.
+	governedTerminalizeTimeout = 15 * time.Second
 )
 
 var errWritingRuntimeNotReady = errors.New("governed writing runtime is not ready")
@@ -136,9 +140,24 @@ func (runtime *GovernedRuntime) Dispatch(runID string) error {
 			}
 			slog.Warn("governed run finished with error", "run_id", runID,
 				"error", err, "cause_chain", strings.Join(causes, " ← "))
+			if !expectedDispatchOutcome(err) {
+				terminalCtx, terminalCancel := context.WithTimeout(context.Background(), governedTerminalizeTimeout)
+				terminalErr := runtime.orchestrator.FailDispatch(terminalCtx, runID, writingruntime.ErrorCodeOf(err))
+				terminalCancel()
+				if terminalErr != nil {
+					slog.Error("governed run could not be terminalized after dispatch failure", "run_id", runID,
+						"error", terminalErr, "original_error_code", writingruntime.ErrorCodeOf(err))
+				}
+			}
 		}
 	}()
 	return nil
+}
+
+func expectedDispatchOutcome(err error) bool {
+	return errors.Is(err, writingruntime.ErrApprovalRequired) || errors.Is(err, writingruntime.ErrRunPaused) ||
+		errors.Is(err, writingruntime.ErrRunCancelled) || errors.Is(err, writingruntime.ErrRunReplanning) ||
+		errors.Is(err, writingruntime.ErrHumanRecoveryRequired)
 }
 
 // Pause/Resume/Cancel adapt the orchestrator to the writingRunController
@@ -267,10 +286,14 @@ func ComposeGovernedRuntime(deps GovernedRuntimeDeps, capabilities *writingplan.
 		slog.Warn("governed draft rollout not registered", "error", err)
 		return runtime
 	}
-	// Editorial family: the finalize role produces the revision set.
+	// Editorial family: the finalize role produces the revision set. It gets
+	// its own registered tool registry so governed execution never borrows the
+	// legacy DAG's mutable runtime state or dereferences a nil registry.
+	editorialTools := editorial.NewEditorialToolRegistry()
+	editorial.RegisterBuiltinTools(editorialTools)
 	if !mustRegister("core.document.finalize", writingruntime.AdapterFamilyEditorial,
 		&writingruntime.EditorialRoleNodeRunner{
-			Invoker: editorial.NewRoleAgentRunner(deps.LLM, deps.Search, deps.KB, deps.Profile, nil, nil),
+			Invoker: editorial.NewRoleAgentRunner(deps.LLM, deps.Search, deps.KB, deps.Profile, nil, editorialTools),
 			Config:  &editorial.AgentConfig{ID: "governed-finalize", Name: "Governed Finalizer", Role: string(editorial.RoleWriting)},
 			Usage: func(result *editorial.RoleRunResult) (writingruntime.LegacyUsage, error) {
 				return writingruntime.LegacyUsage{Measured: true, InputTokens: int64(result.Tokens)}, nil

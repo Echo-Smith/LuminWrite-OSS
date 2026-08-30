@@ -23,7 +23,7 @@ func TestOrchestratorCompletesReadyNodeAndPersistsCheckpoint(t *testing.T) {
 	if len(fixture.store.artifacts) != 1 || len(fixture.checkpoints.saved) != 1 {
 		t.Fatalf("artifacts=%#v checkpoints=%#v", fixture.store.artifacts, fixture.checkpoints.saved)
 	}
-	if len(fixture.store.initialArtifacts) != 1 || fixture.store.initialArtifacts[0].NodeID != "node_initial" {
+	if len(fixture.store.initialArtifacts) != 1 || fixture.store.initialArtifacts[0].NodeID != "node_initial" || len(fixture.store.completions) == 0 || fixture.store.completions[0].Status != "succeeded" {
 		t.Fatalf("initial artifacts were not persisted for lineage: %#v", fixture.store.initialArtifacts)
 	}
 }
@@ -46,7 +46,7 @@ func TestOrchestratorRetriesOnlySafeExecutor(t *testing.T) {
 	if err != nil || out.State != StateCompleted || fixture.executor.calls != 2 {
 		t.Fatalf("out=%#v err=%v calls=%d", out, err, fixture.executor.calls)
 	}
-	if len(fixture.store.attempts) != 2 {
+	if attemptsForNode(fixture.store.attempts, "node_draft") != 2 {
 		t.Fatalf("attempts=%#v", fixture.store.attempts)
 	}
 }
@@ -113,7 +113,7 @@ func TestOrchestratorPersistsStableExecutorErrorCode(t *testing.T) {
 	if ErrorCodeOf(err) != CodeSourceSnapshotFailed {
 		t.Fatalf("error=%v code=%s", err, ErrorCodeOf(err))
 	}
-	if len(fixture.store.completions) == 0 || fixture.store.completions[0].ErrorCode != string(CodeSourceSnapshotFailed) || len(fixture.store.artifacts) != 0 {
+	if len(fixture.store.completions) < 2 || fixture.store.completions[len(fixture.store.completions)-1].ErrorCode != string(CodeSourceSnapshotFailed) || len(fixture.store.artifacts) != 0 {
 		t.Fatalf("completions=%#v artifacts=%#v", fixture.store.completions, fixture.store.artifacts)
 	}
 }
@@ -127,6 +127,16 @@ func TestOrchestratorEmitsCanonicalCommitBoundaryMetrics(t *testing.T) {
 	}
 	if !metrics.has(MetricCanonicalCommit, "started") || !metrics.has(MetricCanonicalCommit, "succeeded") {
 		t.Fatalf("metrics=%#v", metrics.metrics)
+	}
+}
+
+func TestOrchestratorCheckpointUsesExplicitEmptyUnsafeList(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	if _, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.checkpoints.saved) != 1 || fixture.checkpoints.saved[0].UnsafeInFlight == nil || fixture.checkpoints.saved[0].Validate() != nil {
+		t.Fatalf("checkpoint=%#v", fixture.checkpoints.saved)
 	}
 }
 
@@ -144,11 +154,31 @@ func TestCanonicalCommitFailureIsStableAndProducesNoArtifact(t *testing.T) {
 	}
 }
 
+func TestOrchestratorTerminalizesUnexpectedDispatchFailure(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	if err := fixture.orchestrator.FailDispatch(context.Background(), fixture.store.run.RunID, CodeArtifactCommitFailed); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.store.run.Status != string(StateFailed) || len(fixture.store.transitions) != 1 || fixture.store.transitions[0].Cause != "dispatch_failed_artifact_commit_failed" {
+		t.Fatalf("run=%#v transitions=%#v", fixture.store.run, fixture.store.transitions)
+	}
+}
+
 type orchestratorFixture struct {
 	orchestrator *Orchestrator
 	store        *fakeRuntimeStore
 	executor     *fakeGovernedExecutor
 	checkpoints  *memoryCheckpoints
+}
+
+func attemptsForNode(attempts []writingstore.NodeAttempt, nodeID string) int {
+	count := 0
+	for _, attempt := range attempts {
+		if attempt.NodeID == nodeID {
+			count++
+		}
+	}
+	return count
 }
 
 func newOrchestratorFixture(t *testing.T, idempotency writingplan.IdempotencyClass, approval bool) orchestratorFixture {
@@ -218,15 +248,18 @@ type fakeRuntimeStore struct {
 	materialSnapshots map[string]writingstore.MaterialSnapshotRecord
 }
 
-func (store *fakeRuntimeStore) PutArtifact(_ context.Context, artifact writingstore.ArtifactRecord) error {
+func (store *fakeRuntimeStore) CommitInitialArtifacts(_ context.Context, attempt writingstore.NodeAttempt, artifacts []writingstore.ArtifactRecord, _ writingstore.TraceContext) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	for _, existing := range store.initialArtifacts {
-		if existing.ArtifactID == artifact.ArtifactID && existing.Version == artifact.Version {
+	for _, existing := range store.attempts {
+		if existing.NodeID == attempt.NodeID && existing.Attempt == attempt.Attempt {
 			return nil
 		}
 	}
-	store.initialArtifacts = append(store.initialArtifacts, artifact)
+	attempt.Status = "succeeded"
+	store.attempts = append(store.attempts, attempt)
+	store.initialArtifacts = append(store.initialArtifacts, artifacts...)
+	store.completions = append(store.completions, writingstore.AttemptCompletion{RunID: attempt.RunID, NodeID: attempt.NodeID, Attempt: attempt.Attempt, Status: "succeeded", Artifacts: artifacts})
 	return nil
 }
 

@@ -23,6 +23,10 @@ type RecoveryState struct {
 
 func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Checkpoint, attempts []writingstore.NodeAttempt, manifests map[string]writingplan.CapabilityManifest) (RecoveryState, error) {
 	state := RecoveryState{CompletedNodes: map[string]int{}, NextAttempts: map[string]int{}, HumanRequired: []string{}}
+	planNodes := make(map[string]struct{}, len(plan.Nodes))
+	for _, node := range plan.Nodes {
+		planNodes[node.NodeID] = struct{}{}
+	}
 	if checkpoint != nil {
 		if checkpoint.PlanID != plan.PlanID || checkpoint.PlanVersion != planVersion || checkpoint.PlanHash != plan.PlanHash {
 			return RecoveryState{}, ErrPlanChangedDuringRecovery
@@ -34,8 +38,16 @@ func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Check
 		state.HumanRequired = append(state.HumanRequired, checkpoint.UnsafeInFlight...)
 	}
 	for _, attempt := range attempts {
+		// Ledger-owned pseudo attempts (for example node_initial) are valid
+		// artifact lineage roots but are not executable plan nodes. They must
+		// never satisfy graph dependencies or change retry accounting.
 		if attempt.PlanID != plan.PlanID || attempt.PlanVersion != planVersion {
 			continue
+		}
+		if len(planNodes) > 0 {
+			if _, executable := planNodes[attempt.NodeID]; !executable {
+				continue
+			}
 		}
 		if attempt.Attempt >= state.NextAttempts[attempt.NodeID] {
 			state.NextAttempts[attempt.NodeID] = attempt.Attempt + 1
