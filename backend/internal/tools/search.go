@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,24 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 )
+
+var (
+	// ErrProviderNotInstalled is returned when an edition intentionally does
+	// not ship a concrete external information-source adapter.
+	ErrProviderNotInstalled = errors.New("search provider not installed")
+	// ErrProviderNotConfigured is returned when an installed adapter has no
+	// usable deployment configuration.
+	ErrProviderNotConfigured = errors.New("search provider not configured")
+)
+
+// SearchCapability is the edition-neutral readiness projection. OSS exposes
+// the contract but never includes paid provider identities in this list.
+type SearchCapability struct {
+	ProviderID string `json:"provider_id"`
+	Kind       string `json:"kind"`
+	Installed  bool   `json:"installed"`
+	Configured bool   `json:"configured"`
+}
 
 // KnowledgeSearcher is the interface for local knowledge base search.
 // It replaces the concrete WeKnoraClient, allowing the search pipeline
@@ -51,39 +70,20 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	tencentCLIPath string, tencentCLITimeout time.Duration,
 	anysearchAPIKey, anysearchEndpoint string, anysearchTimeout time.Duration,
 ) *SearchClient {
-	c := &SearchClient{}
-
-	if tavilyAPIKey != "" {
-		c.tavily = NewTavilyClient(tavilyAPIKey, tavilyEndpoint, tavilyTimeout)
+	// The OSS edition deliberately ignores commercial source configuration.
+	// The long legacy signature remains temporarily for source compatibility;
+	// Task13 moves edition-specific construction out of the shared interface.
+	_ = []any{
+		tavilyAPIKey, tavilyEndpoint, tavilyTimeout,
+		zhihuEnabled, zhihuBaseURL, zhihuAccessSecret, zhihuTimeout,
+		tencentEnabled, tencentBaseURL, tencentTimeout,
+		weiboEnabled, weiboAppID, weiboAppSecret, weiboTokenEndpoint, weiboBaseURL, weiboTimeout,
+		extraHotEnabled, extraHotBaseURL, extraHotTimeout,
+		bingEnabled, bingBaseURL, bingTimeout,
+		tencentCLIPath, tencentCLITimeout,
+		anysearchAPIKey, anysearchEndpoint, anysearchTimeout,
 	}
-
-	if zhihuEnabled && zhihuAccessSecret != "" {
-		c.zhihu = NewZhihuClient(zhihuBaseURL, zhihuAccessSecret, zhihuTimeout)
-	}
-
-	if tencentEnabled {
-		c.tencent = NewTencentNewsClient(tencentBaseURL, tencentTimeout)
-	}
-
-	// Always try to init the CLI client (auto-detects binary on PATH)
-	c.tencentCLI = NewTencentNewsCLIClient(tencentCLIPath, tencentCLITimeout)
-
-	if weiboEnabled {
-		c.weibo = NewWeiboClient(weiboAppID, weiboAppSecret, weiboTokenEndpoint, weiboBaseURL, weiboTimeout)
-	}
-
-	if extraHotEnabled {
-		c.extraHot = NewExtraHotClient(extraHotBaseURL, extraHotTimeout)
-	}
-
-	if bingEnabled {
-		c.bing = NewBingClient(bingBaseURL, bingTimeout)
-	}
-
-	// AnySearch: always init (anonymous tier works without API key)
-	c.anysearch = NewAnySearchClient(anysearchAPIKey, anysearchEndpoint, anysearchTimeout)
-
-	return c
+	return &SearchClient{}
 }
 
 // SetCredibilityLookup sets an optional credibility lookup provider.
@@ -95,7 +95,20 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.tencent != nil || (c.tencentCLI != nil && c.tencentCLI.IsConfigured()) || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.HasExternalSources()
+}
+
+// HasExternalSources reports whether this edition has an installed and
+// configured external information source. Local KB, crawler, and MCP
+// readiness are deliberately reported by their own capabilities.
+func (c *SearchClient) HasExternalSources() bool {
+	return len(c.activeSources()) > 0
+}
+
+// Capabilities returns no paid identities in OSS. The provider extension
+// contract is public; concrete paid sources are a Commercial responsibility.
+func (c *SearchClient) Capabilities() []SearchCapability {
+	return []SearchCapability{}
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.

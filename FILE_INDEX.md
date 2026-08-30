@@ -9,6 +9,9 @@
 - `backend/internal/writingquality/`：Candidate / Accepted / Verified 质量门、validator 与降级策略。
 - `backend/internal/writingplan/`：IntentPlan、ExecutablePlan、能力注册和静态验证。
 - `backend/internal/database/migrations/095_governed_rollout_evidence.*.sql`：在 append-only RunLedger 中持久化 Task12 路由、执行和 shadow 对比证据。
+- `backend/internal/tools/search.go`、`search_stubs.go`：Task13 OSS 检索能力边界；共享接口保留，但商业 Provider 不注册且显式返回未安装。
+- `backend/internal/tools/url_fetcher.go`：两版共享的有界本地网页抓取与正文抽取实现。
+- `backend/internal/tools/search_capability_test.go`：验证 OSS 不暴露或假注册付费搜索源。
 
 ## Specifications and plans
 
