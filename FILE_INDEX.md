@@ -24,6 +24,7 @@
 - `backend/.env.example`、`docker-compose.yml`、`docs/runbook.md`：Task13 双端点健康检查、preflight 开关和回滚运维说明；OSS 示例不含付费搜索凭证。
 - `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
 - `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
+- `backend/internal/mcp/server.go`、`sse_test.go`：串行化 SSE endpoint/JSON-RPC 响应写入，消除跨 HTTP handler 的 ResponseWriter 数据竞争。
 - `backend/internal/writingruntime/store_evidence.go`、`store_evidence_test.go`：将 rollout evidence 严格校验后写入 writingstore 唯一 RunLedger。
 - `backend/internal/writingstore/shadow_content.go`、`backend/internal/writingruntime/store_shadow_content.go`：持久化 shadow sink、hash 校验与 policy/run 边界清理。
 

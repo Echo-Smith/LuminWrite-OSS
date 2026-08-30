@@ -476,10 +476,10 @@ func (s *MCPServer) RegisterBuiltinTools() {
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
 			info := map[string]any{
-				"name":        s.name,
-				"version":     s.version,
-				"tool_count":  s.registry.Count(),
-				"transport":   "stdio+http",
+				"name":       s.name,
+				"version":    s.version,
+				"tool_count": s.registry.Count(),
+				"transport":  "stdio+http",
 			}
 			data, _ := json.Marshal(info)
 			return string(data), nil
@@ -529,10 +529,11 @@ func (s *MCPServer) StartHTTPServer(addr string) *http.Server {
 
 // sseSession represents an active SSE connection from a client.
 type sseSession struct {
-	id     string
-	writer http.ResponseWriter
+	id      string
+	writer  http.ResponseWriter
 	flusher http.Flusher
-	done   chan struct{}
+	done    chan struct{}
+	writeMu sync.Mutex
 }
 
 // write sends a JSON-RPC response to the SSE client.
@@ -541,7 +542,19 @@ func (sess *sseSession) write(resp *mcpResponse) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(sess.writer, "data: %s\n\n", data)
+	sess.writeEvent("", string(data))
+}
+
+// writeEvent serializes every write and flush on the long-lived response.
+// The GET stream handler sends the endpoint event while POST handlers deliver
+// JSON-RPC responses, so http.ResponseWriter must never be used concurrently.
+func (sess *sseSession) writeEvent(event, data string) {
+	sess.writeMu.Lock()
+	defer sess.writeMu.Unlock()
+	if event != "" {
+		_, _ = fmt.Fprintf(sess.writer, "event: %s\n", event)
+	}
+	_, _ = fmt.Fprintf(sess.writer, "data: %s\n\n", data)
 	if sess.flusher != nil {
 		sess.flusher.Flush()
 	}
@@ -579,8 +592,7 @@ func (s *MCPServer) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 
 	// Send the `endpoint` event — tells the client where to POST messages
 	endpointURL := fmt.Sprintf("/mcp?session=%s", sessionID)
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURL)
-	flusher.Flush()
+	sess.writeEvent("endpoint", endpointURL)
 
 	// Block until the client disconnects or server closes
 	select {
