@@ -14,6 +14,7 @@
 - `backend/internal/tools/search_capability_test.go`：验证 OSS 不暴露或假注册付费搜索源。
 - `backend/internal/server/readiness.go`、`readiness_test.go`：区分 installed/configured/reachable/ready，并为生产流量提供 fail-closed `/ready`。
 - `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
+- `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
 
 ## Specifications and plans
 

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -11,12 +10,13 @@ import (
 )
 
 const (
-	readinessCodeNotConfigured = "NOT_CONFIGURED"
-	readinessCodeNotProbed     = "NOT_PROBED"
-	readinessCodeStale         = "STALE"
-	readinessCodeNotWired      = "NOT_WIRED"
-	readinessCodeDisabled      = "DISABLED"
-	readinessCodeUnreachable   = "UNREACHABLE"
+	readinessCodeNotConfigured   = "NOT_CONFIGURED"
+	readinessCodeNotProbed       = "NOT_PROBED"
+	readinessCodeStale           = "STALE"
+	readinessCodeNotWired        = "NOT_WIRED"
+	readinessCodeDisabled        = "DISABLED"
+	readinessCodeUnreachable     = "UNREACHABLE"
+	readinessCodeMCPUnconfigured = "MCP_UNCONFIGURED"
 )
 
 // CapabilityReadiness separates installed code, deployment configuration,
@@ -137,19 +137,8 @@ func (s *Server) initializeReadiness(now time.Time) {
 		LastCheckedAt: checkedAt(s.dbAvail, now),
 	})
 
-	mcpConnected := s.mcpRegistry != nil && len(s.mcpRegistry.ServerNames()) > 0
-	mcpConfigured := mcpConnected || s.mcpServer != nil
-	mcpError := readinessCodeDisabled
-	if mcpConfigured {
-		mcpError = readinessCodeNotProbed
-	}
-	if mcpConnected {
-		mcpError = ""
-	}
-	registry.Set("mcp", CapabilityReadiness{
-		Installed: true, Configured: mcpConfigured, Reachable: mcpConnected,
-		ErrorCode: mcpError, LastCheckedAt: checkedAt(mcpConnected, now),
-	})
+	s.readiness = registry
+	s.updateMCPReadiness(now)
 
 	// These three capabilities become ready only after Task13's production
 	// composition root and durable shadow/evidence adapters are connected.
@@ -163,7 +152,41 @@ func (s *Server) initializeReadiness(now time.Time) {
 		Required: true, ErrorCode: readinessCodeNotWired,
 	})
 
-	s.readiness = registry
+}
+
+func (s *Server) updateMCPReadiness(now time.Time) {
+	if s.readiness == nil {
+		return
+	}
+	statuses := s.mcpRegistry.Statuses()
+	configured := len(statuses) > 0 || s.mcpServer != nil
+	connected := 0
+	errorCode := readinessCodeMCPUnconfigured
+	lastChecked := time.Time{}
+	for _, status := range statuses {
+		if status.LastChecked.After(lastChecked) {
+			lastChecked = status.LastChecked
+		}
+		if status.Connected {
+			connected++
+		} else if errorCode == readinessCodeMCPUnconfigured && status.ErrorCode != "" {
+			errorCode = status.ErrorCode
+		}
+	}
+	if connected > 0 {
+		errorCode = ""
+	}
+	if s.mcpServer != nil && connected == 0 {
+		errorCode = readinessCodeNotProbed
+	}
+	if lastChecked.IsZero() && len(statuses) > 0 {
+		lastChecked = now
+	}
+	s.readiness.Set("mcp", CapabilityReadiness{
+		Installed: true, Configured: configured, Reachable: connected > 0,
+		Degraded: connected > 0 && connected < len(statuses), ErrorCode: errorCode,
+		LastCheckedAt: lastChecked,
+	})
 }
 
 // readinessError chooses a code without confusing an unprobed configured
@@ -188,36 +211,8 @@ func checkedAt(checked bool, now time.Time) time.Time {
 	return time.Time{}
 }
 
-func (s *Server) refreshLocalReadiness(now time.Time) {
-	if s.readiness == nil {
-		return
-	}
-	databaseReachable := false
-	databaseError := readinessCodeNotConfigured
-	if s.dbAvail && s.db != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := s.db.PingContext(ctx)
-		cancel()
-		databaseReachable = err == nil
-		if databaseReachable {
-			databaseError = ""
-		} else {
-			databaseError = readinessCodeUnreachable
-		}
-	}
-	s.readiness.Set("database", CapabilityReadiness{
-		Required: true, Installed: true, Configured: s.dbAvail,
-		Reachable: databaseReachable, ErrorCode: databaseError,
-		LastCheckedAt: checkedAt(databaseReachable, now),
-	})
-	s.readiness.Set("crawler", CapabilityReadiness{
-		Installed: true, Configured: true, Reachable: true, LastCheckedAt: now,
-	})
-}
-
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now()
-	s.refreshLocalReadiness(now)
 	snapshot := s.readiness.Snapshot(now)
 	status := http.StatusOK
 	if !snapshot.Ready {

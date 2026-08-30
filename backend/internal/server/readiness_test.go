@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/mcp"
 )
 
 func TestReadinessDoesNotTreatConfiguredAsReachable(t *testing.T) {
@@ -14,6 +17,23 @@ func TestReadinessDoesNotTreatConfiguredAsReachable(t *testing.T) {
 	snapshot := registry.Snapshot(time.Now())
 	if snapshot.Ready || snapshot.Components["llm"].Ready {
 		t.Fatalf("configured but unprobed capability reported ready: %#v", snapshot)
+	}
+}
+
+func TestMCPReadinessReportsUnconfiguredAndFailedState(t *testing.T) {
+	registry := mcp.NewRegistry()
+	server := &Server{mcpRegistry: registry, readiness: NewReadinessRegistry(time.Minute)}
+	server.updateMCPReadiness(time.Now())
+	status := server.readiness.Snapshot(time.Now()).Components["mcp"]
+	if status.Configured || status.Ready || status.ErrorCode != readinessCodeMCPUnconfigured {
+		t.Fatalf("unconfigured status=%#v", status)
+	}
+
+	_ = registry.Connect(context.Background(), mcp.MCPClientConfig{Name: "broken", Transport: "invalid"})
+	server.updateMCPReadiness(time.Now())
+	status = server.readiness.Snapshot(time.Now()).Components["mcp"]
+	if !status.Configured || status.Reachable || status.ErrorCode != mcp.MCPErrorConfigInvalid {
+		t.Fatalf("failed status=%#v", status)
 	}
 }
 
