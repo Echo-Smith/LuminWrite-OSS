@@ -9,6 +9,7 @@
 - `backend/internal/writingquality/`：Candidate / Accepted / Verified 质量门、validator 与降级策略。
 - `backend/internal/writingplan/`：IntentPlan、ExecutablePlan、能力注册和静态验证。
 - `backend/internal/database/migrations/095_governed_rollout_evidence.*.sql`：在 append-only RunLedger 中持久化 Task12 路由、执行和 shadow 对比证据。
+- `backend/internal/database/migrations/096_shadow_content.*.sql`：独立持久化、可过期且回滚受保护的 shadow candidate 正文。
 - `backend/internal/tools/search.go`、`search_stubs.go`：Task13 OSS 检索能力边界；共享接口保留，但商业 Provider 不注册且显式返回未安装。
 - `backend/internal/tools/url_fetcher.go`：两版共享的有界本地网页抓取与正文抽取实现。
 - `backend/internal/tools/search_capability_test.go`：验证 OSS 不暴露或假注册付费搜索源。
@@ -16,6 +17,7 @@
 - `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
 - `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
 - `backend/internal/writingruntime/store_evidence.go`、`store_evidence_test.go`：将 rollout evidence 严格校验后写入 writingstore 唯一 RunLedger。
+- `backend/internal/writingstore/shadow_content.go`、`backend/internal/writingruntime/store_shadow_content.go`：持久化 shadow sink、hash 校验与 policy/run 边界清理。
 
 ## Specifications and plans
 
