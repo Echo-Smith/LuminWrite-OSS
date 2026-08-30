@@ -22,6 +22,7 @@
 - `backend/internal/server/readiness.go`、`readiness_test.go`：区分 installed/configured/reachable/ready，并为生产流量提供 fail-closed `/ready`。
 - `backend/internal/server/provider_preflight.go`、`provider_preflight_test.go`：显式或 opt-in 的有界 Provider 凭证探测、稳定错误码与脱敏证据。
 - `backend/.env.example`、`docker-compose.yml`、`docs/runbook.md`：Task13 双端点健康检查、preflight 开关和回滚运维说明；OSS 示例不含付费搜索凭证。
+- `backend/Dockerfile`：OSS 运行镜像不下载、不初始化 Commercial 付费信息源 CLI，仅保留共享运行时依赖。
 - `backend/internal/tools/deepseek_config_test.go`：防止空值和占位密钥被误报为 LLM 已配置。
 - `backend/internal/mcp/registry.go`、`registry_test.go`：保留失败连接状态、输出无凭证 MCP 快照，并防御 nil 执行上下文。
 - `backend/internal/mcp/server.go`、`sse_test.go`：串行化 SSE endpoint/JSON-RPC 响应写入，消除跨 HTTP handler 的 ResponseWriter 数据竞争。
