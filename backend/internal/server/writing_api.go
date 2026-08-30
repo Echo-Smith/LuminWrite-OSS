@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -135,10 +136,12 @@ type persistentWritingAPI struct {
 	capabilities *writingplan.CapabilityRegistry
 	templates    *writingplan.TemplateRegistry
 	controller   writingRunController
+	runtime      *GovernedRuntime
 }
 
-func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {
-	return &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(), templates: writingplan.DefaultTemplateRegistry()}
+func newPersistentWritingAPI(store *writingstore.Store, runtime *GovernedRuntime) *persistentWritingAPI {
+	return &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(),
+		templates: writingplan.DefaultTemplateRegistry(), controller: runtime, runtime: runtime}
 }
 
 func writingAccessFromRequest(r *http.Request) (writingAccess, error) {
@@ -311,6 +314,11 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	if strings.TrimSpace(command.IdempotencyKey) == "" {
 		return writingstore.RuntimeRun{}, writingstore.ErrInvalidRecord
 	}
+	// Fail closed before any persistence: a runtime that cannot dispatch must
+	// never leave an unexplained planned run behind.
+	if service.runtime != nil && !service.runtime.Ready() {
+		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, service.runtime.BlockedCode())
+	}
 	runID := writingstore.StableID("run_", access.UserID, command.IdempotencyKey)
 	status := "planned"
 	if command.Plan.StrategyDecision.ApprovalRequired {
@@ -322,7 +330,25 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	if err := service.store.CreateRunWithPlan(ctx, run, plan, status); err != nil {
 		return writingstore.RuntimeRun{}, err
 	}
-	return service.store.LoadRuntimeRun(ctx, runID)
+	created, err := service.store.LoadRuntimeRun(ctx, runID)
+	if err != nil {
+		return writingstore.RuntimeRun{}, err
+	}
+	// Ordinary runs dispatch on a server-owned context as soon as the
+	// creation transaction has committed. If scheduling fails, a stable
+	// transition rejection is recorded so the planned run stays explained.
+	if created.Status == "planned" && service.runtime != nil {
+		if err := service.runtime.Dispatch(created.RunID); err != nil {
+			if _, recordErr := service.store.RecordRunTransition(ctx, writingstore.RunTransitionCommand{
+				RunID: created.RunID, ExpectedFrom: "planned", RequestedTo: "running",
+				RuleAccepted: false, Cause: "dispatch_failed", ReasonCode: "WRITING_RUNTIME_NOT_READY",
+				Summary: "governed runtime could not schedule the run", IdempotencyKey: created.RunID + ":transition:dispatch_failed",
+				Trace: writingTrace(access, "run.dispatch_rejected")}); recordErr != nil {
+				slog.Error("governed run dispatch rejection could not be recorded", "run_id", created.RunID, "error", recordErr)
+			}
+		}
+	}
+	return created, nil
 }
 
 func (service *persistentWritingAPI) GetRun(ctx context.Context, access writingAccess, runID string) (writingstore.RuntimeRun, error) {
@@ -373,7 +399,18 @@ func (service *persistentWritingAPI) ApproveRun(ctx context.Context, access writ
 	if err != nil {
 		return writingstore.RuntimeRun{}, err
 	}
-	return service.store.LoadRuntimeRun(ctx, command.RunID)
+	approved, err := service.store.LoadRuntimeRun(ctx, command.RunID)
+	if err != nil {
+		return writingstore.RuntimeRun{}, err
+	}
+	// Approval-gated runs dispatch only after the approval transaction has
+	// committed and the run reached the planned state.
+	if approved.Status == "planned" && service.runtime != nil && service.runtime.Ready() {
+		if err := service.runtime.Dispatch(approved.RunID); err != nil {
+			slog.Warn("governed run could not be dispatched after approval", "run_id", approved.RunID, "error", err)
+		}
+	}
+	return approved, nil
 }
 
 func (service *persistentWritingAPI) ControlRun(ctx context.Context, access writingAccess, command controlWritingRunCommand) (writingstore.RuntimeRun, error) {
@@ -620,6 +657,8 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusConflict, "APPROVAL_SCOPE_MISMATCH"
 	case errors.Is(err, errWritingRuntimeUnavailable):
 		status, code = http.StatusServiceUnavailable, "RUNTIME_UNAVAILABLE"
+	case errors.Is(err, errWritingRuntimeNotReady):
+		status, code = http.StatusServiceUnavailable, "WRITING_RUNTIME_NOT_READY"
 	case errors.Is(err, writingstore.ErrNotFound):
 		status, code = http.StatusNotFound, "WRITING_RESOURCE_NOT_FOUND"
 	case errors.Is(err, writingstore.ErrImmutableConflict):

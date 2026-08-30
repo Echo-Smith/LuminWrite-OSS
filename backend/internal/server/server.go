@@ -25,6 +25,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
@@ -102,6 +103,10 @@ type Server struct {
 
 	// Governed writing API. Nil only when persistence is unavailable.
 	writingAPI writingAPIService
+
+	// Governed runtime composition (Task13). Present whenever persistence is
+	// available; readiness decides whether runs may be created.
+	governedRuntime *GovernedRuntime
 
 	// Deployment readiness is stricter than liveness: configured external
 	// dependencies remain unready until a bounded probe succeeds.
@@ -532,7 +537,14 @@ func New(cfg *config.Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("initialize governed writing store: %w", err)
 		}
-		s.writingAPI = newPersistentWritingAPI(governedStore)
+		var governedKB tools.KnowledgeSearcher
+		if s.kbMgr != nil {
+			governedKB = services.NewKbSearchAdapter(s.kbMgr)
+		}
+		s.governedRuntime = ComposeGovernedRuntime(GovernedRuntimeDeps{Store: governedStore, DB: db.DB,
+			LLM: llm, Search: searchClient, KB: governedKB, Metrics: s.metrics},
+			writingplan.DefaultCapabilityRegistry())
+		s.writingAPI = newPersistentWritingAPI(governedStore, s.governedRuntime)
 	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)

@@ -48,6 +48,12 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 		s.writeWritingError(w, err)
 		return
 	}
+	// Fail closed before the service layer touches persistence: a runtime
+	// that cannot dispatch must never create a zombie planned run.
+	if s.governedRuntime != nil && !s.governedRuntime.Ready() {
+		s.writeWritingError(w, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, s.governedRuntime.BlockedCode()))
+		return
+	}
 	key, err := writingIdempotencyKey(r)
 	if err != nil {
 		s.writeWritingError(w, err)
