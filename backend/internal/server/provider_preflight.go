@@ -98,7 +98,13 @@ func (preflight *ProviderPreflight) Run(ctx context.Context) ProviderPreflightSn
 
 	searchResults := []tools.SearchProbeResult{}
 	if preflight.search != nil {
-		searchResults = preflight.search.ProbeExternalSources(ctx)
+		searchTimeout := preflight.config.Timeout
+		if searchTimeout <= 0 || searchTimeout > 30*time.Second {
+			searchTimeout = 8 * time.Second
+		}
+		searchCtx, cancelSearch := context.WithTimeout(ctx, searchTimeout)
+		searchResults = preflight.search.ProbeExternalSources(searchCtx)
+		cancelSearch()
 	}
 	configuredSearch := 0
 	reachableSearch := 0
