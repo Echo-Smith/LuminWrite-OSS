@@ -32,6 +32,9 @@
 
 ## Specifications and plans
 
+- `README.md`、`README.en.md`：Task1–13 后的产品入口；以治理型写作运行时为当前主架构，并明确真实发布状态与 OSS 能力边界。
+- `docs/plans/2026-08-31-readme-task1-13-refresh-design.md`：README 信息架构、双版本边界与真实性约束。
+- `docs/plans/2026-08-31-readme-task1-13-refresh.md`：Task1–13 中英文 README 双仓刷新实施计划。
 - `specs/lcp/v1/`：Lumin Content Protocol schema 与纵向场景 fixture。
 - `specs/task11-governed-materials/`：Task11 材料、事实源与 B2 契约规格。
 - `specs/task12-governed-rollout/`：Task12 三类适配器、shadow、埋点和发布门禁规格。
