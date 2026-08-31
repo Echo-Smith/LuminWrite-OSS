@@ -2,6 +2,8 @@
 
 [中文](README.md) · [Live workspace](https://luminbuddy2.ericdocmic.top/v2/) · [Changelog](#changelog)
 
+**Edition: OSS** — includes the governed writing kernel, MCP, baseline retrieval, and extension contracts; excludes commercial paid-search providers, credential settings, and proprietary connectors.
+
 > **An AI writing workspace for Chinese content creators**: from intent understanding, source retrieval, and outline confirmation, to style-aware drafting, post-review, feedback, and memory sedimentation—transforming one-shot generation into an observable, interruptible, and iterative writing process.
 
 ![LuminBuddy writing workspace](docs/assets/luminbuddy-workspace.png)
@@ -12,52 +14,59 @@
 
 **LuminBuddy** is an AI writing assistant designed for Chinese content production. It doesn't pursue "one-click generation" magic, but instead breaks down the writing process into observable, interruptible, and iterative engineering workflows—keeping creators in control at key decision points while AI assists in source gathering, structure planning, style adaptation, and quality checking.
 
-**Current maturity: Engineering Beta**. The repository contains a complete frontend and backend, Harness single-layer Agent orchestration, writing Pipeline, guided outlines, style profiles, A/B evaluation, feedback system, tiered memory, and monitoring metrics; continuously iterating.
+**Current maturity: Engineering Beta; the governed kernel is connected to the primary flow.** Task1–13 delivered WritingContract, plan compilation, LCP/Document AST, typed Artifacts, transactional storage, runtime orchestration, three quality gates, V2 APIs, a document-first workspace, governed materials, shadow rollout, and production wiring. Code, builds, CI, and three real writing paths in an isolated environment pass; production traffic still requires staging evidence, recovery/cancel/rollback drills, and credential rotation.
 
-### Governed Writing Runtime: Target Architecture and Migration Boundary
+### Governed Writing Runtime
 
-V2 evolves toward the [Governed Writing Runtime](docs/19-governed-writing-runtime.md) as its single target architecture and protocol baseline, delivered through the [implementation plan](docs/plans/2026-08-27-governed-writing-runtime-implementation.md). New capabilities must bind a versioned WritingContract, ExecutablePlan, Artifact, quality state, and Snapshot. The document is the primary product object; chat is the channel for changing the contract, explaining decisions, and controlling execution.
+The [Governed Writing Runtime](docs/19-governed-writing-runtime.md) is the single authoritative writing kernel for V2. Every new task binds a versioned WritingContract and a statically validated ExecutablePlan. Models and legacy operators may submit only typed Artifacts or Revisions; they cannot bypass quality gates to overwrite the official document.
 
-During migration, the existing Harness, Pipeline, and Editorial DAG remain available as executors or compatibility adapters:
-
-- `agent.start` and `workflow.start` retain wire compatibility for now, but they are not two parallel authoritative runtimes.
-- Legacy `mode` and `agent_mode` are not the new `task_mode`, `orchestration_mode`, and `assurance_level`; old fields must not carry the new semantics.
-- `agent.completed` and `workflow.completed` only mean the current executor path ended. They do not mean the content is Accepted, Verified, or formally committed.
-- The Article Output Contract only defines the streaming Markdown parsing boundary. Successful parsing does not imply LCP validation, Document AST construction, version commit, or quality acceptance.
+- **The document is the primary object:** chat changes the contract, explains decisions, and controls execution; body text, versions, citations, and quality states belong to the document.
+- **writingstore is the sole source of truth:** Contract, Plan, Run, Artifact, Decision, Ledger, Snapshot, and canonical/shadow content are persisted together.
+- **Quality states cannot be fabricated:** Candidate Draft, Accepted Draft, and Verified Deliverable advance monotonically. A BLOCKER, a missing required validator, or a missing complete snapshot prevents Verified.
+- **Legacy capabilities are governed adapters:** Harness, Pipeline, and Editorial Roles run through ExecutorAdapter and do not form a parallel source of truth. Contract, permission, budget, or lineage violations fail closed.
+- **Release claims stay evidence-based:** process health, run completion, or successful Markdown parsing does not mean a deliverable was accepted, verified, or approved for production traffic.
 
 ---
 
 ## Problems Solved
 
-General chat models can draft quickly, but real writing work usually fails at four points:
+General chat models can draft quickly, but real writing work usually fails at these points:
 
 | Pain Point | Manifestation | LuminBuddy's Solution |
 |------------|--------------|----------------------|
-| **Unstable intent understanding** | User's real needs, length, and style constraints not accurately captured | Rule-first intent routing + low-confidence LLM fallback |
-| **Black-box generation** | Source retrieval, opinion organization, and drafting compressed into one unobservable generation | Harness single-layer orchestration, every step visible, pausable, resumable |
-| **Loss of control at key points** | Users can't intervene at high-cost decision points like outline confirmation or style adjustment | Guided Mode: confirm outline before drafting |
-| **Feedback doesn't accumulate** | Good/bad feedback doesn't enter next generation; team can't locate failure points | Section feedback + A/B evaluation + tiered memory system |
+| **Intent drifts in long context** | Requirements, length, style, and evidence constraints are gradually lost | WritingContract records explicit choices, inference sources, and delivery criteria |
+| **Generation is a black box** | Materials, planning, execution, and drafting collapse into one opaque response | ExecutablePlan, RunLedger, and durable events make work observable, cancellable, and recoverable |
+| **Materials lose provenance** | Multi-source synthesis drops conflicts, snapshots, or citation relationships | MaterialAdapter, SourcePack, content snapshots, and lineage govern every input |
+| **Users lose control at costly decisions** | A system can execute expensive or risky work before review | Automatic and manual strategies coexist; high-cost, high-risk, and manual tasks require confirmation |
+| **“Generated” is mistaken for deliverable** | Correct formatting does not prove facts, style, or contract compliance | Candidate / Accepted / Verified gates with non-waivable BLOCKER findings |
+| **Failures create conflicting versions** | Retries, restarts, and duplicate events can corrupt state | Idempotent commits, complete checkpoints, snapshots, pause/cancel/rollback, and shadow isolation |
 
 ---
 
 ## How It Works
 
-### Core Architecture: Harness-LLM Single-Layer Continuous Session
+### Core Architecture: Contract-Driven Document Runtime
 
-Inspired by DeepSeek Harness (dsh), adopts a **single-layer architecture**:
-
+```text
+User request / materials / explicit strategy
+  → WritingContract (goal, style, evidence, budget, permissions, approval)
+  → Strategy Compiler → ExecutablePlan (bounded DAG + capability binding)
+  → Orchestrator → ExecutorAdapter (Harness / Engine Step / Editorial Role)
+  → typed Artifact + lineage + usage
+  → LCP / Document AST / RevisionSet
+  → Quality Gate (Candidate → Accepted → Verified)
+  → writingstore atomically commits DocumentVersion + Snapshot + RunLedger
+  → frontend projects the document, run summary, detail report, and chat controls
 ```
-User Request
-  → Harness (intent routing, tool registration, state management, circuit breaking)
-    → LLM continuous session (autonomously decides which tools to call, when to write, when to revise)
-      ←→ Tool execution (search/knowledge base/write/review/revise)
-  → Streaming output to frontend
-```
 
-**Key designs**:
-- **No nested ReAct + inner agent loop**, reducing latency and output drift
-- **1 LLM continuous session** replaces traditional Pipeline's 10+ independent calls, time-to-first-token from 30-60s to 3-5s
-- **Cross-turn session persistence**: articles, sources, search records accumulate and reuse within the same dialog
+The compiler selects among templates, the capability registry, and constrained extension strategies. Unknown capabilities, unbounded retries, missing inputs, permission violations, budget overflow, and missing final artifacts are rejected before execution.
+
+### Automatic Execution and User Control
+
+- Ordinary tasks: execute immediately after the system compiles the plan; the plan remains visible and cancellable.
+- High-cost or high-risk tasks: require confirmation of plan and budget.
+- Manual mode: explicit user choices win; system recommendations cannot silently replace them.
+- Mid-run changes: chat updates the contract or sends control commands; provisional stream content cannot overwrite a committed document version.
 
 ### Smart Context Management
 
@@ -75,15 +84,16 @@ System Prompt reduced from full injection (3000+ tokens) to resident layer (500-
 ### Writing Flow
 
 ```text
-Writing Request
-  → Intent Recognition (rule-first, ms-level routing)
-  → Memory Retrieval (user preference injection)
-  → Source Retrieval (multi-source search + knowledge base + relevance filtering)
-  → Outline Confirmation (guided mode: confirm/edit/redo)
-  → Style-aware Streaming Writing (generate according to Profile rules)
-  → Post-review (quality scoring + safety check)
-  → Auto-fix (low-severity issues auto-fixed)
-  → Section Feedback + A/B Evaluation + Memory Sedimentation
+Create or revise WritingContract
+  → normalize user materials, web sources, and knowledge results
+  → compile and validate ExecutablePlan
+  → execute automatically or await confirmation by cost/risk/user policy
+  → produce typed Outline, SectionDraft, ResearchNote, and ClaimMap Artifacts
+  → compile Document AST and create Candidate Draft
+  → validate contract, style, facts, citations, and safety
+  → advance to Accepted Draft only with no BLOCKER
+  → produce Verified Deliverable only after required validators and complete Snapshot
+  → continue user edits, RevisionSets, feedback, evaluation, and memory in one document lifecycle
 ```
 
 ---
@@ -94,18 +104,20 @@ Writing Request
 
 | Feature | Description |
 |---------|-------------|
-| **Intent Recognition** | Rule-first routing, supports writing/polish/compress/expand/free chat |
-| **Multi-source Retrieval** | Extensible multi-source search framework + internal knowledge base (BM25 + Dense + GraphRAG) |
-| **Guided Mode** | Outline confirmation, editing, up to five regenerations |
+| **WritingContract** | Captures task mode, style, materials, evidence, budget, permissions, approval, and delivery requirements |
+| **Adaptive Planning** | T1–T4 trust levels, capability binding, static validation, and explicit user strategy precedence |
+| **Three Writing Scenarios** | Long-form creation, multi-material synthesis, faithful rewrite, and their fail-closed paths |
+| **Material Governance** | Material/SourcePack/ClaimMap Artifacts, conflict Findings, citations, and content snapshots |
 | **Style Configuration** | Style Profile independently managed, supports versioning, grayscale release and rollback |
-| **Streaming Output** | WebSocket real-time push, supports pause/resume/cancel |
+| **Document-First Workspace** | Document stage, collapsible global panel, run summary, detail tabs, and resizable bottom chat |
+| **Durable Run Control** | WebSocket durable events, pause/resume/cancel, idempotent commit, and restart recovery |
 | **Rich Text Editor** | Tiptap/ProseMirror editor with bold, lists, blockquotes, code blocks |
-| **Quality Review** | 6-dimension scoring (factuality/structure/style/rhetoric/length/safety) |
-| **Auto-fix** | Auto-correct when review fails, up to 3 attempts |
+| **Three Quality States** | Candidate / Accepted / Verified, validator degradation, BLOCKER, and full audit reports |
+| **Isolated Rollout** | off/shadow/allowlist/percentage policy, shadow isolation, TTL, and rollback protection |
 
 ### Writing Toolset
 
-Tools LLM autonomously calls during continuous session:
+The governed runtime schedules built-in and adapted tools through the Capability Registry. Tool output must become a typed Artifact and cannot directly commit the official document:
 
 | Tool | Purpose |
 |------|---------|
@@ -121,7 +133,7 @@ Tools LLM autonomously calls during continuous session:
 | `fact_check` | Extract factual claims and verify through search |
 | `retrieve_context` | On-demand retrieval of session context |
 
-> **Search Source Extension**: This repo provides the complete `SearchClient` interface and multi-source concurrent search framework. Search sources are integrated as independent modules. Developers can refer to the stub implementations in `search_stubs.go` to connect their own search sources.
+> **Search boundary:** OSS includes the common retrieval contracts, local knowledge retrieval, bounded shared web fetching, and extension interfaces. It does not register commercial paid providers or include their credential variables or CLIs.
 
 ### Online Editing & Export
 
@@ -144,15 +156,17 @@ Supports file-layer bidirectional sync (Markdown file ↔ database), human-reada
 
 ### Editorial Multi-Agent Collaboration
 
-A complete three-Agent orchestration system for editorial content production:
+Research, writing, and review roles are governed Executor capabilities behind the shared Orchestrator:
 
 ```
-Human editor creates task → Research Agent → Writing Agent → Review Agent
-  → Quality routing: pass → pending publish / minor issues → return / severe → escalate to human
+WritingContract → constrained role plan → research/writing/review Artifacts
+  → shared quality gates → document version or human decision
 ```
 
 - **Role-based Agent Executor** (RoleAgentRunner): Each Agent has independent Persona, toolset, and signal tools
 - **Tool Registry Management** (EditorialToolRegistry): Add new tools with `Register`, no switch-case modification needed
+- **Single commit path**: Roles return ExecutionResult; only the Orchestrator writes to writingstore
+- **Missing dependencies fail closed**: An incomplete registry, permission, input, or usage record cannot become success
 - **Three-layer Model**: Event (objective facts) + Decision (human/system choices) + Transition (state changes)
 - **Quality Routing**: Source count, information gaps, verified claims auto-scored, auto-advance when passing
 - **Agent Reputation**: Records success rate, Token cost, quality scores
@@ -199,46 +213,29 @@ Implements the Agent Card concept from the A2A (Agent-to-Agent) protocol, where 
 ## Technical Architecture
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Frontend (React 19 + Vite)                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ Writing  │ │ Topic    │ │ Personal │ │ Admin          │  │
-│  │ Workspace│ │ Center   │ │ Center   │ │ Dashboard      │  │
-│  └─────┬────┘ └─────┬────┘ └─────┬────┘ └───────┬────────┘  │
-│        └────────────┴────────────┘              │           │
-│                     │                           │           │
-│              WebSocket + REST                   │           │
-└─────────────────────┼───────────────────────────┼───────────┘
-                      │                           │
-┌─────────────────────┼───────────────────────────┼───────────┐
-│              Go Backend (chi router)             │           │
-│                     │                           │           │
-│  ┌──────────────────┴───────────────────────────┴────────┐  │
-│  │                   Harness Agent Engine                 │  │
-│  │  ┌────────┐  ┌─────────┐  ┌────────┐  ┌────────────┐  │  │
-│  │  │ Intent │→ │ Search  │→ │ Write  │→ │PostReview  │  │  │
-│  │  │Routing │  │  Plan   │  │ Step   │  │   Step     │  │  │
-│  │  └────────┘  └─────────┘  └────────┘  └────────────┘  │  │
-│  │                                                        │  │
-│  │  ┌────────┐  ┌─────────┐  ┌────────┐  ┌────────────┐  │  │
-│  │  │ Memory │  │  Style  │  │  A/B   │  │  Feedback  │  │  │
-│  │  │  Gate  │  │ Profile │  │  Eval  │  │  System    │  │  │
-│  │  └────────┘  └─────────┘  └────────┘  └────────────┘  │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                     │                                       │
-│  ┌──────────┬──────────┬──────────┬──────────┬──────────┐  │
-│  │ DeepSeek │  Search  │ IMA KB   │ DashScope│ MCP Server│  │
-│  │  Client  │  Client  │  Client  │ Embedding│ (JSON-RPC) │  │
-│  └──────────┴──────────┴──────────┴──────────┴──────────┘  │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-┌─────────────────────┼───────────────────────────────────────┐
-│              PostgreSQL 17 + pgvector + paradedb             │
-│  ┌─────────┬──────────┬──────────┬──────────┬────────────┐  │
-│  │ User    │ Style    │ Knowledge│ Memory   │ Session    │  │
-│  │ Data    │ Profiles │ Base     │ System   │ Logs       │  │
-│  └─────────┴──────────┴──────────┴──────────┴────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ React writing workspace                                          │
+│ global panel │ document stage │ run summary │ details │ chat     │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │ REST + WebSocket durable events
+┌───────────────────────────▼──────────────────────────────────────┐
+│ Go API / Governed Composition Root                               │
+│ Contract API │ Plan/Run API │ Document API │ Quality/Audit API   │
+├──────────────────────────────────────────────────────────────────┤
+│ writingkernel → writingplan → writingruntime → writingquality    │
+│ Contract       Compiler       Orchestrator      Validators        │
+│ LCP/AST        Registry       Recovery/Rollout  Quality Gates     │
+├──────────────────────────────────────────────────────────────────┤
+│ ExecutorAdapter: Harness Core │ Engine Step │ Editorial Role      │
+│ Shared capabilities: local retrieval │ web fetch │ MCP │ memory  │
+├──────────────────────────────────────────────────────────────────┤
+│ writingstore: Contract / Plan / Run / Artifact / Decision /       │
+│ Ledger / DocumentVersion / Snapshot / canonical / shadow          │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────────────┐
+│ PostgreSQL 17 + pgvector + ParadeDB │ Redis wake-up │ object data │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tech Stack
@@ -251,7 +248,8 @@ Implements the Agent Card concept from the A2A (Agent-to-Agent) protocol, where 
 | LLM | DeepSeek API (default), supports OpenAI compatible interface |
 | Embedding | DashScope text-embedding-v3 (1024-dim) |
 | Deployment | Docker Compose, 1Panel |
-| Monitoring | Prometheus metrics + slog structured logging + Trace tracking |
+| Runtime Protocol | LCP v1, WritingContract, ExecutablePlan, typed Artifact, durable RunEvent |
+| Monitoring | Prometheus metrics + slog structured logging + RunLedger + Trace tracking |
 
 ---
 
@@ -261,11 +259,11 @@ Implements the Agent Card concept from the A2A (Agent-to-Agent) protocol, where 
 
 ```bash
 cp .env.docker.example .env.docker
-# Edit .env.docker: fill in model API keys and database password
+# Edit .env.docker with only the model, embedding, and database settings you need locally
 docker compose up -d
 ```
 
-Frontend at `http://localhost:3002`, backend health at `http://localhost:8080/api/v2/health`.
+Frontend is at `http://localhost:3002`. `/api/v2/health` only means the process is alive; check `http://localhost:8080/api/v2/ready` for production dependencies. Never commit real credentials.
 
 ### Local Development
 
@@ -280,9 +278,11 @@ cd frontend && npm ci && npm run dev
 ### Validation
 
 ```bash
-cd backend && go test ./...
-cd frontend && npm ci && npm run build
+make verify
+docker compose config --quiet
 ```
+
+`make verify` runs the Go build and full test suite plus frontend lint, production build, and WaBench tests. PostgreSQL integration tests should use the CI-equivalent ParadeDB image with both `vector` and `pg_search`, and set `TEST_DATABASE_URL`.
 
 ### Deployment Packaging
 
@@ -296,13 +296,14 @@ cd frontend && npm ci && npm run build
 
 ### Search Source Extension
 
-This repo provides the search client core framework (`backend/internal/tools/search.go`), including:
-- `SearchClient` multi-source concurrent search struct
-- `NewSearchClient` constructor
-- `Search` / `FetchHotTopics` concurrent search methods
-- `KnowledgeSearcher` knowledge base search interface
+OSS shares:
 
-Search sources are integrated as independent modules. This repo provides stub implementations for all search source types in `search_stubs.go`. Developers can refer to these stubs to connect their own search sources:
+- common `SearchClient` / `KnowledgeSearcher` contracts and the Capability Registry;
+- local knowledge retrieval plus bounded shared web fetching and extraction;
+- MCP Client/Server, discovery, readiness, and sandboxing;
+- fail-closed stubs and tests for custom search adapters.
+
+Paid provider implementations, credential variables, and commercial CLIs are not part of OSS. A custom source must return governed Source/SourcePack Artifacts and declare permissions, timeout, cost, and stable errors:
 
 ```go
 // Example: implement a custom search source
@@ -311,11 +312,11 @@ type MySearchClient struct { /* ... */ }
 func NewMySearchClient(/* params */) *MySearchClient { /* ... */ }
 
 func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
-    // Your search logic
+    // Return results with source, timestamp, and provenance metadata
 }
 ```
 
-Then initialize your search source in `NewSearchClient`.
+Do not turn an uninstalled provider into fake success or an unexplained empty result. `/ready` distinguishes installed, configured, reachable, and ready.
 
 ---
 
@@ -338,10 +339,25 @@ Then initialize your search source in `NewSearchClient`.
 | [Luminbuddy Eval Center](docs/16-wabench-eval-center.md) | Seven evaluation workspaces, Chinese Excel, review traceability |
 | [WritingAgentBench V2](docs/14-wabench-v2-evaluation.md) | Real Harness Adapter, five Rubric, failure-first, independent red team |
 | [Runbook](docs/runbook.md) | Deployment, monitoring, troubleshooting |
+| [Governed Writing Runtime](docs/19-governed-writing-runtime.md) | Contract, Plan, LCP, document, quality, snapshot, workspace, and edition boundaries |
+| [Task1–12 Implementation](docs/plans/2026-08-27-governed-writing-runtime-implementation.md) | Domain protocol through workspace, materials, and vertical release gates |
+| [LCP v1](specs/lcp/v1/README.md) | Schemas, enums, fixtures, and three writing scenarios |
+| [Task11 Governed Materials](specs/task11-governed-materials/design.md) | MaterialAdapter, typed Artifacts, conflict handling, and the sole source of truth |
+| [Task12 Governed Rollout](specs/task12-governed-rollout/design.md) | ExecutorAdapters, shadow isolation, telemetry, and rollback |
+| [Task13 Production Wiring](docs/releases/2026-08-30-task13-production-wiring-readiness.md) | Passed evidence, remaining production gates, and credential boundaries |
 
 ---
 
 ## Changelog
+
+### v0.8.0 (2026-08-31) — Task1–13 Governed Writing Platform
+
+- **Task1–4 · Protocol and planning:** unified architecture boundary; LCP v1, WritingContract, Document AST, RevisionSet, typed Writing Plan IR, Capability Registry, and T1–T4 strategy compilation.
+- **Task5–7 · Persistence and execution:** governed schema, transactional Repository, immutable RunLedger, atomic Snapshot commits, state machine, ExecutorRegistry, budget/permission/approval gates, and bounded recovery.
+- **Task8–10 · Quality, API, and workspace:** Candidate/Accepted/Verified, non-waivable BLOCKER, validator degradation, V2 Contract/Document/Run/Quality/Audit APIs, and the document-first four-region workspace.
+- **Task11 · Governed materials:** MaterialAdapter, typed Material/Source Artifacts, conflict Findings, single Orchestrator commit path, and B2 contracts for legacy operators.
+- **Task12 · Governed rollout:** three ExecutorAdapters, shadow-content isolation, rollout evidence, telemetry, defense matrix, and three vertical scenarios.
+- **Task13 · Production wiring:** unified composition root, readiness/provider preflight, MCP concurrency hardening, canonical/shadow persistence, and real-model path acceptance. Production traffic remains gated by staging evidence.
 
 ### v0.7.0 (2026-08-24)
 
@@ -403,7 +419,8 @@ Then initialize your search source in `NewSearchClient`.
 ## Project Disclaimer
 
 - This is a runnable personal product and engineering project, not a validated commercial deployment.
-- Search sources are integrated as independent modules; refer to `search_stubs.go` stub implementations to connect your own.
+- Code, builds, CI, and isolated real paths pass; this is not approval for production deployment or traffic.
+- OSS shares the governed kernel, MCP, baseline retrieval, web fetching, and extension contracts; it excludes commercial paid-search implementations and credentials.
 - The repository contains no production secrets; create local configuration from the example env files.
 
 ## License

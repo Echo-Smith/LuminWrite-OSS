@@ -2,6 +2,8 @@
 
 [English](README.en.md) · [在线体验](https://luminbuddy2.ericdocmic.top/v2/) · [更新日志](#更新日志)
 
+**版本：OSS** — 包含完整治理写作内核、MCP、基础检索与扩展接口；不包含商业付费搜索 Provider、凭证配置或专有连接器。
+
 > **面向中文内容创作者的 AI 写作工作台**：从需求理解、素材检索、提纲确认，到按风格成稿、写后自检、反馈与记忆沉淀，把一次性生成变成可观察、可干预、可迭代的写作流程。
 
 ![笔润智谈写作工作台](docs/assets/luminbuddy-workspace.png)
@@ -12,18 +14,17 @@
 
 **笔润智谈**（LuminBuddy）是一款面向中文内容生产场景的 AI 写作助手。它不追求"一键生成"的魔法，而是将写作过程拆解为可观察、可干预、可迭代的工程流程——让创作者在关键决策点保持控制权，同时让 AI 在素材搜集、结构规划、风格适配和质量检查等环节提供有效辅助。
 
-**当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。
+**当前成熟度：工程 Beta，治理内核已接入主流程。** Task1–13 已完成 WritingContract、计划编译、LCP/Document AST、typed Artifact、事务存储、运行时、三级质量门禁、V2 API、文档优先工作台、材料治理、shadow rollout 与生产接线。代码、构建、CI 和隔离环境的三条真实写作链路已通过；生产流量仍需完成 staging 证据归档、恢复/取消/回滚演练和凭证轮换。
 
-### 治理型写作运行时：目标架构与迁移边界
+### 治理型写作运行时
 
-V2 后续演进以 [治理型写作运行时](docs/19-governed-writing-runtime.md) 为唯一目标架构和协议基线，并按[实施计划](docs/plans/2026-08-27-governed-writing-runtime-implementation.md)逐步落地。新能力必须绑定版本化的 WritingContract、ExecutablePlan、Artifact、质量状态和 Snapshot；文档是主对象，聊天只负责修改合约、解释决策和控制执行。
+[治理型写作运行时](docs/19-governed-writing-runtime.md)是 V2 当前唯一权威写作内核。每个新任务必须绑定版本化的 WritingContract 和经过静态验证的 ExecutablePlan；模型与旧算子只能提交 typed Artifact 或 Revision，不能绕过质量门禁直接写正式文档。
 
-迁移期间，现有 Harness、Pipeline 和 Editorial DAG 继续作为执行器或兼容适配入口：
-
-- `agent.start` 与 `workflow.start` 暂时保持 wire 兼容，但不构成两套并行权威内核。
-- 旧 `mode` 与 `agent_mode` 不等同于新的 `task_mode`、`orchestration_mode` 和 `assurance_level`，不得复用旧字段承载新语义。
-- `agent.completed` 与 `workflow.completed` 只表示当前执行路径结束，不表示内容已经 Accepted、Verified 或正式提交。
-- Article Output Contract 只规定模型输出的流式 Markdown 解析边界；解析成功不等于 LCP 校验、Document AST 构建、版本提交或质量验收成功。
+- **文档是主对象**：聊天负责修改合约、解释决策和控制运行，正文、版本、引用和质量状态归属于文档。
+- **writingstore 是唯一事实源**：Contract、Plan、Run、Artifact、Decision、Ledger、Snapshot 与 canonical/shadow 内容统一持久化。
+- **质量状态不可伪造**：Candidate Draft、Accepted Draft、Verified Deliverable 逐级晋升；存在 BLOCKER、缺少必需验证器或完整快照时禁止 Verified。
+- **旧能力受控接入**：Harness、Pipeline、Editorial Role 通过 ExecutorAdapter 复用，不构成平行事实源；任何不满足合约、权限、预算或 lineage 的执行都 fail-closed。
+- **发布状态如实表达**：进程健康、运行结束或 Markdown 解析成功，都不等于内容已验收或生产流量已获批准。
 
 ---
 
@@ -33,31 +34,39 @@ V2 后续演进以 [治理型写作运行时](docs/19-governed-writing-runtime.m
 
 | 痛点 | 具体表现 | 笔润智谈的解决方案 |
 |------|---------|------------------|
-| **意图理解不稳定** | 用户的真实需求、篇幅和风格约束没有被准确捕捉 | 规则优先的意图路由 + 低置信度 LLM fallback |
-| **生成过程黑盒** | 素材检索、观点组织和成稿被压进一次不可观察的生成 | Harness 单层编排，每一步可见、可暂停、可恢复 |
-| **关键节点失控** | 用户无法在提纲确认、风格调整等高代价决策点干预 | Guided Mode 引导模式，提纲确认后再成稿 |
-| **反馈无法沉淀** | 好坏反馈没有进入下一次生成，团队难以定位失败环节 | 分段反馈 + A/B 评测 + 分层记忆系统 |
+| **意图理解不稳定** | 真实需求、篇幅、风格和证据约束容易在长上下文中漂移 | WritingContract 固化用户选择、推断来源和交付标准 |
+| **生成过程黑盒** | 素材、计划、执行和成稿被压进一次不可观察的生成 | ExecutablePlan、RunLedger 和 durable event 让步骤可见、可中止、可恢复 |
+| **素材失真或失联** | 多材料综合时来源、冲突和引用关系容易丢失 | MaterialAdapter、SourcePack、内容快照与 lineage 统一治理 |
+| **关键节点失控** | 用户无法在高成本、高风险决策前干预 | 自动与手动策略并行，高成本/高风险/手动设置必须先确认 |
+| **“生成完成”被误当成可交付** | 格式正确并不代表事实、风格和合约已经满足 | Candidate / Accepted / Verified 三级质量门禁与不可豁免 BLOCKER |
+| **运行失败难恢复** | 重试、重启和重复事件可能产生冲突版本 | 幂等提交、完整 Checkpoint、Snapshot、暂停/取消/回滚和 shadow 隔离 |
 
 ---
 
 ## 如何解决
 
-### 核心架构：Harness-LLM 单层持续会话
+### 核心架构：合约驱动的文档运行时
 
-借鉴 DeepSeek Harness (dsh) 的编排理念，采用**单层架构**：
-
+```text
+用户需求 / 材料 / 显式策略
+  → WritingContract（目标、风格、证据、预算、权限、审批）
+  → Strategy Compiler → ExecutablePlan（有界 DAG + Capability 绑定）
+  → Orchestrator → ExecutorAdapter（Harness / Engine Step / Editorial Role）
+  → typed Artifact + lineage + usage
+  → LCP / Document AST / RevisionSet
+  → Quality Gate（Candidate → Accepted → Verified）
+  → writingstore 原子提交 DocumentVersion + Snapshot + RunLedger
+  → 前端文档、运行摘要、详情报告和对话控制同步投影
 ```
-用户请求
-  → Harness（意图路由、工具注册、状态管理、断路保护）
-    → LLM 持续会话（自主决定调用什么工具、何时写作、何时修正）
-      ←→ 工具执行（搜索/知识库/写作/评审/修正）
-  → 流式输出到前端
-```
 
-**关键设计**：
-- **不存在外层 ReAct + 内层 agent loop 的嵌套**，降低延迟与输出漂移
-- **1 次 LLM 持续会话**替代传统 Pipeline 的 10+ 次独立调用，首字延迟从 30-60s 降至 3-5s
-- **会话状态跨轮持久化**：文章、素材、搜索记录在同一对话框内累积复用
+计划编译器可以从模板、能力注册表和受限扩展策略中选择执行方案；未知能力、无界重试、缺失输入、权限越界、预算溢出和缺少最终产物都会在执行前被拒绝。
+
+### 自动执行与用户控制
+
+- 普通任务：系统生成计划后立即执行，前端始终可查看、暂停或中止。
+- 高成本、高风险任务：必须先确认计划和预算。
+- 手动模式：尊重用户显式选择，系统建议不能静默覆盖。
+- 执行中修改：通过对话更新合约或发出控制指令，已提交文档版本不会被流式临时内容覆盖。
 
 ### 智能上下文管理
 
@@ -75,15 +84,16 @@ System Prompt 从全量注入（3000+ tokens）精简为常驻层（500-800 toke
 ### 写作流程
 
 ```text
-写作需求
-  → 意图识别（规则优先，毫秒级路由）
-  → 记忆检索（用户偏好注入）
-  → 素材检索（多源搜索 + 知识库 + 相关性过滤）
-  → 提纲确认（引导模式：确认/编辑/重做）
-  → 风格化流式写作（按 Profile 规则生成）
-  → 写后审校（质量评分 + 敏感检查）
-  → 自动修正（低严重度问题自动修复）
-  → 分段反馈 + A/B 评测 + 记忆沉淀
+创建或修改 WritingContract
+  → 归一化用户材料、网页来源与知识库结果
+  → 编译并验证 ExecutablePlan
+  → 自动执行，或按成本/风险/用户设置等待确认
+  → 生成提纲、章节、研究笔记、ClaimMap 等 typed Artifact
+  → 编译 Document AST 并形成 Candidate Draft
+  → 合约/风格/事实/引用/安全验证
+  → 无 BLOCKER 时晋升 Accepted Draft
+  → 必需验证器与完整 Snapshot 通过后形成 Verified Deliverable
+  → 用户编辑、RevisionSet、反馈、评测与记忆继续进入同一文档生命周期
 ```
 
 ---
@@ -94,18 +104,20 @@ System Prompt 从全量注入（3000+ tokens）精简为常驻层（500-800 toke
 
 | 功能 | 说明 |
 |------|------|
-| **意图识别** | 规则优先路由，支持写作/润色/压缩/扩写/自由对话 |
-| **多源检索** | 可扩展的多源搜索架构 + 内部知识库（BM25 + Dense + GraphRAG） |
-| **引导模式** | 提纲确认、编辑、最多五次重做 |
+| **WritingContract** | 固化任务模式、风格、材料、证据、预算、权限、审批与交付要求 |
+| **自适应计划** | T1–T4 信任等级、能力注册、静态验证与用户显式策略优先 |
+| **三类写作场景** | 长文创作、多材料综合、忠实改写及其 fail-closed 防御路径 |
+| **材料与来源治理** | Material/SourcePack/ClaimMap Artifact、冲突 Finding、引用与内容快照 |
 | **风格配置** | Style Profile 独立管理，支持版本、灰度发布和回滚 |
-| **流式输出** | WebSocket 实时推送，支持暂停/恢复/取消 |
+| **文档优先工作台** | 正文主舞台、可收起左栏、运行摘要、详情标签和底部可缩放对话 |
+| **持久化运行控制** | WebSocket durable event、暂停/恢复/取消、幂等提交与重启恢复 |
 | **富文本编辑** | Tiptap/ProseMirror 富文本编辑器，支持加粗、列表、引用、代码块等格式 |
-| **质量评审** | 6 维度评分（事实/结构/风格/修辞/篇幅/安全） |
-| **自动修正** | 评审未通过时自动修正，最多 3 次尝试 |
+| **三级质量治理** | Candidate / Accepted / Verified、验证器降级、BLOCKER 与完整审计报告 |
+| **隔离发布** | off/shadow/allowlist/percentage 策略、shadow 内容隔离、TTL 与回滚保护 |
 
 ### 写作工具集
 
-LLM 在持续会话中自主调用的工具：
+治理运行时可以通过 Capability Registry 调度以下内置或适配工具；工具输出必须转换为 typed Artifact，不能直接提交正式文档：
 
 | 工具 | 用途 |
 |------|------|
@@ -121,7 +133,7 @@ LLM 在持续会话中自主调用的工具：
 | `fact_check` | 提取事实声明并通过搜索验证 |
 | `retrieve_context` | 按需获取会话上下文 |
 
-> **搜索源扩展**：本仓库提供了 `SearchClient` 的完整接口和多源并发搜索框架。搜索源以独立模块形式接入，开发者可以参照 `search_stubs.go` 中的 stub 实现来对接自己的搜索源。
+> **搜索源边界**：OSS 提供通用检索契约、本地知识检索、共享网页抓取和扩展接口，不注册商业付费 Provider，也不包含其凭证变量或 CLI。
 
 ### 在线编辑与导出
 
@@ -144,15 +156,17 @@ LLM 在持续会话中自主调用的工具：
 
 ### 编辑部多 Agent 协作
 
-编辑部内部供稿流程的完整三 Agent 编排系统：
+编辑部研究、写作和审校角色作为受治理 Executor 能力接入统一 Orchestrator：
 
 ```
-人类编辑创建任务 → 研究Agent → 写作Agent → 审校Agent
-  → 质量路由：通过→待发布 / 一般问题→退回 / 严重问题→升级人工
+WritingContract → 受限角色计划 → 研究/写作/审校 Artifact
+  → 统一质量门禁 → 文档版本或人工决策
 ```
 
 - **角色化 Agent 执行器**（RoleAgentRunner）：每个 Agent 有独立 Persona、工具集和信号工具
 - **工具注册式管理**（EditorialToolRegistry）：新增工具只需 `Register`，无需修改 switch-case
+- **统一提交**：角色只返回 ExecutionResult，由 Orchestrator 写入 writingstore
+- **缺失依赖 fail-closed**：registry、权限、输入或 usage 不完整时拒绝伪造成功
 - **三层模型**：Event（客观事实）+ Decision（人类/系统选择）+ Transition（状态转换）
 - **质量路由**：信源数、信息缺口、验证声明自动评分，达标自动推进
 - **Agent 信誉**：记录成功率、Token 成本、质量评分
@@ -199,45 +213,29 @@ LLM 在持续会话中自主调用的工具：
 ## 技术架构
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Frontend (React 19 + Vite)                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ 写作工作台 │ │ 选题中心  │ │ 个人中心  │ │ Admin Dashboard │  │
-│  └─────┬────┘ └─────┬────┘ └─────┬────┘ └───────┬────────┘  │
-│        └────────────┴────────────┘              │           │
-│                     │                           │           │
-│              WebSocket + REST                   │           │
-└─────────────────────┼───────────────────────────┼───────────┘
-                      │                           │
-┌─────────────────────┼───────────────────────────┼───────────┐
-│              Go Backend (chi router)             │           │
-│                     │                           │           │
-│  ┌──────────────────┴───────────────────────────┴────────┐  │
-│  │                   Harness Agent Engine                 │  │
-│  │  ┌────────┐  ┌─────────┐  ┌────────┐  ┌────────────┐  │  │
-│  │  │ Intent │→ │ Search  │→ │ Write  │→ │PostReview  │  │  │
-│  │  │Routing │  │  Plan   │  │ Step   │  │   Step     │  │  │
-│  │  └────────┘  └─────────┘  └────────┘  └────────────┘  │  │
-│  │                                                        │  │
-│  │  ┌────────┐  ┌─────────┐  ┌────────┐  ┌────────────┐  │  │
-│  │  │ Memory │  │  Style  │  │  A/B   │  │  Feedback  │  │  │
-│  │  │  Gate  │  │ Profile │  │  Eval  │  │  System    │  │  │
-│  │  └────────┘  └─────────┘  └────────┘  └────────────┘  │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                     │                                       │
-│  ┌──────────┬──────────┬──────────┬──────────┬──────────┐  │
-│  │ DeepSeek │  Search  │ IMA KB   │ DashScope│ MCP Server│  │
-│  │  Client  │  Client  │  Client  │ Embedding│ (JSON-RPC) │  │
-│  └──────────┴──────────┴──────────┴──────────┴──────────┘  │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-┌─────────────────────┼───────────────────────────────────────┐
-│              PostgreSQL 17 + pgvector + paradedb             │
-│  ┌─────────┬──────────┬──────────┬──────────┬────────────┐  │
-│  │ 用户数据 │ 风格配置  │ 知识库   │ 记忆系统  │ 会话日志   │  │
-│  │会话状态  │ A/B评测  │ GraphRAG │ 实体网络  │ 审计日志   │  │
-│  └─────────┴──────────┴──────────┴──────────┴────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ React 写作工作台                                                  │
+│ 左侧全局面板 │ 文档主舞台 │ 运行摘要 │ 详情标签 │ 底部对话控制     │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │ REST + WebSocket durable events
+┌───────────────────────────▼──────────────────────────────────────┐
+│ Go API / Governed Composition Root                               │
+│ Contract API │ Plan/Run API │ Document API │ Quality/Audit API   │
+├──────────────────────────────────────────────────────────────────┤
+│ writingkernel → writingplan → writingruntime → writingquality    │
+│ Contract       Compiler       Orchestrator      Validators        │
+│ LCP/AST        Registry       Recovery/Rollout  Quality Gates     │
+├──────────────────────────────────────────────────────────────────┤
+│ ExecutorAdapter: Harness Core │ Engine Step │ Editorial Role      │
+│ Shared capabilities: local retrieval │ web fetch │ MCP │ memory  │
+├──────────────────────────────────────────────────────────────────┤
+│ writingstore：Contract / Plan / Run / Artifact / Decision /       │
+│ Ledger / DocumentVersion / Snapshot / canonical / shadow          │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────────────┐
+│ PostgreSQL 17 + pgvector + ParadeDB │ Redis wake-up │ object data │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 技术栈
@@ -247,10 +245,11 @@ LLM 在持续会话中自主调用的工具：
 | 前端 | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui, Tiptap/ProseMirror |
 | 后端 | Go 1.25+, chi router, coder/websocket |
 | 数据库 | PostgreSQL 17 + pgvector + paradedb (BM25) |
-| LLM | DeepSeek API (默认), 支持 OpenAI 兼容接口 |
+| LLM | DeepSeek API（默认），支持 OpenAI 兼容接口 |
 | Embedding | DashScope text-embedding-v3 (1024维) |
 | 部署 | Docker Compose, 1Panel |
-| 监控 | Prometheus 指标 + slog 结构化日志 + Trace 链路追踪 |
+| 运行协议 | LCP v1、WritingContract、ExecutablePlan、typed Artifact、durable RunEvent |
+| 监控 | Prometheus 指标 + slog 结构化日志 + RunLedger + Trace 链路追踪 |
 
 ---
 
@@ -260,11 +259,11 @@ LLM 在持续会话中自主调用的工具：
 
 ```bash
 cp .env.docker.example .env.docker
-# 编辑 .env.docker，填入模型 API Key 和数据库密码
+# 编辑 .env.docker，只填写本地所需的模型、Embedding 和数据库配置
 docker compose up -d
 ```
 
-默认入口：前端 `http://localhost:3002`，后端健康检查 `http://localhost:8080/api/v2/health`。
+默认入口：前端 `http://localhost:3002`；`/api/v2/health` 只表示进程存活，生产依赖请检查 `http://localhost:8080/api/v2/ready`。不要把真实凭证提交到仓库。
 
 ### 本地开发
 
@@ -283,9 +282,11 @@ npm run dev
 ### 验证
 
 ```bash
-cd backend && go test ./...
-cd frontend && npm ci && npm run build
+make verify
+docker compose config --quiet
 ```
+
+`make verify` 包含 Go 构建/全量测试以及前端 lint、生产构建和 WaBench 测试。启用 PostgreSQL 集成测试时应使用与 CI 一致、包含 `vector` 与 `pg_search` 的 ParadeDB 镜像，并设置 `TEST_DATABASE_URL`。
 
 ### 部署打包
 
@@ -299,13 +300,14 @@ cd frontend && npm ci && npm run build
 
 ### 搜索源扩展
 
-本仓库提供了搜索客户端的核心框架（`backend/internal/tools/search.go`），包含：
-- `SearchClient` 多源并发搜索结构体
-- `NewSearchClient` 构造函数
-- `Search` / `FetchHotTopics` 并发搜索方法
-- `KnowledgeSearcher` 知识库搜索接口
+OSS 共享以下能力：
 
-搜索源以独立模块形式接入。本仓库在 `search_stubs.go` 中提供了所有搜索源类型的 stub 实现，开发者可以参照这些 stub 来对接自己的搜索源：
+- 通用 `SearchClient` / `KnowledgeSearcher` 契约与 Capability Registry；
+- 本地知识检索、共享的有界网页抓取与正文抽取；
+- MCP Client/Server、工具发现、readiness 与安全沙箱；
+- 自定义搜索源的 fail-closed stub 和接入测试。
+
+付费搜索 Provider 的实现、凭证变量和商业 CLI 不属于 OSS。自定义搜索源必须返回受治理的 Source/SourcePack Artifact，并声明权限、超时、成本和稳定错误码：
 
 ```go
 // 示例：实现一个自定义搜索源
@@ -314,11 +316,11 @@ type MySearchClient struct { /* ... */ }
 func NewMySearchClient(/* params */) *MySearchClient { /* ... */ }
 
 func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([]engine.SearchResult, error) {
-    // 你的搜索逻辑
+    // 返回带来源、时间和可追溯元数据的结果
 }
 ```
 
-然后在 `NewSearchClient` 中初始化你的搜索源即可。
+不要通过伪成功或空结果假装未安装的 Provider 已就绪；`/ready` 必须区分 installed、configured、reachable 和 ready。
 
 ---
 
@@ -341,10 +343,25 @@ func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([
 | [Luminbuddy Eval Center](docs/16-wabench-eval-center.md) | 七个评测工作区、中文 Excel、评审溯源、仲裁、隐私与发布边界 |
 | [WritingAgentBench V2 执行](docs/14-wabench-v2-evaluation.md) | 真实 Harness Adapter、五项 Rubric、失败优先、独立红队和 Shadow 门禁 |
 | [运维手册](docs/runbook.md) | 部署、监控与故障排查 |
+| [治理型写作运行时](docs/19-governed-writing-runtime.md) | Contract、Plan、LCP、文档、质量、快照、前端与双版本边界 |
+| [Task1–12 实施计划](docs/plans/2026-08-27-governed-writing-runtime-implementation.md) | 从领域协议到工作台、材料与纵向发布门禁 |
+| [LCP v1](specs/lcp/v1/README.md) | Schema、枚举、fixtures 与三条写作场景 |
+| [Task11 材料治理](specs/task11-governed-materials/design.md) | MaterialAdapter、typed Artifact、冲突与单一事实源 |
+| [Task12 受治理放量](specs/task12-governed-rollout/design.md) | ExecutorAdapter、shadow 隔离、telemetry 与回滚 |
+| [Task13 生产接线记录](docs/releases/2026-08-30-task13-production-wiring-readiness.md) | 已通过证据、未通过生产门禁与凭证边界 |
 
 ---
 
 ## 更新日志
+
+### v0.8.0 (2026-08-31) — Task1–13 治理型写作平台
+
+- **Task1–4 · 协议与计划**：确立统一架构边界；实现 LCP v1、WritingContract、Document AST、RevisionSet、类型化 Writing Plan IR、Capability Registry 和 T1–T4 策略编译。
+- **Task5–7 · 持久化与执行**：完成治理数据库、事务 Repository、不可变 RunLedger、Snapshot 原子提交、状态机、ExecutorRegistry、预算/权限/审批门禁和有界恢复。
+- **Task8–10 · 质量、API 与工作台**：落地 Candidate/Accepted/Verified、不可豁免 BLOCKER、验证器降级、V2 Contract/Document/Run/Quality/Audit API，以及文档优先四区域工作台。
+- **Task11 · 材料治理**：MaterialAdapter、Material/Source typed Artifact、冲突 Finding、Orchestrator 单一提交和旧算子 B2 契约。
+- **Task12 · 受治理放量**：三类 ExecutorAdapter、shadow 内容隔离、rollout evidence、telemetry、防御矩阵和三条纵向场景。
+- **Task13 · 生产接线**：统一 composition root、readiness/provider preflight、MCP 并发修复、canonical/shadow 持久化和真实模型链路验收；生产流量继续受 staging 门禁约束。
 
 ### v0.7.0 (2026-08-24)
 
@@ -406,7 +423,8 @@ func (c *MySearchClient) Search(ctx context.Context, query string, limit int) ([
 ## 项目声明
 
 - 这是可运行的个人产品与工程项目，不代表已完成规模化市场验证。
-- 搜索源以独立模块形式接入，参照 `search_stubs.go` 中的 stub 实现自行对接。
+- 当前代码、构建、CI 与隔离真实链路已通过；这不等于生产部署或生产流量已获批准。
+- OSS 共享治理内核、MCP、基础检索、网页抓取与扩展契约，不包含商业付费搜索源实现和凭证。
 - 仓库不包含生产环境密钥；请从示例环境文件创建本地配置。
 
 ## License
