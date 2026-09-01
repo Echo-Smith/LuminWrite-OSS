@@ -5,7 +5,7 @@
  * 流程Tab优化为多Agent协同视图，按阶段分组展示
  */
 import { useState, useEffect, useCallback } from "react";
-import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, type LucideIcon } from "lucide-react";
+import { ChevronRight, Clock, Globe, Palette, Bot, Brain, Search, PenLine, ShieldCheck, Sparkles, Database, FileText, History, Loader2, BookOpen, PanelRightClose, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -214,8 +214,8 @@ function GovernedDetailPanel({ onClose }: { onClose?: () => void }) {
   return (
     <aside className="governed-detail-panel" aria-label="文档详情面板">
       <div className="governed-detail-header">
-        <div><span>DOCUMENT DESK</span><h3>详情</h3></div>
-        {onClose && <button onClick={onClose} aria-label="收起详情面板"><ChevronRight className="h-4 w-4" />收起</button>}
+        <h3>详情</h3>
+        {onClose && <button onClick={onClose} aria-label="收起详情面板" title="收起详情"><PanelRightClose className="h-4 w-4" /></button>}
       </div>
       <RunDetailTabs
         activeTab={activeTab}

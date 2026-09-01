@@ -12,8 +12,8 @@ export function UserMessage({ message }: { message: ChatMessage }) {
     .join("");
 
   return (
-    <div className="flex justify-end px-4 py-3 anim-fade-up">
-      <div className="rounded-2xl rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm max-w-[75%]">
+    <div className="user-message-row flex justify-end anim-fade-up">
+      <div className="user-message-bubble max-w-[75%] rounded-2xl rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground">
         <p className="whitespace-pre-wrap break-words">{text}</p>
       </div>
     </div>

@@ -1,22 +1,20 @@
 /**
- * 未来写作工作台：全局导航 | 文档主舞台 | 运行摘要 | 详情分页 | 对话停靠。
+ * 未来写作工作台：全局导航 | Codex 式内联对话 | 连续文档纸面 | 详情分页。
  * 运行资源与布局偏好是两套独立状态，任何事件都不能替用户展开或切换面板。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Menu, PanelRightOpen, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
-import { ConversationDock } from "@/components/assistant-ui/conversation-dock";
 import { WritingComposer, type WritingComposerHandle } from "@/components/composer/writing-composer";
 import { DocumentSurface } from "@/components/document/document-surface";
 import { RevisionDiff } from "@/components/document/revision-diff";
-import { RunSummaryStrip } from "@/components/runtime/run-summary-strip";
+import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { Button } from "@/components/ui/button";
 import { PulseIndicator } from "@/components/animation";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBillingStore } from "@/stores/billing-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
@@ -34,8 +32,22 @@ function currentDeviceId(): string {
   return created;
 }
 
+const DETAIL_WIDTH_MIN = 320;
+const DETAIL_WIDTH_MAX = 520;
+const DETAIL_RESIZE_VIEWPORT_MIN = 1180;
+const DOCUMENT_SAFE_WIDTH = 560;
+type WorkspaceStyle = CSSProperties & { "--workspace-detail-width": string };
+
+function clampDetailWidth(width: number, sidebarOpen: boolean): number {
+  if (typeof window === "undefined" || window.innerWidth < DETAIL_RESIZE_VIEWPORT_MIN) return width;
+  const navigationWidth = sidebarOpen ? 256 : 0;
+  const safeMaximum = Math.max(DETAIL_WIDTH_MIN, Math.min(DETAIL_WIDTH_MAX, window.innerWidth - navigationWidth - DOCUMENT_SAFE_WIDTH));
+  return Math.min(Math.max(width, DETAIL_WIDTH_MIN), safeMaximum);
+}
+
 export function WritingWorkspace() {
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
+  const [detailWidth, setDetailWidth] = useState(360);
   const [pendingRevision, setPendingRevision] = useState<RevisionSet | null>(null);
   const composerRef = useRef<WritingComposerHandle | null>(null);
   const { connected } = useAgentWebSocket();
@@ -48,29 +60,22 @@ export function WritingWorkspace() {
   const token = useAuthStore((state) => state.token);
   const user = useAuthStore((state) => state.user);
 
-  const billingBalance = useBillingStore((state) => state.balance);
-  const loadBalance = useBillingStore((state) => state.loadBalance);
   const finalArticle = useWorkflowStore((state) => state.finalArticle);
-  const workflowStatus = useWorkflowStore((state) => state.runStatus);
 
   const runtimeDocument = useWritingRuntimeStore((state) => state.document);
   const versions = useWritingRuntimeStore((state) => state.versions);
   const run = useWritingRuntimeStore((state) => state.run);
-  const nodeStatuses = useWritingRuntimeStore((state) => state.nodeStatuses);
   const provisionalDeltas = useWritingRuntimeStore((state) => state.provisionalDeltas);
   const quality = useWritingRuntimeStore((state) => state.quality);
   const runtimeError = useWritingRuntimeStore((state) => state.error);
   const loadDocument = useWritingRuntimeStore((state) => state.loadDocument);
   const loadRun = useWritingRuntimeStore((state) => state.loadRun);
   const refreshRunEvents = useWritingRuntimeStore((state) => state.refreshRunEvents);
-  const controlRun = useWritingRuntimeStore((state) => state.controlRun);
 
-  const globalSidebar = useWorkspaceLayoutStore((state) => state.globalSidebar);
   const detailPanel = useWorkspaceLayoutStore((state) => state.detailPanel);
-  const conversationPanel = useWorkspaceLayoutStore((state) => state.conversationPanel);
-  const setGlobalSidebar = useWorkspaceLayoutStore((state) => state.setGlobalSidebar);
+  const composerWidth = useWorkspaceLayoutStore((state) => state.composerWidth);
   const setDetailPanel = useWorkspaceLayoutStore((state) => state.setDetailPanel);
-  const setConversationPanel = useWorkspaceLayoutStore((state) => state.setConversationPanel);
+  const setComposerWidth = useWorkspaceLayoutStore((state) => state.setComposerWidth);
   const setLayoutScope = useWorkspaceLayoutStore((state) => state.setScope);
 
   const governedVersion = useMemo(() => {
@@ -91,7 +96,33 @@ export function WritingWorkspace() {
   const documentId = runtimeDocument?.document_id ?? session?.id ?? "new";
   const title = runtimeDocument?.title ?? finalArticle?.title ?? session?.title ?? "未命名文档";
 
-  useEffect(() => { void loadSessions(); void loadBalance(); }, [loadBalance, loadSessions]);
+  const feedbackContext = useMemo(() => {
+    if (!session?.traceId) return null;
+    for (const message of session.messages.slice().reverse()) {
+      if (message.role !== "assistant") continue;
+      const feedbackPart = message.parts.slice().reverse().find((part) => part.type === "data" && part.dataType === "feedback");
+      if (!feedbackPart || feedbackPart.type !== "data") continue;
+      const data = feedbackPart.data as { article?: string; has_feedback?: boolean };
+      if (data.article?.trim()) return { traceId: session.traceId, article: data.article, hasFeedback: data.has_feedback };
+    }
+    return null;
+  }, [session?.messages, session?.traceId]);
+
+  useEffect(() => { void loadSessions(); }, [loadSessions]);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const syncSidebarDefault = (event: MediaQueryListEvent) => setSidebarOpen(event.matches);
+    desktopQuery.addEventListener("change", syncSidebarDefault);
+    return () => desktopQuery.removeEventListener("change", syncSidebarDefault);
+  }, []);
+
+  useEffect(() => {
+    const keepDetailWidthSafe = () => setDetailWidth((width) => clampDetailWidth(width, sidebarOpen));
+    keepDetailWidthSafe();
+    window.addEventListener("resize", keepDetailWidthSafe);
+    return () => window.removeEventListener("resize", keepDetailWidthSafe);
+  }, [sidebarOpen]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -119,43 +150,51 @@ export function WritingWorkspace() {
   }, [documentId, setLayoutScope, user?.userId]);
 
   useKeyboardShortcuts({
-    onToggleSidebar: () => window.innerWidth < 768
-      ? setMobileSidebarOpen((value) => !value)
-      : setGlobalSidebar(globalSidebar === "expanded" ? "collapsed" : "expanded"),
-    onToggleDetail: () => setDetailPanel(detailPanel === "collapsed" ? (window.innerWidth < 1280 ? "drawer" : "expanded") : "collapsed"),
+    onToggleSidebar: () => setSidebarOpen((value) => !value),
+    onToggleDetail: () => setDetailPanel(detailPanel === "collapsed" ? (window.innerWidth < 768 ? "drawer" : "expanded") : "collapsed"),
     onFocusInput: () => composerRef.current?.focusTextarea(),
     onEscape: () => {
-      if (mobileSidebarOpen) setMobileSidebarOpen(false);
+      if (sidebarOpen) setSidebarOpen(false);
       else if (detailPanel !== "collapsed") setDetailPanel("collapsed");
     },
   });
 
   const handleReconnect = useCallback(() => connectWS(), [connectWS]);
-  const handleRunControl = useCallback((action: "pause" | "resume" | "cancel") => {
-    if (run) void controlRun(run.run_id, action, token ?? undefined);
-  }, [controlRun, run, token]);
-
+  const resizeDetailFromPointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    setDetailWidth(clampDetailWidth(window.innerWidth - event.clientX, sidebarOpen));
+  };
+  const resizeDetailFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const increments: Record<string, number> = { ArrowLeft: 16, ArrowRight: -16 };
+    if (event.key === "Home") { event.preventDefault(); setDetailWidth(DETAIL_WIDTH_MIN); return; }
+    if (event.key === "End") { event.preventDefault(); setDetailWidth(clampDetailWidth(DETAIL_WIDTH_MAX, sidebarOpen)); return; }
+    if (!(event.key in increments)) return;
+    event.preventDefault();
+    setDetailWidth((width) => clampDetailWidth(width + increments[event.key], sidebarOpen));
+  };
+  const workspaceStyle: WorkspaceStyle = { "--workspace-detail-width": `${detailWidth}px` };
   return (
-    <div className="governed-workspace">
-      {mobileSidebarOpen && <button className="workspace-scrim md:hidden" onClick={() => setMobileSidebarOpen(false)} aria-label="关闭导航" />}
-      <div className={cn("workspace-global-sidebar", mobileSidebarOpen && "workspace-global-sidebar-open")}>
-        <Sidebar collapsed={globalSidebar === "collapsed"} onToggle={() => setGlobalSidebar(globalSidebar === "expanded" ? "collapsed" : "expanded")} />
+    <div className="governed-workspace" style={workspaceStyle} data-sidebar-open={sidebarOpen} data-detail-state={detailPanel} data-composer-width={composerWidth}>
+      {sidebarOpen && <button className="workspace-scrim lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
+      <div className={cn("workspace-global-sidebar", sidebarOpen && "workspace-global-sidebar-open")}>
+        <Sidebar
+          onClose={() => setSidebarOpen(false)}
+          onNavigate={() => { if (window.innerWidth < 1024) setSidebarOpen(false); }}
+        />
       </div>
 
       <section className="workspace-center">
         <header className="workspace-toolbar">
           <div className="flex min-w-0 items-center gap-2">
-            <button onClick={() => setMobileSidebarOpen(true)} className="workspace-icon-button md:hidden" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>
-            <div className="min-w-0"><p className="workspace-eyebrow">WRITING WORKSPACE</p><h2>{title}</h2></div>
+            {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="workspace-icon-button" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>}
+            <div className="min-w-0"><h2>{title}</h2></div>
           </div>
           <div className="flex items-center gap-2">
-            {billingBalance && billingBalance.point_balance > 0 && <span className="workspace-balance">{Math.floor(billingBalance.point_balance)} 积分</span>}
             {!connected && <button className="workspace-connection" onClick={handleReconnect}><PulseIndicator status="paused" size="sm" ring={false} /><span>重新连接</span><RefreshCw className="h-3 w-3" /></button>}
-            {detailPanel === "collapsed" && <Button variant="ghost" size="sm" aria-label="打开详情面板" onClick={() => setDetailPanel(window.innerWidth < 1280 ? "drawer" : "expanded")} className="gap-1.5"><PanelRightOpen className="h-4 w-4" /><span className="hidden sm:inline">详情</span></Button>}
+            {detailPanel === "collapsed" && <Button variant="ghost" size="icon" aria-label="打开详情面板" title="打开详情" onClick={() => setDetailPanel(window.innerWidth < 768 ? "drawer" : "expanded")} className="workspace-icon-button"><PanelRightOpen className="h-4 w-4" /></Button>}
           </div>
         </header>
 
-        <RunSummaryStrip run={run} nodeStatuses={nodeStatuses} quality={quality} legacyStatus={workflowStatus === "idle" ? session?.status : workflowStatus} onControl={handleRunControl} />
         {runtimeError && <div className="runtime-error" role="alert">{runtimeError}</div>}
 
         <div className="workspace-document-region">
@@ -166,22 +205,53 @@ export function WritingWorkspace() {
             provisionalDeltas={provisionalDeltas}
             qualityState={quality?.quality_state ?? versions[versions.length - 1]?.quality_state}
             onRevisionSet={setPendingRevision}
+            beforePaper={session?.messages.length ? <Thread variant="flow" /> : undefined}
+            afterPaper={feedbackContext ? (
+              <FeedbackBar traceId={feedbackContext.traceId} article={feedbackContext.article} hasFeedback={feedbackContext.hasFeedback} />
+            ) : undefined}
           />
           <RevisionDiff revisionSet={pendingRevision} />
         </div>
 
-        <ConversationDock state={conversationPanel} onStateChange={setConversationPanel} statusText={run?.status === "running" ? "运行中，可继续补充要求" : "修改合约、解释决策与控制执行"}>
-          <div className="conversation-thread"><Thread variant="dock" /></div>
-          <WritingComposer ref={composerRef} compact />
-        </ConversationDock>
       </section>
 
-      {detailPanel !== "collapsed" && (
-        <div className={cn("workspace-detail", detailPanel === "drawer" && "workspace-detail-drawer")} data-panel-state={detailPanel}>
-          <button className="workspace-detail-scrim" onClick={() => setDetailPanel("collapsed")} aria-label="关闭详情" />
-          <DetailPanel governed onClose={() => setDetailPanel("collapsed")} />
+      <aside className="workspace-sidecar" data-panel-state={detailPanel} aria-label="写作控制栏">
+        {detailPanel === "expanded" && (
+          <button
+            className="workspace-detail-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整详情栏宽度"
+            aria-valuemin={DETAIL_WIDTH_MIN}
+            aria-valuemax={DETAIL_WIDTH_MAX}
+            aria-valuenow={detailWidth}
+            title="拖动调整详情栏宽度"
+            onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)}
+            onPointerMove={resizeDetailFromPointer}
+            onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+            onKeyDown={resizeDetailFromKeyboard}
+          />
+        )}
+        <div className="workspace-sidecar-main">
+          <div
+            className={cn("workspace-detail", detailPanel === "drawer" && "workspace-detail-drawer")}
+            data-panel-state={detailPanel}
+            aria-hidden={detailPanel === "collapsed"}
+          >
+            <button className="workspace-detail-scrim" onClick={() => setDetailPanel("collapsed")} aria-label="关闭详情" />
+            <DetailPanel governed onClose={() => setDetailPanel("collapsed")} />
+          </div>
         </div>
-      )}
+      </aside>
+
+      <div className={cn("workspace-composer-layer", composerWidth === "compact" && "workspace-composer-layer-compact")} aria-label="写作输入">
+        <WritingComposer
+          ref={composerRef}
+          compact={composerWidth === "compact"}
+          floating
+          onToggleWidth={() => setComposerWidth(composerWidth === "wide" ? "compact" : "wide")}
+        />
+      </div>
     </div>
   );
 }

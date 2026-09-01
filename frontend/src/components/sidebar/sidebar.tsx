@@ -1,14 +1,14 @@
 /**
  * 左侧栏 — 会话列表 + 选题入口 + 用户区
  *
- * 支持折叠/展开（收起为窄图标条）
+ * 桌面端始终保持完整宽度；移动端由工作台作为完整抽屉显示或隐藏。
  * 底部用户区点击弹出 Popover：个人中心 / 管理后台
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Plus, Trash2, Compass,
   Settings, Sun, Moon, LogOut, UserPlus,
-  PanelLeftClose, PanelLeftOpen,
+  PanelLeftClose,
   ChevronRight, User, AlertTriangle, Newspaper,
   CreditCard,
 } from "lucide-react";
@@ -24,6 +24,7 @@ import {
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
+import { useBillingStore } from "@/stores/billing-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useTheme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
@@ -31,11 +32,11 @@ import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 
 interface SidebarProps {
-  collapsed: boolean;
-  onToggle: () => void;
+  onClose?: () => void;
+  onNavigate?: () => void;
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ onClose, onNavigate }: SidebarProps) {
   const navigate = useNavigate();
   const sessions = useAgentStore((s) => s.sessions);
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
@@ -65,6 +66,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const openAuth = useAuthModal((s) => s.openAuth);
+  const billingBalance = useBillingStore((s) => s.balance);
+  const loadBalance = useBillingStore((s) => s.loadBalance);
+
+  useEffect(() => { void loadBalance(); }, [loadBalance]);
 
   // 实验功能偏好
   const enableEditorial = useSettingsStore((s) => s.enableEditorial);
@@ -83,112 +88,28 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     });
   };
 
-  // ─── 折叠态 ──────────────────────────────────────────────
-  if (collapsed) {
-    return (
-      <aside className="flex h-full w-14 flex-col items-center border-r bg-surface py-3 gap-2 anim-slide-right" data-panel-state="collapsed" aria-label="全局导航">
-        {/* 展开按钮 */}
-        <button
-          onClick={onToggle}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-          title="展开侧栏"
-          aria-expanded="false"
-        >
-          <PanelLeftOpen className="h-4 w-4" />
-        </button>
-
-        {/* 新建 */}
-        <button
-          onClick={() => createSession()}
-          className="group flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-transform-precise hover:scale-105 active:scale-95"
-          title="新建写作"
-        >
-          <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
-        </button>
-
-        <Separator className="w-8" />
-
-        {/* 导航图标 */}
-        <button
-          onClick={() => navigate("/topics")}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-          title="选题中心"
-        >
-          <Compass className="h-4 w-4" />
-        </button>
-
-        {enableEditorial && (
-          <button
-            onClick={() => navigate("/workspace")}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-ui"
-            title="工作台"
-          >
-            <Newspaper className="h-4 w-4" />
-          </button>
-        )}
-
-        {/* 占位 */}
-        <div className="flex-1" />
-
-        {/* 底部用户头像 — 点击弹出面板 */}
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              className="flex h-9 w-9 items-center justify-center transition-transform-precise hover:scale-105"
-              title={isGuest ? "登录/注册账号" : (user?.username ?? user?.userId ?? "用户")}
-            >
-              <Avatar className="h-8 w-8">
-                <AvatarFallback className={cn(
-                  "text-xs font-medium",
-                  isGuest ? "bg-amber-100 text-amber-700" : "bg-muted text-foreground"
-                )}>
-                  {isGuest ? "客" : (user?.username?.slice(0, 2).toUpperCase() ?? user?.userId?.slice(0, 2).toUpperCase() ?? "?")}
-                </AvatarFallback>
-              </Avatar>
-            </button>
-          </PopoverTrigger>
-          <PopoverContent side="right" align="end" className="w-56">
-            <UserMenuContent
-              isGuest={isGuest}
-              isAdmin={isAdmin}
-              theme={theme}
-              onToggleTheme={toggleTheme}
-              onNavigate={(path) => navigate(path)}
-              onLogout={() => {
-                logout();
-                // 重新初始化（自动创建游客 session），然后返回写作页
-                useAuthStore.getState().init();
-                navigate("/write", { replace: true });
-              }}
-              onRegister={handleRegister}
-            />
-          </PopoverContent>
-        </Popover>
-      </aside>
-    );
-  }
-
-  // ─── 展开态 ──────────────────────────────────────────────
   return (
     <aside className="flex h-full w-64 flex-col border-r bg-surface anim-slide-right" data-panel-state="expanded" aria-label="全局导航">
-      {/* 顶部品牌区 + 折叠按钮 */}
+      {/* 顶部品牌区；完整侧栏在任意屏宽都可收起 */}
       <div className="flex items-center gap-2.5 px-3 py-3.5">
-        <BrandIcon size="md" showLabel subtitle="V2 · writing agent" />
-        <button
-          onClick={onToggle}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-ui shrink-0"
-          title="收起侧栏"
-          aria-expanded="true"
-        >
-          <PanelLeftClose className="h-4 w-4" />
-        </button>
+        <BrandIcon size="md" showLabel />
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+            title="关闭侧栏"
+            aria-label="关闭侧栏"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+        )}
       </div>
 
       {/* 新建写作 */}
       <div className="p-3">
         <Button
           className="w-full justify-start gap-2 group transition-transform-precise hover:scale-[1.02] active:scale-[0.98]"
-          onClick={() => createSession()}
+          onClick={() => { createSession(); onNavigate?.(); }}
         >
           <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
           新建写作
@@ -201,7 +122,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           variant="ghost"
           size="sm"
           className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => navigate("/topics")}
+          onClick={() => { navigate("/topics"); onNavigate?.(); }}
         >
           <Compass className="h-4 w-4" />
           选题与素材
@@ -211,7 +132,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             variant="ghost"
             size="sm"
             className="w-full justify-start gap-2 text-muted-foreground"
-            onClick={() => navigate("/workspace")}
+            onClick={() => { navigate("/workspace"); onNavigate?.(); }}
           >
             <Newspaper className="h-4 w-4" />
             工作台
@@ -251,6 +172,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   onClick={() => {
                     // 直接切换会话（不再弹出确认对话框）
                     switchSession(session.id);
+                    onNavigate?.();
                   }}
                 >
                   {/* 状态圆点 — 进行中显示黄色脉冲 */}
@@ -281,10 +203,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </ScrollArea>
 
       {/* ── 底部用户区 — 点击弹出 Popover 面板 ── */}
-      <div className="border-t">
+      <div className="px-2 pb-2">
         <Popover>
           <PopoverTrigger asChild>
-            <button className="group flex w-full items-center gap-2.5 p-3 transition-ui hover:bg-accent/50">
+            <button className="group flex w-full items-center gap-2.5 rounded-lg p-2.5 text-muted-foreground transition-ui hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground">
               <Avatar className="h-8 w-8 shrink-0">
                 <AvatarFallback className={cn(
                   "text-xs font-medium",
@@ -317,13 +239,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               isAdmin={isAdmin}
               theme={theme}
               onToggleTheme={toggleTheme}
-              onNavigate={(path) => navigate(path)}
+              onNavigate={(path) => { navigate(path); onNavigate?.(); }}
               onLogout={() => {
                 logout();
                 useAuthStore.getState().init();
                 navigate("/write", { replace: true });
               }}
               onRegister={handleRegister}
+              pointBalance={billingBalance?.point_balance}
+              planName={billingBalance?.plan_display_name}
             />
           </PopoverContent>
         </Popover>
@@ -391,7 +315,7 @@ function RunningSessionBar() {
 }
 
 // ════════════════════════════════════════════════════════════
-// 用户菜单面板内容 — 共用于折叠态和展开态
+// 用户菜单面板内容
 // ════════════════════════════════════════════════════════════
 
 interface UserMenuContentProps {
@@ -402,6 +326,8 @@ interface UserMenuContentProps {
   onNavigate: (path: string) => void;
   onLogout: () => void;
   onRegister: () => void;
+  pointBalance?: number;
+  planName?: string;
 }
 
 function UserMenuContent({
@@ -412,9 +338,24 @@ function UserMenuContent({
   onNavigate,
   onLogout,
   onRegister,
+  pointBalance,
+  planName,
 }: UserMenuContentProps) {
   return (
     <div className="space-y-0.5">
+      {!isGuest && typeof pointBalance === "number" && (
+        <button
+          className="mb-1 flex w-full items-center justify-between rounded-lg bg-accent/55 px-3 py-2.5 text-left transition-ui hover:bg-accent"
+          onClick={() => onNavigate("/profile")}
+        >
+          <span>
+            <span className="block text-[11px] text-muted-foreground">可用积分</span>
+            <span className="block text-sm font-semibold tabular-nums">{Math.floor(pointBalance).toLocaleString()} 积分</span>
+          </span>
+          {planName && <span className="max-w-20 truncate text-[10px] text-muted-foreground">{planName}</span>}
+        </button>
+      )}
+
       {/* 个人中心 */}
       <MenuRow
         icon={User}

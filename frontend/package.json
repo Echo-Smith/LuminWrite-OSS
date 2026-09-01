@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "node --test tests/*.test.ts",
-    "test:wabench": "node --test tests/wabench-eval.test.ts"
+    "test:wabench": "node --test tests/wabench-eval.test.ts",
+    "test:brand": "node --test tests/brand-icon-assets.test.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.10.0",

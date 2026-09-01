@@ -10,6 +10,26 @@ type Theme = "light" | "dark";
 
 const STORAGE_KEY = "luminbuddy-theme";
 
+const THEME_ICON_ASSETS = {
+  light: {
+    svg: "/favicon.svg",
+    png: "/app-icon.png",
+    apple: "/apple-touch-icon.png",
+  },
+  dark: {
+    svg: "/favicon-dark.svg",
+    png: "/app-icon-dark.png",
+    apple: "/apple-touch-icon-dark.png",
+  },
+} as const;
+
+function syncThemeIcons(theme: Theme) {
+  const assets = THEME_ICON_ASSETS[theme];
+  document.querySelector<HTMLLinkElement>("#app-favicon-svg")?.setAttribute("href", assets.svg);
+  document.querySelector<HTMLLinkElement>("#app-favicon-png")?.setAttribute("href", assets.png);
+  document.querySelector<HTMLLinkElement>("#apple-touch-icon")?.setAttribute("href", assets.apple);
+}
+
 function getInitialTheme(): Theme {
   if (typeof window === "undefined") return "light";
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -24,6 +44,7 @@ function applyTheme(theme: Theme) {
   } else {
     root.classList.remove("dark");
   }
+  syncThemeIcons(theme);
 }
 
 export function useTheme() {

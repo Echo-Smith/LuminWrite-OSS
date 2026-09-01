@@ -10,12 +10,15 @@
  *   - 支持错误 Toast 通知
  *   - 基于 Tiptap/ProseMirror 的富文本编辑器
  */
-import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
-import { Square, Plus, X, PenLine, Paperclip, Loader2, Database, BookOpen, FolderSearch } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo, forwardRef, useImperativeHandle, type ChangeEvent, type DragEvent } from "react";
+import { Square, Plus, X, PenLine, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus, FileUp, Upload, ChevronRight } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
 import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
+import { KnowledgeMaterialDialog } from "./knowledge-material-dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
@@ -23,7 +26,7 @@ import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
-import { listMaterials, getMaterialContent, type UserMaterial } from "@/lib/material-api";
+import { listMaterials, getMaterialContent, uploadMaterial, type UserMaterial } from "@/lib/material-api";
 
 export interface WritingComposerHandle {
   focusTextarea: () => void;
@@ -35,28 +38,47 @@ export interface WritingComposerHandle {
   insertText: (text: string) => void;
 }
 
-export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boolean }>(function WritingComposer({ compact = false }, ref) {
+interface WritingComposerProps {
+  compact?: boolean;
+  floating?: boolean;
+  onToggleWidth?: () => void;
+}
+
+interface ComposerMaterial {
+  id: string;
+  sourceId?: string;
+  title: string;
+  excerpt: string;
+  payload: string;
+}
+
+export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposerProps>(function WritingComposer({ compact = false, floating = false, onToggleWidth }, ref) {
   const [message, setMessage] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
-  const [materials, setMaterials] = useState<string[]>([]);
-  const [showMaterials, setShowMaterials] = useState(false);
+  const [materials, setMaterials] = useState<ComposerMaterial[]>([]);
+  const [materialMenuOpen, setMaterialMenuOpen] = useState(false);
   const [materialInput, setMaterialInput] = useState("");
   const [uploading, setUploading] = useState(false);
-  // 素材库选择器
-  const [showMaterialPicker, setShowMaterialPicker] = useState(false);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false);
   const [kbMaterials, setKbMaterials] = useState<UserMaterial[]>([]);
   const [kbMaterialsLoading, setKbMaterialsLoading] = useState(false);
-  const [kbSearchQuery, setKbSearchQuery] = useState("");
   // 自动检索开关状态（从 session 读取，默认 true）
   // 开启后 LLM 写作时自动从素材库检索相关内容；关闭则仅使用手动选择的素材
-  const kbEnabled = useAgentStore((s) => {
+  const sessionKbEnabled = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.kbEnabled ?? true;
+    return session?.kbEnabled;
   });
-  const handleToggleKB = useCallback(() => {
+  const [pendingKbEnabled, setPendingKbEnabled] = useState(true);
+  const kbEnabled = sessionKbEnabled ?? pendingKbEnabled;
+  useEffect(() => {
+    if (sessionKbEnabled !== undefined) setPendingKbEnabled(sessionKbEnabled);
+  }, [sessionKbEnabled]);
+  const handleToggleKB = useCallback((checked: boolean) => {
+    setPendingKbEnabled(checked);
     useAgentStore.setState((s) => ({
       sessions: s.sessions.map((sess) =>
-        sess.id === s.activeSessionId ? { ...sess, kbEnabled: !sess.kbEnabled } : sess
+        sess.id === s.activeSessionId ? { ...sess, kbEnabled: checked } : sess
       ),
     }));
   }, []);
@@ -64,6 +86,23 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
   const [shakeKey, setShakeKey] = useState(0);
   const editorRef = useRef<TiptapEditorHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
+
+  const appendMaterial = useCallback((material: Omit<ComposerMaterial, "id">) => {
+    setMaterials((current) => {
+      if (material.sourceId && current.some((item) => item.sourceId === material.sourceId)) return current;
+      return [
+        ...current,
+        { ...material, id: crypto.randomUUID?.() ?? `material-${Date.now()}-${current.length}` },
+      ];
+    });
+  }, []);
+
+  const attachedMaterialIds = useMemo(
+    () => new Set(materials.flatMap((material) => material.sourceId ? [material.sourceId] : [])),
+    [materials],
+  );
 
   // 选题注入的素材现在统一在右侧详情面板的「素材」Tab 中管理，输入框上方不再单独展示
 
@@ -170,7 +209,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
       mode,
       model,
       agent_mode: agentMode,
-      user_materials: materials.length > 0 ? materials : undefined,
+      user_materials: materials.length > 0 ? materials.map((material) => material.payload) : undefined,
       kb_enabled: kbEnabled,
       orchestration_mode: orchestrationMode,
       assurance_level: assuranceLevel,
@@ -183,7 +222,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
 
   const handleAddMaterial = () => {
     if (materialInput.trim()) {
-      setMaterials([...materials, materialInput.trim()]);
+      const content = materialInput.trim();
+      appendMaterial({ title: "粘贴素材", excerpt: content, payload: content });
       setMaterialInput("");
     } else {
       // 空素材添加 → 触发 Composer 抖动
@@ -191,30 +231,64 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const uploadFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0 || uploading) return;
     setUploading(true);
+    let uploadedCount = 0;
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("title", file.name);
-      const res = await fetch("/api/v2/materials/upload", {
-        method: "POST",
-        body: fd,
-      });
-      const json = await res.json();
-      if (json.success && json.data) {
-        const tag = `文件：${file.name}`;
-        setMaterials([...materials, tag]);
+      for (const file of files) {
+        const sourceId = await uploadMaterial(file, file.name);
+        if (!sourceId) throw new Error(`${file.name} 上传失败`);
+        const isImage = file.type.startsWith("image/");
+        appendMaterial({
+          sourceId,
+          title: file.name,
+          excerpt: `${isImage ? "图片" : "文件"}素材 · 已上传并解析`,
+          payload: `${isImage ? "图片" : "文件"}：${file.name}`,
+        });
+        uploadedCount += 1;
       }
+      setMaterialMenuOpen(false);
+      toast.success("素材已添加", `${uploadedCount} 个文件已上传并解析`);
     } catch (err) {
       console.error("file upload failed", err);
       toast.error("文件上传失败", err instanceof Error ? err.message : "请稍后重试");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      if (imageInputRef.current) imageInputRef.current.value = "";
     }
+  }, [appendMaterial, uploading]);
+
+  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
+    void uploadFiles(Array.from(event.target.files ?? []));
+  };
+
+  const handleDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFiles(true);
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFiles(false);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFiles(false);
+    void uploadFiles(Array.from(event.dataTransfer.files));
   };
 
   // ─── 从素材库选择素材 ───
@@ -223,190 +297,90 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
     try {
       const { materials } = await listMaterials(1, 50, "all");
       setKbMaterials(materials);
-    } catch {
-      // silent
+    } catch (error) {
+      toast.error("素材库加载失败", error instanceof Error ? error.message : "请稍后重试");
     } finally {
       setKbMaterialsLoading(false);
     }
   }, []);
 
-  const handleOpenMaterialPicker = useCallback(() => {
-    setShowMaterialPicker(true);
-    loadKbMaterials();
+  const handleOpenKnowledgeDialog = useCallback(() => {
+    setMaterialMenuOpen(false);
+    setKnowledgeDialogOpen(true);
+    void loadKbMaterials();
   }, [loadKbMaterials]);
 
-  const handlePickMaterial = useCallback(async (mat: UserMaterial) => {
-    let content = mat.content_preview || "";
-    try {
-      const detail = await getMaterialContent(mat.id);
-      content = detail.content_preview || content;
-    } catch {
-      // use preview
+  const handlePickMaterials = useCallback(async (selectedMaterials: UserMaterial[]) => {
+    const resolved = await Promise.all(selectedMaterials.map(async (material) => {
+      let content = material.content_preview || "";
+      try {
+        const detail = await getMaterialContent(material.id);
+        content = detail.content_preview || content;
+      } catch {
+        // 内容接口失败时仍可使用列表摘要。
+      }
+      return { material, content };
+    }));
+
+    for (const { material, content } of resolved) {
+      appendMaterial({
+        sourceId: material.id,
+        title: material.title,
+        excerpt: content || material.file_name || "素材库资料",
+        payload: `素材：${material.title}: ${content}`,
+      });
     }
-    const tag = `素材：${mat.title}: ${content}`;
-    setMaterials((prev) => [...prev, tag]);
-    setShowMaterialPicker(false);
-    toast.success("已注入素材", mat.title);
-  }, []);
+    toast.success("素材库资料已添加", `${selectedMaterials.length} 条素材已注入本次写作`);
+  }, [appendMaterial]);
 
   return (
     <div className="relative">
       {/* 顶部渐变遮罩 — 从透明过渡到背景色，实现悬浮效果 */}
-      <div className="pointer-events-none absolute -top-8 left-0 right-0 h-8 bg-gradient-to-t from-surface to-transparent z-10" />
-      <div className={cn("relative z-20", compact ? "px-3 pb-3 pt-1" : "px-4 pb-4 pt-2")}>
+      {!floating && <div className="pointer-events-none absolute -top-8 left-0 right-0 h-8 bg-gradient-to-t from-surface to-transparent z-10" />}
+      <div className={cn("writing-composer-frame relative z-20 pb-4 pt-2", compact ? "px-3" : "px-4")}>
       {/* ── Composer 圆角矩形容器 ── */}
       <div
         key={`composer-${shakeKey}`}
-        className={cn("composer-shell overflow-hidden", shakeKey > 0 && "anim-shake")}
+        className={cn(
+          "composer-shell overflow-hidden",
+          shakeKey > 0 && "anim-shake",
+          isDraggingFiles && "composer-shell-dragging",
+        )}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
-        {/* 素材标签（在容器内顶部） */}
+        {isDraggingFiles && (
+          <div className="composer-drop-overlay" aria-label="拖拽文件上传区域">
+            <Upload className="h-5 w-5" />
+            <strong>松开即可添加素材</strong>
+            <span>支持图片、PDF、Office、文本与 Markdown</span>
+          </div>
+        )}
+        {onToggleWidth && (
+          <button
+            className="composer-width-toggle"
+            onClick={onToggleWidth}
+            aria-label={compact ? "展开输入框" : "收窄输入框"}
+            title={compact ? "展开输入框" : "收窄输入框"}
+          >
+            <span key={compact ? "expand" : "contract"} className="composer-width-icon">
+              {compact ? <Maximize2 className="h-[18px] w-[18px]" /> : <Minimize2 className="h-[18px] w-[18px]" />}
+            </span>
+          </button>
+        )}
         {materials.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 px-4 pt-3 anim-fade-in">
-            {materials.map((mat, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
-              >
-                <span className="max-w-[200px] truncate">{mat.slice(0, 50)}...</span>
-                <button
-                  onClick={() => setMaterials(materials.filter((_, idx) => idx !== i))}
-                  className="text-muted-foreground hover:text-foreground transition-ui"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* 素材输入展开区 */}
-        {showMaterials && (
-          <div className="px-4 pt-3 anim-fade-in">
-            <div className="flex gap-2">
-              <input
-                value={materialInput}
-                onChange={(e) => setMaterialInput(e.target.value)}
-                placeholder="粘贴参考素材，回车添加..."
-                className="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-xs outline-none transition-ui placeholder:text-muted-foreground focus:border-border"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleAddMaterial();
-                  }
-                }}
-              />
-              <button
-                onClick={handleAddMaterial}
-                className="rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent"
-              >
-                添加
-              </button>
-              {/* 文件上传按钮 — 调用 docreader 解析 PDF/Word/图片 */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="hidden"
-                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.bmp,.html"
-                onChange={handleFileUpload}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent disabled:opacity-50"
-                title="上传文件（PDF/Word/图片等，自动解析）"
-              >
-                {uploading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Paperclip className="h-3.5 w-3.5" />
-                )}
-                {uploading ? "解析中..." : "文件"}
-              </button>
-              {/* 从素材库选择已有素材 */}
-              <button
-                onClick={handleOpenMaterialPicker}
-                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs font-medium transition-ui hover:bg-accent"
-                title="从素材库选择已有素材"
-              >
-                <FolderSearch className="h-3.5 w-3.5" />
-                素材库
-              </button>
-              {/* 自动检索开关 — 控制是否启用素材库自动检索 */}
-              <button
-                onClick={handleToggleKB}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-ui",
-                  kbEnabled
-                    ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                    : "border-border/60 bg-card text-muted-foreground hover:bg-accent"
-                )}
-                title={kbEnabled ? "自动检索已开启（点击关闭）" : "自动检索已关闭（点击开启）"}
-              >
-                <BookOpen className="h-3.5 w-3.5" />
-                {kbEnabled ? "自动检索 ON" : "自动检索 OFF"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 素材库选择器弹窗 */}
-        {showMaterialPicker && (
-          <div className="px-4 pt-3 anim-fade-in">
-            <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
-              {/* Header */}
-              <div className="flex items-center justify-between border-b px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <FolderSearch className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-xs font-medium">从素材库选择</span>
-                  {kbMaterialsLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
-                </div>
-                <button
-                  onClick={() => setShowMaterialPicker(false)}
-                  className="text-muted-foreground hover:text-foreground transition-ui"
-                >
+          <section className="composer-material-strip scrollbar-hide anim-fade-in" aria-label="已添加的参考素材">
+            {materials.map((material) => (
+              <div key={material.id} className="composer-material-chip">
+                <span className="min-w-0"><strong>{material.title}</strong><small>{material.excerpt}</small></span>
+                <button onClick={() => setMaterials((current) => current.filter((item) => item.id !== material.id))} aria-label={`移除素材：${material.title}`}>
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
-              {/* Search */}
-              <div className="px-3 py-2 border-b">
-                <input
-                  value={kbSearchQuery}
-                  onChange={(e) => setKbSearchQuery(e.target.value)}
-                  placeholder="筛选素材标题..."
-                  className="w-full rounded-md border border-border/40 bg-background px-2.5 py-1.5 text-xs outline-none placeholder:text-muted-foreground focus:border-border"
-                />
-              </div>
-              {/* List */}
-              <div className="max-h-[240px] overflow-y-auto">
-                {kbMaterials.length === 0 ? (
-                  <div className="py-8 text-center">
-                    <Database className="h-6 w-6 text-muted-foreground mx-auto mb-1" />
-                    <p className="text-xs text-muted-foreground">
-                      {kbMaterialsLoading ? "加载中..." : "素材库为空，请先上传素材"}
-                    </p>
-                  </div>
-                ) : (
-                  kbMaterials
-                    .filter((m) => !kbSearchQuery.trim() || m.title.toLowerCase().includes(kbSearchQuery.toLowerCase()))
-                    .map((mat) => (
-                      <button
-                        key={mat.id}
-                        onClick={() => handlePickMaterial(mat)}
-                        className="flex items-start gap-2 w-full px-3 py-2 hover:bg-accent/50 transition-ui text-left border-b last:border-0"
-                      >
-                        <Database className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium truncate">{mat.title}</div>
-                          <div className="text-[10px] text-muted-foreground line-clamp-1">
-                            {mat.content_preview || mat.file_name || "—"}
-                          </div>
-                        </div>
-                      </button>
-                    ))
-                )}
-              </div>
-            </div>
-          </div>
+            ))}
+          </section>
         )}
 
         {/* 主输入区 — Tiptap 富文本编辑器 */}
@@ -419,29 +393,85 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
         />
 
         {/* 底部控件行 — 无分割线 */}
-        <div className="flex items-center gap-2 px-4 py-2.5">
+        <div className={cn("composer-control-row flex items-center py-2.5", compact ? "gap-1 px-2" : "gap-2 px-4")}>
           {/* 左侧：+ 素材按钮 */}
-          <button
-            className={cn(
-              "relative flex items-center justify-center h-8 w-8 rounded-xl text-muted-foreground transition-ui",
-              showMaterials
-                ? "bg-accent text-foreground"
-                : "hover:bg-accent hover:text-foreground"
-            )}
-            onClick={() => setShowMaterials(!showMaterials)}
-            title="添加素材"
-          >
-            <Plus className="h-[18px] w-[18px]" />
-            {materials.length > 0 && (
-              <span className="absolute -top-1 -right-1 rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground leading-4">
-                {materials.length}
-              </span>
-            )}
-          </button>
+          <input ref={imageInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileInput} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv,.html" multiple className="hidden" onChange={handleFileInput} />
+          <Popover open={materialMenuOpen} onOpenChange={setMaterialMenuOpen}>
+            <PopoverTrigger asChild>
+              <button
+                className={cn(
+                  "relative flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground transition-ui",
+                  materialMenuOpen ? "bg-accent text-foreground" : "hover:bg-accent hover:text-foreground",
+                )}
+                aria-label="添加参考素材"
+                title="添加参考素材"
+                disabled={uploading}
+              >
+                {uploading ? <Loader2 className="h-[18px] w-[18px] animate-spin" /> : <Plus className="h-[18px] w-[18px]" />}
+                {materials.length > 0 && (
+                  <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1.5 text-[10px] font-medium leading-4 text-primary-foreground">
+                    {materials.length}
+                  </span>
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="top" align="start" sideOffset={12} className="composer-material-popover w-[292px] max-w-[calc(100vw-24px)] p-0">
+              <header className="composer-material-popover-header">
+                <span className="composer-material-popover-title"><strong>添加参考素材</strong><small>也可以直接拖到输入框</small></span>
+                <div className="composer-material-paste">
+                  <input
+                    value={materialInput}
+                    onChange={(event) => setMaterialInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleAddMaterial();
+                      }
+                    }}
+                    placeholder="粘贴一段参考文字"
+                    aria-label="粘贴参考文字"
+                  />
+                  <button onClick={handleAddMaterial}>添加</button>
+                </div>
+              </header>
+              <div className="composer-material-menu">
+                <button
+                  className="composer-material-menu-item"
+                  onClick={() => {
+                    setMaterialMenuOpen(false);
+                    imageInputRef.current?.click();
+                  }}
+                >
+                  <ImagePlus className="h-4 w-4" />
+                  <span><strong>照片</strong><small>上传图片作为视觉参考</small></span>
+                </button>
+                <button
+                  className="composer-material-menu-item"
+                  onClick={() => {
+                    setMaterialMenuOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  <FileUp className="h-4 w-4" />
+                  <span><strong>文件</strong><small>PDF、Office、文本或 Markdown</small></span>
+                </button>
+                <div className="composer-material-menu-item composer-material-library-row">
+                  <button className="composer-material-library-main" onClick={handleOpenKnowledgeDialog}>
+                    <FolderSearch className="h-4 w-4" />
+                    <span><strong>素材库</strong><small>搜索资料并自动补充相关内容</small></span>
+                    <ChevronRight className="ml-auto h-4 w-4" />
+                  </button>
+                  <Switch checked={kbEnabled} onCheckedChange={handleToggleKB} aria-label="素材库自动检索" />
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
 
           {/* 左侧：引导模式 */}
           <ModePicker
             value={mode}
+            compact={compact}
             onChange={handleModeChange}
             orchestrationValue={orchestrationMode}
             onOrchestrationChange={setOrchestrationMode}
@@ -452,13 +482,13 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
           />
 
           {/* 左侧：风格选择（紧挨模式右侧） */}
-          <StylePicker value={style} onChange={handleStyleChange} />
+          <StylePicker value={style} onChange={handleStyleChange} compact={compact} />
 
           {/* 右侧弹性间距 */}
           <div className="flex-1" />
 
           {/* 右侧：模型选择 */}
-          <ModelPicker value={model} onChange={setModel} />
+          <ModelPicker value={model} onChange={setModel} compact={compact} />
 
           {/* 右侧：发送/暂停/取消按钮 — 笔头像黑色圆 */}
           <div className="flex items-center gap-1.5">
@@ -507,6 +537,16 @@ export const WritingComposer = forwardRef<WritingComposerHandle, { compact?: boo
         </div>
       </div>
       </div>
+      <KnowledgeMaterialDialog
+        open={knowledgeDialogOpen}
+        onOpenChange={setKnowledgeDialogOpen}
+        materials={kbMaterials}
+        loading={kbMaterialsLoading}
+        kbEnabled={kbEnabled}
+        onToggleKB={handleToggleKB}
+        attachedMaterialIds={attachedMaterialIds}
+        onAddMaterials={handlePickMaterials}
+      />
     </div>
   );
 });

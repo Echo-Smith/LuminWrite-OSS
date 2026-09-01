@@ -22,21 +22,21 @@ const scope = (documentId: string): WorkspaceLayoutScope => ({
 
 test("layout preferences persist independently per document scope", () => {
   const storage = new MemoryStorage();
-  saveLayoutPreference(storage, scope("doc-a"), { ...defaultWorkspaceLayout, globalSidebar: "collapsed", conversationPanel: "minimized" });
+  saveLayoutPreference(storage, scope("doc-a"), { ...defaultWorkspaceLayout, composerWidth: "compact" });
   saveLayoutPreference(storage, scope("doc-b"), { ...defaultWorkspaceLayout, detailTab: "quality", detailPanel: "drawer" });
 
-  assert.equal(loadLayoutPreference(storage, scope("doc-a")).globalSidebar, "collapsed");
   assert.equal(loadLayoutPreference(storage, scope("doc-a")).detailTab, "outline");
+  assert.equal(loadLayoutPreference(storage, scope("doc-a")).composerWidth, "compact");
   assert.equal(loadLayoutPreference(storage, scope("doc-b")).detailTab, "quality");
-  assert.equal(loadLayoutPreference(storage, scope("doc-b")).conversationPanel, "expanded");
   assert.notEqual(layoutStorageKey(scope("doc-a")), layoutStorageKey(scope("doc-b")));
 });
 
 test("invalid or partial persisted data fails back to safe defaults", () => {
   const storage = new MemoryStorage();
-  storage.setItem(layoutStorageKey(scope("doc-a")), JSON.stringify({ detailTab: "unknown", conversationPanel: "compact" }));
+  storage.setItem(layoutStorageKey(scope("doc-a")), JSON.stringify({ globalSidebar: "collapsed", detailTab: "unknown", conversationPanel: "compact" }));
   const restored = loadLayoutPreference(storage, scope("doc-a"));
   assert.equal(restored.detailTab, "outline");
-  assert.equal(restored.conversationPanel, "compact");
-  assert.equal(restored.globalSidebar, "expanded");
+  assert.equal("conversationPanel" in restored, false);
+  assert.equal("globalSidebar" in restored, false);
+  assert.equal(restored.composerWidth, "wide");
 });

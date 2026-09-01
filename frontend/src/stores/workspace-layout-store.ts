@@ -1,15 +1,13 @@
 import { create } from "zustand";
 
-export type GlobalSidebarState = "expanded" | "collapsed";
 export type DetailPanelState = "expanded" | "collapsed" | "drawer";
 export type DetailTab = "outline" | "materials" | "run" | "quality" | "versions";
-export type ConversationPanelState = "expanded" | "compact" | "minimized";
+export type ComposerWidthState = "wide" | "compact";
 
 export interface WorkspaceLayoutPreference {
-  globalSidebar: GlobalSidebarState;
   detailPanel: DetailPanelState;
   detailTab: DetailTab;
-  conversationPanel: ConversationPanelState;
+  composerWidth: ComposerWidthState;
 }
 
 export interface WorkspaceLayoutScope {
@@ -25,29 +23,26 @@ export interface LayoutStorage {
 }
 
 export const defaultWorkspaceLayout: WorkspaceLayoutPreference = {
-  globalSidebar: "expanded",
   detailPanel: "expanded",
   detailTab: "outline",
-  conversationPanel: "expanded",
+  composerWidth: "wide",
 };
 
-const SIDEBAR_STATES = new Set(["expanded", "collapsed"]);
 const DETAIL_STATES = new Set(["expanded", "collapsed", "drawer"]);
 const DETAIL_TABS = new Set(["outline", "materials", "run", "quality", "versions"]);
-const CONVERSATION_STATES = new Set(["expanded", "compact", "minimized"]);
+const COMPOSER_WIDTHS = new Set(["wide", "compact"]);
 
 export function layoutStorageKey(scope: WorkspaceLayoutScope): string {
-  return ["lumin-writing-layout-v1", scope.userId, scope.deviceId, scope.workspaceId, scope.documentId]
+  return ["lumin-writing-layout-v5", scope.userId, scope.deviceId, scope.workspaceId, scope.documentId]
     .map(encodeURIComponent)
     .join(":");
 }
 
 function normalizeLayout(value: Partial<WorkspaceLayoutPreference> | null | undefined): WorkspaceLayoutPreference {
   return {
-    globalSidebar: SIDEBAR_STATES.has(value?.globalSidebar ?? "") ? value!.globalSidebar! : defaultWorkspaceLayout.globalSidebar,
     detailPanel: DETAIL_STATES.has(value?.detailPanel ?? "") ? value!.detailPanel! : defaultWorkspaceLayout.detailPanel,
     detailTab: DETAIL_TABS.has(value?.detailTab ?? "") ? value!.detailTab! : defaultWorkspaceLayout.detailTab,
-    conversationPanel: CONVERSATION_STATES.has(value?.conversationPanel ?? "") ? value!.conversationPanel! : defaultWorkspaceLayout.conversationPanel,
+    composerWidth: COMPOSER_WIDTHS.has(value?.composerWidth ?? "") ? value!.composerWidth! : defaultWorkspaceLayout.composerWidth,
   };
 }
 
@@ -73,10 +68,9 @@ const anonymousScope: WorkspaceLayoutScope = { userId: "anonymous", deviceId: "b
 interface WorkspaceLayoutActions {
   scope: WorkspaceLayoutScope;
   setScope: (scope: WorkspaceLayoutScope) => void;
-  setGlobalSidebar: (value: GlobalSidebarState) => void;
   setDetailPanel: (value: DetailPanelState) => void;
   setDetailTab: (value: DetailTab) => void;
-  setConversationPanel: (value: ConversationPanelState) => void;
+  setComposerWidth: (value: ComposerWidthState) => void;
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutPreference & WorkspaceLayoutActions>((set, get) => {
@@ -89,9 +83,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutPreference & Worksp
     ...loadLayoutPreference(browserStorage(), anonymousScope),
     scope: anonymousScope,
     setScope: (scope) => set({ scope, ...loadLayoutPreference(browserStorage(), scope) }),
-    setGlobalSidebar: (globalSidebar) => persist({ globalSidebar }),
     setDetailPanel: (detailPanel) => persist({ detailPanel }),
     setDetailTab: (detailTab) => persist({ detailTab }),
-    setConversationPanel: (conversationPanel) => persist({ conversationPanel }),
+    setComposerWidth: (composerWidth) => persist({ composerWidth }),
   };
 });
