@@ -22,6 +22,7 @@ const (
 	CodeArtifactCommitFailed           ErrorCode = "ARTIFACT_COMMIT_FAILED"
 	CodeRolloutPolicyInvalid           ErrorCode = "ROLLOUT_POLICY_INVALID"
 	CodeRolloutEvidenceFailed          ErrorCode = "ROLLOUT_EVIDENCE_FAILED"
+	CodeRolloutPromotionDenied         ErrorCode = "ROLLOUT_PROMOTION_DENIED"
 	CodeExecutionFailed                ErrorCode = "EXECUTION_FAILED"
 )
 

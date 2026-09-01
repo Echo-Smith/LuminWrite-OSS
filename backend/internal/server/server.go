@@ -101,7 +101,8 @@ type Server struct {
 	db *database.DB
 
 	// Governed writing API. Nil only when persistence is unavailable.
-	writingAPI writingAPIService
+	writingAPI      writingAPIService
+	governedRollout *governedRolloutDependencies
 
 	// Billing
 billingRepo *database.BillingRepo
@@ -528,6 +529,7 @@ func New(cfg *config.Config) (*Server, error) {
 			return nil, fmt.Errorf("initialize governed writing store: %w", err)
 		}
 		s.writingAPI = newPersistentWritingAPI(governedStore)
+		s.governedRollout = newGovernedRolloutDependencies(governedStore, s.metrics)
 	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)

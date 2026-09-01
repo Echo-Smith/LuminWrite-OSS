@@ -2,6 +2,7 @@ package writingstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -152,7 +153,8 @@ func TestSeedRuntimeEvidenceForDowngradeCheck(t *testing.T) {
 	appendTestEvent(t, store, event)
 }
 
-func TestNodeAttemptKeyIsExactAndDeterministic(t *testing.T) {	key, err := NodeAttemptKey("run_test", "node_draft", 2)
+func TestNodeAttemptKeyIsExactAndDeterministic(t *testing.T) {
+	key, err := NodeAttemptKey("run_test", "node_draft", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,6 +383,78 @@ func TestRuntimeEvidenceIsAppendOnlyAndBoundToNodeAttempt(t *testing.T) {
 	}
 }
 
+func TestTask13ShadowContentAndPromotionRecordsAreDurable(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	body := []byte("isolated shadow body")
+	bodyHash := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
+	policyHash := testHash("task13-policy")
+	key := strings.TrimPrefix(policyHash, "sha256:") + "/" + fixture.runID + "-node_draft-1-draft/" + strings.TrimPrefix(bodyHash, "sha256:")
+	record := ShadowContentRecord{ContentKey: key, PolicyHash: policyHash, RunID: fixture.runID,
+		MediaType: "text/markdown", ContentHash: bodyHash, Body: body,
+		StoredAt: now, ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.PutShadowContent(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutShadowContent(ctx, record); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	reopened, err := New(integrationDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.GetShadowContent(ctx, key)
+	if err != nil || string(loaded.Body) != string(body) || loaded.ContentHash != record.ContentHash {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+	if removed, err := reopened.DeleteShadowContentPrefix(ctx, strings.TrimPrefix(policyHash, "sha256:")+"/"+fixture.runID+"-"); err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+
+	if _, _, err := store.StartNodeAttempt(ctx, fixture.nodeAttempt(), testTrace()); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		evidence := RuntimeEvidenceRecord{EvidenceID: StableID("evt_", "task13", fmt.Sprint(index)),
+			RunID: fixture.runID, NodeID: fixture.nodeID, Attempt: 1, Kind: "shadow_comparison",
+			Payload:    map[string]any{"kind": "shadow_comparison", "policy_hash": policyHash, "status": "different", "error_code": ""},
+			OccurredAt: now.Add(time.Duration(index) * time.Minute)}
+		if err := store.RecordRuntimeEvidence(ctx, evidence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	health, err := reopened.RolloutEvidenceHealth(ctx, policyHash, now.Add(-time.Hour))
+	if err != nil || health.ComparisonRecords != 3 || health.FailedRecords != 0 || health.LastRecordedAt.IsZero() {
+		t.Fatalf("health=%#v err=%v", health, err)
+	}
+	approval := RolloutApprovalRecord{ApprovalID: "approval_task13", PolicyHash: policyHash, PolicyVersion: 2,
+		ActivationKey: "change-task13", TargetMode: "allowlist", ApprovedBy: "operator_test", Reason: "integration test",
+		EvidenceHealth: health, EvidenceCutoff: health.Cutoff, EvidenceLastRecordedAt: health.LastRecordedAt,
+		CreatedAt: now.Add(4 * time.Minute), ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.RecordRolloutApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reopened.LatestRolloutApproval(ctx, policyHash, 2, "change-task13")
+	if err != nil || persisted.ApprovalID != approval.ApprovalID || persisted.EvidenceHealth.ComparisonRecords != 3 {
+		t.Fatalf("approval=%#v err=%v", persisted, err)
+	}
+	refreshed := approval
+	refreshed.ApprovalID = "approval_task13_refresh"
+	refreshed.CreatedAt = approval.CreatedAt.Add(time.Minute)
+	refreshed.ExpiresAt = approval.ExpiresAt.Add(time.Minute)
+	if err := store.RecordRolloutApproval(ctx, refreshed); err != nil {
+		t.Fatalf("append refreshed approval: %v", err)
+	}
+	persisted, err = reopened.LatestRolloutApproval(ctx, policyHash, 2, "change-task13")
+	if err != nil || persisted.ApprovalID != refreshed.ApprovalID {
+		t.Fatalf("latest refreshed approval=%#v err=%v", persisted, err)
+	}
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE writing_rollout_approvals SET reason='mutated' WHERE approval_id=$1`, refreshed.ApprovalID); err == nil {
+		t.Fatal("append-only approval accepted an update")
+	}
+}
+
 func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {
 	store, fixture := newIntegrationFixture(t, true)
 	ctx := context.Background()
@@ -518,7 +592,7 @@ func newIntegrationFixture(t *testing.T, complete bool) (*Store, integrationFixt
 		t.Skip("TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE writing_documents CASCADE`); err != nil {
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE writing_rollout_approvals, writing_documents CASCADE`); err != nil {
 		t.Fatalf("reset writing tables: %v", err)
 	}
 	var userID string

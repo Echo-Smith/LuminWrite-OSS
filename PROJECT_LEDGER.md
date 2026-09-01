@@ -42,6 +42,7 @@
 | **安全加固 + 生产化** | 🔄 进行中 | 2026-08 | 红队评估、Prompt Injection 防御、运维手册 |
 | 自演进闭环 | 📋 规划中 | — | feedback → candidate → eval gate → rollout |
 | 多实例水平扩展 | ✅ 完成 | 2026-08 | Redis session adapter + Docker Swarm + Nginx sticky session |
+| **治理型写作运行时（Task11/Task12）** | 🔄 local shadow 就绪 | 2026-08-27 | WritingContract → ExecutablePlan → Artifact / Document → Quality Gates 已实现；仅允许本地 shadow 验证，未授权放量或生产 |
 
 ---
 
@@ -149,6 +150,27 @@
 - **理由**：system prompt 防御指令降低 LLM 被劫持概率；输入 sanitization 在源头过滤已知注入模式
 - **重新评估**：如果出现新型 injection 攻击，需要扩展 sanitization 规则和红队用例
 
+### D-007 | 2026-08-27 | 以治理型写作运行时统一新写作内核
+
+- **背景**：Harness、Pipeline 与 Editorial 已覆盖多个写作入口，但流式 Markdown 和执行完成事件不足以表达可审计的正式内容提交、质量状态与恢复边界。
+- **选择**：以版本化 WritingContract、ExecutablePlan、Artifact、Document AST、Snapshot 和 Candidate / Accepted / Verified 质量状态为新能力的共同内核；旧入口仅经适配器兼容。
+- **理由**：让用户意图、自动策略、内容版本、质量证据和执行恢复均可追溯，并防止执行器直接绕过提交与质量门。
+- **重新评估**：如实际写作场景证明约束导致不可接受的延迟或质量损失，应调整策略、能力和审批规则，而非建立第二套权威状态路径。
+
+### D-008 | 2026-08-29 | 受治理适配器采用 shadow-first 发布策略
+
+- **背景**：新内核需与旧 Harness / Pipeline / Editorial 三类真实执行器并行验证，不能把候选结果直接写入正式内容。
+- **选择**：默认仅 local shadow；shadow 使用独立内容 namespace、独立生命周期与 evidence，baseline 不等待候选，也不受其错误、取消或计费影响。
+- **理由**：先在不影响 canonical Artifact、用户积分或基线路径的前提下收集对比证据。
+- **重新评估**：allowlist 前必须具备持久化 evidence/sink、晋升运维门禁、真实 LLM 纵向验收及双版本全量回归；percentage 和生产另行授权。
+
+### D-009 | 2026-09-01 | 晋升权限由持久化证据与 exact-scope 审批共同授予
+
+- **背景**：Task12 local shadow 的 evidence 与 shadow body 仅在进程内，缺少可审计且不可绕过的 allowlist 晋升判断。
+- **选择**：evidence 继续写入 append-only RunLedger；shadow body 写入独立 PostgreSQL 表；allowlist 必须同时满足健康证据、有效 policy 和绑定 exact hash/version/activation key 的限时追加审批。percentage / enabled 由该 gate 拒绝。
+- **理由**：把晋升从操作纪律变成 fail-closed 代码与数据库约束，同时保留审批、激活和部署为彼此独立的授权动作。
+- **重新评估**：只有在目标环境积累稳定的 allowlist evidence 并完成单独授权后，才讨论 percentage；本决策不自动授权生产。
+
 ---
 
 ## 5. 版本变更日志
@@ -162,6 +184,8 @@
 | v2.4.0 | 2026-Q1 | MCP 双向集成（含已弃用的 UnifiedAgent） | Agent, MCP |
 | v2.5.0 | 2026-Q1 | GraphRAG + 灰度发布 + WebAuthn | KB, Profile, Auth |
 | v2.6.0 | 2026-08 | 红队评估 + Prompt Injection 防御 + 运维手册 | Security, Eval, Ops |
+| v2.7.0-dev | 2026-08-27—29 | 治理型写作内核、材料 Artifact、三类旧执行器适配与 shadow rollout 加固 | Writing runtime, LCP, Store, Quality, Rollout |
+| v2.7.0-dev | 2026-09-01 | Task13 持久化 shadow/evidence、晋升门禁、真实模型三场景验收 | Writing runtime, Store, Migration, Ops |
 
 ---
 
@@ -174,6 +198,8 @@
 | 2026-08-03 | 创建项目台账 | AgentOps 审计 | 健康检查 P0 缺口 | ✅ 完成 |
 | 2026-08-03 | 增加红队评估集 | AgentOps 审计 | 健康检查 P1 缺口 | ✅ 完成 |
 | 2026-08-03 | 增加 Prompt Injection 防御 | AgentOps 审计 | 健康检查 P1 缺口 | ✅ 完成 |
+| 2026-08-27—29 | 完成治理运行时及 Task11/Task12 local-shadow 加固 | 稳定化分支 | 将正式内容、质量与影子验证收敛到可审计边界 | ✅ 代码与本地验证完成；未部署、未放量 |
+| 2026-09-01 | 完成 Task13 工程化与双仓验收 | 稳定化分支 | 补齐持久化、晋升门禁和真实模型纵向证据 | ✅ local shadow 前置完成；未审批、未激活、未部署 |
 
 ---
 
@@ -192,6 +218,12 @@
 | E-009 | 代码 | 红队评估集 | `backend/internal/services/redteam_eval.go` |
 | E-010 | 代码 | Prompt Injection 防御 | `backend/internal/engine/guardrails.go` |
 | E-011 | 文档 | 运维手册 | `docs/runbook.md` |
+| E-012 | 文档 | 治理型写作运行时设计 | `docs/19-governed-writing-runtime.md` |
+| E-013 | 代码 | 治理运行时、执行器适配与 shadow 隔离 | `backend/internal/writingruntime/` |
+| E-014 | 代码 | 运行 / Artifact / Snapshot 事务存储 | `backend/internal/writingstore/` |
+| E-015 | 文档 | Task12 就绪评估与放量前置 | `docs/releases/2026-08-29-governed-runtime-readiness.md` |
+| E-016 | 代码 | Task13 持久化 shadow、evidence health 与晋升门禁 | `backend/internal/writingstore/rollout.go`、`backend/internal/writingruntime/persistent_rollout.go`、`promotion_gate.go` |
+| E-017 | 验收 | Task13 真实模型、数据库与双仓回归报告 | `docs/releases/2026-09-01-task13-governance-productionization.md` |
 
 ---
 
@@ -204,6 +236,9 @@
 | 2026-08-03 | 评估门 | 红队评估集 | ✅ 通过 | 20+ 对抗用例创建 |
 | — | 发布门 | 回归评估通过 | ⏳ 待执行 | 需要在 profile publish 时触发 |
 | — | 安全门 | 红队测试通过率 > 90% | ⏳ 待执行 | 需要运行红队评估 |
+| 2026-08-29 | local shadow 门 | 双版本运行时、迁移、前后端门禁和真实纵向治理链路 | ✅ 通过 | 详见 `docs/releases/2026-08-29-governed-runtime-readiness.md`；不构成 allowlist 或生产授权 |
+| 2026-09-01 | allowlist 前置工程门 | durable evidence/sink、晋升清单、真实 LLM 纵向验收、双仓全量回归 | ✅ 通过 | 只代表可评估；尚无真实审批、subject 激活或生产授权 |
+| — | allowlist 发布门 | 目标环境证据、exact-scope 审批与独立激活变更 | ⏳ 待授权 | 本任务未执行 |
 
 ---
 
@@ -216,6 +251,8 @@
 | R-003 | 记忆无限增长 | 低 | 中 | 需要实现 forgetting 策略 | 待处理 |
 | R-004 | 编辑部 Agent 死锁 | 低 | 中 | Lease 超时 + 重试上限 + 人类升级 | 已缓解 |
 | R-005 | DB 迁移失败 | 低 | 高 | migrator.go 回滚 + 启动前检查 | 已缓解 |
+| R-006 | 将 shadow 结论误作生产就绪 | 中 | 高 | 明确 rollout 阶梯、独立 shadow namespace、fail-closed gate 与单独授权 | 已缓解，持续关注 |
+| R-007 | shadow evidence 仅在内存，无法支撑晋升 | 高 | 高 | RunLedger evidence 与独立 shadow sink 已持久化 | 已缓解 |
 
 ---
 
@@ -227,8 +264,10 @@
 | 待定 | 是否迁移到 K8s | — | 📋 规划中 |
 | 待定 | 是否增加 RBAC 细粒度权限 | — | 📋 规划中 |
 | 待定 | 记忆 forgetting 策略选型 | — | 📋 规划中 |
+| 待授权 | 是否对指定 subject 激活 allowlist policy | — | ⛔ 未授权 |
+| 待定 | 是否进入 percentage 评估 | — | ⛔ 需先积累 allowlist 证据 |
 
 ---
 
-*最后更新：2026-08-03*
+*最后更新：2026-09-01*
 *维护者：Writing Agent V2 Team*

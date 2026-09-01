@@ -719,5 +719,62 @@ docker exec writing-agent-pg psql -U postgres -d writing_agent_v2 -c "
 
 ---
 
-*最后更新：2026-08-03*
+## 9. Task13 治理运行时晋升门禁
+
+Task13 只把系统推进到“allowlist 可评估、可审批”的工程状态。以下命令不会改变流量；percentage、enabled 和生产部署均需另行授权。
+
+### 9.1 前置检查
+
+1. 数据库迁移必须包含 `096_governance_productionization`。
+2. 待评估 policy 必须是经过 `WithComputedHash` 封装的 `allowlist` JSON，且包含非空 `activation_key` 和 `allow_subjects`。
+3. 最近 7 天至少有 3 条同一 policy hash 的 `runtime.shadow_compared`，失败数为 0，最后证据不早于 24 小时前。
+4. shadow body 只能存在于 `writing_shadow_contents`，canonical Artifact/Document 不得出现 `shadow://` 引用。
+
+### 9.2 只读评估
+
+```bash
+DATABASE_URL='postgres://...' go run ./backend/cmd/governance-gate \
+  -action assess \
+  -policy /absolute/path/to/allowlist-policy.json
+```
+
+`allowed=false` 时不得审批。常见原因包括 `insufficient_comparisons`、`evidence_failures_exceeded`、`evidence_stale`、`approval_missing` 和 `approval_evidence_stale`。
+
+### 9.3 显式审批
+
+```bash
+DATABASE_URL='postgres://...' go run ./backend/cmd/governance-gate \
+  -action approve \
+  -policy /absolute/path/to/allowlist-policy.json \
+  -operator release-operator-id \
+  -reason 'ticket/change reference and reviewed evidence' \
+  -approval-ttl 24h
+```
+
+审批记录绑定 exact policy hash、policy version、activation key 和证据水位，数据库禁止更新或删除。审批后产生的新证据会让旧审批失效，必须重新评估。该命令只写审批，不修改配置、不重启服务、不切流。
+
+### 9.4 真实模型纵向验收
+
+凭据只能通过本地未跟踪环境变量提供：
+
+```bash
+export TASK13_LLM_BASE_URL='https://api.b.ai/v1'
+export TASK13_LLM_MODEL='deepseek-v4-flash'
+export TASK13_LLM_API_KEY='temporary-test-key'
+export TEST_DATABASE_URL='postgres://isolated-test-database'
+./scripts/run-task13-live-acceptance.sh
+```
+
+验收覆盖长文、多材料综合、忠实改写；每场均检查 governed run 完成、质量门、canonical/shadow 隔离、PostgreSQL evidence 和 shadow body 重读、凭据不进入 evidence。测试结束后立即撤销提供方密钥并删除本地环境文件。
+
+### 9.5 明确禁止
+
+- 不得把 `assess` 或 `approve` 的成功等同于生产授权。
+- 不得把 allowlist policy 改为 percentage/enabled 绕过门禁；生产 gate 会拒绝。
+- 不得在未通过双仓回归、迁移检查和真实模型验收时激活 allowlist。
+- 本手册不授权 push、deploy、生产数据库写入或真实用户流量。
+
+---
+
+*最后更新：2026-09-01*
 *维护者：Writing Agent V2 Team*

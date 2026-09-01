@@ -1,5 +1,7 @@
 # Governed Adapter Rollout Readiness — 2026-08-29
 
+> 2026-09-01 更新：本文记录 Task12 当时状态。持久化、晋升门禁与真实模型验收的最新结论见 `2026-09-01-task13-governance-productionization.md`；当前仍未激活 allowlist，percentage / production 仍未授权。
+
 Task12（governed adapter shadow rollout）实现完成后的就绪评估。结论按发布阶梯分级，各级独立判定；上级达成不代表下级自动授权。
 
 ```text
