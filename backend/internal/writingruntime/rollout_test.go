@@ -207,7 +207,7 @@ func TestAllowlistAndPercentageRouteBySubject(t *testing.T) {
 	}
 	request.Subject = "user_bob"
 	missed, _ := DecideRoute(policy, request, time.Now().UTC())
-	if missed.Lane != LaneBaseline || missed.Reason != "allowlist_miss" {
+	if missed.Lane != LaneBaseline || missed.Reason != "allowlist_miss" || !missed.RunShadow {
 		t.Fatalf("other subject=%#v", missed)
 	}
 	request.Subject = ""
@@ -349,6 +349,92 @@ func TestAuthoritativeExecutorRefusesShadowMode(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("shadow mode refusal was not recorded as evidence")
+	}
+}
+
+// TestAllowlistMissKeepsShadowEvidenceFresh pins that allowlist misses run the
+// shadow lane under the authoritative policy hash: promotion evidence keeps
+// accumulating while unmatched traffic is served the baseline lane.
+func TestAllowlistMissKeepsShadowEvidenceFresh(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	request.Subject = "user_outsider"
+	baseline := &fakeGovernedExecutor{descriptor: ExecutorDescriptor{ExecutorID: "baseline.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}}}
+	candidateRunner := &fakeLegacyRunner{usage: LegacyUsage{Measured: true}, outputs: []LegacyPayload{{OutputKey: "draft", ArtifactType: "full_draft", MediaType: "text/markdown", Body: []byte("candidate"), Provenance: map[string]any{}, SourceRefs: []string{}}}}
+	canonical := &stageCountingGateway{inner: &memoryGateway{body: []byte("contract")}}
+	policy := DefaultShadowPolicy("candidate.engine", AdapterFamilyEngine, request.Node.Capability, request.Node.CapabilityVersion)
+	policy.Mode, policy.AllowSubjects, policy.ActivationKey = RolloutAllowlist, []string{"user_alice"}, "approved-subjects-1"
+	policy, _ = policy.WithComputedHash()
+	shadowGateway, err := NewShadowContentGateway(canonical, NewMemoryShadowContentSink(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := NewShadowIsolatedExecutorAdapter(AdapterFamilyEngine,
+		ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
+		request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, shadowGateway, candidateRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := NewMutableRolloutPolicyProvider(policy)
+	evidence := &MemoryRolloutEvidenceStore{}
+	executor, err := NewShadowRolloutExecutor(baseline, candidate, provider, evidence, &metricCapture{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Execute(context.Background(), request)
+	if err != nil || len(result.Artifacts) != 1 {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	eventually(t, 2*time.Second, "allowlist miss comparison evidence", func() bool {
+		for _, record := range evidence.Records() {
+			if record.Kind == "shadow_comparison" && record.PolicyHash == policy.PolicyHash && record.Comparison != nil {
+				return true
+			}
+		}
+		return false
+	})
+	if canonical.stages != 0 {
+		t.Fatalf("shadow staging leaked into canonical: %d", canonical.stages)
+	}
+}
+
+// TestAuthoritativeExecutorServesBaselineOnAllowlistMiss pins that
+// post-activation misses on a candidate-authoritative executor serve the
+// baseline lane and record expected traffic, not an authority violation.
+func TestAuthoritativeExecutorServesBaselineOnAllowlistMiss(t *testing.T) {
+	request := legacyRequest([]byte("contract"))
+	request.Subject = "user_outsider"
+	baseline := &fakeGovernedExecutor{descriptor: ExecutorDescriptor{ExecutorID: "baseline.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}}}
+	candidateRunner := &fakeLegacyRunner{}
+	candidate, err := NewLegacyExecutorAdapter(AdapterFamilyEngine,
+		ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
+		request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, candidateRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := DefaultShadowPolicy("candidate.engine", AdapterFamilyEngine, request.Node.Capability, request.Node.CapabilityVersion)
+	policy.Mode, policy.AllowSubjects, policy.ActivationKey = RolloutAllowlist, []string{"user_alice"}, "approved-subjects-1"
+	policy, _ = policy.WithComputedHash()
+	provider, _ := NewMutableRolloutPolicyProvider(policy)
+	evidence := &MemoryRolloutEvidenceStore{}
+	metrics := &metricCapture{}
+	executor, err := NewRolloutExecutor(baseline, candidate, provider, evidence, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Execute(context.Background(), request)
+	if err != nil || len(result.Artifacts) != 1 {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	if candidateRunner.callCount() != 0 {
+		t.Fatalf("canonical candidate ran %d executions for a missed subject", candidateRunner.callCount())
+	}
+	if metrics.has(MetricAuthorityViolation, "shadow_mode_unavailable") {
+		t.Fatalf("metrics=%#v", metrics.metrics)
+	}
+	for _, record := range evidence.Records() {
+		if record.Status == "shadow_mode_unavailable" {
+			t.Fatalf("allowlist miss was rejected as evidence: %#v", record)
+		}
 	}
 }
 

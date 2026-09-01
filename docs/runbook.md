@@ -767,7 +767,28 @@ export TEST_DATABASE_URL='postgres://isolated-test-database'
 
 验收覆盖长文、多材料综合、忠实改写；每场均检查 governed run 完成、质量门、canonical/shadow 隔离、PostgreSQL evidence 和 shadow body 重读、凭据不进入 evidence。测试结束后立即撤销提供方密钥并删除本地环境文件。
 
-### 9.5 明确禁止
+### 9.5 allowlist 证据积累（只采证据，不做授权）
+
+allowlist 晋升门禁要求目标 policy hash 下最近 7 天 ≥3 条 `runtime.shadow_compared` 且无失败。运行时语义保证这一点：allowlist 未命中主体正常走 baseline，同时继续执行 shadow 对比（`allowlist_miss` → RunShadow），因此证据在当前 allowlist policy hash 下持续累积。采集作业：
+
+```bash
+export TASK13_LLM_BASE_URL='https://api.b.ai/v1'
+export TASK13_LLM_MODEL='deepseek-v4-flash'
+export TASK13_LLM_API_KEY='collector-key'
+export TEST_DATABASE_URL='postgres://...same-database-as-assessment...'
+make evidence-accumulate
+```
+
+采集作业每次运行追加独立的 run/document lineage（幂等键按 run 隔离，重复执行会累积而不是覆盖），并把允许清单政策绑定到三个纵向场景的治理节点上。运行输出每个 policy hash 的 evidence health 与只读 `EvidenceAssessment` 结果；`allowed=false` 时按 `insufficient_comparisons`、`evidence_stale` 等原因继续按日采集。门禁默认要求 24 小时内仍有新证据，建议每日 cron。
+
+边界与注意：
+
+- 采集只写 evidence/shadow/lineage，不审批、不激活、不改配置、不影响 baseline 服务。
+- 不要在采集数据库上运行 `run-task13-live-acceptance.sh`：该验收套件会 TRUNCATE documents 并级联清空累积证据。建议用独立数据库，或接受验收即重置。
+- 采集作业中 allowlist 主体（policy 的 `allow_subjects`）不会出现在请求里；若把真实主体加入 policy 前先激活，候选权威执行器会按预期拒绝并记 `candidate_lane_blocked`，这会计入失败数。
+- `make evidence-gate ROLLOUT_POLICY_FILE=/abs/path/policy.json` 只做只读评估；审批仍必须走 §9.3 的 `approve` + 受控激活变更。
+
+### 9.6 明确禁止
 
 - 不得把 `assess` 或 `approve` 的成功等同于生产授权。
 - 不得把 allowlist policy 改为 percentage/enabled 绕过门禁；生产 gate 会拒绝。
@@ -776,5 +797,5 @@ export TEST_DATABASE_URL='postgres://isolated-test-database'
 
 ---
 
-*最后更新：2026-09-01*
+*最后更新：2026-09-02*
 *维护者：Writing Agent V2 Team*

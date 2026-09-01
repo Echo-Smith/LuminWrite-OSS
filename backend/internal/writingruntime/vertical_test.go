@@ -377,6 +377,7 @@ type verticalResult struct {
 	canonical       *verticalGateway
 	evidenceRecords func(*testing.T) []RuntimeEvidence
 	shadowKeys      func(*testing.T) []string
+	policyHashes    []string
 	outcome         RunOutcome
 	runID           string
 }
@@ -387,6 +388,13 @@ type verticalRolloutBackend struct {
 	prepare  func(*testing.T, writingkernel.WritingContract, writingplan.WritingPlanEnvelope, []verticalNode, string, string)
 	records  func(*testing.T, string) []RuntimeEvidence
 	keys     func(*testing.T, string) []string
+	// ids, when set, replaces the default run/document ids so evidence
+	// accumulation suites can append fresh lineage per invocation while
+	// scenario names (and therefore capability and policy hashes) stay stable.
+	ids func(name string) (runID, documentID string)
+	// nodePolicy, when set and non-nil, replaces the default shadow policy of
+	// one node so a governed policy can accumulate comparison evidence.
+	nodePolicy func(index int, capability, candidateID string) *AdapterRolloutPolicy
 }
 
 type verticalMaterialSelection struct{ materials []MaterialDescriptor }
@@ -440,8 +448,10 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := "run_vertical_" + name
-	documentID := "doc_vertical_" + name
+	runID, documentID := "run_vertical_"+name, "doc_vertical_"+name
+	if backend.ids != nil {
+		runID, documentID = backend.ids(name)
+	}
 	capabilityVersion := "1.0.0"
 	proposed := make([]writingplan.ProposedStep, 0, len(nodes))
 	for index, node := range nodes {
@@ -512,6 +522,7 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	capabilities := writingplan.NewCapabilityRegistry("vertical-" + name)
 	executors := NewExecutorRegistry()
 	policyHashes := make([]string, 0, len(nodes))
+	governedHashes := make([]string, 0, len(nodes))
 	for index, node := range nodes {
 		capability := "core.vertical." + name + "." + node.name
 		bindingID := fmt.Sprintf("vertical.%s.baseline.%d", name, index)
@@ -535,7 +546,13 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 		// candidate descriptor for the binding check.
 		candidateID := fmt.Sprintf("vertical.%s.candidate.%d", name, index)
 		nodePolicy := DefaultShadowPolicy(candidateID, AdapterFamilyEngine, capability, capabilityVersion)
+		if backend.nodePolicy != nil {
+			if governed := backend.nodePolicy(index, capability, candidateID); governed != nil {
+				nodePolicy = *governed
+			}
+		}
 		policyHashes = append(policyHashes, strings.TrimPrefix(nodePolicy.PolicyHash, "sha256:"))
+		governedHashes = append(governedHashes, nodePolicy.PolicyHash)
 		nodeGateway, err := NewShadowContentGateway(canonical, backend.sink, nodePolicy)
 		if err != nil {
 			t.Fatal(err)
@@ -591,7 +608,8 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	}
 	result := verticalResult{store: store, canonical: canonical, outcome: out, runID: runID,
 		evidenceRecords: func(t *testing.T) []RuntimeEvidence { return backend.records(t, runID) },
-		shadowKeys:      func(t *testing.T) []string { return backend.keys(t, runID) }}
+		shadowKeys:      func(t *testing.T) []string { return backend.keys(t, runID) },
+		policyHashes:    governedHashes}
 	persisted, err := store.ListRunArtifacts(context.Background(), runID)
 	if err != nil || len(persisted) != len(nodes) {
 		t.Fatalf("artifacts=%#v err=%v", persisted, err)

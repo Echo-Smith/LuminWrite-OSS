@@ -1,7 +1,7 @@
 # ─── Writing Agent V2 — Root Makefile ───────────────────
 # Common Docker commands for development and deployment.
 
-.PHONY: help up down build rebuild logs ps shell clean dev weknora verify verify-backend verify-frontend
+.PHONY: help up down build rebuild logs ps shell clean dev weknora verify verify-backend verify-frontend evidence-accumulate evidence-gate
 
 # Default: show available commands
 help: ## Show this help
@@ -49,6 +49,14 @@ verify-frontend: ## Lint, build, and test the frontend
 	cd frontend && npm run lint
 	cd frontend && npm run build
 	cd frontend && npm run test:wabench
+
+# ── Governance (local shadow only) ──────────────────────
+
+evidence-accumulate: ## Append allowlist shadow evidence via live verticals (needs TASK13_LLM_*/TEST_DATABASE_URL)
+	./scripts/run-allowlist-evidence-accumulation.sh
+
+evidence-gate: ## Read-only allowlist promotion assessment (needs DATABASE_URL + ROLLOUT_POLICY_FILE)
+	cd backend && go run ./cmd/governance-gate -action assess -policy "$(ROLLOUT_POLICY_FILE)"
 
 # ── WeKnora (optional RAG service) ──────────────────────
 

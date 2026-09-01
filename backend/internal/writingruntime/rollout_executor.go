@@ -132,6 +132,15 @@ func (executor *RolloutExecutor) Execute(ctx context.Context, request ExecutionR
 	}
 	if decision.RunShadow {
 		if !executor.shadowOnly {
+			if decision.Reason == "allowlist_miss" {
+				// Post-activation misses are expected traffic on a
+				// candidate-authoritative executor: serve baseline and record
+				// the route without marking an authority violation, so the
+				// policy's evidence health only tracks real failures.
+				result, executeErr := executor.executeLane(ctx, LaneBaseline, executor.baseline, request, policy.Mode)
+				_ = executor.recordExecution(ctx, request, policy, decision, LaneBaseline, result, executeErr)
+				return result, executeErr
+			}
 			// Only a shadow rollout executor may run the shadow lane: an
 			// authoritative executor's candidate stages through the canonical
 			// gateway, so shadow traffic would leak into canonical storage.

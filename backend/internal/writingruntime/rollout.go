@@ -152,7 +152,10 @@ func DecideRoute(policy AdapterRolloutPolicy, request ExecutionRequest, now time
 		if containsString(policy.AllowSubjects, routeSubject(request)) {
 			base.Lane, base.Reason = LaneCandidate, "allowlist_match"
 		} else {
-			base.Reason = "allowlist_miss"
+			// Unmatched subjects keep running the shadow lane under the
+			// authoritative policy hash, so promotion evidence stays fresh
+			// without ever granting misses the candidate lane.
+			base.RunShadow, base.Reason = true, "allowlist_miss"
 		}
 	case RolloutPercentage:
 		base.SubjectBucket = stableBucket(policy, routeSubject(request))
