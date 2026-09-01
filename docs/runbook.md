@@ -804,6 +804,28 @@ go run ./backend/cmd/evidence-policy-dump -out /absolute/path/to/policy-dir
 3. **审批后立即停止采集**：审批产生后新证据会使审批 `approval_evidence_stale` 失效。按日 cron 只适用于"持续积累、尚未审批"阶段；审批后如需续期，重新评估并重新审批。
 4. 审批 ≠ 激活。对指定 subject 启用候选路径仍是独立受控变更（§9.6）。
 
+### 9.7 percentage 阶梯工程与审批（不切流）
+
+percentage 是 allowlist 之后的下一级晋升阶梯：同一 activation key 必须先持有 allowlist 阶段审批（机械阶梯检查，缺失即拒绝），percentage 审批本身仍由相同的证据标准约束（最近 7 天 ≥3 条对比、0 失败、24h 内有新证据）+ exact policy hash 审批绑定。
+
+运行时语义（已被测试钉死，双仓一致）：
+
+- 命中主体（stable bucket < basis_points）走候选 lane（`percentage_match`），不运行 shadow。
+- 未命中主体走 baseline，同时在 shadow 执行器上继续 shadow 对比（`percentage_miss` → RunShadow），证据在 percentage policy hash 下持续累积——与 allowlist 未命中语义对称。
+- bucket 只由 `activation_key + subject` 决定，与 policy hash 无关：调大 basis points 只会单调扩容命中人群，不会重排全部主体（换 activation key 才会重排）。
+- 权威（candidate-authoritative）执行器对未命中主体按预期流量服务 baseline，不记 authority violation。
+- `GatedRolloutPolicyProvider` 未配置 `PercentageGate` 时对 percentage policy 一律 fail-closed（`percentage_gate_not_configured`），即使有审批也拒绝。
+
+证据积累：`EvidenceScenarioPolicies()` 采集作业当前固定产出 allowlist 模式 policy。percentage policy 可用 `percentagePolicyForTest` 同样的字段构造（mode=percentage + basis_points + 同一 activation_key），证据未达标时按日采集直到 `assess` 返回 `allowed=true`。
+
+审批走查（与 §9.3 相同的命令；percentage policy JSON 会自动走 percentage 门禁）：
+
+1. 确认阶梯：`psql -c "SELECT target_mode, approved_by, expires_at FROM writing_rollout_approvals WHERE activation_key='<key>' AND target_mode='allowlist' ORDER BY created_at DESC LIMIT 1"`——必须存在且未过期。
+2. `governance-gate -action assess -policy <percentage-policy.json>`：要求 `allowed=true`。
+3. `governance-gate -action approve -policy <percentage-policy.json> ...`：CLI 会机械校验同 activation key 的 allowlist 阶段审批，缺失时报 `allowlist stage approval missing`。
+4. 迁移 `097_percentage_promotion` 放开 `writing_rollout_approvals.target_mode` 的 CHECK 到 allowlist|percentage；审批记录仍是 append-only。
+5. 审批 ≠ 激活。把 basis points 从 0 调到目标灰度值并部署，是下一次独立受控变更（§9.6）。
+
 ### 9.6 明确禁止
 
 - 不得把 `assess` 或 `approve` 的成功等同于生产授权。

@@ -2,6 +2,7 @@ package writingruntime
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,8 @@ type governanceStoreStub struct {
 	health      writingstore.RolloutEvidenceHealth
 	approval    writingstore.RolloutApprovalRecord
 	approvalErr error
+	ladder      writingstore.RolloutApprovalRecord
+	ladderErr   error
 }
 
 func (s *governanceStoreStub) RolloutEvidenceHealth(context.Context, string, time.Time) (writingstore.RolloutEvidenceHealth, error) {
@@ -19,6 +22,9 @@ func (s *governanceStoreStub) RolloutEvidenceHealth(context.Context, string, tim
 }
 func (s *governanceStoreStub) LatestRolloutApproval(context.Context, string, int, string) (writingstore.RolloutApprovalRecord, error) {
 	return s.approval, s.approvalErr
+}
+func (s *governanceStoreStub) LatestRolloutApprovalByActivationKey(context.Context, string, string) (writingstore.RolloutApprovalRecord, error) {
+	return s.ladder, s.ladderErr
 }
 
 func allowlistPolicyForGate() AdapterRolloutPolicy {
@@ -93,5 +99,83 @@ func TestGatedProviderFailsClosedAndRecordsDenial(t *testing.T) {
 	}
 	if records := evidence.Records(); len(records) != 1 || records[0].Status != "promotion_denied" {
 		t.Fatalf("records=%#v", records)
+	}
+}
+
+func percentagePolicyForGate() AdapterRolloutPolicy {
+	policy := DefaultShadowPolicy("candidate.engine", AdapterFamilyEngine, "core.draft.generate", "1.0.0")
+	policy.PolicyVersion, policy.Mode, policy.ActivationKey, policy.BasisPoints, policy.AllowSubjects = 2, RolloutPercentage, "change-task13", 1000, []string{}
+	policy, _ = policy.WithComputedHash()
+	return policy
+}
+
+func TestPercentagePromotionGateRequiresFreshHealthExactApprovalAndLadder(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	policy := percentagePolicyForGate()
+	health := writingstore.RolloutEvidenceHealth{PolicyHash: policy.PolicyHash, ComparisonRecords: 3, TotalRecords: 9, LastRecordedAt: now.Add(-time.Hour), Cutoff: now.Add(-7 * 24 * time.Hour)}
+	store := &governanceStoreStub{health: health,
+		approval: writingstore.RolloutApprovalRecord{ApprovalID: "approval_percentage", PolicyHash: policy.PolicyHash,
+			PolicyVersion: policy.PolicyVersion, ActivationKey: policy.ActivationKey, TargetMode: string(RolloutPercentage),
+			EvidenceLastRecordedAt: health.LastRecordedAt, ExpiresAt: now.Add(time.Hour)},
+		ladder: writingstore.RolloutApprovalRecord{ApprovalID: "approval_allowlist_stage", TargetMode: string(RolloutAllowlist), ExpiresAt: now.Add(time.Hour)}}
+	gate := PercentagePromotionGate{Store: store, Criteria: DefaultPromotionCriteria(), Now: func() time.Time { return now }}
+	assessment, err := gate.Assess(context.Background(), policy)
+	if err != nil || !assessment.Allowed || assessment.ApprovalID != "approval_percentage" {
+		t.Fatalf("assessment=%#v err=%v", assessment, err)
+	}
+
+	// Missing allowlist stage blocks the percentage rung even when the
+	// percentage evidence and approval are perfect.
+	store.ladderErr = writingstore.ErrNotFound
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "allowlist_stage_missing") {
+		t.Fatalf("ladder assessment=%#v err=%v", assessment, err)
+	}
+	store.ladderErr = nil
+
+	// A percentage-target approval bound to the wrong hash is rejected.
+	store.approval.PolicyHash = hashForTest("wrong-percentage-policy")
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "approval_scope_mismatch") {
+		t.Fatalf("scope assessment=%#v err=%v", assessment, err)
+	}
+
+	// An allowlist-targeted approval cannot authorize the percentage rung.
+	store.approval.PolicyHash = policy.PolicyHash
+	store.approval.TargetMode = string(RolloutAllowlist)
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "approval_mode_mismatch") {
+		t.Fatalf("mode assessment=%#v err=%v", assessment, err)
+	}
+
+	// Stale evidence fails the shared criteria before approval binding.
+	store.approval.TargetMode = string(RolloutPercentage)
+	store.health.ComparisonRecords = 2
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "insufficient_comparisons") {
+		t.Fatalf("health assessment=%#v err=%v", assessment, err)
+	}
+}
+
+func TestGatedProviderFailsClosedForPercentageWithoutGate(t *testing.T) {
+	policy := percentagePolicyForGate()
+	base, _ := NewMutableRolloutPolicyProvider(policy)
+	evidence := &MemoryRolloutEvidenceStore{}
+	// PercentageGate deliberately nil: percentage traffic must fail closed
+	// until an operator explicitly wires the percentage gate.
+	provider := GatedRolloutPolicyProvider{Base: base,
+		Gate: AllowlistPromotionGate{Store: &governanceStoreStub{}, Criteria: DefaultPromotionCriteria()}, Evidence: evidence}
+	request := legacyRequest([]byte("contract"))
+	_, err := provider.Policy(context.Background(), request.Identity())
+	if ErrorCodeOf(err) != CodeRolloutPromotionDenied || !strings.Contains(err.Error(), "percentage_gate_not_configured") {
+		t.Fatalf("err=%v", err)
+	}
+
+	provider.PercentageGate = &PercentagePromotionGate{Store: &governanceStoreStub{}, Criteria: DefaultPromotionCriteria()}
+	if _, err := provider.Policy(context.Background(), request.Identity()); ErrorCodeOf(err) != CodeRolloutPromotionDenied {
+		t.Fatalf("err=%v", err)
+	}
+	if records := evidence.Records(); len(records) != 2 {
+		t.Fatalf("records=%d", len(records))
 	}
 }

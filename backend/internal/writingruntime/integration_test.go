@@ -93,12 +93,16 @@ func TestTask12ScenariosRouteRealB2AdaptersThroughShadowRollout(t *testing.T) {
 	}{
 		{"engine_step", AdapterFamilyEngine, func(t *testing.T) LegacyNodeRunner {
 			return EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} },
-				Usage: func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil }}
+				Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
+					return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil
+				}}
 		}},
 		{"editorial_role", AdapterFamilyEditorial, func(t *testing.T) LegacyNodeRunner {
 			return EditorialRoleNodeRunner{Invoker: &fakeRoleInvoker{result: &editorial.RoleRunResult{Output: "editorial scenario draft", Tokens: 3}},
-				Config:  &editorial.AgentConfig{ID: "writer", Role: "writer"},
-				Usage:   func(*editorial.RoleRunResult) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 2, OutputTokens: 3}, nil }}
+				Config: &editorial.AgentConfig{ID: "writer", Role: "writer"},
+				Usage: func(*editorial.RoleRunResult) (LegacyUsage, error) {
+					return LegacyUsage{Measured: true, InputTokens: 2, OutputTokens: 3}, nil
+				}}
 		}},
 		{"harness_core", AdapterFamilyHarness, func(t *testing.T) LegacyNodeRunner {
 			return HarnessCoreNodeRunner{Invoker: &fakeHarnessCoreInvoker{result: HarnessCoreResult{Usage: LegacyUsage{Measured: true, InputTokens: 4, OutputTokens: 5},

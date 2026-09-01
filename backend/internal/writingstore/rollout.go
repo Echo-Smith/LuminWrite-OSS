@@ -155,7 +155,9 @@ func (s *Store) RecordRolloutApproval(ctx context.Context, record RolloutApprova
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
-	if record.PolicyVersion < 1 || record.TargetMode != "allowlist" || strings.TrimSpace(record.ActivationKey) == "" || strings.TrimSpace(record.ApprovedBy) == "" || strings.TrimSpace(record.Reason) == "" ||
+	// Percentage approvals may only be recorded for the second rung of the
+	// ladder; the allowlist stage itself is enforced by the promotion gate.
+	if record.PolicyVersion < 1 || !validApprovalTargetMode(record.TargetMode) || strings.TrimSpace(record.ActivationKey) == "" || strings.TrimSpace(record.ApprovedBy) == "" || strings.TrimSpace(record.Reason) == "" ||
 		record.EvidenceCutoff.IsZero() || record.EvidenceLastRecordedAt.IsZero() || record.EvidenceHealth.PolicyHash != record.PolicyHash ||
 		!record.EvidenceHealth.Cutoff.Equal(record.EvidenceCutoff) || !record.EvidenceHealth.LastRecordedAt.Equal(record.EvidenceLastRecordedAt) || !record.ExpiresAt.After(record.CreatedAt) {
 		return fmt.Errorf("%w: incomplete rollout approval", ErrInvalidRecord)
@@ -177,6 +179,10 @@ func (s *Store) RecordRolloutApproval(ctx context.Context, record RolloutApprova
 	return nil
 }
 
+func validApprovalTargetMode(mode string) bool {
+	return mode == "allowlist" || mode == "percentage"
+}
+
 func (s *Store) LatestRolloutApproval(ctx context.Context, policyHash string, policyVersion int, activationKey string) (RolloutApprovalRecord, error) {
 	var record RolloutApprovalRecord
 	var health []byte
@@ -194,6 +200,39 @@ func (s *Store) LatestRolloutApproval(ctx context.Context, policyHash string, po
 	}
 	if err != nil {
 		return RolloutApprovalRecord{}, fmt.Errorf("load rollout approval: %w", err)
+	}
+	if err := json.Unmarshal(health, &record.EvidenceHealth); err != nil {
+		return RolloutApprovalRecord{}, err
+	}
+	return record, nil
+}
+
+// LatestRolloutApprovalByActivationKey resolves the promotion ladder: it
+// returns the newest approval for an activation key regardless of the policy
+// hash that carried it, optionally restricted to one target mode (pass "" for
+// any). Percentage promotions use it to prove the same change already passed
+// the allowlist stage.
+func (s *Store) LatestRolloutApprovalByActivationKey(ctx context.Context, activationKey, targetMode string) (RolloutApprovalRecord, error) {
+	if strings.TrimSpace(activationKey) == "" {
+		return RolloutApprovalRecord{}, fmt.Errorf("%w: activation key required", ErrInvalidRecord)
+	}
+	query := `
+		SELECT approval_id, policy_hash, policy_version, activation_key, target_mode, approved_by, reason,
+		 evidence_health, evidence_cutoff, evidence_last_recorded_at, expires_at, created_at
+		FROM writing_rollout_approvals
+		WHERE activation_key=$1 AND target_mode=COALESCE(NULLIF($2,''), target_mode)
+		ORDER BY created_at DESC LIMIT 1
+	`
+	var record RolloutApprovalRecord
+	var health []byte
+	err := s.db.QueryRowContext(ctx, query, activationKey, targetMode).Scan(&record.ApprovalID, &record.PolicyHash, &record.PolicyVersion,
+		&record.ActivationKey, &record.TargetMode, &record.ApprovedBy, &record.Reason, &health,
+		&record.EvidenceCutoff, &record.EvidenceLastRecordedAt, &record.ExpiresAt, &record.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RolloutApprovalRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return RolloutApprovalRecord{}, fmt.Errorf("load rollout approval by activation key: %w", err)
 	}
 	if err := json.Unmarshal(health, &record.EvidenceHealth); err != nil {
 		return RolloutApprovalRecord{}, err

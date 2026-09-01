@@ -257,21 +257,21 @@ type GovernedStepEmitter struct{}
 
 func NewGovernedStepEmitter() *GovernedStepEmitter { return &GovernedStepEmitter{} }
 
-func (*GovernedStepEmitter) StepStart(engine.StepName, int)                  {}
-func (*GovernedStepEmitter) StepComplete(engine.StepName, interface{}, int64) {}
-func (*GovernedStepEmitter) StreamDelta(string)                              {}
-func (*GovernedStepEmitter) StreamReset()                                    {}
-func (*GovernedStepEmitter) ReasoningDelta(string)                           {}
-func (*GovernedStepEmitter) ArticleTitle(string)                             {}
-func (*GovernedStepEmitter) StreamDone(string)                               {}
+func (*GovernedStepEmitter) StepStart(engine.StepName, int)                              {}
+func (*GovernedStepEmitter) StepComplete(engine.StepName, interface{}, int64)            {}
+func (*GovernedStepEmitter) StreamDelta(string)                                          {}
+func (*GovernedStepEmitter) StreamReset()                                                {}
+func (*GovernedStepEmitter) ReasoningDelta(string)                                       {}
+func (*GovernedStepEmitter) ArticleTitle(string)                                         {}
+func (*GovernedStepEmitter) StreamDone(string)                                           {}
 func (*GovernedStepEmitter) AwaitInput(engine.StepName, interface{}, []string, int, int) {}
-func (*GovernedStepEmitter) Paused(engine.StepName, interface{})             {}
-func (*GovernedStepEmitter) PausedWithReason(engine.StepName, interface{}, string) {}
-func (*GovernedStepEmitter) Resumed(engine.StepName)                         {}
-func (*GovernedStepEmitter) Error(string, string, engine.StepName)           {}
-func (*GovernedStepEmitter) Completed(string, string, interface{}, interface{}) {}
-func (*GovernedStepEmitter) Cancelled()                                      {}
-func (*GovernedStepEmitter) Compaction(int, int, string, uint64, string)     {}
+func (*GovernedStepEmitter) Paused(engine.StepName, interface{})                         {}
+func (*GovernedStepEmitter) PausedWithReason(engine.StepName, interface{}, string)       {}
+func (*GovernedStepEmitter) Resumed(engine.StepName)                                     {}
+func (*GovernedStepEmitter) Error(string, string, engine.StepName)                       {}
+func (*GovernedStepEmitter) Completed(string, string, interface{}, interface{})          {}
+func (*GovernedStepEmitter) Cancelled()                                                  {}
+func (*GovernedStepEmitter) Compaction(int, int, string, uint64, string)                 {}
 
 func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) ([]LegacyPayload, LegacyUsage, error) {
 	if runner.StepFactory == nil {

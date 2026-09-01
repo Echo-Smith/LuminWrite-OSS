@@ -453,6 +453,27 @@ func TestTask13ShadowContentAndPromotionRecordsAreDurable(t *testing.T) {
 	if _, err := integrationDB.ExecContext(ctx, `UPDATE writing_rollout_approvals SET reason='mutated' WHERE approval_id=$1`, refreshed.ApprovalID); err == nil {
 		t.Fatal("append-only approval accepted an update")
 	}
+
+	percentageHealth := health
+	percentageHealth.PolicyHash = testHash("task13-percentage-policy")
+	percentageApproval := RolloutApprovalRecord{ApprovalID: "approval_task13_percentage", PolicyHash: percentageHealth.PolicyHash,
+		PolicyVersion: 2, ActivationKey: "change-task13", TargetMode: "percentage", ApprovedBy: "operator_test",
+		Reason: "integration test percentage", EvidenceHealth: percentageHealth, EvidenceCutoff: percentageHealth.Cutoff,
+		EvidenceLastRecordedAt: percentageHealth.LastRecordedAt, CreatedAt: now.Add(6 * time.Minute), ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.RecordRolloutApproval(ctx, percentageApproval); err != nil {
+		t.Fatalf("record percentage approval: %v", err)
+	}
+	ladder, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-task13", "allowlist")
+	if err != nil || ladder.TargetMode != "allowlist" || ladder.ApprovalID != refreshed.ApprovalID {
+		t.Fatalf("allowlist ladder=%#v err=%v", ladder, err)
+	}
+	latestPercentage, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-task13", "percentage")
+	if err != nil || latestPercentage.ApprovalID != percentageApproval.ApprovalID {
+		t.Fatalf("percentage ladder=%#v err=%v", latestPercentage, err)
+	}
+	if _, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-absent", "allowlist"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing ladder err=%v", err)
+	}
 }
 
 func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {

@@ -201,6 +201,7 @@
 | 2026-08-27—29 | 完成治理运行时及 Task11/Task12 local-shadow 加固 | 稳定化分支 | 将正式内容、质量与影子验证收敛到可审计边界 | ✅ 代码与本地验证完成；未部署、未放量 |
 | 2026-09-01 | 完成 Task13 工程化与双仓验收 | 稳定化分支 | 补齐持久化、晋升门禁和真实模型纵向证据 | ✅ local shadow 前置完成；未审批、未激活、未部署 |
 | 2026-09-02 | 打通 allowlist 证据积累闭环并交付采集作业 | 稳定化分支 | 修复 allowlist miss 与证据 hash 的语义缝，证据可累积在治理 policy hash 下 | ✅ 双仓同步；仅采证据，未审批、未激活、未部署 |
+| 2026-09-02 | 交付 percentage 阶梯工程与 ProjectMemory/Context Compiler 设计 | 稳定化分支 | 补齐 allowlist→percentage 阶梯的门禁、证据与审批工程；定稿 V2.9 记忆/上下文设计 | ✅ 双仓字节一致、容器验证全绿；未审批、未激活、未部署 |
 
 ---
 
@@ -227,6 +228,8 @@
 | E-017 | 验收 | Task13 真实模型、数据库与双仓回归报告 | `docs/releases/2026-09-01-task13-governance-productionization.md` |
 | E-018 | 代码+验收 | allowlist 证据积累闭环与采集作业 | `backend/internal/writingruntime/rollout.go`、`rollout_executor.go`、`evidence_accumulation_test.go`、`docs/releases/2026-09-02-allowlist-evidence-accumulation.md` |
 | E-019 | 代码+验收 | 治理 policy 表固化（`evidence_policy.go` + `cmd/evidence-policy-dump`）与本地证据库 3 场景证据 + exact-scope 审批记录（3×`allowed=true`，approval ID 见 release 文档；激活未授权） | `backend/internal/writingruntime/evidence_policy.go`、`backend/cmd/evidence-policy-dump/`、`backend/internal/writingruntime/vertical_test.go`、`docs/runbook.md` §9.5.1 |
+| E-020 | 代码+验收 | percentage 阶梯工程：miss 证据语义修复、受众稳定桶、`PercentagePromotionGate`（含 allowlist 阶梯机械检查）、审批存储放开 target_mode（迁移 097）、CLI 支持；双仓字节一致 | `backend/internal/writingruntime/rollout.go`、`promotion_gate.go`、`backend/internal/writingstore/rollout.go`、`backend/internal/database/migrations/097_percentage_promotion.*.sql`、`backend/cmd/governance-gate/`、`docs/releases/2026-09-02-percentage-promotion-engineering.md`、`docs/runbook.md` §9.7 |
+| E-021 | 设计 | ProjectMemory 与 Context Compiler 设计（四层分离、有效期区间 facts、受控词表、确定性编译、驻留层、Manifest 契约、M1–M5 顺序） | `docs/18-project-memory-context-compiler.md` |
 
 ---
 
@@ -244,6 +247,8 @@
 | 2026-09-02 | allowlist 证据积累门 | 证据可在治理 policy hash 下跨次运行累积；采集作业与只读评估入口 | ✅ 通过 | 工程闭环打通；真实审批与激活仍待授权 |
 | 2026-09-02 | allowlist 证据+审批门 | 本地证据库 3 场景 ×3 条 `shadow_compared`、0 失败；`assess allowed=true` ×3；append-only exact-scope 审批 ×3（24h TTL，2026-09-02T17:40Z 到期） | ✅ 通过 | 审批 ID 与 hash 记录于 `docs/releases/2026-09-02-allowlist-evidence-accumulation.md`；仅覆盖证据+审批，**激活仍是独立未授权变更** |
 | — | allowlist 激活门 | 对指定 subject 激活 allowlist policy 的独立受控变更（需显式授权 + 双仓回归 + 复核审批在有效期内） | ⏳ 待授权 | 本任务未执行；percentage/production 仍被门禁拒绝 |
+| 2026-09-02 | percentage 工程门 | miss 证据在 percentage policy hash 下累积、受众桶跨放量稳定、gate fail-closed、阶梯机械检查、迁移 097 双仓验证（fresh DB 自动应用） | ✅ 通过 | 纯工程交付：无 percentage 审批、未调 basis points、未部署、未切流；percentage 激活仍需 §9.7 走查 + 独立授权 |
+| 2026-09-02 | 设计门 | ProjectMemory/Context Compiler 设计定稿（参考 NarraCat/LucidWrite/DeepSeek Harness 调研） | ✅ 通过 | 仅设计文档（`docs/18`）；实现待 V2.9 排期 |
 
 ---
 

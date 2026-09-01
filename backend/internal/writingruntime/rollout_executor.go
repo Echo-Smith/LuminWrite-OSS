@@ -24,8 +24,8 @@ type RolloutExecutor struct {
 	telemetry  RuntimeTelemetry
 	now        func() time.Time
 
-	shadowFailures     atomic.Int64
-	shadowCircuitOpen  atomic.Bool
+	shadowFailures    atomic.Int64
+	shadowCircuitOpen atomic.Bool
 }
 
 // NewRolloutExecutor builds the candidate-authoritative rollout executor.
@@ -132,7 +132,7 @@ func (executor *RolloutExecutor) Execute(ctx context.Context, request ExecutionR
 	}
 	if decision.RunShadow {
 		if !executor.shadowOnly {
-			if decision.Reason == "allowlist_miss" {
+			if decision.Reason == "allowlist_miss" || decision.Reason == "percentage_miss" {
 				// Post-activation misses are expected traffic on a
 				// candidate-authoritative executor: serve baseline and record
 				// the route without marking an authority violation, so the
