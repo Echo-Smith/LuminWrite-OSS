@@ -788,6 +788,22 @@ make evidence-accumulate
 - 采集作业中 allowlist 主体（policy 的 `allow_subjects`）不会出现在请求里；若把真实主体加入 policy 前先激活，候选权威执行器会按预期拒绝并记 `candidate_lane_blocked`，这会计入失败数。
 - `make evidence-gate ROLLOUT_POLICY_FILE=/abs/path/policy.json` 只做只读评估；审批仍必须走 §9.3 的 `approve` + 受控激活变更。
 
+#### §9.5.1 policy 固化与审批走查（2026-09-02 实测路径）
+
+采集作业内部按 `EvidenceScenarioPolicies()` 生成治理 allowlist policy。要把证据挂到可审计、可复核的 policy hash 上，先用 dump 工具把三份 policy JSON 固化到磁盘（hash 与库中证据一致）：
+
+```bash
+go run ./backend/cmd/evidence-policy-dump -out /absolute/path/to/policy-dir
+# 输出 JSON lines：{scenario, policy_hash, file}
+```
+
+注意：policy hash 覆盖全部字段（含 `mode`）。若运行时政策表或采集代码变动，hash 会随之变化，需重新 dump 并重新累积证据。之后走查：
+
+1. `governance-gate -action assess -policy <dump 出的 policy.json>`：要求 `allowed=true`（≥3 条对比、0 失败、24h 内有新证据）。
+2. `governance-gate -action approve -policy <policy.json> -operator <操作者> -reason '<变更依据>' -approval-ttl 24h`：写入 append-only 审批，绑定 exact hash / version / activation key。
+3. **审批后立即停止采集**：审批产生后新证据会使审批 `approval_evidence_stale` 失效。按日 cron 只适用于"持续积累、尚未审批"阶段；审批后如需续期，重新评估并重新审批。
+4. 审批 ≠ 激活。对指定 subject 启用候选路径仍是独立受控变更（§9.6）。
+
 ### 9.6 明确禁止
 
 - 不得把 `assess` 或 `approve` 的成功等同于生产授权。

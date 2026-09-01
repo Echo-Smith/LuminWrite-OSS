@@ -436,7 +436,23 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract.ContractID = "ctr_vertical_" + name
+	runID, documentID := "run_vertical_"+name, "doc_vertical_"+name
+	if backend.ids != nil {
+		runID, documentID = backend.ids(name)
+	}
+	// Contracts are immutable per (contract_id, version) alongside their
+	// document: per-invocation ids must therefore also derive the contract id,
+	// or a second accumulation run collides with the first one's record.
+	contractID := "ctr_vertical_" + name
+	// Contracts, intent plans, plans, and strategy decisions are all immutable
+	// alongside their per-invocation lineage: per-invocation ids must derive
+	// every object id, or a second accumulation run collides with the first.
+	lineageSuffix := ""
+	if backend.ids != nil {
+		lineageSuffix = "_" + strings.TrimPrefix(strings.TrimPrefix(runID, "run_vertical_"), "evidence_")
+		contractID = "ctr_vertical_" + name + lineageSuffix
+	}
+	contract.ContractID = contractID
 	if len(contract.Content.RequiredPoints) == 0 {
 		contract.Content.RequiredPoints = []string{"治理边界", "用户控制", "可审计证据"}
 	}
@@ -448,10 +464,6 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID, documentID := "run_vertical_"+name, "doc_vertical_"+name
-	if backend.ids != nil {
-		runID, documentID = backend.ids(name)
-	}
 	capabilityVersion := "1.0.0"
 	proposed := make([]writingplan.ProposedStep, 0, len(nodes))
 	for index, node := range nodes {
@@ -462,14 +474,14 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 		proposed = append(proposed, writingplan.ProposedStep{StepID: node.name, Objective: "execute governed " + node.name,
 			CapabilityHint: "core.vertical." + name + "." + node.name, DependsOn: dependencies})
 	}
-	intent, err := (writingplan.IntentPlan{IntentPlanID: "iplan_vertical_" + name,
+	intent, err := (writingplan.IntentPlan{IntentPlanID: "iplan_vertical_" + name + lineageSuffix,
 		ContractRef: writingplan.ObjectRef{ID: contract.ContractID, Version: contract.Version, Hash: contract.ContractHash},
 		Summary:     "execute governed vertical scenario", ProposedSteps: proposed,
 		CreatedBy: writingplan.ActorSystem, CreatedAt: now}).WithComputedHash()
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := writingplan.ExecutablePlan{PlanID: "plan_vertical_" + name, Status: writingplan.PlanValidated,
+	plan := writingplan.ExecutablePlan{PlanID: "plan_vertical_" + name + lineageSuffix, Status: writingplan.PlanValidated,
 		IntentPlanRef: writingplan.ObjectRef{ID: intent.IntentPlanID, Version: 1, Hash: intent.IntentPlanHash},
 		TrustLevel:    writingplan.TrustT1, RootNodeID: "node_" + nodes[0].name, Nodes: []writingplan.PlanNode{},
 		StaticValidation: writingplan.StaticValidation{Valid: true, CheckedAt: now, Errors: []string{},
@@ -497,7 +509,7 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := writingplan.StrategyDecision{DecisionID: "decision_vertical_" + name, IntentPlanRef: plan.IntentPlanRef,
+	decision := writingplan.StrategyDecision{DecisionID: "decision_vertical_" + name + lineageSuffix, IntentPlanRef: plan.IntentPlanRef,
 		Candidates: []writingplan.StrategyCandidate{{PlanHash: plan.PlanHash, TrustLevel: plan.TrustLevel,
 			EstimatedCostUSD: 1, EstimatedDurationMS: int64(nodeTimeout.Milliseconds()), EstimatedConfidence: .8}},
 		SelectedPlanHash: plan.PlanHash, SelectionSource: writingplan.SelectionSystem,

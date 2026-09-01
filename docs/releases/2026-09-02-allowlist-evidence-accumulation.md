@@ -23,3 +23,21 @@ Task13 交付了 `AllowlistPromotionGate` + `governance-gate` CLI，但存在一
 ## 边界（未改变）
 
 未审批、未激活、未部署、未推送、未切换真实流量；`percentage`/`enabled` 仍被门禁拒绝。本变更只让"证据可以在正确的 policy hash 下累积"成为可能，allowlist 发布仍需 §9.2/§9.3 的评估、审批与受控激活。
+
+## 本地证据与审批记录（2026-09-01/02，仅限本地证据库）
+
+在独立本地数据库（`writing_agent_evidence`，与主库和 Task13 验收库隔离）上走完了 §9.5 采集 → §9.2 只读评估 → §9.3 审批的完整前半程。真实模型为 `deepseek-v4-flash`（临时测试凭据，测试后由提供方删除）。
+
+- **证据**：三个纵向场景各完成 3 次采集运行，每个治理 allowlist policy hash 下累计 3 条 `runtime.shadow_compared`，失败 0 条；重复运行按独立 lineage 累积（期间修复了契约/意图计划/计划/决策 ID 未随 run 派生导致的跨次运行冲突）。
+- **只读评估**：三个场景 `assess` 均返回 `allowed=true`。
+- **审批**（append-only，绑定 exact policy hash / policy version 2 / activation key `change-local-evidence-accumulation`；operator `zcode-stabilization-agent`；TTL 24h，created 2026-09-01T17:40Z，expires 2026-09-02T17:40Z；理由注明"激活仍是独立受控变更"）：
+
+| 场景 | approval_id | policy_hash |
+|---|---|---|
+| long_form | `approval_9197fbec7de9ef607e2e0fb3e23666bc` | `sha256:73c970a8a0102f72b251b21adeab398bc4a781aac6e623c5bb4dc53926976997` |
+| multi_material | `approval_eef468c32c49c94cedbb5be5315e39e9` | `sha256:81c4c698a393d59c50e91ce302473f3d3bbd1e77a56ee1ea4ed16a297bca1b84` |
+| faithful_rewrite | `approval_1a27a337fb3d2780ea04efdf41e7fa68` | `sha256:9d844c2cc9aa25ef5145a2cea6ece5621354f0a109fe451472df408d20c63bfb` |
+
+- **复核**：审批后立即重跑 `assess`，三场景仍 `allowed=true`。
+- **采集已停止**：审批后继续采集会产生新证据并使审批 `approval_evidence_stale` 失效，因此按日 cron 已删除；如需续期，重新采集并按 §9.2/§9.3 重走评估与审批。
+- **激活未执行**：以上记录只覆盖"证据 + exact-scope 审批"。是否对指定 subject 激活 allowlist policy 仍是独立的受控变更，需要显式授权后按 §9.3/§9.6 执行。

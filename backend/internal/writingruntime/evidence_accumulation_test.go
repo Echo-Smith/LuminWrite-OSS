@@ -20,21 +20,51 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
 
-const evidenceHarnessActivationKey = "change-local-evidence-accumulation"
+const evidenceHarnessActivationKey = EvidenceHarnessActivationKey
 
-// allowlistPolicyForHarness derives the governed allowlist policy for one
-// vertical node: identity fields stay aligned with the shadow candidate so
-// bindRolloutPolicy accepts it, and the hash is stable across invocations
-// because every identity field is deterministic.
-func allowlistPolicyForHarness(capability, candidateID string) AdapterRolloutPolicy {
-	policy := DefaultShadowPolicy(candidateID, AdapterFamilyEngine, capability, "1.0.0")
-	policy.PolicyVersion = 2
-	policy.Mode = RolloutAllowlist
-	policy.ActivationKey = evidenceHarnessActivationKey
-	policy.AllowSubjects = []string{"user_operator_first"}
-	policy.Reason = "local allowlist evidence accumulation; no production authorization"
-	policy, _ = policy.WithComputedHash()
-	return policy
+func TestEvidenceScenarioPolicyTableMatchesLiveNodes(t *testing.T) {
+	liveNodes := map[string]func(*tools.LLMClient) []verticalNode{
+		"long_form":        liveLongFormNodes,
+		"multi_material":   liveMultiMaterialNodes,
+		"faithful_rewrite": liveFaithfulRewriteNodes,
+	}
+	for _, spec := range EvidenceScenarioPolicies() {
+		build, ok := liveNodes[spec.Name]
+		if !ok {
+			t.Fatalf("scenario %q has no live node builder", spec.Name)
+		}
+		nodes := build(nil)
+		if spec.GovernedIndex < 0 || spec.GovernedIndex >= len(nodes) {
+			t.Fatalf("scenario %q governed index %d out of range", spec.Name, spec.GovernedIndex)
+		}
+		if nodes[spec.GovernedIndex].name != spec.NodeName {
+			t.Fatalf("scenario %q node %d = %q, table says %q", spec.Name, spec.GovernedIndex, nodes[spec.GovernedIndex].name, spec.NodeName)
+		}
+	}
+}
+
+func TestEvidenceGovernedPoliciesAreDistinctAndStable(t *testing.T) {
+	seen := map[string]string{}
+	for _, spec := range EvidenceScenarioPolicies() {
+		policy, ok := EvidenceGovernedPolicy(spec.Name)
+		if !ok {
+			t.Fatalf("scenario %q has no governed policy", spec.Name)
+		}
+		if err := policy.Validate(); err != nil {
+			t.Fatalf("scenario %q policy invalid: %v", spec.Name, err)
+		}
+		if policy.Mode != RolloutAllowlist || policy.ActivationKey != EvidenceHarnessActivationKey {
+			t.Fatalf("scenario %q policy not the governed allowlist: %#v", spec.Name, policy)
+		}
+		again, _ := EvidenceGovernedPolicy(spec.Name)
+		if again.PolicyHash != policy.PolicyHash {
+			t.Fatalf("scenario %q policy hash drifted between calls", spec.Name)
+		}
+		if previous, bound := seen[policy.PolicyHash]; bound {
+			t.Fatalf("scenarios %q and %q share one policy hash", previous, spec.Name)
+		}
+		seen[policy.PolicyHash] = spec.Name
+	}
 }
 
 func TestAllowlistEvidenceAccumulationHarness(t *testing.T) {
@@ -83,7 +113,7 @@ func TestAllowlistEvidenceAccumulationHarness(t *testing.T) {
 				evidence: durableEvidenceMirror{persistent: WritingStoreEvidenceStore{Recorder: persistent},
 					memory: &MemoryRolloutEvidenceStore{}},
 				sink: &durableShadowTracker{persistent: WritingStoreShadowContentSink{Store: persistent, TTL: DefaultShadowContentTTL}},
-				ids: func(string) (string, string) { return runID, documentID },
+				ids:  func(string) (string, string) { return runID, documentID },
 				nodePolicy: func(index int, capability, candidateID string) *AdapterRolloutPolicy {
 					if index != scenario.governedIndex {
 						return nil

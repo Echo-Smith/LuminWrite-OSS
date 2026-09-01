@@ -226,6 +226,7 @@
 | E-016 | 代码 | Task13 持久化 shadow、evidence health 与晋升门禁 | `backend/internal/writingstore/rollout.go`、`backend/internal/writingruntime/persistent_rollout.go`、`promotion_gate.go` |
 | E-017 | 验收 | Task13 真实模型、数据库与双仓回归报告 | `docs/releases/2026-09-01-task13-governance-productionization.md` |
 | E-018 | 代码+验收 | allowlist 证据积累闭环与采集作业 | `backend/internal/writingruntime/rollout.go`、`rollout_executor.go`、`evidence_accumulation_test.go`、`docs/releases/2026-09-02-allowlist-evidence-accumulation.md` |
+| E-019 | 代码+验收 | 治理 policy 表固化（`evidence_policy.go` + `cmd/evidence-policy-dump`）与本地证据库 3 场景证据 + exact-scope 审批记录（3×`allowed=true`，approval ID 见 release 文档；激活未授权） | `backend/internal/writingruntime/evidence_policy.go`、`backend/cmd/evidence-policy-dump/`、`backend/internal/writingruntime/vertical_test.go`、`docs/runbook.md` §9.5.1 |
 
 ---
 
@@ -241,7 +242,8 @@
 | 2026-08-29 | local shadow 门 | 双版本运行时、迁移、前后端门禁和真实纵向治理链路 | ✅ 通过 | 详见 `docs/releases/2026-08-29-governed-runtime-readiness.md`；不构成 allowlist 或生产授权 |
 | 2026-09-01 | allowlist 前置工程门 | durable evidence/sink、晋升清单、真实 LLM 纵向验收、双仓全量回归 | ✅ 通过 | 只代表可评估；尚无真实审批、subject 激活或生产授权 |
 | 2026-09-02 | allowlist 证据积累门 | 证据可在治理 policy hash 下跨次运行累积；采集作业与只读评估入口 | ✅ 通过 | 工程闭环打通；真实审批与激活仍待授权 |
-| — | allowlist 发布门 | 目标环境证据、exact-scope 审批与独立激活变更 | ⏳ 待授权 | 本任务未执行 |
+| 2026-09-02 | allowlist 证据+审批门 | 本地证据库 3 场景 ×3 条 `shadow_compared`、0 失败；`assess allowed=true` ×3；append-only exact-scope 审批 ×3（24h TTL，2026-09-02T17:40Z 到期） | ✅ 通过 | 审批 ID 与 hash 记录于 `docs/releases/2026-09-02-allowlist-evidence-accumulation.md`；仅覆盖证据+审批，**激活仍是独立未授权变更** |
+| — | allowlist 激活门 | 对指定 subject 激活 allowlist policy 的独立受控变更（需显式授权 + 双仓回归 + 复核审批在有效期内） | ⏳ 待授权 | 本任务未执行；percentage/production 仍被门禁拒绝 |
 
 ---
 
