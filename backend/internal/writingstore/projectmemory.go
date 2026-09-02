@@ -12,6 +12,15 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/projectmemory"
 )
 
+// marshalStringSlice marshals a string slice as a JSON array, normalizing a
+// nil slice to [] so the jsonb_typeof='array' column checks never see null.
+func marshalStringSlice(values []string) ([]byte, error) {
+	if values == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(values)
+}
+
 // ProjectRecord is a ProjectMemory scope: facts and candidates hang off a
 // project, and documents may reference one via writing_documents.project_id.
 type ProjectRecord struct {
@@ -139,7 +148,7 @@ func (s *Store) StageMemoryCandidates(ctx context.Context, candidates []projectm
 	}
 	return s.InTransaction(ctx, func(tx *Tx) error {
 		for i := range candidates {
-			refs, err := json.Marshal(candidates[i].SourceRefs)
+			refs, err := marshalStringSlice(candidates[i].SourceRefs)
 			if err != nil {
 				return err
 			}
@@ -276,52 +285,9 @@ func (s *Store) CommitMemoryCandidate(ctx context.Context, candidateID string, a
 			VocabularyVersion: candidate.VocabularyVersion, ExtendedPredicate: candidate.ExtendedPredicate,
 			ContentHash: contentHash, CandidateID: candidate.CandidateID,
 			CommittedByType: string(actor.Type), CommittedByID: actor.ID, CreatedAt: time.Now().UTC()}
-		// Single-valued predicates follow the one-active-fact rule: the new
-		// state supersedes the previous one, and cannot predate it (the closed
-		// interval must still satisfy valid_to > valid_from). Multi-valued
-		// predicates keep coexisting active facts.
-		superseded := []string{}
-		if projectmemory.SingleValued(candidate.Predicate) {
-			predecessors, err := tx.tx.QueryContext(ctx, `
-				SELECT fact_id, valid_from FROM project_facts
-				WHERE project_id=$1 AND subject=$2 AND predicate=$3 AND valid_to IS NULL AND content_hash<>$4
-				ORDER BY valid_from
-			`, candidate.ProjectID, candidate.Subject, candidate.Predicate, contentHash)
-			if err != nil {
-				return fmt.Errorf("probe predecessors: %w", err)
-			}
-			for predecessors.Next() {
-				var predecessorID string
-				var validFrom time.Time
-				if err := predecessors.Scan(&predecessorID, &validFrom); err != nil {
-					predecessors.Close()
-					return err
-				}
-				if !candidate.AsOf.After(validFrom) {
-					predecessors.Close()
-					return fmt.Errorf("%w: state change %s is at or before the active fact %s valid_from", ErrConflict, candidateID, predecessorID)
-				}
-				superseded = append(superseded, predecessorID)
-			}
-			if err := predecessors.Err(); err != nil {
-				predecessors.Close()
-				return err
-			}
-			predecessors.Close()
-		}
-		refsJSON, err := json.Marshal(fact.SourceRefs)
+		superseded, err := insertFactWithSupersede(ctx, tx, fact)
 		if err != nil {
 			return err
-		}
-		if _, err := tx.tx.ExecContext(ctx, `
-			INSERT INTO project_facts
-			(fact_id, project_id, subject, predicate, object, valid_from, source_run_id, source_refs,
-			 vocabulary_version, extended_predicate, content_hash, candidate_id, committed_by_type, committed_by_id, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)
-		`, fact.FactID, fact.ProjectID, fact.Subject, fact.Predicate, fact.Object, fact.ValidFrom,
-			fact.SourceRunID, refsJSON, fact.VocabularyVersion, fact.ExtendedPredicate, fact.ContentHash,
-			fact.CandidateID, fact.CommittedByType, fact.CommittedByID, fact.CreatedAt); err != nil {
-			return fmt.Errorf("insert fact: %w", err)
 		}
 		for _, predecessorID := range superseded {
 			if _, err := tx.tx.ExecContext(ctx, `
@@ -468,4 +434,500 @@ func (s *Store) ListActiveFacts(ctx context.Context, projectID, subject string) 
 		facts = append(facts, fact)
 	}
 	return facts, rows.Err()
+}
+
+// insertFactWithSupersede inserts a canon fact and resolves the single-valued
+// predecessor rule: single-valued predicates follow the one-active-fact rule
+// (the new state supersedes the previous one and cannot predate it, keeping
+// valid_to > valid_from); multi-valued predicates keep coexisting active
+// facts. Returns the predecessor ids whose intervals the caller must close.
+func insertFactWithSupersede(ctx context.Context, tx *Tx, fact projectmemory.Fact) ([]string, error) {
+	superseded := []string{}
+	if projectmemory.SingleValued(fact.Predicate) {
+		predecessors, err := tx.tx.QueryContext(ctx, `
+			SELECT fact_id, valid_from FROM project_facts
+			WHERE project_id=$1 AND subject=$2 AND predicate=$3 AND valid_to IS NULL AND content_hash<>$4
+			ORDER BY valid_from
+		`, fact.ProjectID, fact.Subject, fact.Predicate, fact.ContentHash)
+		if err != nil {
+			return nil, fmt.Errorf("probe predecessors: %w", err)
+		}
+		for predecessors.Next() {
+			var predecessorID string
+			var validFrom time.Time
+			if err := predecessors.Scan(&predecessorID, &validFrom); err != nil {
+				predecessors.Close()
+				return nil, err
+			}
+			if !fact.ValidFrom.After(validFrom) {
+				predecessors.Close()
+				return nil, fmt.Errorf("%w: state change %s is at or before the active fact %s valid_from", ErrConflict, fact.CandidateID, predecessorID)
+			}
+			superseded = append(superseded, predecessorID)
+		}
+		if err := predecessors.Err(); err != nil {
+			predecessors.Close()
+			return nil, err
+		}
+		predecessors.Close()
+	}
+	refsJSON, err := marshalStringSlice(fact.SourceRefs)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.tx.ExecContext(ctx, `
+		INSERT INTO project_facts
+		(fact_id, project_id, subject, predicate, object, valid_from, source_run_id, source_refs,
+		 vocabulary_version, extended_predicate, content_hash, candidate_id, committed_by_type, committed_by_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)
+	`, fact.FactID, fact.ProjectID, fact.Subject, fact.Predicate, fact.Object, fact.ValidFrom,
+		fact.SourceRunID, refsJSON, fact.VocabularyVersion, fact.ExtendedPredicate, fact.ContentHash,
+		fact.CandidateID, fact.CommittedByType, fact.CommittedByID, fact.CreatedAt); err != nil {
+		return nil, fmt.Errorf("insert fact: %w", err)
+	}
+	return superseded, nil
+}
+
+// StageMemoryClaims stages a batch of claims into the corroboration lane.
+// Any actor may raise a claim; the batch fails whole on any invalid item.
+// Re-raising a triple that already has an open/supported claim in the
+// project is rejected: corroboration accumulates on the existing claim, so
+// duplicates cannot fragment the evidence ledger.
+func (s *Store) StageMemoryClaims(ctx context.Context, claims []projectmemory.Claim) error {
+	if len(claims) == 0 {
+		return fmt.Errorf("%w: claim batch is empty", ErrInvalidRecord)
+	}
+	batchID := claims[0].BatchID
+	for i := range claims {
+		if err := validateID(claims[i].ClaimID, "claim_", "claim_id"); err != nil {
+			return err
+		}
+		if err := validateID(claims[i].BatchID, "bat_", "batch_id"); err != nil {
+			return err
+		}
+		if claims[i].BatchID != batchID {
+			return fmt.Errorf("%w: batch mixes batch ids %q and %q", ErrInvalidRecord, batchID, claims[i].BatchID)
+		}
+		if claims[i].RaisedByType == "" {
+			return fmt.Errorf("%w: claim %s requires raised_by_type", ErrInvalidRecord, claims[i].ClaimID)
+		}
+		warnings, err := projectmemory.ValidateClaim(&claims[i])
+		if err != nil {
+			return fmt.Errorf("%w: claim %s: %v", ErrInvalidRecord, claims[i].ClaimID, err)
+		}
+		_ = warnings
+		if claims[i].Status == "" {
+			claims[i].Status = "open"
+		}
+		if claims[i].Status != "open" {
+			return fmt.Errorf("%w: claim %s must stage as open", ErrInvalidRecord, claims[i].ClaimID)
+		}
+		if claims[i].CreatedAt.IsZero() {
+			claims[i].CreatedAt = time.Now().UTC()
+		}
+		claims[i].ContentHash = projectmemory.ContentKey(claims[i].ProjectID, claims[i].Subject, claims[i].Predicate, claims[i].Object, claims[i].VocabularyVersion)
+	}
+	return s.InTransaction(ctx, func(tx *Tx) error {
+		for i := range claims {
+			refs, err := marshalStringSlice(claims[i].SourceRefs)
+			if err != nil {
+				return err
+			}
+			var existingID string
+			err = tx.tx.QueryRowContext(ctx, `
+				SELECT claim_id FROM project_claims WHERE project_id=$1 AND content_hash=$2 AND status IN ('open','supported')
+			`, claims[i].ProjectID, claims[i].ContentHash).Scan(&existingID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("probe open claim: %w", err)
+			}
+			if err == nil {
+				return fmt.Errorf("%w: claim %s duplicates open claim %s", ErrConflict, claims[i].ClaimID, existingID)
+			}
+			if _, err := tx.tx.ExecContext(ctx, `
+				INSERT INTO project_claims
+				(claim_id, batch_id, project_id, subject, predicate, object, as_of, raised_by_type, raised_by_id,
+				 source_run_id, source_refs, vocabulary_version, extended_predicate, content_hash, status, created_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),$11,$12,$13,$14,$15,$16)
+			`, claims[i].ClaimID, claims[i].BatchID, claims[i].ProjectID, claims[i].Subject, claims[i].Predicate,
+				claims[i].Object, claims[i].AsOf, claims[i].RaisedByType, claims[i].RaisedByID,
+				claims[i].SourceRunID, refs, claims[i].VocabularyVersion, claims[i].ExtendedPredicate,
+				claims[i].ContentHash, claims[i].Status, claims[i].CreatedAt); err != nil {
+				return fmt.Errorf("stage claim %s: %w", claims[i].ClaimID, err)
+			}
+			// The raising run is the claim's first evidence citation.
+			if _, err := tx.tx.ExecContext(ctx, `
+				INSERT INTO project_claim_evidence
+				(evidence_id, claim_id, evidence_hash, source_run_id, source_refs, recorded_by_type, recorded_by_id)
+				VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,NULLIF($7,''))
+			`, StableID("evd_", claims[i].ClaimID, claims[i].ContentHash, "raise"), claims[i].ClaimID,
+				projectmemory.EvidenceHash(claims[i].SourceRunID, claims[i].SourceRefs),
+				claims[i].SourceRunID, refs, claims[i].RaisedByType, claims[i].RaisedByID); err != nil {
+				return fmt.Errorf("record raising evidence %s: %w", claims[i].ClaimID, err)
+			}
+		}
+		return nil
+	})
+}
+
+// CorroborateMemoryClaim records one evidence citation. Any actor may
+// corroborate — gathering sources is machine work. Recording is idempotent
+// per evidence hash; when distinct citations reach the support threshold the
+// claim flips from open to supported. Support never auto-promotes.
+func (s *Store) CorroborateMemoryClaim(ctx context.Context, claimID, evidenceID string, sourceRunID string, sourceRefs []string, actor Actor) (projectmemory.Claim, error) {
+	if err := validateID(evidenceID, "evd_", "evidence_id"); err != nil {
+		return projectmemory.Claim{}, err
+	}
+	if err := actor.Validate(); err != nil {
+		return projectmemory.Claim{}, err
+	}
+	if len(sourceRefs) == 0 && strings.TrimSpace(sourceRunID) == "" {
+		return projectmemory.Claim{}, fmt.Errorf("%w: evidence requires source_refs or source_run_id", ErrInvalidRecord)
+	}
+	claim := projectmemory.Claim{}
+	err := s.InTransaction(ctx, func(tx *Tx) error {
+		var refs []byte
+		var promotedAt sql.NullTime
+		err := tx.tx.QueryRowContext(ctx, `
+			SELECT claim_id, batch_id, project_id, subject, predicate, object, as_of, raised_by_type, COALESCE(raised_by_id,''),
+			 COALESCE(source_run_id,''), source_refs, vocabulary_version, extended_predicate, content_hash, status,
+			 COALESCE(promoted_fact_id,''), promoted_at, created_at
+			FROM project_claims WHERE claim_id=$1
+		`, claimID).Scan(&claim.ClaimID, &claim.BatchID, &claim.ProjectID, &claim.Subject, &claim.Predicate, &claim.Object,
+			&claim.AsOf, &claim.RaisedByType, &claim.RaisedByID, &claim.SourceRunID, &refs, &claim.VocabularyVersion,
+			&claim.ExtendedPredicate, &claim.ContentHash, &claim.Status, &claim.PromotedFactID, &promotedAt, &claim.CreatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: claim %s", ErrNotFound, claimID)
+		}
+		if err != nil {
+			return fmt.Errorf("load claim: %w", err)
+		}
+		if err := json.Unmarshal(refs, &claim.SourceRefs); err != nil {
+			return err
+		}
+		if claim.Status != "open" && claim.Status != "supported" {
+			return fmt.Errorf("%w: claim %s is %q and no longer accepts evidence", ErrConflict, claimID, claim.Status)
+		}
+		refsJSON, err := marshalStringSlice(sourceRefs)
+		if err != nil {
+			return err
+		}
+		evidenceHash := projectmemory.EvidenceHash(sourceRunID, sourceRefs)
+		result, err := tx.tx.ExecContext(ctx, `
+			INSERT INTO project_claim_evidence
+			(evidence_id, claim_id, evidence_hash, source_run_id, source_refs, recorded_by_type, recorded_by_id)
+			VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,NULLIF($7,''))
+			ON CONFLICT (claim_id, evidence_hash) DO NOTHING
+		`, evidenceID, claimID, evidenceHash, sourceRunID, refsJSON, actor.Type, actor.ID)
+		if err != nil {
+			return fmt.Errorf("record evidence: %w", err)
+		}
+		if rows, _ := result.RowsAffected(); rows == 1 {
+			var citations int
+			if err := tx.tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM project_claim_evidence WHERE claim_id=$1
+			`, claimID).Scan(&citations); err != nil {
+				return fmt.Errorf("count evidence: %w", err)
+			}
+			if claim.Status == "open" && int64(citations) >= projectmemory.ClaimSupportThreshold {
+				if _, err := tx.tx.ExecContext(ctx, `
+					UPDATE project_claims SET status='supported', updated_at=NOW() WHERE claim_id=$1
+				`, claimID); err != nil {
+					return fmt.Errorf("support claim: %w", err)
+				}
+				claim.Status = "supported"
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return projectmemory.Claim{}, err
+	}
+	return claim, nil
+}
+
+// CommitMemoryClaim promotes a claim into a canonical fact. The gate is
+// HITL-only (user actor); support status is advisory context, so committing
+// an open claim is allowed — the user judges, corroboration informs. The
+// fact insertion reuses the candidate commit machinery, including idempotent
+// handling of an already-canon triple.
+func (s *Store) CommitMemoryClaim(ctx context.Context, claimID string, actor Actor, factID string) (projectmemory.Fact, bool, error) {
+	if err := validateID(factID, "fact_", "fact_id"); err != nil {
+		return projectmemory.Fact{}, false, err
+	}
+	if err := actor.Validate(); err != nil {
+		return projectmemory.Fact{}, false, err
+	}
+	if actor.Type != ActorUser {
+		return projectmemory.Fact{}, false, fmt.Errorf("%w: project memory claim promotion requires a user actor, got %q", ErrInvalidRecord, actor.Type)
+	}
+	var fact projectmemory.Fact
+	var claim projectmemory.Claim
+	err := s.InTransaction(ctx, func(tx *Tx) error {
+		var refs []byte
+		err := tx.tx.QueryRowContext(ctx, `
+			SELECT claim_id, batch_id, project_id, subject, predicate, object, as_of, raised_by_type, COALESCE(raised_by_id,''),
+			 COALESCE(source_run_id,''), source_refs, vocabulary_version, extended_predicate, content_hash, status,
+			 COALESCE(promoted_fact_id,''), created_at
+			FROM project_claims WHERE claim_id=$1
+		`, claimID).Scan(&claim.ClaimID, &claim.BatchID, &claim.ProjectID, &claim.Subject, &claim.Predicate, &claim.Object,
+			&claim.AsOf, &claim.RaisedByType, &claim.RaisedByID, &claim.SourceRunID, &refs, &claim.VocabularyVersion,
+			&claim.ExtendedPredicate, &claim.ContentHash, &claim.Status, &claim.PromotedFactID, &claim.CreatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: claim %s", ErrNotFound, claimID)
+		}
+		if err != nil {
+			return fmt.Errorf("load claim: %w", err)
+		}
+		if err := json.Unmarshal(refs, &claim.SourceRefs); err != nil {
+			return err
+		}
+		if claim.Status != "open" && claim.Status != "supported" {
+			return fmt.Errorf("%w: claim %s is %q, only open or supported claims can be promoted", ErrConflict, claimID, claim.Status)
+		}
+		contentHash := projectmemory.ContentKey(claim.ProjectID, claim.Subject, claim.Predicate, claim.Object, claim.VocabularyVersion)
+		var existingID string
+		err = tx.tx.QueryRowContext(ctx, `
+			SELECT fact_id FROM project_facts WHERE project_id=$1 AND content_hash=$2 AND valid_to IS NULL
+		`, claim.ProjectID, contentHash).Scan(&existingID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("probe active fact: %w", err)
+		}
+		if err == nil {
+			if _, err := tx.tx.ExecContext(ctx, `
+				UPDATE project_claims SET status='promoted', promoted_fact_id=$2, promoted_at=NOW(), updated_at=NOW() WHERE claim_id=$1
+			`, claimID, existingID); err != nil {
+				return fmt.Errorf("link promoted claim: %w", err)
+			}
+			fact, err = scanFact(s.db.QueryRowContext(ctx, factColumns+` FROM project_facts WHERE fact_id=$1`, existingID))
+			return err
+		}
+		// Insert the canon fact with the same single-valued supersede rules
+		// as the candidate commit path.
+		fact = projectmemory.Fact{FactID: factID, ProjectID: claim.ProjectID,
+			Subject: claim.Subject, Predicate: claim.Predicate, Object: claim.Object,
+			ValidFrom: claim.AsOf, SourceRunID: claim.SourceRunID, SourceRefs: claim.SourceRefs,
+			VocabularyVersion: claim.VocabularyVersion, ExtendedPredicate: claim.ExtendedPredicate,
+			ContentHash: contentHash, CandidateID: "",
+			CommittedByType: string(actor.Type), CommittedByID: actor.ID, CreatedAt: time.Now().UTC()}
+		superseded, err := insertFactWithSupersede(ctx, tx, fact)
+		if err != nil {
+			return err
+		}
+		for _, predecessorID := range superseded {
+			if _, err := tx.tx.ExecContext(ctx, `
+				UPDATE project_facts SET valid_to=$2, superseded_by=$3 WHERE fact_id=$1
+			`, predecessorID, fact.ValidFrom, fact.FactID); err != nil {
+				return fmt.Errorf("supersede predecessor %s: %w", predecessorID, err)
+			}
+		}
+		if _, err := tx.tx.ExecContext(ctx, `
+			UPDATE project_claims SET status='promoted', promoted_fact_id=$2, promoted_at=NOW(), updated_at=NOW() WHERE claim_id=$1
+		`, claimID, fact.FactID); err != nil {
+			return fmt.Errorf("close promoted claim: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return projectmemory.Fact{}, false, err
+	}
+	return fact, true, nil
+}
+
+// RejectMemoryClaim closes a claim as rejected. HITL-only, mirroring commit.
+func (s *Store) RejectMemoryClaim(ctx context.Context, claimID string, actor Actor) error {
+	if err := actor.Validate(); err != nil {
+		return err
+	}
+	if actor.Type != ActorUser {
+		return fmt.Errorf("%w: project memory claim rejection requires a user actor, got %q", ErrInvalidRecord, actor.Type)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE project_claims SET status='rejected', updated_at=NOW()
+		WHERE claim_id=$1 AND status IN ('open','supported')
+	`, claimID)
+	if err != nil {
+		return fmt.Errorf("reject claim: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("%w: rejectable claim %s", ErrNotFound, claimID)
+	}
+	return nil
+}
+
+// ListMemoryClaims returns the claims of one project, optionally filtered by
+// status (pass "" for all).
+func (s *Store) ListMemoryClaims(ctx context.Context, projectID, status string) ([]projectmemory.Claim, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("%w: project id required", ErrInvalidRecord)
+	}
+	query := `
+		SELECT claim_id, batch_id, project_id, subject, predicate, object, as_of, raised_by_type, COALESCE(raised_by_id,''),
+		 COALESCE(source_run_id,''), source_refs, vocabulary_version, extended_predicate, content_hash, status,
+		 COALESCE(promoted_fact_id,''), created_at
+		FROM project_claims WHERE project_id=$1
+	`
+	args := []any{projectID}
+	if status != "" {
+		query += ` AND status=$2`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at, claim_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list claims: %w", err)
+	}
+	defer rows.Close()
+	claims := []projectmemory.Claim{}
+	for rows.Next() {
+		var claim projectmemory.Claim
+		var refs []byte
+		if err := rows.Scan(&claim.ClaimID, &claim.BatchID, &claim.ProjectID, &claim.Subject, &claim.Predicate, &claim.Object,
+			&claim.AsOf, &claim.RaisedByType, &claim.RaisedByID, &claim.SourceRunID, &refs, &claim.VocabularyVersion,
+			&claim.ExtendedPredicate, &claim.ContentHash, &claim.Status, &claim.PromotedFactID, &claim.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(refs, &claim.SourceRefs); err != nil {
+			return nil, err
+		}
+		claims = append(claims, claim)
+	}
+	return claims, rows.Err()
+}
+
+// StageMemoryEntity stages an entity birth certificate into the candidate
+// pool. Any actor may raise entities; the (project, kind, canonical name)
+// identity must not collide with a live entity.
+func (s *Store) StageMemoryEntity(ctx context.Context, entity *projectmemory.Entity) error {
+	if err := validateID(entity.EntityID, "ent_", "entity_id"); err != nil {
+		return err
+	}
+	if entity.RaisedByType == "" {
+		return fmt.Errorf("%w: entity %s requires raised_by_type", ErrInvalidRecord, entity.EntityID)
+	}
+	if _, err := projectmemory.ValidateEntity(entity); err != nil {
+		return fmt.Errorf("%w: entity %s: %v", ErrInvalidRecord, entity.EntityID, err)
+	}
+	if entity.Status == "" {
+		entity.Status = "candidate"
+	}
+	if entity.Status != "candidate" {
+		return fmt.Errorf("%w: entity %s must stage as candidate", ErrInvalidRecord, entity.EntityID)
+	}
+	if entity.CreatedAt.IsZero() {
+		entity.CreatedAt = time.Now().UTC()
+	}
+	aliases, err := marshalStringSlice(entity.Aliases)
+	if err != nil {
+		return err
+	}
+	refs, err := marshalStringSlice(entity.SourceRefs)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO project_entities
+		(entity_id, project_id, entity_kind, canonical_name, aliases, description, source_run_id, source_refs,
+		 status, raised_by_type, raised_by_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,NULLIF($11,''),$12)
+	`, entity.EntityID, entity.ProjectID, entity.EntityKind, entity.CanonicalName, aliases, entity.Description,
+		entity.SourceRunID, refs, entity.Status, entity.RaisedByType, entity.RaisedByID, entity.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("stage entity: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("%w: entity %s", ErrConflict, entity.EntityID)
+	}
+	return nil
+}
+
+// PromoteMemoryEntity moves a candidate entity into the live registry.
+// HITL-only, mirroring canon commits.
+func (s *Store) PromoteMemoryEntity(ctx context.Context, entityID string, actor Actor) error {
+	if err := actor.Validate(); err != nil {
+		return err
+	}
+	if actor.Type != ActorUser {
+		return fmt.Errorf("%w: entity promotion requires a user actor, got %q", ErrInvalidRecord, actor.Type)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE project_entities SET status='promoted', promoted_by_type=$2, promoted_by_id=NULLIF($3,''),
+		 promoted_at=NOW(), updated_at=NOW()
+		WHERE entity_id=$1 AND status='candidate'
+	`, entityID, actor.Type, actor.ID)
+	if err != nil {
+		return fmt.Errorf("promote entity: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("%w: candidate entity %s", ErrNotFound, entityID)
+	}
+	return nil
+}
+
+// ArchiveMemoryEntity retires an entity, freeing its (project, kind, name)
+// identity for re-registration. HITL-only.
+func (s *Store) ArchiveMemoryEntity(ctx context.Context, entityID string, actor Actor) error {
+	if err := actor.Validate(); err != nil {
+		return err
+	}
+	if actor.Type != ActorUser {
+		return fmt.Errorf("%w: entity archival requires a user actor, got %q", ErrInvalidRecord, actor.Type)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE project_entities SET status='archived', updated_at=NOW()
+		WHERE entity_id=$1 AND status IN ('candidate','promoted')
+	`, entityID)
+	if err != nil {
+		return fmt.Errorf("archive entity: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("%w: archivable entity %s", ErrNotFound, entityID)
+	}
+	return nil
+}
+
+// ListMemoryEntities returns the entities of one project, optionally
+// filtered by kind and status (pass "" for all).
+func (s *Store) ListMemoryEntities(ctx context.Context, projectID, entityKind, status string) ([]projectmemory.Entity, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("%w: project id required", ErrInvalidRecord)
+	}
+	query := `
+		SELECT entity_id, project_id, entity_kind, canonical_name, aliases, description, COALESCE(source_run_id,''),
+		 source_refs, status, raised_by_type, COALESCE(raised_by_id,''), COALESCE(promoted_by_type,''),
+		 COALESCE(promoted_by_id,''), created_at
+		FROM project_entities WHERE project_id=$1
+	`
+	args := []any{projectID}
+	if entityKind != "" {
+		args = append(args, entityKind)
+		query += fmt.Sprintf(` AND entity_kind=$%d`, len(args))
+	}
+	if status != "" {
+		args = append(args, status)
+		query += fmt.Sprintf(` AND status=$%d`, len(args))
+	}
+	query += ` ORDER BY created_at, entity_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list entities: %w", err)
+	}
+	defer rows.Close()
+	entities := []projectmemory.Entity{}
+	for rows.Next() {
+		var entity projectmemory.Entity
+		var aliases, refs []byte
+		if err := rows.Scan(&entity.EntityID, &entity.ProjectID, &entity.EntityKind, &entity.CanonicalName, &aliases,
+			&entity.Description, &entity.SourceRunID, &refs, &entity.Status, &entity.RaisedByType, &entity.RaisedByID,
+			&entity.PromotedByType, &entity.PromotedByID, &entity.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(aliases, &entity.Aliases); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(refs, &entity.SourceRefs); err != nil {
+			return nil, err
+		}
+		entities = append(entities, entity)
+	}
+	return entities, rows.Err()
 }

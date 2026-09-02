@@ -1,6 +1,7 @@
 package projectmemory
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,71 @@ func TestVocabularyIsComplete(t *testing.T) {
 	for _, name := range []string{"identity", "constraint", "style_rule"} {
 		if !ValidPredicate(name) {
 			t.Fatalf("missing predicate %q", name)
+		}
+	}
+}
+
+func TestValidateClaimReusesCandidateRules(t *testing.T) {
+	claim := Claim{ClaimID: "claim_test", BatchID: "bat_test", ProjectID: "prj_test",
+		Subject: " LuminBuddy ", Predicate: "Identity", Object: "非虚构写作助手",
+		AsOf: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), SourceRunID: "run_test"}
+	warnings, err := ValidateClaim(&claim)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("warnings=%v err=%v", warnings, err)
+	}
+	if claim.Subject != "luminbuddy" || claim.Predicate != "identity" {
+		t.Fatalf("normalized=%#v", claim)
+	}
+	claim.SourceRunID = ""
+	if _, err := ValidateClaim(&claim); err == nil || !strings.Contains(err.Error(), "provenance") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestEvidenceHashIsIdempotentAndDisjoint(t *testing.T) {
+	byRun := EvidenceHash("run_a", nil)
+	byRunAgain := EvidenceHash(" run_a ", nil)
+	if byRun != byRunAgain {
+		t.Fatal("run hash must be whitespace-idempotent")
+	}
+	byRefs := EvidenceHash("", []string{"doc_b", "doc_a"})
+	byRefsAgain := EvidenceHash("", []string{"doc_a", " doc_b "})
+	if byRefs != byRefsAgain {
+		t.Fatal("refs hash must be order-idempotent")
+	}
+	if byRun == byRefs {
+		t.Fatal("run and refs citations must hash apart")
+	}
+}
+
+func TestValidateEntityBirthCertificate(t *testing.T) {
+	entity := Entity{EntityID: "ent_test", ProjectID: "prj_test", EntityKind: " Organization ",
+		CanonicalName: " Acme Labs ", Aliases: []string{"ACME", "acme", ""}, SourceRunID: "run_test"}
+	if _, err := ValidateEntity(&entity); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if entity.EntityKind != "organization" || entity.CanonicalName != "Acme Labs" || len(entity.Aliases) != 1 || entity.Aliases[0] != "ACME" {
+		t.Fatalf("normalized=%#v", entity)
+	}
+	entity.Aliases = append(entity.Aliases, "Acme Labs")
+	if _, err := ValidateEntity(&entity); err == nil || !strings.Contains(err.Error(), "duplicates the canonical name") {
+		t.Fatalf("self alias err=%v", err)
+	}
+	entity.CanonicalName, entity.Aliases = "Acme Labs", []string{fmt.Sprintf("a%d", 1)}
+	for i := 0; i < MaxEntityAliases; i++ {
+		entity.Aliases = append(entity.Aliases, fmt.Sprintf("alias-%d", i))
+	}
+	if _, err := ValidateEntity(&entity); err == nil || !strings.Contains(err.Error(), "cap") {
+		t.Fatalf("alias cap err=%v", err)
+	}
+	entity.Aliases = entity.Aliases[:MaxEntityAliases-1]
+	entity.EntityKind = "character"
+	if _, err := ValidateEntity(&entity); err == nil || !strings.Contains(err.Error(), "closed set") {
+		t.Fatalf("fiction kind err=%v", err)
+	}
+	for _, kind := range EntityKinds() {
+		if !ValidEntityKind(kind) {
+			t.Fatalf("kind %q from the set must validate", kind)
 		}
 	}
 }

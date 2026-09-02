@@ -170,3 +170,15 @@ M1 已按本设计实现（迁移 099 + `internal/projectmemory` + `writingstore
 7. **幂等语义**。同一内容三元组（content hash + project + 词表版本）在活跃行中唯一（partial unique index）；重复提交返回既有 fact 并关闭候选，不报错——replay 安全。
 
 后续里程碑仍按 §18.7：M2 claims→canon 晋升与实体/术语，M3 编译器 MVP，M4 Manifest 契约，M5 Context Runtime。
+
+
+---
+
+## 18.10 M2 前矫正：产品定位为非虚构（2026-09-02）
+
+产品定位确认为**非虚构写作**（报告、评论、研究整理、知识性内容等），对设计的落地影响：
+
+1. **through_line 改造为领域中立的"未决线索账本"**（顺延 M2.5）。NarraCat 的贯穿线（核心戏剧问题、不可逆转折、伏笔账本）是小说专用语义，不采纳。非虚构对应的长期对象是：未回答的研究问题、待核实的说法、跨章节保持一致的论点链。字段按此设计，M2.5 交付。
+2. **实体类型按非虚构设计**：`person / organization / place / concept / term / product / event / work`。没有"角色卡"概念；实体仍只存"出生证明"（不可变标识），演化真值在 facts。
+3. **词表 v1 维持现状**。identity/location/possession/goal/state 等谓词同样适用于真实主体（机构、产品、人物）；领域新谓词（如引用、论证、数据口径）走 `x-` 扩展积累真实用法后升 v2，不预设。
+4. **M2 范围**：claims 待证池（证据累积 → supported → user 提交晋升 canon）+ entities 候选池（出生证明 + candidate→promoted）。terminology / decisions / open_questions / through_line 顺延 M2.5。

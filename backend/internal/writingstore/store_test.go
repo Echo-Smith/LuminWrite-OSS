@@ -1006,3 +1006,154 @@ func TestProjectMemoryCandidateLifecycleRequiresUserCommit(t *testing.T) {
 		t.Fatalf("staged after reject=%d err=%v", len(staged), err)
 	}
 }
+
+func TestProjectMemoryClaimCorroborationAndPromotion(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, project_claim_evidence, project_claims, project_entities, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_claim"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M2", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+
+	claim := projectmemory.Claim{ClaimID: "claim_store_1", BatchID: "bat_claim", ProjectID: projectID,
+		Subject: "LuminBuddy", Predicate: "state", Object: "开源", AsOf: time.Now().UTC().Add(-time.Hour),
+		SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageMemoryClaims(ctx, []projectmemory.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Duplicate staging of the same open triple is rejected: corroboration
+	// accumulates on the existing claim, never fragments.
+	duplicate := claim
+	duplicate.ClaimID = "claim_store_dup"
+	if err := store.StageMemoryClaims(ctx, []projectmemory.Claim{duplicate}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate claim err=%v", err)
+	}
+
+	// The raising run is already one citation; a model may corroborate.
+	supported, err := store.CorroborateMemoryClaim(ctx, "claim_store_1", "evd_store_2", "run_store_2", nil, Actor{Type: ActorModel, ID: "researcher"})
+	if err != nil || supported.Status != "supported" {
+		t.Fatalf("supported=%#v err=%v", supported, err)
+	}
+	// Re-recording the same citation is idempotent and does not flip again.
+	replayed, err := store.CorroborateMemoryClaim(ctx, "claim_store_1", "evd_store_2_replay", "run_store_2", nil, Actor{Type: ActorModel, ID: "researcher"})
+	if err != nil || replayed.Status != "supported" {
+		t.Fatalf("replay=%#v err=%v", replayed, err)
+	}
+
+	// Promotion is HITL-only, and support never auto-promotes.
+	if _, _, err := store.CommitMemoryClaim(ctx, "claim_store_1", Actor{Type: ActorModel, ID: "writer"}, "fact_claim_1"); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model promotion err=%v", err)
+	}
+	fact, promoted, err := store.CommitMemoryClaim(ctx, "claim_store_1", user, "fact_claim_1")
+	if err != nil || !promoted || fact.Subject != "luminbuddy" || fact.Predicate != "state" {
+		t.Fatalf("fact=%#v promoted=%v err=%v", fact, promoted, err)
+	}
+	claims, err := store.ListMemoryClaims(ctx, projectID, "promoted")
+	if err != nil || len(claims) != 1 || claims[0].PromotedFactID != fact.FactID {
+		t.Fatalf("promoted claims=%#v err=%v", claims, err)
+	}
+	// The promoted claim no longer accepts evidence or re-promotion.
+	if _, err := store.CorroborateMemoryClaim(ctx, "claim_store_1", "evd_store_3", "run_store_3", nil, Actor{Type: ActorModel, ID: "researcher"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("evidence on promoted claim err=%v", err)
+	}
+	if _, _, err := store.CommitMemoryClaim(ctx, "claim_store_1", user, "fact_claim_replay"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("re-promotion err=%v", err)
+	}
+
+	// A second claim stays open, is rejected by the user, then vanishes from
+	// the rejectable pool.
+	if err := store.StageMemoryClaims(ctx, []projectmemory.Claim{{
+		ClaimID: "claim_store_2", BatchID: "bat_claim_2", ProjectID: projectID,
+		Subject: "LuminBuddy", Predicate: "state", Object: "闭源", AsOf: time.Now().UTC(),
+		SourceRefs: []string{"doc_store"}, RaisedByType: string(ActorModel)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectMemoryClaim(ctx, "claim_store_2", Actor{Type: ActorModel, ID: "writer"}); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model rejection err=%v", err)
+	}
+	if err := store.RejectMemoryClaim(ctx, "claim_store_2", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectMemoryClaim(ctx, "claim_store_2", user); err == nil {
+		t.Fatal("double rejection accepted")
+	}
+}
+
+func TestProjectMemoryEntityCandidatePool(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, project_claim_evidence, project_claims, project_entities, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_entity"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M2 entities", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A model stages a candidate birth certificate with case-variant aliases.
+	entity := &projectmemory.Entity{EntityID: "ent_store_1", ProjectID: projectID, EntityKind: "organization",
+		CanonicalName: "Acme Labs", Aliases: []string{"ACME", "acme"}, SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageMemoryEntity(ctx, entity); err != nil {
+		t.Fatal(err)
+	}
+	if len(entity.Aliases) != 1 || entity.Aliases[0] != "ACME" || entity.Status != "candidate" {
+		t.Fatalf("normalized entity=%#v", entity)
+	}
+
+	// A second live identity with the same (project, kind, name) collides.
+	twin := &projectmemory.Entity{EntityID: "ent_store_twin", ProjectID: projectID, EntityKind: "organization",
+		CanonicalName: "Acme Labs", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageMemoryEntity(ctx, twin); err == nil {
+		t.Fatal("live identity collision accepted")
+	}
+
+	// Promotion is HITL-only; then the name is freed by archiving.
+	if err := store.PromoteMemoryEntity(ctx, "ent_store_1", Actor{Type: ActorModel, ID: "writer"}); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model promotion err=%v", err)
+	}
+	if err := store.PromoteMemoryEntity(ctx, "ent_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.ListMemoryEntities(ctx, projectID, "organization", "promoted")
+	if err != nil || len(promoted) != 1 || promoted[0].EntityID != "ent_store_1" {
+		t.Fatalf("promoted=%#v err=%v", promoted, err)
+	}
+	if err := store.ArchiveMemoryEntity(ctx, "ent_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	// The archived identity can be re-registered.
+	if err := store.StageMemoryEntity(ctx, twin); err != nil {
+		t.Fatalf("re-register after archive: %v", err)
+	}
+	entities, err := store.ListMemoryEntities(ctx, projectID, "", "")
+	if err != nil || len(entities) != 2 {
+		t.Fatalf("entities=%d err=%v", len(entities), err)
+	}
+	// Entity identity columns are immutable at the database level.
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_entities SET canonical_name='篡改' WHERE entity_id=$1`, "ent_store_1"); err == nil {
+		t.Fatal("immutable entity accepted an identity update")
+	}
+	if err := store.ArchiveMemoryEntity(ctx, "ent_absent", user); err == nil {
+		t.Fatal("absent entity archived")
+	}
+}
