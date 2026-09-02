@@ -332,10 +332,15 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		if err := request.Validate(); err != nil {
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
 		}
-		// Context shadow wiring (M4a): compile and persist the envelope, then
-		// inject it into the request. Failures degrade to a nil envelope —
-		// shadow mode never changes execution outcomes.
-		request.Context = orchestrator.compileNodeContext(ctx, run, node, attemptNumber, manifest)
+		// Context wiring (M4a shadow, M4b activation): compile and persist the
+		// envelope, then inject it into the request. Infrastructure failures
+		// degrade to a nil envelope; a capability that opted into
+		// EnforceRequiredContext fails the node on required-missing (M4b).
+		envelope, contextErr := orchestrator.compileNodeContext(ctx, run, node, attemptNumber, manifest)
+		if contextErr != nil {
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, contextErr)
+		}
+		request.Context = envelope
 		attempt := writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,
 			PlanVersion: planRecord.PlanVersion, NodeID: node.NodeID, Attempt: attemptNumber,
 			IdempotencyKey: key, NodeKind: node.Kind, CapabilityID: node.Capability,

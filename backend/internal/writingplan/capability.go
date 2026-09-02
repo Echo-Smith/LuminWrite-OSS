@@ -47,8 +47,9 @@ func ValidContextBlock(name ContextBlockName) bool {
 
 // ContextContract is the manifest's declaration of what context a capability
 // may see (docs/18 §18.5.5). Required blocks that the compiler cannot supply
-// are recorded in the envelope; failing the node on them is a separate,
-// explicitly activated policy — M4a ships the shadow semantics.
+// are recorded in the envelope; failing the node on them requires this
+// capability to opt in via EnforceRequiredContext — an explicit, per-manifest
+// activation reviewed with shadow data in hand (M4b).
 type ContextContract struct {
 	RequiredContext  []ContextBlockName `json:"required_context,omitempty"`
 	OptionalContext  []ContextBlockName `json:"optional_context,omitempty"`
@@ -56,6 +57,11 @@ type ContextContract struct {
 	// ContextTokenBudget caps this capability's envelope; 0 means the
 	// compiler default.
 	ContextTokenBudget int `json:"context_token_budget,omitempty"`
+	// EnforceRequiredContext fails the node when a required block is missing
+	// from the compiled envelope. Default false (shadow semantics): the gap
+	// is recorded and observed, never fatal. Activation is a per-manifest
+	// reviewed decision.
+	EnforceRequiredContext bool `json:"enforce_required_context,omitempty"`
 }
 
 type CapabilityManifest struct {
@@ -328,7 +334,8 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	outline := base("core.outline.generate", "writing.outline", "engine.step.outline", []ArtifactType{"contract"}, []ArtifactType{"outline"}, []Permission{"model.invoke", "materials.read"}, false)
 	outline.OptionalInputTypes = []ArtifactType{"source_pack"}
 	outline.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards}}
+		OptionalContext:        []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards},
+		EnforceRequiredContext: true}
 	register(outline)
 	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"full_draft"}, []Permission{"model.invoke", "materials.read"}, false)
 	draft.OptionalInputTypes = []ArtifactType{"outline", "source_pack"}
@@ -349,8 +356,9 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	// Style directives must not shape evidence collection: research stays
 	// style-neutral by contract.
 	research.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		OptionalContext:  []ContextBlockName{ContextCanonFacts, ContextOpenDecisions, ContextTerminology, ContextEntitiesCards},
-		ForbiddenContext: []ContextBlockName{ContextStyleDirectives}}
+		OptionalContext:        []ContextBlockName{ContextCanonFacts, ContextOpenDecisions, ContextTerminology, ContextEntitiesCards},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
 	register(research)
 	return registry
 }

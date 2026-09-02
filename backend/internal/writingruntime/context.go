@@ -13,12 +13,12 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
 
-// M4a context shadow wiring (docs/18 §18.12): the orchestrator compiles one
+// M4b context activation (docs/18 §18.12): the orchestrator compiles one
 // envelope per node attempt from the capability's manifest contract, persists
 // it, and hands it to the executor. Required blocks that go unsupplied are
-// recorded in the envelope and in telemetry — they never fail the node in
-// M4a. Activating required-context fail-closed is a separate, explicitly
-// reviewed policy change (M4b).
+// recorded in the envelope and in telemetry; a capability that opted into
+// EnforceRequiredContext additionally fails the node with
+// CONTEXT_REQUIRED_MISSING. Infrastructure degradation never fails the node.
 
 // ContextSource preloads the compiler inputs for one node attempt. The
 // orchestrator never queries project memory directly: implementors decide how
@@ -118,22 +118,28 @@ func (source StoreContextSource) CompileInputs(ctx context.Context, run writings
 	return input, nil
 }
 
-// compileNodeContext is the shadow hook: compile, persist, and return the
-// envelope for injection. Every failure degrades to nil with a telemetry
-// record — shadow mode must not change execution outcomes.
-func (orchestrator *Orchestrator) compileNodeContext(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode, attempt int, manifest writingplan.CapabilityManifest) *contextcompiler.Envelope {
+// compileNodeContext compiles, persists, and returns the envelope for
+// injection. Failure semantics are deliberately split:
+//   - infrastructure degradation (source error, compile error, persistence
+//     error) degrades to a nil envelope and never fails the node — shadow
+//     mode must not change execution outcomes, and an infrastructure gap is
+//     not evidence of a context gap;
+//   - a capability that opted into EnforceRequiredContext and compiled an
+//     envelope missing a required block fails the node with
+//     CONTEXT_REQUIRED_MISSING (M4b activation, per-manifest).
+func (orchestrator *Orchestrator) compileNodeContext(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode, attempt int, manifest writingplan.CapabilityManifest) (*contextcompiler.Envelope, error) {
 	if orchestrator.Context == nil {
-		return nil
+		return nil, nil
 	}
 	observe := func(status string) {
-		observeRuntime(ctx, orchestrator.Telemetry, RuntimeMetric{Kind: "runtime.context_envelope",
+		observeRuntime(ctx, orchestrator.Telemetry, RuntimeMetric{Kind: MetricContextEnvelope,
 			ExecutorID: manifest.Executor, Capability: node.Capability, Mode: "shadow",
 			Lane: LaneBaseline, Status: status})
 	}
 	input, err := orchestrator.Context.CompileInputs(ctx, run, node)
 	if err != nil {
 		observe("source_failed")
-		return nil
+		return nil, nil
 	}
 	input.Wanted = manifest.Context.ContextWanted()
 	if manifest.Context.ContextTokenBudget > 0 {
@@ -142,13 +148,36 @@ func (orchestrator *Orchestrator) compileNodeContext(ctx context.Context, run wr
 	envelope, err := contextcompiler.Compile(input)
 	if err != nil {
 		observe("compile_failed")
-		return nil
+		return nil, nil
+	}
+	if manifest.Context.EnforceRequiredContext {
+		missing := map[string]bool{}
+		for _, entry := range envelope.Missing {
+			missing[entry.Block] = true
+		}
+		absent := []string{}
+		for _, block := range manifest.Context.RequiredContext {
+			if missing[string(block)] {
+				absent = append(absent, string(block))
+			}
+		}
+		if len(absent) > 0 {
+			sort.Strings(absent)
+			observe("required_missing")
+			// The attempt is already started: record its completion so the
+			// attempt ledger never leaves a running row behind.
+			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: run.RunID,
+				NodeID: node.NodeID, Attempt: attempt, Status: "failed", ErrorCode: string(CodeContextRequiredMissing),
+				ErrorMessage: strings.Join(absent, ","), Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
+			return nil, runtimeError(CodeContextRequiredMissing, RetryNever,
+				strings.Join(absent, ","), ErrContextRequiredMissing)
+		}
 	}
 	if orchestrator.Envelopes != nil {
 		payload, err := json.Marshal(envelope)
 		if err != nil {
 			observe("persist_failed")
-			return &envelope
+			return &envelope, nil
 		}
 		record := writingstore.ContextEnvelopeRecord{EnvelopeID: writingstore.StableID("env_", run.RunID, node.NodeID, fmt.Sprint(attempt), envelope.Hash),
 			RunID: run.RunID, NodeID: node.NodeID, Attempt: attempt, CompilerVersion: envelope.CompilerVersion,
@@ -156,9 +185,9 @@ func (orchestrator *Orchestrator) compileNodeContext(ctx context.Context, run wr
 			Trimmed: envelope.Trimmed, Diagnostics: envelope.Diagnostics()}
 		if err := orchestrator.Envelopes.SaveContextEnvelope(ctx, record); err != nil {
 			observe("persist_failed")
-			return &envelope
+			return &envelope, nil
 		}
 	}
 	observe("succeeded")
-	return &envelope
+	return &envelope, nil
 }

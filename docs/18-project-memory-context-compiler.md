@@ -211,3 +211,15 @@ M4a 按 §18.5.5 和 §18.7 实现：CapabilityManifest 上下文契约 + 编译
 3. **白名单语义是 manifest 契约的前提**。编译器 `Wanted` 字段从"声明空块显式缺省"扩展为"非空时只装配声明块"——未声明的块即使有数据也被跳过。这是契约边界形成的必要条件，也解释了 M3 测试中 `TestCompileMissingBlocksAreExplicit` 预期调整的原因。
 4. **StoreContextSource 是第一次将 project-memory 查询接入运行时**。它展示了接线模式：`ContextSource` 接口、`StoreContextSource` 默认实现、orchestrator 在 attempt 分派处调用。无 project 的 run 返回空 input（所有 wanted 块进 missing），优雅降级——这使 M4a 反向兼容所有存量 run。
 5. **内置 capability 契约草案**（5 个）：research 唯一声明了 `ForbiddenContext=[style_directives]`——证据收集应保持风格中立。outline/draft/quality/finalize 按角色需求声明 required+/optional±。这些是初始工作假设，随使用迭代。
+
+
+---
+
+## 18.13 M4b 实施矫正记录（2026-09-02，代码落地后回写）
+
+M4b 激活 required fail-closed，按"声明与强制分离"的阶梯纪律落地：
+
+1. **激活开关是 per-manifest 的**（`ContextContract.EnforceRequiredContext`，默认 false），不是全局策略——每个 capability 拿着影子数据独立评审后显式打开。M4b 激活了 outline 与 research（两者唯一 required 块 contract_digest 在 `StoreContextSource` 下始终有数据源）；draft/quality/finalize 保持影子（document_state 尚无数据源，激活即全面拒绝）。
+2. **失败语义双通道**（对 §18.11 第 2 条的延伸）：基础设施降级（source 失败/编译失败/落库失败）永远不拒绝节点——基础设施缺口不是上下文缺口的证据；只有"编译成功但 required 块缺失"才在 enforce 开启时拒绝。错误码 `CONTEXT_REQUIRED_MISSING`（RetryNever：数据缺口不会因重跑愈合），消息列出缺失块名。
+3. **attempt 台账完整性**：拒绝点在 `StartNodeAttempt` 之后，因此拒绝时同步写 attempt completion（status=failed + 稳定错误码），不留下悬空的 running 行——这是测试驱动的修正，最初实现直接 return。
+4. **遥测新增 `context_envelope`**（MetricKind，有界基数）：succeeded/required_missing/source_failed/compile_failed/persist_failed 五状态，替代 M4a 的内联字符串。

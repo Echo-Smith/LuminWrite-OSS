@@ -21,6 +21,7 @@ const (
 	MetricShadowComparison   MetricKind = "shadow_comparison"
 	MetricCanonicalCommit    MetricKind = "canonical_commit"
 	MetricAuthorityViolation MetricKind = "authority_violation"
+	MetricContextEnvelope    MetricKind = "context_envelope"
 )
 
 type ExecutionLane string
