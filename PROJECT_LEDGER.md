@@ -207,6 +207,7 @@
 | 2026-09-02 | V2.9 M2：交付 claims 佐证道与实体候选池 | 稳定化分支 | 非虚构定位矫正（§18.10）后的证据累积 → user 晋升闭环 | ✅ 双仓字节一致、容器验证全绿；无运行时变更 |
 | 2026-09-02 | V2.9 M2.5：交付 curated 项目状态四类对象 | 稳定化分支 | 术语/决策/未决问题/领域中立贯穿线账本（迁移 101），全部沿用候选道 + user-only 门 + 内容不可变 | ✅ 双仓字节一致、容器验证全绿；无运行时变更 |
 | 2026-09-02 | V2.9 M3：交付 Context Compiler MVP | 稳定化分支 | 确定性上下文编译：九块装配、分块预算、驻留层 fail-closed、显式缺省、envelope 落库（迁移 102） | ✅ 双仓字节一致、容器验证全绿；编译器未接入执行路径（M4） |
+| 2026-09-02 | V2.9 M4a：交付 Manifest 上下文契约 + 编译器影子接线 | 稳定化分支 | 编译器成为 Node 执行数据入口（影子）；required 缺块只记录不拒绝 | ✅ 双仓字节一致、容器验证全绿；fail-closed 待 M4b，存量 run 零影响 |
 
 ---
 
@@ -240,6 +241,7 @@
 | E-024 | 代码+验收 | ProjectMemory M2：claims 佐证道（evidence hash 幂等、supported 仅 advisory、user-only 晋升复用单值失效机制）、实体候选池（非虚构封闭类型集、出生证明不可变、归档释放身份）、`insertFactWithSupersede` 双路复用、nil-slice JSON 归一修复 | `backend/internal/database/migrations/100_project_memory_m2.*.sql`、`backend/internal/projectmemory/claims.go`、`backend/internal/writingstore/projectmemory.go`、`docs/releases/2026-09-02-project-memory-m2.md` |
 | E-025 | 代码+验收 | ProjectMemory M2.5：`project_terminology`（stage 期唯一 + 归档释放）、`project_decisions`（supersedes 链事务内关闭）、`project_open_questions`（open/answered/dropped）、`project_threads`（领域中立贯穿线 + resident 驻留标记）；`MaxAliases` 统一上限；测试暴露并修复三处实现缝隙（answer 状态漏翻转、threads 触发器列清单误含 resolved_fact_id、supersedes 占位符） | `backend/internal/database/migrations/101_project_memory_curated.*.sql`、`backend/internal/projectmemory/curated.go`、`backend/internal/writingstore/projectmemory_curated.go`、`docs/releases/2026-09-02-project-memory-m25.md` |
 | E-026 | 代码+验收 | Context Compiler MVP：`internal/contextcompiler`（纯函数、`CompilerVersion` 钉死块集/预算、行粒度裁剪、missing/trimmed/diagnostics 三通道、hash 仅覆盖 Blocks）、迁移 102 专表（`(run,node,attempt,hash)` 唯一幂等）、store 落库三方法；测试驱动修正 payload 形态（Blocks 数组 → 完整 envelope 对象满足 jsonb object 约束） | `backend/internal/contextcompiler/`、`backend/internal/database/migrations/102_context_envelopes.*.sql`、`backend/internal/writingstore/context_envelope.go`、`docs/releases/2026-09-02-context-compiler-m3.md`、`docs/18-project-memory-context-compiler.md` §18.11 |
+| E-027 | 代码+验收 | CapabilityManifest 上下文契约（required/optional/forbidden + budget + 校验）、5 个内置 capability 契约草案（research 禁止 style_directives）、编译器 Wanted 白名单语义、orchestrator 影子接线（ContextSource/EnvelopeSink 接口 + 编译→落库→注入 + telemetry）、`DocumentProjectID`；测试驱动修正：fixture manifest 契约缺失暴露、白名单改变 M3 缺省测试预期 | `backend/internal/writingplan/capability.go`、`backend/internal/contextcompiler/compiler.go`、`backend/internal/writingruntime/context.go`、`orchestrator.go`、`executor.go`、`executor_adapters.go`、`backend/internal/writingstore/projectmemory.go`、`docs/releases/2026-09-02-capability-context-m4a.md`、`docs/18-project-memory-context-compiler.md` §18.12 |
 
 ---
 
@@ -264,6 +266,7 @@
 | 2026-09-02 | V2.9 M2 设计矫正门 | 非虚构定位落地：实体封闭类型集（无角色卡）、through_line 改造为领域中立未决线索账本（顺延 M2.5）；claim 佐证永不自动晋升（HITL 保持 store 层硬门禁）；迁移 100 双仓 fresh DB 验证 | ✅ 通过 | M2 完成；M2.5 terminology/decisions/through_line、M3 编译器待排期 |
 | 2026-09-02 | V2.9 M2.5 设计矫正门 | 非虚构贯穿线落地为领域中立线索账本（resident 驻留语义为 M3 编译器预留）；四类对象 canon 路径与 M1/M2 同等 HITL 纪律；迁移 101 双仓 fresh DB 验证 | ✅ 通过 | M2.5 完成；ProjectMemory 数据面齐备，下一步 M3 Context Compiler MVP |
 | 2026-09-02 | V2.9 M3 设计矫正门 | 编译器纯函数化（不连 store、Input 预装载）、行数记账近似（真实分词归 M5）、落库从 run 事件矫正为专表、hash 语义钉死为模型可见 Blocks；迁移 102 双仓 fresh DB 验证 | ✅ 通过 | M3 完成；M4 Manifest 契约接入执行路径待排期 |
+| 2026-09-02 | V2.9 M4a 设计矫正门 | ContextContract 嵌入 manifest 而非独立文件；白名单语义成为契约前提；影子模式 fail-closed 后置（M4b）；无 project 的 run 全 missing 优雅降级；双仓 11 文件字节一致 | ✅ 通过 | M4a 完成；M4b required fail-closed 激活、M5 Context Runtime 待排期 |
 
 ---
 

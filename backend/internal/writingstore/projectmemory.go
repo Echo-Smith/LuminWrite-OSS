@@ -109,6 +109,27 @@ func (s *Store) SetDocumentProject(ctx context.Context, documentID, projectID st
 	return nil
 }
 
+// DocumentProjectID resolves the project scope a document is attached to.
+// ErrNotFound covers both the missing document and a document without a
+// project — callers treat both as "no project scope".
+func (s *Store) DocumentProjectID(ctx context.Context, documentID string) (string, error) {
+	if err := validateID(documentID, "doc_", "document_id"); err != nil {
+		return "", err
+	}
+	var projectID sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT project_id FROM writing_documents WHERE document_id=$1`, documentID).Scan(&projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("document project: %w", err)
+	}
+	if !projectID.Valid {
+		return "", ErrNotFound
+	}
+	return projectID.String, nil
+}
+
 // StageMemoryCandidates stages a batch of validated candidates in one
 // transaction. Validation happens per candidate before insert; a batch with
 // any invalid candidate fails whole, so partial lanes cannot leak. Any actor

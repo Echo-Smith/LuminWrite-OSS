@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
@@ -179,7 +180,9 @@ func newOrchestratorFixture(t *testing.T, idempotency writingplan.IdempotencyCla
 	manifest := writingplan.CapabilityManifest{ID: "core.draft.generate", Class: "writing.draft", Executor: "engine.step.write",
 		InputTypes: []writingplan.ArtifactType{"contract"}, OptionalInputTypes: []writingplan.ArtifactType{}, OutputTypes: []writingplan.ArtifactType{"full_draft"}, Permissions: []writingplan.Permission{"model.invoke", "materials.read"},
 		EstimatedCostUSD: 1, EstimatedDurationMS: 100, Version: "1.0.0", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction},
-		MaxBounds: plan.Nodes[0].Bounds, Idempotency: idempotency, Available: true}
+		MaxBounds: plan.Nodes[0].Bounds, Idempotency: idempotency, Available: true,
+		Context: writingplan.ContextContract{RequiredContext: []writingplan.ContextBlockName{writingplan.ContextContractDigest, writingplan.ContextDocumentState},
+			OptionalContext: []writingplan.ContextBlockName{writingplan.ContextThroughLine, writingplan.ContextCanonFacts, writingplan.ContextTerminology, writingplan.ContextOpenDecisions, writingplan.ContextEntitiesCards, writingplan.ContextSourceEvidence, writingplan.ContextStyleDirectives}}}
 	if err := capabilities.Register(manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +378,7 @@ type fakeGovernedExecutor struct {
 	started                      chan struct{}
 	failErr                      error
 	contentRef                   string
+	contextOut                   chan *contextcompiler.Envelope
 }
 
 func (executor *fakeGovernedExecutor) Descriptor() ExecutorDescriptor { return executor.descriptor }
@@ -388,6 +392,9 @@ func (executor *fakeGovernedExecutor) Execute(ctx context.Context, request Execu
 	executor.mu.Unlock()
 	if started != nil && call == 1 {
 		close(started)
+	}
+	if executor.contextOut != nil {
+		executor.contextOut <- request.Context
 	}
 	if block != nil {
 		select {

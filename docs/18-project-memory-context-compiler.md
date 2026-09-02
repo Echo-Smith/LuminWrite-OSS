@@ -198,3 +198,16 @@ Context Compiler MVP 已按 §18.5 实现（迁移 102 + `internal/contextcompil
 6. **executor 接线未做**（M4 范围）：编译器当前不进入执行路径，落库由调用方（未来的 runtime 适配层）显式调用。
 
 后续 M4：CapabilityManifest 的 required/optional/forbidden_context 接入 Executor 权限模型，编译器成为 Node 执行的数据入口。
+
+
+---
+
+## 18.12 M4a 实施矫正记录（2026-09-02，代码落地后回写）
+
+M4a 按 §18.5.5 和 §18.7 实现：CapabilityManifest 上下文契约 + 编译器白名单 + 运行时影子接线。落地中确定的点：
+
+1. **ContextContract 嵌入 CapabilityManifest 而非独立文件**。设计稿的 Manifest 契约是 YAML 示意，实现直接扩展现有 manifest 结构（`Context` 字段），共享已有的 deep-copy 和注册校验链。`ContextBlockName` 字符串常量与 `contextcompiler` 包对称但独立定义——writingplan 不依赖 contextcompiler（无环），`ValidContextBlock` 自行维护同步。
+2. **影子模式是 M4a 的边界**。required 缺块仅记录在 envelope 的 Missing 通道和 telemetry 中，永不拒绝节点执行。fail-closed 激活被明确延迟到 M4b，作为独立受控变更。`Orchestrator.Context` 和 `Orchestrator.Envelopes` 均为 nil-safe：默认 orchestrator 无任何行为变化。
+3. **白名单语义是 manifest 契约的前提**。编译器 `Wanted` 字段从"声明空块显式缺省"扩展为"非空时只装配声明块"——未声明的块即使有数据也被跳过。这是契约边界形成的必要条件，也解释了 M3 测试中 `TestCompileMissingBlocksAreExplicit` 预期调整的原因。
+4. **StoreContextSource 是第一次将 project-memory 查询接入运行时**。它展示了接线模式：`ContextSource` 接口、`StoreContextSource` 默认实现、orchestrator 在 attempt 分派处调用。无 project 的 run 返回空 input（所有 wanted 块进 missing），优雅降级——这使 M4a 反向兼容所有存量 run。
+5. **内置 capability 契约草案**（5 个）：research 唯一声明了 `ForbiddenContext=[style_directives]`——证据收集应保持风格中立。outline/draft/quality/finalize 按角色需求声明 required+/optional±。这些是初始工作假设，随使用迭代。

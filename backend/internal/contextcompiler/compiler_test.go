@@ -122,7 +122,7 @@ func TestCompileMissingBlocksAreExplicit(t *testing.T) {
 	input := Input{
 		ProjectID:      "prj_test",
 		ContractDigest: "空项目首章",
-		Wanted:         []string{ResidentBlock, "canon_facts", "terminology"},
+		Wanted:         []string{"contract_digest", ResidentBlock, "canon_facts", "terminology"},
 	}
 	envelope, err := Compile(input)
 	if err != nil {
@@ -135,7 +135,8 @@ func TestCompileMissingBlocksAreExplicit(t *testing.T) {
 	if missing[ResidentBlock] != "no resident threads supplied" || missing["canon_facts"] != "no data supplied" || missing["terminology"] != "no data supplied" {
 		t.Fatalf("missing=%v", envelope.Missing)
 	}
-	// Unwanted absent blocks stay silent — only requested gaps are flagged.
+	// The contract digest is the only block with data; under the allowlist the
+	// undeclared blocks stay out entirely.
 	if len(envelope.Blocks) != 1 || envelope.Blocks[0].Name != "contract_digest" {
 		t.Fatalf("blocks=%v", envelope.Blocks)
 	}
@@ -162,5 +163,50 @@ func TestCompileResidentThreadsAreSorted(t *testing.T) {
 	}
 	if second.Hash != envelope.Hash {
 		t.Fatal("input order changed the hash: threads must be normalized")
+	}
+}
+
+func TestCompileWantedIsAnAllowlist(t *testing.T) {
+	// Without a manifest contract, every supplied block is assembled.
+	open, err := Compile(richInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open.Blocks) < 8 {
+		t.Fatalf("open compile=%v", open.Blocks)
+	}
+	// With a contract, undeclared blocks stay out even though data exists —
+	// this is what makes a capability's context contract binding.
+	input := richInput()
+	input.Wanted = []string{"contract_digest", ResidentBlock, "canon_facts"}
+	envelope, err := Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, block := range envelope.Blocks {
+		names[block.Name] = true
+	}
+	if !names["contract_digest"] || !names[ResidentBlock] || !names["canon_facts"] {
+		t.Fatalf("declared blocks missing: %v", envelope.Blocks)
+	}
+	for _, undeclared := range []string{"terminology", "open_decisions", "entities_cards", "source_evidence", "document_state", "style_directives"} {
+		if names[undeclared] {
+			t.Fatalf("undeclared block %s was assembled", undeclared)
+		}
+	}
+	if len(envelope.Missing) != 0 {
+		t.Fatalf("supplied declared blocks must not be missing: %v", envelope.Missing)
+	}
+}
+
+func TestCompileRejectsUnknownWantedBlock(t *testing.T) {
+	input := richInput()
+	input.Wanted = []string{"contract_digest", "secret_block"}
+	if _, err := Compile(input); err == nil || !strings.Contains(err.Error(), "not a compiler block") {
+		t.Fatalf("err=%v", err)
+	}
+	if !ValidBlock("canon_facts") || ValidBlock("secret_block") || len(Blocks()) != 9 {
+		t.Fatalf("block registry mismatch: valid=%v blocks=%v", ValidBlock("canon_facts"), Blocks())
 	}
 }

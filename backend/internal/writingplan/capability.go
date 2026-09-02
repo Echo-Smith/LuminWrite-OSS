@@ -18,6 +18,46 @@ const (
 	IdempotencyExternal IdempotencyClass = "external_side_effect"
 )
 
+// ContextBlockName names one compiled context block of a capability's
+// context contract (docs/18 §18.5.5). The set is pinned by the context
+// compiler; the plan layer only checks membership and disjointness.
+type ContextBlockName string
+
+const (
+	ContextContractDigest  ContextBlockName = "contract_digest"
+	ContextThroughLine     ContextBlockName = "through_line_anchor"
+	ContextCanonFacts      ContextBlockName = "canon_facts"
+	ContextTerminology     ContextBlockName = "terminology"
+	ContextOpenDecisions   ContextBlockName = "open_decisions"
+	ContextEntitiesCards   ContextBlockName = "entities_cards"
+	ContextSourceEvidence  ContextBlockName = "source_evidence"
+	ContextDocumentState   ContextBlockName = "document_state"
+	ContextStyleDirectives ContextBlockName = "style_directives"
+)
+
+// ValidContextBlock reports whether the name is one of the compiler's blocks.
+func ValidContextBlock(name ContextBlockName) bool {
+	switch name {
+	case ContextContractDigest, ContextThroughLine, ContextCanonFacts, ContextTerminology,
+		ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextDocumentState, ContextStyleDirectives:
+		return true
+	}
+	return false
+}
+
+// ContextContract is the manifest's declaration of what context a capability
+// may see (docs/18 §18.5.5). Required blocks that the compiler cannot supply
+// are recorded in the envelope; failing the node on them is a separate,
+// explicitly activated policy — M4a ships the shadow semantics.
+type ContextContract struct {
+	RequiredContext  []ContextBlockName `json:"required_context,omitempty"`
+	OptionalContext  []ContextBlockName `json:"optional_context,omitempty"`
+	ForbiddenContext []ContextBlockName `json:"forbidden_context,omitempty"`
+	// ContextTokenBudget caps this capability's envelope; 0 means the
+	// compiler default.
+	ContextTokenBudget int `json:"context_token_budget,omitempty"`
+}
+
 type CapabilityManifest struct {
 	ID                  string           `json:"id"`
 	Class               string           `json:"class"`
@@ -26,6 +66,7 @@ type CapabilityManifest struct {
 	OptionalInputTypes  []ArtifactType   `json:"optional_input_types"`
 	OutputTypes         []ArtifactType   `json:"output_types"`
 	Permissions         []Permission     `json:"permissions"`
+	Context             ContextContract  `json:"context"`
 	Streaming           bool             `json:"streaming"`
 	EstimatedCostUSD    float64          `json:"estimated_cost_usd"`
 	EstimatedDurationMS int64            `json:"estimated_duration_ms"`
@@ -38,6 +79,48 @@ type CapabilityManifest struct {
 	Idempotency         IdempotencyClass `json:"idempotency"`
 	Available           bool             `json:"available"`
 	DirectDocumentWrite bool             `json:"direct_document_write"`
+}
+
+// ValidateContextContract checks the declaration: every name is a compiler
+// block and the three sets are pairwise disjoint. A block cannot be both
+// required and forbidden — that would make the capability unexecutable.
+func (contract ContextContract) ValidateContextContract() error {
+	seen := map[ContextBlockName]string{}
+	for _, group := range []struct {
+		kind  string
+		names []ContextBlockName
+	}{
+		{"required", contract.RequiredContext},
+		{"optional", contract.OptionalContext},
+		{"forbidden", contract.ForbiddenContext},
+	} {
+		for _, name := range group.names {
+			if !ValidContextBlock(name) {
+				return fmt.Errorf("CONTEXT_BLOCK_UNKNOWN: %s is not a compiler block", name)
+			}
+			if first, clash := seen[name]; clash {
+				return fmt.Errorf("CONTEXT_BLOCK_CONFLICT: %s is both %s and %s", name, first, group.kind)
+			}
+			seen[name] = group.kind
+		}
+	}
+	if contract.ContextTokenBudget < 0 {
+		return fmt.Errorf("CONTEXT_TOKEN_BUDGET_INVALID: %d", contract.ContextTokenBudget)
+	}
+	return nil
+}
+
+// ContextWanted returns the blocks the compiler should assemble for this
+// contract: required plus optional, in a stable order.
+func (contract ContextContract) ContextWanted() []string {
+	wanted := make([]string, 0, len(contract.RequiredContext)+len(contract.OptionalContext))
+	for _, name := range contract.RequiredContext {
+		wanted = append(wanted, string(name))
+	}
+	for _, name := range contract.OptionalContext {
+		wanted = append(wanted, string(name))
+	}
+	return wanted
 }
 
 type ExecutionRequest struct {
@@ -212,6 +295,9 @@ func validateManifest(manifest CapabilityManifest) error {
 	if manifest.DirectDocumentWrite {
 		return errors.New("DIRECT_DOCUMENT_WRITE_FORBIDDEN: capability must emit Artifact or RevisionSet")
 	}
+	if err := manifest.Context.ValidateContextContract(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -236,18 +322,35 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 			SupportedNodeKinds: kinds, MaxBounds: Bounds{MaxAttempts: 2, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 2, TimeoutMS: 120000},
 			Idempotency: IdempotencyRequired}
 	}
+	// Context contracts (docs/18 §18.5.5): required blocks that go unsupplied
+	// are recorded in the envelope, never silently absent. Fail-closed on
+	// required-missing is a separately activated policy (M4b).
 	outline := base("core.outline.generate", "writing.outline", "engine.step.outline", []ArtifactType{"contract"}, []ArtifactType{"outline"}, []Permission{"model.invoke", "materials.read"}, false)
 	outline.OptionalInputTypes = []ArtifactType{"source_pack"}
+	outline.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards}}
 	register(outline)
 	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"full_draft"}, []Permission{"model.invoke", "materials.read"}, false)
 	draft.OptionalInputTypes = []ArtifactType{"outline", "source_pack"}
+	draft.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
+		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextStyleDirectives}}
 	register(draft)
 	quality := base("core.validation.quality", "validation.quality", "engine.step.post_review", []ArtifactType{"full_draft"}, []ArtifactType{"quality_report"}, []Permission{"model.invoke", "validation.run"}, true)
 	quality.OptionalInputTypes = []ArtifactType{"evidence_report", "fact_report"}
+	quality.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
+		OptionalContext: []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextStyleDirectives}}
 	register(quality)
-	register(base("core.document.finalize", "document.finalize", "kernel.document.finalize", []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}, []Permission{"document.revision"}, false))
+	finalize := base("core.document.finalize", "document.finalize", "kernel.document.finalize", []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}, []Permission{"document.revision"}, false)
+	finalize.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
+		OptionalContext: []ContextBlockName{ContextTerminology}}
+	register(finalize)
 	research := base("core.retrieval.search", "research.collect", "engine.step.search", []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}, []Permission{"external.research", "materials.read"}, false)
 	research.SupportsEvidence = true
+	// Style directives must not shape evidence collection: research stays
+	// style-neutral by contract.
+	research.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		OptionalContext:  []ContextBlockName{ContextCanonFacts, ContextOpenDecisions, ContextTerminology, ContextEntitiesCards},
+		ForbiddenContext: []ContextBlockName{ContextStyleDirectives}}
 	register(research)
 	return registry
 }
@@ -261,6 +364,9 @@ func cloneManifest(manifest CapabilityManifest) CapabilityManifest {
 	manifest.OptionalInputTypes = append([]ArtifactType(nil), manifest.OptionalInputTypes...)
 	manifest.OutputTypes = append([]ArtifactType(nil), manifest.OutputTypes...)
 	manifest.Permissions = append([]Permission(nil), manifest.Permissions...)
+	manifest.Context.RequiredContext = append([]ContextBlockName(nil), manifest.Context.RequiredContext...)
+	manifest.Context.OptionalContext = append([]ContextBlockName(nil), manifest.Context.OptionalContext...)
+	manifest.Context.ForbiddenContext = append([]ContextBlockName(nil), manifest.Context.ForbiddenContext...)
 	manifest.SupportedNodeKinds = append([]NodeKind(nil), manifest.SupportedNodeKinds...)
 	return manifest
 }

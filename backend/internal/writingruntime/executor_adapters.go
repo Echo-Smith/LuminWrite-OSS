@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -33,7 +34,11 @@ type ContentGateway interface {
 }
 
 type LegacyNodeInput struct {
-	Request  ExecutionRequest
+	Request ExecutionRequest
+	// Context is the compiled envelope for this attempt, injected by the
+	// orchestrator's shadow wiring. Nil when compilation is disabled or
+	// degraded; runners treat it as advisory.
+	Context  *contextcompiler.Envelope
 	Payloads map[writingplan.ArtifactType][][]byte
 }
 
@@ -166,7 +171,7 @@ func (executor *LegacyExecutor) Execute(ctx context.Context, request ExecutionRe
 	}
 	started := executor.now()
 	legacyCtx, cancel := context.WithTimeout(ctx, time.Duration(request.Node.Bounds.TimeoutMS)*time.Millisecond)
-	outputs, usage, err := executor.runner.Run(legacyCtx, LegacyNodeInput{Request: request, Payloads: payloads})
+	outputs, usage, err := executor.runner.Run(legacyCtx, LegacyNodeInput{Request: request, Context: request.Context, Payloads: payloads})
 	cancel()
 	if err != nil {
 		return ExecutionResult{}, err

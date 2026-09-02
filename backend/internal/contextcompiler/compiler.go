@@ -49,6 +49,21 @@ var blockOrder = []string{
 	"style_directives",
 }
 
+// Blocks returns the compiler's block names in assembly order.
+func Blocks() []string {
+	return append([]string(nil), blockOrder...)
+}
+
+// ValidBlock reports whether name is a compiler block.
+func ValidBlock(name string) bool {
+	for _, block := range blockOrder {
+		if block == name {
+			return true
+		}
+	}
+	return false
+}
+
 // BudgetTable maps block names to their share of the total budget. The
 // compiler derives per-block limits from the requested total so operators can
 // scale envelopes without touching code.
@@ -185,7 +200,10 @@ type Input struct {
 	// TotalBudget overrides DefaultTokenBudget when positive.
 	TotalBudget int
 	// Wanted lists the blocks the node requires; a wanted block without data
-	// is a hard missing entry.
+	// is a hard missing entry. A non-empty Wanted is also an allowlist: only
+	// declared blocks are assembled, even when data exists for others — this
+	// is what makes a capability manifest's context contract binding. All
+	// wanted names must be valid compiler blocks.
 	Wanted []string
 }
 
@@ -236,8 +254,13 @@ func Compile(input Input) (Envelope, error) {
 	}
 	table := defaultBudgetTable(total)
 	wanted := map[string]bool{}
+	allowlist := len(input.Wanted) > 0
 	for _, block := range input.Wanted {
-		wanted[strings.TrimSpace(block)] = true
+		name := strings.TrimSpace(block)
+		if !ValidBlock(name) {
+			return Envelope{}, fmt.Errorf("block %q is not a compiler block", block)
+		}
+		wanted[name] = true
 	}
 
 	threads := make([]string, 0, len(input.ThreadLabels))
@@ -263,17 +286,20 @@ func Compile(input Input) (Envelope, error) {
 	envelope := Envelope{CompilerVersion: CompilerVersion, tokenBudget: total}
 	diagnostics := []Diagnostic{}
 
-	// Resident layer first, fail-closed on overflow.
+	// Resident layer first, fail-closed on overflow. Assembly only covers
+	// allowlisted blocks when a manifest contract narrows the envelope.
 	if residentBody := bodies[ResidentBlock]; residentBody != "" {
-		if tokens := lineCount(residentBody); tokens > ResidentBudget {
-			return Envelope{}, fmt.Errorf("resident layer needs %d tokens over the %d budget: canon is bloated, compilation fails closed", tokens, ResidentBudget)
+		if !allowlist || wanted[ResidentBlock] {
+			if tokens := lineCount(residentBody); tokens > ResidentBudget {
+				return Envelope{}, fmt.Errorf("resident layer needs %d tokens over the %d budget: canon is bloated, compilation fails closed", tokens, ResidentBudget)
+			}
 		}
 	} else if wanted[ResidentBlock] {
 		envelope.Missing = append(envelope.Missing, Missing{Block: ResidentBlock, Reason: "no resident threads supplied"})
 	}
 
 	for _, block := range blockOrder {
-		if block == ResidentBlock {
+		if block == ResidentBlock || allowlist && !wanted[block] {
 			continue
 		}
 		body := bodies[block]
@@ -299,7 +325,7 @@ func Compile(input Input) (Envelope, error) {
 		}
 		envelope.Blocks = append(envelope.Blocks, Block{Name: block, Body: body, Tokens: tokens})
 	}
-	if residentBody := bodies[ResidentBlock]; residentBody != "" {
+	if residentBody := bodies[ResidentBlock]; residentBody != "" && (!allowlist || wanted[ResidentBlock]) {
 		envelope.Blocks = append(envelope.Blocks, Block{Name: ResidentBlock, Body: residentBody, Tokens: lineCount(residentBody)})
 	}
 

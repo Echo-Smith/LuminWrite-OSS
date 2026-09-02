@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
@@ -166,6 +167,10 @@ type ExecutionRequest struct {
 	// Subject carries the rollout audience (user/tenant) for allowlist and
 	// percentage routing. Empty falls back to the run id.
 	Subject string
+	// Context is the compiled context envelope for this attempt (M4a shadow
+	// wiring). Nil means context compilation is disabled or degraded —
+	// executors treat it as advisory, never authoritative.
+	Context *contextcompiler.Envelope
 }
 
 func (request ExecutionRequest) Validate() error {

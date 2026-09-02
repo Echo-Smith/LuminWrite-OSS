@@ -162,6 +162,12 @@ type Orchestrator struct {
 	// Subject resolves the rollout audience (user/tenant) for allowlist and
 	// percentage routing. Nil means executions route by run id.
 	Subject func(writingstore.RuntimeRun) string
+	// Context compiles per-attempt envelopes from the capability's manifest
+	// contract; Envelopes persists them. Nil Context disables the context
+	// shadow wiring entirely (M4a: compilation and audit only — required
+	// blocks going unsupplied never fail the node).
+	Context   ContextSource
+	Envelopes ContextEnvelopeSink
 
 	mu       sync.Mutex
 	controls map[string]*runControl
@@ -326,6 +332,10 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		if err := request.Validate(); err != nil {
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
 		}
+		// Context shadow wiring (M4a): compile and persist the envelope, then
+		// inject it into the request. Failures degrade to a nil envelope —
+		// shadow mode never changes execution outcomes.
+		request.Context = orchestrator.compileNodeContext(ctx, run, node, attemptNumber, manifest)
 		attempt := writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,
 			PlanVersion: planRecord.PlanVersion, NodeID: node.NodeID, Attempt: attemptNumber,
 			IdempotencyKey: key, NodeKind: node.Kind, CapabilityID: node.Capability,
