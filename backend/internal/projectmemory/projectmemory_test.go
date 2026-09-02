@@ -143,13 +143,13 @@ func TestValidateEntityBirthCertificate(t *testing.T) {
 		t.Fatalf("self alias err=%v", err)
 	}
 	entity.CanonicalName, entity.Aliases = "Acme Labs", []string{fmt.Sprintf("a%d", 1)}
-	for i := 0; i < MaxEntityAliases; i++ {
+	for i := 0; i < MaxAliases; i++ {
 		entity.Aliases = append(entity.Aliases, fmt.Sprintf("alias-%d", i))
 	}
 	if _, err := ValidateEntity(&entity); err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("alias cap err=%v", err)
 	}
-	entity.Aliases = entity.Aliases[:MaxEntityAliases-1]
+	entity.Aliases = entity.Aliases[:MaxAliases-1]
 	entity.EntityKind = "character"
 	if _, err := ValidateEntity(&entity); err == nil || !strings.Contains(err.Error(), "closed set") {
 		t.Fatalf("fiction kind err=%v", err)

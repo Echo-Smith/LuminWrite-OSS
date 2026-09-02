@@ -14,8 +14,9 @@ import (
 // committing user, never an auto-promotion: canon writes stay user-only.
 const ClaimSupportThreshold = 2
 
-// MaxEntityAliases caps the alias list of one entity birth certificate.
-const MaxEntityAliases = 12
+// MaxAliases caps any curated alias list (entity birth certificates,
+// terminology entries).
+const MaxAliases = 12
 
 // entityKinds is the closed non-fiction entity set (docs/18 §18.10). There is
 // no character-card concept; evolving truth lives in facts, not on entities.
@@ -169,8 +170,8 @@ func ValidateEntity(entity *Entity) ([]string, error) {
 		seen[folded] = true
 		aliases = append(aliases, normalized)
 	}
-	if len(aliases) > MaxEntityAliases {
-		return nil, fmt.Errorf("entity carries %d aliases, the cap is %d", len(aliases), MaxEntityAliases)
+	if len(aliases) > MaxAliases {
+		return nil, fmt.Errorf("list carries %d aliases, the cap is %d", len(aliases), MaxAliases)
 	}
 	entity.Aliases = aliases
 	if len(entity.SourceRefs) == 0 && strings.TrimSpace(entity.SourceRunID) == "" {

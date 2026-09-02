@@ -1157,3 +1157,163 @@ func TestProjectMemoryEntityCandidatePool(t *testing.T) {
 		t.Fatal("absent entity archived")
 	}
 }
+
+func TestProjectMemoryCuratedStateLifecycle(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, project_claim_evidence, project_claims, project_entities, project_terminology, project_decisions, project_open_questions, project_threads, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_curated"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M2.5", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+	model := Actor{Type: ActorModel, ID: "curator"}
+
+	// Terminology: stage -> model promotion refused -> user promotion ->
+	// duplicate live term rejected by the partial unique index -> archive
+	// frees the term for re-registration.
+	entry := &projectmemory.Terminology{TerminologyID: "term_store_1", ProjectID: projectID,
+		Term: "生成式检索", Definition: "由模型直接生成检索结果的方法", Aliases: []string{"GSR"},
+		Forbidden: []string{"AI搜索"}, SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageTerminology(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Status != "candidate" {
+		t.Fatalf("status=%q", entry.Status)
+	}
+	if err := store.PromoteTerminology(ctx, "term_store_1", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model promotion err=%v", err)
+	}
+	if err := store.PromoteTerminology(ctx, "term_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	// The (project, term) identity collides at stage time while an entry is
+	// live — same rule as the entity pool; archiving frees the term.
+	twin := &projectmemory.Terminology{TerminologyID: "term_store_twin", ProjectID: projectID,
+		Term: "生成式检索", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageTerminology(ctx, twin); err == nil {
+		t.Fatal("duplicate live term staged")
+	}
+	if err := store.ArchiveTerminology(ctx, "term_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StageTerminology(ctx, twin); err != nil {
+		t.Fatalf("stage after archive: %v", err)
+	}
+	if err := store.PromoteTerminology(ctx, "term_store_twin", user); err != nil {
+		t.Fatalf("promote after archive: %v", err)
+	}
+	glossary, err := store.ListTerminology(ctx, projectID, "active")
+	if err != nil || len(glossary) != 1 || glossary[0].TerminologyID != "term_store_twin" {
+		t.Fatalf("glossary=%#v err=%v", glossary, err)
+	}
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_terminology SET term='篡改' WHERE terminology_id=$1`, "term_store_twin"); err == nil {
+		t.Fatal("immutable terminology accepted a content update")
+	}
+
+	// Decisions: two candidates, promotion order decides the supersede chain.
+	first := &projectmemory.Decision{DecisionID: "dec_store_1", ProjectID: projectID,
+		Statement: "全文统一用“模型”指代底层引擎", Rationale: "与产品文案一致", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	second := &projectmemory.Decision{DecisionID: "dec_store_2", ProjectID: projectID,
+		Statement: "全文统一用“引擎”指代底层引擎", Rationale: "更中性", Supersedes: "dec_store_1",
+		SourceRefs: []string{"doc_store"}, RaisedByType: string(ActorModel)}
+	if err := store.StageDecision(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StageDecision(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_2", user); err == nil {
+		t.Fatal("superseding an inactive decision accepted")
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_2", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model decision promotion err=%v", err)
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_2", user); err != nil {
+		t.Fatal(err)
+	}
+	decisions, err := store.ListDecisions(ctx, projectID, "superseded")
+	if err != nil || len(decisions) != 1 || decisions[0].DecisionID != "dec_store_1" {
+		t.Fatalf("superseded=%#v err=%v", decisions, err)
+	}
+
+	// Open questions: raise by model, answer/drop by user only.
+	question := &projectmemory.OpenQuestion{QuestionID: "qu_store_1", ProjectID: projectID,
+		Question: "数据口径以哪家年报为准？", Context: "第三章引用营收数据", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.RaiseOpenQuestion(ctx, question); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerOpenQuestion(ctx, "qu_store_1", "以 2025 年度报告为准", "", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model answer err=%v", err)
+	}
+	if err := store.AnswerOpenQuestion(ctx, "qu_store_1", "", "", user); err == nil {
+		t.Fatal("empty answer accepted")
+	}
+	if err := store.AnswerOpenQuestion(ctx, "qu_store_1", "以 2025 年度报告为准", "", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DropOpenQuestion(ctx, "qu_store_1", user); err == nil {
+		t.Fatal("answering twice via drop accepted")
+	}
+	if err := store.RaiseOpenQuestion(ctx, &projectmemory.OpenQuestion{QuestionID: "qu_store_2", ProjectID: projectID,
+		Question: "是否引用竞品定价？", SourceRefs: []string{"doc_store"}, RaisedByType: string(ActorModel)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DropOpenQuestion(ctx, "qu_store_2", user); err != nil {
+		t.Fatal(err)
+	}
+	openQuestions, err := store.ListOpenQuestions(ctx, projectID, "open")
+	if err != nil || len(openQuestions) != 0 {
+		t.Fatalf("open questions=%d err=%v", len(openQuestions), err)
+	}
+
+	// Threads: resident thread survives, resolution links a fact.
+	fact, _, err := store.CommitMemoryCandidate(ctx, func() string {
+		if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{{
+			CandidateID: "cand_thread", BatchID: "bat_thread", ProjectID: projectID,
+			Subject: "LuminBuddy", Predicate: "state", Object: "开源", AsOf: time.Now().UTC().Add(-time.Hour),
+			SourceRefs: []string{"doc_store"}, SubmittedByType: string(ActorModel)}}); err != nil {
+			t.Fatal(err)
+		}
+		return "cand_thread"
+	}(), user, "fact_thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := &projectmemory.Thread{ThreadID: "thr_store_1", ProjectID: projectID,
+		Label: "论点链：检索优于重排", Summary: "贯穿全文的核心论证", Resident: true,
+		SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageThread(ctx, thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveThread(ctx, "thr_store_1", "", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model resolution err=%v", err)
+	}
+	if err := store.PromoteThread(ctx, "thr_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveThread(ctx, "thr_store_1", fact.FactID, user); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListThreads(ctx, projectID, "resolved")
+	if err != nil || len(threads) != 1 || threads[0].ResolvedFactID != fact.FactID {
+		t.Fatalf("resolved threads=%#v err=%v", threads, err)
+	}
+	// Fact content is immutable; only interval columns move (M1 rule holds
+	// for curated references too).
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_threads SET label='篡改' WHERE thread_id=$1`, "thr_store_1"); err == nil {
+		t.Fatal("immutable thread accepted a content update")
+	}
+}

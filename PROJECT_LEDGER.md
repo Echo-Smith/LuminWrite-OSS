@@ -205,6 +205,7 @@
 | 2026-09-02 | 交付 production（enabled）晋升门禁并收口 V2.8 | 稳定化分支 | percentage→enabled 最后一级门禁、阶梯与审批链路；V2.8 八项全部完成 | ✅ 双仓字节一致、容器验证全绿；无生产审批、未激活、未部署 |
 | 2026-09-02 | V2.9 启动：落地 ProjectMemory M1 | 稳定化分支 | 项目记忆基础：canon facts 区间行、候选道、HITL 门（对照代码矫正设计稿 §18.9） | ✅ 双仓字节一致、容器验证全绿；无运行时变更 |
 | 2026-09-02 | V2.9 M2：交付 claims 佐证道与实体候选池 | 稳定化分支 | 非虚构定位矫正（§18.10）后的证据累积 → user 晋升闭环 | ✅ 双仓字节一致、容器验证全绿；无运行时变更 |
+| 2026-09-02 | V2.9 M2.5：交付 curated 项目状态四类对象 | 稳定化分支 | 术语/决策/未决问题/领域中立贯穿线账本（迁移 101），全部沿用候选道 + user-only 门 + 内容不可变 | ✅ 双仓字节一致、容器验证全绿；无运行时变更 |
 
 ---
 
@@ -236,6 +237,7 @@
 | E-022 | 代码+验收 | production（enabled）晋升门禁：`ProductionPromotionGate`（percentage 阶段证据 + 阶段审批在期 + exact-scope 生产审批）、provider fail-closed（`production_gate_not_configured`）、审批存储放开 enabled（迁移 098，enabled 审批 health 携带 percentage hash）、CLI enabled 路由与阶梯校验 | `backend/internal/writingruntime/promotion_gate.go`、`backend/internal/writingstore/rollout.go`、`backend/internal/database/migrations/098_production_promotion.*.sql`、`backend/cmd/governance-gate/`、`docs/releases/2026-09-02-production-promotion-policy.md`、`docs/runbook.md` §9.8 |
 | E-023 | 代码+验收 | ProjectMemory M1：`writing_projects`/`project_memory_candidates`/`project_facts`（迁移 099）、受控词表 v1、候选整批暂存、user-only commit/supersede、单值谓词自动区间失效、幂等 replay | `backend/internal/database/migrations/099_project_memory.*.sql`、`backend/internal/projectmemory/`、`backend/internal/writingstore/projectmemory.go`、`docs/releases/2026-09-02-project-memory-m1.md`、`docs/18-project-memory-context-compiler.md` §18.9 |
 | E-024 | 代码+验收 | ProjectMemory M2：claims 佐证道（evidence hash 幂等、supported 仅 advisory、user-only 晋升复用单值失效机制）、实体候选池（非虚构封闭类型集、出生证明不可变、归档释放身份）、`insertFactWithSupersede` 双路复用、nil-slice JSON 归一修复 | `backend/internal/database/migrations/100_project_memory_m2.*.sql`、`backend/internal/projectmemory/claims.go`、`backend/internal/writingstore/projectmemory.go`、`docs/releases/2026-09-02-project-memory-m2.md` |
+| E-025 | 代码+验收 | ProjectMemory M2.5：`project_terminology`（stage 期唯一 + 归档释放）、`project_decisions`（supersedes 链事务内关闭）、`project_open_questions`（open/answered/dropped）、`project_threads`（领域中立贯穿线 + resident 驻留标记）；`MaxAliases` 统一上限；测试暴露并修复三处实现缝隙（answer 状态漏翻转、threads 触发器列清单误含 resolved_fact_id、supersedes 占位符） | `backend/internal/database/migrations/101_project_memory_curated.*.sql`、`backend/internal/projectmemory/curated.go`、`backend/internal/writingstore/projectmemory_curated.go`、`docs/releases/2026-09-02-project-memory-m25.md` |
 
 ---
 
@@ -258,6 +260,7 @@
 | 2026-09-02 | production 工程门 | percentage 阶段证据与审批在期校验、enabled fail-closed、迁移 098 双仓验证（fresh DB 自动应用、append-only 保持） | ✅ 通过 | V2.8 清单收口：纯工程交付，无 enabled 审批、未部署、未切流；生产激活仍需 §9.8 走查 + 独立授权 |
 | 2026-09-02 | V2.9 M1 设计矫正门 | ProjectMemory M1 交付：四项设计矫正回写（project 一级对象、ActorType 硬门禁、复用 089 append-only、词表 Go 侧版本化）+ 单值/多值谓词二分；迁移 099 双仓 fresh DB 验证 | ✅ 通过 | M1 完成；M2 claims 晋升/实体/术语、M3 编译器待排期 |
 | 2026-09-02 | V2.9 M2 设计矫正门 | 非虚构定位落地：实体封闭类型集（无角色卡）、through_line 改造为领域中立未决线索账本（顺延 M2.5）；claim 佐证永不自动晋升（HITL 保持 store 层硬门禁）；迁移 100 双仓 fresh DB 验证 | ✅ 通过 | M2 完成；M2.5 terminology/decisions/through_line、M3 编译器待排期 |
+| 2026-09-02 | V2.9 M2.5 设计矫正门 | 非虚构贯穿线落地为领域中立线索账本（resident 驻留语义为 M3 编译器预留）；四类对象 canon 路径与 M1/M2 同等 HITL 纪律；迁移 101 双仓 fresh DB 验证 | ✅ 通过 | M2.5 完成；ProjectMemory 数据面齐备，下一步 M3 Context Compiler MVP |
 
 ---
 
