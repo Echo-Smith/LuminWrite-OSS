@@ -28,4 +28,4 @@ allowlist 阶段已完成证据积累与审批（见 2026-09-02 allowlist releas
 
 ## 边界（未改变）
 
-未审批任何 percentage policy、未部署、未推送、未切换真实流量、basis points 未在任何运行环境调整。**阶梯当前状态**：allowlist 阶段有 3 条本地审批（已过期，见 allowlist release doc），percentage 阶段无审批、无激活。percentage 发布仍需：percentage policy 证据积累 → §9.7 评估 → §9.3/§9.7 审批（阶梯校验）→ 独立受控激活变更。runbook 新增 §9.7 记录完整走查路径。
+未审批任何 percentage policy、未部署、未推送、未切换真实流量、basis points 未在任何运行环境调整。**阶梯当前状态**：allowlist 阶段有 3 条本地审批（已过期，见 allowlist release doc），percentage 阶段无审批、无激活。percentage 发布仍需：percentage policy 证据积累 → §9.6 评估 → §9.3/§9.6 审批（阶梯校验）→ 独立受控激活变更。runbook 新增 §9.6 记录完整走查路径。

@@ -474,6 +474,31 @@ func TestTask13ShadowContentAndPromotionRecordsAreDurable(t *testing.T) {
 	if _, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-absent", "allowlist"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing ladder err=%v", err)
 	}
+
+	// Enabled approvals certify the percentage stage's evidence health, so the
+	// certified health carries the percentage policy hash rather than the
+	// enabled policy's own hash; the store must accept that pairing and reject
+	// the mismatched pairing for the lower rungs.
+	enabledHealth := percentageHealth
+	enabledApproval := RolloutApprovalRecord{ApprovalID: "approval_task13_enabled", PolicyHash: testHash("task13-enabled-policy"),
+		PolicyVersion: 3, ActivationKey: "change-task13", TargetMode: "enabled", ApprovedBy: "operator_test",
+		Reason: "integration test enabled", EvidenceHealth: enabledHealth, EvidenceCutoff: enabledHealth.Cutoff,
+		EvidenceLastRecordedAt: enabledHealth.LastRecordedAt, CreatedAt: now.Add(7 * time.Minute), ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.RecordRolloutApproval(ctx, enabledApproval); err != nil {
+		t.Fatalf("record enabled approval: %v", err)
+	}
+	latestEnabled, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-task13", "enabled")
+	if err != nil || latestEnabled.ApprovalID != enabledApproval.ApprovalID {
+		t.Fatalf("enabled ladder=%#v err=%v", latestEnabled, err)
+	}
+	misbound := percentageApproval
+	misbound.ApprovalID = "approval_task13_misbound"
+	misbound.PolicyHash = testHash("task13-unrelated-policy")
+	misbound.CreatedAt = now.Add(8 * time.Minute)
+	misbound.ExpiresAt = misbound.ExpiresAt.Add(time.Minute)
+	if err := store.RecordRolloutApproval(ctx, misbound); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("misbound percentage approval err=%v", err)
+	}
 }
 
 func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {

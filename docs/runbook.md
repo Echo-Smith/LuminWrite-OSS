@@ -804,7 +804,7 @@ go run ./backend/cmd/evidence-policy-dump -out /absolute/path/to/policy-dir
 3. **审批后立即停止采集**：审批产生后新证据会使审批 `approval_evidence_stale` 失效。按日 cron 只适用于"持续积累、尚未审批"阶段；审批后如需续期，重新评估并重新审批。
 4. 审批 ≠ 激活。对指定 subject 启用候选路径仍是独立受控变更（§9.6）。
 
-### 9.7 percentage 阶梯工程与审批（不切流）
+### 9.6 percentage 阶梯工程与审批（不切流）
 
 percentage 是 allowlist 之后的下一级晋升阶梯：同一 activation key 必须先持有 allowlist 阶段审批（机械阶梯检查，缺失即拒绝），percentage 审批本身仍由相同的证据标准约束（最近 7 天 ≥3 条对比、0 失败、24h 内有新证据）+ exact policy hash 审批绑定。
 
@@ -826,7 +826,23 @@ percentage 是 allowlist 之后的下一级晋升阶梯：同一 activation key 
 4. 迁移 `097_percentage_promotion` 放开 `writing_rollout_approvals.target_mode` 的 CHECK 到 allowlist|percentage；审批记录仍是 append-only。
 5. 审批 ≠ 激活。把 basis points 从 0 调到目标灰度值并部署，是下一次独立受控变更（§9.6）。
 
-### 9.6 明确禁止
+### 9.8 production（enabled）晋升策略（不切流）
+
+enabled 是阶梯最后一级：所有主体走候选 lane，运行时不再产生任何对比证据（对比证据只存在于 shadow/allowlist/percentage policy hash 下）。因此 production 门禁不要求 enabled policy 自身的证据，而是要求 **percentage 阶段证明变更已就绪**：
+
+1. **阶梯证据**：同一 activation key 必须已持有 percentage 阶段审批，且该审批记录的 percentage policy hash 下最近 7 天 ≥3 条对比、0 失败、24h 内有新证据（缺失即 `percentage_stage_missing`）。
+2. **阶段审批在期**：percentage 阶段审批本身未过期（`percentage_stage_expired`）。审批后立即停止采集的规则（§9.5.1）在这里同样适用。
+3. **exact-scope 生产审批**：enabled 审批绑定 exact enabled policy hash / version / activation key（走查同 §9.3，CLI 自动路由到 `ProductionPromotionGate`；输出 `target_mode: enabled`）。
+
+运行时强制（与 percentage 门禁同款 fail-closed）：
+
+- `GatedRolloutPolicyProvider.ProductionGate` 未配置时，enabled policy 一律拒绝（`production_gate_not_configured`），即使库里有生产审批。
+- `assess` 阶段即可复核阶梯：`governance-gate -action assess -policy <enabled-policy.json>` 返回 `percentage_stage_missing` / `evidence_stale` 等原因。
+- 迁移 `098_production_promotion` 放开 `target_mode` CHECK 到 allowlist|percentage|enabled；enabled 审批的 `evidence_health` 刻意携带 **percentage** policy hash（enabled 模式无 shadow 对比，这是 store 层唯一允许 hash 与 record hash 不同的模式）。
+
+审批 ≠ 激活。把生产 policy 部署到运行时并让流量真正走候选 lane，仍是独立的受控变更（§9.7），需要：双仓回归 + 迁移检查 + 真实模型纵向验收 + 审批在有效期内 + 显式授权。
+
+### 9.7 明确禁止
 
 - 不得把 `assess` 或 `approve` 的成功等同于生产授权。
 - 不得把 allowlist policy 改为 percentage/enabled 绕过门禁；生产 gate 会拒绝。

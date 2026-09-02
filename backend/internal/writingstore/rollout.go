@@ -155,10 +155,17 @@ func (s *Store) RecordRolloutApproval(ctx context.Context, record RolloutApprova
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
-	// Percentage approvals may only be recorded for the second rung of the
-	// ladder; the allowlist stage itself is enforced by the promotion gate.
+	// Percentage and enabled approvals may only be recorded for their rungs of
+	// the ladder; the stage below each is enforced by the promotion gates.
+	if err := validateHash(record.EvidenceHealth.PolicyHash, "evidence policy_hash"); err != nil {
+		return err
+	}
+	// Enabled approvals certify the percentage stage's evidence health: the
+	// certified health deliberately carries the percentage policy hash, not
+	// the enabled policy's own (enabled mode produces no shadow comparisons).
 	if record.PolicyVersion < 1 || !validApprovalTargetMode(record.TargetMode) || strings.TrimSpace(record.ActivationKey) == "" || strings.TrimSpace(record.ApprovedBy) == "" || strings.TrimSpace(record.Reason) == "" ||
-		record.EvidenceCutoff.IsZero() || record.EvidenceLastRecordedAt.IsZero() || record.EvidenceHealth.PolicyHash != record.PolicyHash ||
+		record.EvidenceCutoff.IsZero() || record.EvidenceLastRecordedAt.IsZero() ||
+		(record.TargetMode != "enabled" && record.EvidenceHealth.PolicyHash != record.PolicyHash) ||
 		!record.EvidenceHealth.Cutoff.Equal(record.EvidenceCutoff) || !record.EvidenceHealth.LastRecordedAt.Equal(record.EvidenceLastRecordedAt) || !record.ExpiresAt.After(record.CreatedAt) {
 		return fmt.Errorf("%w: incomplete rollout approval", ErrInvalidRecord)
 	}
@@ -180,7 +187,7 @@ func (s *Store) RecordRolloutApproval(ctx context.Context, record RolloutApprova
 }
 
 func validApprovalTargetMode(mode string) bool {
-	return mode == "allowlist" || mode == "percentage"
+	return mode == "allowlist" || mode == "percentage" || mode == "enabled"
 }
 
 func (s *Store) LatestRolloutApproval(ctx context.Context, policyHash string, policyVersion int, activationKey string) (RolloutApprovalRecord, error) {

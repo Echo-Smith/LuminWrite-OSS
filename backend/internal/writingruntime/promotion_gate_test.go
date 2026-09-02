@@ -179,3 +179,111 @@ func TestGatedProviderFailsClosedForPercentageWithoutGate(t *testing.T) {
 		t.Fatalf("records=%d", len(records))
 	}
 }
+
+func enabledPolicyForGate() AdapterRolloutPolicy {
+	policy := DefaultShadowPolicy("candidate.engine", AdapterFamilyEngine, "core.draft.generate", "1.0.0")
+	policy.PolicyVersion, policy.Mode, policy.ActivationKey, policy.AllowSubjects = 3, RolloutEnabled, "change-task13", []string{}
+	policy, _ = policy.WithComputedHash()
+	return policy
+}
+
+func TestProductionPromotionGateRequiresPercentageStageFreshEvidenceAndExactApproval(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	policy := enabledPolicyForGate()
+	percentageHash := hashForTest("percentage-policy")
+	health := writingstore.RolloutEvidenceHealth{PolicyHash: percentageHash, ComparisonRecords: 3, TotalRecords: 9, LastRecordedAt: now.Add(-time.Hour), Cutoff: now.Add(-7 * 24 * time.Hour)}
+	store := &governanceStoreStub{health: health,
+		approval: writingstore.RolloutApprovalRecord{ApprovalID: "approval_enabled", PolicyHash: policy.PolicyHash,
+			PolicyVersion: policy.PolicyVersion, ActivationKey: policy.ActivationKey, TargetMode: string(RolloutEnabled),
+			EvidenceLastRecordedAt: health.LastRecordedAt, ExpiresAt: now.Add(time.Hour)},
+		ladder: writingstore.RolloutApprovalRecord{ApprovalID: "approval_percentage_stage", PolicyHash: percentageHash,
+			TargetMode: string(RolloutPercentage), EvidenceLastRecordedAt: health.LastRecordedAt, ExpiresAt: now.Add(48 * time.Hour)}}
+	gate := ProductionPromotionGate{Store: store, Criteria: DefaultPromotionCriteria(), Now: func() time.Time { return now }}
+	assessment, err := gate.Assess(context.Background(), policy)
+	if err != nil || !assessment.Allowed || assessment.ApprovalID != "approval_enabled" {
+		t.Fatalf("assessment=%#v err=%v", assessment, err)
+	}
+	// The evidence health must be looked up under the percentage policy hash
+	// recorded on the stage approval, not under the enabled policy's own hash.
+	if assessment.Health.PolicyHash != percentageHash {
+		t.Fatalf("health=%#v", assessment.Health)
+	}
+
+	// A missing percentage stage blocks production even when everything else
+	// is perfect.
+	store.ladderErr = writingstore.ErrNotFound
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "percentage_stage_missing") {
+		t.Fatalf("ladder assessment=%#v err=%v", assessment, err)
+	}
+	store.ladderErr = nil
+
+	// An expired percentage stage approval cannot authorize production.
+	store.ladder.ExpiresAt = now.Add(-time.Hour)
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "percentage_stage_expired") {
+		t.Fatalf("expired stage assessment=%#v err=%v", assessment, err)
+	}
+	store.ladder.ExpiresAt = now.Add(48 * time.Hour)
+
+	// Stale percentage-stage evidence fails the shared criteria before
+	// approval binding.
+	store.health.LastRecordedAt = now.Add(-48 * time.Hour)
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "evidence_stale") {
+		t.Fatalf("stale assessment=%#v err=%v", assessment, err)
+	}
+	store.health.LastRecordedAt = now.Add(-time.Hour)
+
+	// Failures on the percentage stage block production.
+	store.health.FailedRecords = 1
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "evidence_failures_exceeded") {
+		t.Fatalf("failures assessment=%#v err=%v", assessment, err)
+	}
+	store.health.FailedRecords = 0
+
+	// An allowlist-targeted approval cannot authorize the production rung.
+	store.approval.TargetMode = string(RolloutAllowlist)
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "approval_mode_mismatch") {
+		t.Fatalf("mode assessment=%#v err=%v", assessment, err)
+	}
+
+	// An enabled approval bound to the wrong hash is rejected.
+	store.approval.TargetMode = string(RolloutEnabled)
+	store.approval.PolicyHash = hashForTest("wrong-enabled-policy")
+	assessment, err = gate.Assess(context.Background(), policy)
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "approval_scope_mismatch") {
+		t.Fatalf("scope assessment=%#v err=%v", assessment, err)
+	}
+
+	// A percentage policy is refused outright by the production gate.
+	assessment, err = gate.EvidenceAssessment(context.Background(), percentagePolicyForGate())
+	if err != nil || assessment.Allowed || !containsString(assessment.Reasons, "target_mode_not_enabled") {
+		t.Fatalf("mode mismatch assessment=%#v err=%v", assessment, err)
+	}
+}
+
+func TestGatedProviderFailsClosedForEnabledWithoutGate(t *testing.T) {
+	policy := enabledPolicyForGate()
+	base, _ := NewMutableRolloutPolicyProvider(policy)
+	evidence := &MemoryRolloutEvidenceStore{}
+	// ProductionGate deliberately nil: enabled traffic must fail closed until
+	// an operator explicitly wires the production gate.
+	provider := GatedRolloutPolicyProvider{Base: base,
+		Gate: AllowlistPromotionGate{Store: &governanceStoreStub{}, Criteria: DefaultPromotionCriteria()}, Evidence: evidence}
+	request := legacyRequest([]byte("contract"))
+	_, err := provider.Policy(context.Background(), request.Identity())
+	if ErrorCodeOf(err) != CodeRolloutPromotionDenied || !strings.Contains(err.Error(), "production_gate_not_configured") {
+		t.Fatalf("err=%v", err)
+	}
+
+	provider.ProductionGate = &ProductionPromotionGate{Store: &governanceStoreStub{}, Criteria: DefaultPromotionCriteria()}
+	if _, err := provider.Policy(context.Background(), request.Identity()); ErrorCodeOf(err) != CodeRolloutPromotionDenied {
+		t.Fatalf("err=%v", err)
+	}
+	if records := evidence.Records(); len(records) != 2 {
+		t.Fatalf("records=%d", len(records))
+	}
+}

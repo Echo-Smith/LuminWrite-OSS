@@ -45,6 +45,42 @@ type PromotionAssessment struct {
 	AssessedAt time.Time                          `json:"assessed_at"`
 }
 
+// checkPromotionPolicyState runs the policy-side prelude shared by every
+// promotion gate: expected mode, kill switch, and active window. A mode
+// mismatch is fatal for the assessment (it is reported alone); the other
+// reasons accumulate alongside evidence findings.
+func checkPromotionPolicyState(now time.Time, policy AdapterRolloutPolicy, expectedMode RolloutMode) (reasons []string, modeMismatch bool) {
+	reasons = []string{}
+	if policy.Mode != expectedMode {
+		return append(reasons, "target_mode_not_"+string(expectedMode)), true
+	}
+	if policy.KillSwitch {
+		reasons = append(reasons, "policy_kill_switch")
+	}
+	if !policy.EffectiveAt.IsZero() && now.Before(policy.EffectiveAt) {
+		reasons = append(reasons, "policy_not_effective")
+	}
+	if !policy.ExpiresAt.IsZero() && !now.Before(policy.ExpiresAt) {
+		reasons = append(reasons, "policy_expired")
+	}
+	return reasons, false
+}
+
+// applyPromotionCriteria folds the shared evidence criteria into reasons.
+func applyPromotionCriteria(health writingstore.RolloutEvidenceHealth, criteria PromotionCriteria, now time.Time) []string {
+	reasons := []string{}
+	if health.ComparisonRecords < criteria.MinimumComparisons {
+		reasons = append(reasons, "insufficient_comparisons")
+	}
+	if health.FailedRecords > criteria.MaximumFailures {
+		reasons = append(reasons, "evidence_failures_exceeded")
+	}
+	if health.LastRecordedAt.IsZero() || now.Sub(health.LastRecordedAt) > criteria.Freshness {
+		reasons = append(reasons, "evidence_stale")
+	}
+	return reasons
+}
+
 // assessPromotionEvidence runs the shared evidence criteria for one promotion
 // target: the policy must carry the expected mode, be active, and show fresh
 // failure-free comparison evidence under its own policy hash.
@@ -56,32 +92,16 @@ func assessPromotionEvidence(ctx context.Context, store RolloutGovernanceStore, 
 	if err := policy.Validate(); err != nil {
 		return writingstore.RolloutEvidenceHealth{}, reasons, err
 	}
-	if policy.Mode != expectedMode {
-		reasons = append(reasons, "target_mode_not_"+string(expectedMode))
-		return writingstore.RolloutEvidenceHealth{}, reasons, nil
+	stateReasons, modeMismatch := checkPromotionPolicyState(now, policy, expectedMode)
+	if modeMismatch {
+		return writingstore.RolloutEvidenceHealth{}, stateReasons, nil
 	}
-	if policy.KillSwitch {
-		reasons = append(reasons, "policy_kill_switch")
-	}
-	if !policy.EffectiveAt.IsZero() && now.Before(policy.EffectiveAt) {
-		reasons = append(reasons, "policy_not_effective")
-	}
-	if !policy.ExpiresAt.IsZero() && !now.Before(policy.ExpiresAt) {
-		reasons = append(reasons, "policy_expired")
-	}
+	reasons = append(reasons, stateReasons...)
 	health, err := store.RolloutEvidenceHealth(ctx, policy.PolicyHash, now.Add(-criteria.EvidenceWindow))
 	if err != nil {
 		return writingstore.RolloutEvidenceHealth{}, reasons, err
 	}
-	if health.ComparisonRecords < criteria.MinimumComparisons {
-		reasons = append(reasons, "insufficient_comparisons")
-	}
-	if health.FailedRecords > criteria.MaximumFailures {
-		reasons = append(reasons, "evidence_failures_exceeded")
-	}
-	if health.LastRecordedAt.IsZero() || now.Sub(health.LastRecordedAt) > criteria.Freshness {
-		reasons = append(reasons, "evidence_stale")
-	}
+	reasons = append(reasons, applyPromotionCriteria(health, criteria, now)...)
 	return health, reasons, nil
 }
 
@@ -212,12 +232,114 @@ func (gate PercentagePromotionGate) Assess(ctx context.Context, policy AdapterRo
 	return bindPromotionApproval(ctx, gate.Store, now, policy, assessment, string(RolloutPercentage))
 }
 
+// ProductionPromotionGate governs the final percentage → enabled rung. Enabled
+// is the production mode: every subject takes the candidate lane, so it
+// intentionally has no runtime evidence of its own — comparison evidence only
+// exists under the shadow/allowlist/percentage policy hashes. The gate
+// therefore requires the percentage stage itself to prove the change is ready:
+// fresh failure-free evidence under the percentage policy hash plus an
+// unexpired percentage-target approval, both for the same activation key, and
+// an enabled-target approval bound to this exact enabled policy hash. It never
+// switches traffic by itself; it only decides whether the gated policy
+// provider may serve an enabled policy.
+type ProductionPromotionGate struct {
+	Store    RolloutGovernanceStore
+	Criteria PromotionCriteria
+	Now      func() time.Time
+}
+
+func (gate ProductionPromotionGate) now() time.Time {
+	if gate.Now != nil {
+		return gate.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// EvidenceAssessment evaluates the percentage-stage evidence for this change.
+// The comparison evidence is looked up under the percentage policy hash
+// recorded in the stage approval, not under the enabled policy's own hash.
+func (gate ProductionPromotionGate) EvidenceAssessment(ctx context.Context, policy AdapterRolloutPolicy) (PromotionAssessment, error) {
+	now := gate.now()
+	assessment := PromotionAssessment{Reasons: []string{}, AssessedAt: now}
+	criteria := normalizePromotionCriteria(gate.Criteria)
+	if err := policy.Validate(); err != nil {
+		return assessment, err
+	}
+	stateReasons, modeMismatch := checkPromotionPolicyState(now, policy, RolloutEnabled)
+	if modeMismatch {
+		assessment.Reasons = append(assessment.Reasons, stateReasons...)
+		return assessment, nil
+	}
+	assessment.Reasons = append(assessment.Reasons, stateReasons...)
+	stage, err := gate.Store.LatestRolloutApprovalByActivationKey(ctx, policy.ActivationKey, string(RolloutPercentage))
+	if errors.Is(err, writingstore.ErrNotFound) {
+		assessment.Reasons = append(assessment.Reasons, "percentage_stage_missing")
+		return assessment, nil
+	}
+	if err != nil {
+		return assessment, err
+	}
+	health, err := gate.Store.RolloutEvidenceHealth(ctx, stage.PolicyHash, now.Add(-criteria.EvidenceWindow))
+	if err != nil {
+		return assessment, err
+	}
+	assessment.Health = health
+	assessment.Reasons = append(assessment.Reasons, applyPromotionCriteria(health, criteria, now)...)
+	assessment.Allowed = len(assessment.Reasons) == 0
+	return assessment, nil
+}
+
+func (gate ProductionPromotionGate) Assess(ctx context.Context, policy AdapterRolloutPolicy) (PromotionAssessment, error) {
+	now := gate.now()
+	assessment := PromotionAssessment{Reasons: []string{}, AssessedAt: now}
+	criteria := normalizePromotionCriteria(gate.Criteria)
+	if err := policy.Validate(); err != nil {
+		return assessment, err
+	}
+	stateReasons, modeMismatch := checkPromotionPolicyState(now, policy, RolloutEnabled)
+	if modeMismatch {
+		assessment.Reasons = append(assessment.Reasons, stateReasons...)
+		return assessment, nil
+	}
+	assessment.Reasons = append(assessment.Reasons, stateReasons...)
+	stage, err := gate.Store.LatestRolloutApprovalByActivationKey(ctx, policy.ActivationKey, string(RolloutPercentage))
+	if errors.Is(err, writingstore.ErrNotFound) {
+		assessment.Reasons = append(assessment.Reasons, "percentage_stage_missing")
+		assessment.Allowed = false
+		return assessment, nil
+	}
+	if err != nil {
+		return assessment, err
+	}
+	health, err := gate.Store.RolloutEvidenceHealth(ctx, stage.PolicyHash, now.Add(-criteria.EvidenceWindow))
+	if err != nil {
+		return assessment, err
+	}
+	assessment.Health = health
+	assessment.Reasons = append(assessment.Reasons, applyPromotionCriteria(health, criteria, now)...)
+	assessment.Allowed = len(assessment.Reasons) == 0
+	if !assessment.Allowed {
+		return assessment, nil
+	}
+	// The percentage stage approval must still be unexpired: a stale rung
+	// cannot authorize the production promotion even with fresh evidence.
+	if !stage.ExpiresAt.After(now) {
+		assessment.Allowed = false
+		assessment.Reasons = append(assessment.Reasons, "percentage_stage_expired")
+		return assessment, nil
+	}
+	return bindPromotionApproval(ctx, gate.Store, now, policy, assessment, string(RolloutEnabled))
+}
+
 type GatedRolloutPolicyProvider struct {
 	Base RolloutPolicyProvider
 	Gate AllowlistPromotionGate
 	// PercentageGate governs percentage policies. A nil gate keeps percentage
 	// policies fail-closed even when a percentage approval exists in the store.
 	PercentageGate *PercentagePromotionGate
+	// ProductionGate governs enabled policies. A nil gate keeps enabled
+	// policies fail-closed even when a production approval exists in the store.
+	ProductionGate *ProductionPromotionGate
 	Evidence       RolloutEvidenceStore
 }
 
@@ -241,6 +363,13 @@ func (provider GatedRolloutPolicyProvider) Policy(ctx context.Context, identity 
 			assessment = PromotionAssessment{Reasons: []string{"percentage_gate_not_configured"}}
 		} else {
 			assessment, gateErr = provider.PercentageGate.Assess(ctx, policy)
+		}
+	case RolloutEnabled:
+		if provider.ProductionGate == nil {
+			gateErr = fmt.Errorf("production promotion gate is not configured")
+			assessment = PromotionAssessment{Reasons: []string{"production_gate_not_configured"}}
+		} else {
+			assessment, gateErr = provider.ProductionGate.Assess(ctx, policy)
 		}
 	default:
 		assessment, gateErr = provider.Gate.Assess(ctx, policy)
