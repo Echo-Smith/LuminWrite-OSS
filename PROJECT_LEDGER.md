@@ -203,6 +203,7 @@
 | 2026-09-02 | 打通 allowlist 证据积累闭环并交付采集作业 | 稳定化分支 | 修复 allowlist miss 与证据 hash 的语义缝，证据可累积在治理 policy hash 下 | ✅ 双仓同步；仅采证据，未审批、未激活、未部署 |
 | 2026-09-02 | 交付 percentage 阶梯工程与 ProjectMemory/Context Compiler 设计 | 稳定化分支 | 补齐 allowlist→percentage 阶梯的门禁、证据与审批工程；定稿 V2.9 记忆/上下文设计 | ✅ 双仓字节一致、容器验证全绿；未审批、未激活、未部署 |
 | 2026-09-02 | 交付 production（enabled）晋升门禁并收口 V2.8 | 稳定化分支 | percentage→enabled 最后一级门禁、阶梯与审批链路；V2.8 八项全部完成 | ✅ 双仓字节一致、容器验证全绿；无生产审批、未激活、未部署 |
+| 2026-09-02 | V2.9 启动：落地 ProjectMemory M1 | 稳定化分支 | 项目记忆基础：canon facts 区间行、候选道、HITL 门（对照代码矫正设计稿 §18.9） | ✅ 双仓字节一致、容器验证全绿；无运行时变更 |
 
 ---
 
@@ -232,6 +233,7 @@
 | E-020 | 代码+验收 | percentage 阶梯工程：miss 证据语义修复、受众稳定桶、`PercentagePromotionGate`（含 allowlist 阶梯机械检查）、审批存储放开 target_mode（迁移 097）、CLI 支持；双仓字节一致 | `backend/internal/writingruntime/rollout.go`、`promotion_gate.go`、`backend/internal/writingstore/rollout.go`、`backend/internal/database/migrations/097_percentage_promotion.*.sql`、`backend/cmd/governance-gate/`、`docs/releases/2026-09-02-percentage-promotion-engineering.md`、`docs/runbook.md` §9.6 |
 | E-021 | 设计 | ProjectMemory 与 Context Compiler 设计（四层分离、有效期区间 facts、受控词表、确定性编译、驻留层、Manifest 契约、M1–M5 顺序） | `docs/18-project-memory-context-compiler.md` |
 | E-022 | 代码+验收 | production（enabled）晋升门禁：`ProductionPromotionGate`（percentage 阶段证据 + 阶段审批在期 + exact-scope 生产审批）、provider fail-closed（`production_gate_not_configured`）、审批存储放开 enabled（迁移 098，enabled 审批 health 携带 percentage hash）、CLI enabled 路由与阶梯校验 | `backend/internal/writingruntime/promotion_gate.go`、`backend/internal/writingstore/rollout.go`、`backend/internal/database/migrations/098_production_promotion.*.sql`、`backend/cmd/governance-gate/`、`docs/releases/2026-09-02-production-promotion-policy.md`、`docs/runbook.md` §9.8 |
+| E-023 | 代码+验收 | ProjectMemory M1：`writing_projects`/`project_memory_candidates`/`project_facts`（迁移 099）、受控词表 v1、候选整批暂存、user-only commit/supersede、单值谓词自动区间失效、幂等 replay | `backend/internal/database/migrations/099_project_memory.*.sql`、`backend/internal/projectmemory/`、`backend/internal/writingstore/projectmemory.go`、`docs/releases/2026-09-02-project-memory-m1.md`、`docs/18-project-memory-context-compiler.md` §18.9 |
 
 ---
 
@@ -252,6 +254,7 @@
 | 2026-09-02 | percentage 工程门 | miss 证据在 percentage policy hash 下累积、受众桶跨放量稳定、gate fail-closed、阶梯机械检查、迁移 097 双仓验证（fresh DB 自动应用） | ✅ 通过 | 纯工程交付：无 percentage 审批、未调 basis points、未部署、未切流；percentage 激活仍需 §9.6 走查 + 独立授权 |
 | 2026-09-02 | 设计门 | ProjectMemory/Context Compiler 设计定稿（参考 NarraCat/LucidWrite/DeepSeek Harness 调研） | ✅ 通过 | 仅设计文档（`docs/18`）；实现待 V2.9 排期 |
 | 2026-09-02 | production 工程门 | percentage 阶段证据与审批在期校验、enabled fail-closed、迁移 098 双仓验证（fresh DB 自动应用、append-only 保持） | ✅ 通过 | V2.8 清单收口：纯工程交付，无 enabled 审批、未部署、未切流；生产激活仍需 §9.8 走查 + 独立授权 |
+| 2026-09-02 | V2.9 M1 设计矫正门 | ProjectMemory M1 交付：四项设计矫正回写（project 一级对象、ActorType 硬门禁、复用 089 append-only、词表 Go 侧版本化）+ 单值/多值谓词二分；迁移 099 双仓 fresh DB 验证 | ✅ 通过 | M1 完成；M2 claims 晋升/实体/术语、M3 编译器待排期 |
 
 ---
 

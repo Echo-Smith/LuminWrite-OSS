@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/projectmemory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 )
@@ -839,4 +840,169 @@ func testTrace() TraceContext {
 
 func testHash(seed string) string {
 	return StableID("sha256:", seed) + strings.Repeat("0", 32)
+}
+
+func TestProjectMemoryCandidateLifecycleRequiresUserCommit(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	// Truncate project scopes first: writing_documents references
+	// writing_projects, so a later CASCADE would drop the fixture document.
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_store"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M1", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetProject(ctx, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetDocumentProject(ctx, fixture.documentID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetDocumentProject(ctx, fixture.documentID, "prj_absent"); err == nil {
+		t.Fatal("missing project accepted by FK")
+	}
+
+	asOf := time.Now().UTC().Add(-2 * time.Hour)
+	candidate := func(id, batchID, subject, predicate, object string) projectmemory.Candidate {
+		return projectmemory.Candidate{CandidateID: id, BatchID: batchID, ProjectID: projectID,
+			Subject: subject, Predicate: predicate, Object: object, AsOf: asOf,
+			SourceRefs: []string{"doc_store"}, SubmittedByType: string(ActorModel)}
+	}
+	mustCommit := func(id, factID string) projectmemory.Fact {
+		t.Helper()
+		fact, committed, err := store.CommitMemoryCandidate(ctx, id, user, factID)
+		if err != nil || !committed {
+			t.Fatalf("commit %s fact=%#v committed=%v err=%v", id, fact, committed, err)
+		}
+		return fact
+	}
+
+	// A batch containing one invalid candidate fails whole: no partial lanes.
+	invalid := []projectmemory.Candidate{candidate("cand_store_1", "bat_store", "林然", "location", "旧书店"),
+		{CandidateID: "cand_store_bad", BatchID: "bat_store", ProjectID: projectID,
+			Subject: "林然", Predicate: "location", Object: "无处", AsOf: asOf, SubmittedByType: string(ActorModel)}}
+	if err := store.StageMemoryCandidates(ctx, invalid); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("invalid batch err=%v", err)
+	}
+	if staged, err := store.ListStagedMemoryCandidates(ctx, projectID, ""); err != nil || len(staged) != 0 {
+		t.Fatalf("staged after failed batch=%d err=%v", len(staged), err)
+	}
+
+	batch := []projectmemory.Candidate{candidate("cand_store_1", "bat_store", "林然", "location", "旧书店"),
+		candidate("cand_store_rel", "bat_store", "林然", "relationship", "陈默"),
+		candidate("cand_store_ext", "bat_store", "林然", "x-mood", "沉静")}
+	if err := store.StageMemoryCandidates(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := store.ListStagedMemoryCandidates(ctx, projectID, "bat_store")
+	if err != nil || len(staged) != 3 {
+		t.Fatalf("staged=%d err=%v", len(staged), err)
+	}
+	var extended *projectmemory.Candidate
+	for i := range staged {
+		if staged[i].CandidateID == "cand_store_ext" {
+			extended = &staged[i]
+		}
+	}
+	if extended == nil || len(extended.Warnings) != 1 || extended.Warnings[0] != "extended_predicate:x-mood" || !extended.ExtendedPredicate {
+		t.Fatalf("extension candidate=%#v", extended)
+	}
+
+	// HITL gate: only a user actor may turn candidates into canon.
+	if _, _, err := store.CommitMemoryCandidate(ctx, "cand_store_1", Actor{Type: ActorModel, ID: "extractor"}, "fact_store_1"); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model commit err=%v", err)
+	}
+	fact := mustCommit("cand_store_1", "fact_store_1")
+	if fact.Predicate != "location" || fact.Subject != "林然" || fact.ValidTo != nil || fact.ContentHash == "" {
+		t.Fatalf("active fact=%#v", fact)
+	}
+
+	// Replaying the same triple through a new candidate is idempotent: the
+	// existing fact comes back and the replayed candidate closes.
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_replay", "bat_store_replay", "林然", "location", "旧书店")}); err != nil {
+		t.Fatal(err)
+	}
+	fact, committed, err := store.CommitMemoryCandidate(ctx, "cand_store_replay", user, "fact_store_replay")
+	if err != nil || committed || fact.FactID != "fact_store_1" {
+		t.Fatalf("replay fact=%#v committed=%v err=%v", fact, committed, err)
+	}
+
+	// A state change supersedes the previous location. A state change predating
+	// the active fact is rejected: the closed interval would violate
+	// valid_to > valid_from.
+	relocation := candidate("cand_store_move", "bat_store_move", "林然", "location", "咖啡馆")
+	relocation.AsOf = asOf.Add(time.Hour)
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{relocation}); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit("cand_store_move", "fact_store_move")
+	old, err := store.GetFact(ctx, "fact_store_1")
+	if err != nil || old.ValidTo == nil || old.SupersededBy != "fact_store_move" {
+		t.Fatalf("superseded old=%#v err=%v", old, err)
+	}
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_back", "bat_store_back", "林然", "location", "车站")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CommitMemoryCandidate(ctx, "cand_store_back", user, "fact_store_back"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("backdated commit err=%v", err)
+	}
+
+	// Relationship facts fold their endpoint pair: committing the reverse
+	// direction is the idempotent path, while a different pair coexists.
+	mustCommit("cand_store_rel", "fact_store_rel")
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_rel_reverse", "bat_store_rel_reverse", "陈默", "relationship", "林然")}); err != nil {
+		t.Fatal(err)
+	}
+	fact, committed, err = store.CommitMemoryCandidate(ctx, "cand_store_rel_reverse", user, "fact_store_rel_reverse")
+	if err != nil || committed || fact.FactID != "fact_store_rel" {
+		t.Fatalf("reverse rel fact=%#v committed=%v err=%v", fact, committed, err)
+	}
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_rel2", "bat_store_rel2", "陈默", "relationship", "老周")}); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit("cand_store_rel2", "fact_store_rel2")
+
+	active, err := store.ListActiveFacts(ctx, projectID, "")
+	if err != nil || len(active) != 3 {
+		t.Fatalf("active=%d err=%v", len(active), err)
+	}
+	bySubject, err := store.ListActiveFacts(ctx, projectID, "  林然 ")
+	if err != nil || len(bySubject) != 2 {
+		t.Fatalf("bySubject=%d err=%v", len(bySubject), err)
+	}
+	if bySubject, err = store.ListActiveFacts(ctx, projectID, "陈默"); err != nil || len(bySubject) != 1 {
+		t.Fatalf("bySubject=%d err=%v", len(bySubject), err)
+	}
+
+	// Fact content is immutable at the database level; only the interval
+	// columns may move.
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_facts SET subject='篡改' WHERE fact_id=$1`, "fact_store_1"); err == nil {
+		t.Fatal("immutable fact accepted a content update")
+	}
+	// Supersede is HITL-only and requires a successor that exists.
+	if err := store.SupersedeFact(ctx, "fact_store_move", "fact_absent", time.Now().UTC(), Actor{Type: ActorModel, ID: "worker"}); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model supersede err=%v", err)
+	}
+	if err := store.SupersedeFact(ctx, "fact_store_move", "fact_absent", time.Now().UTC(), user); err == nil {
+		t.Fatal("absent successor accepted")
+	}
+	if err := store.RejectMemoryCandidate(ctx, "cand_store_ext", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectMemoryCandidate(ctx, "cand_store_back", user); err != nil {
+		t.Fatal(err)
+	}
+	if staged, err := store.ListStagedMemoryCandidates(ctx, projectID, ""); err != nil || len(staged) != 0 {
+		t.Fatalf("staged after reject=%d err=%v", len(staged), err)
+	}
 }

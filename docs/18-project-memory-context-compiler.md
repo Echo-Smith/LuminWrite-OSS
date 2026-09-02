@@ -153,3 +153,20 @@ style_directives       UserMemory 风格指令（只读投影）
 - **词表演进**：初始谓词集合的粒度决定后续所有折叠逻辑；宁可小词表 + 显式 `x-` 扩展 + 警告计数，不要一开始求全。
 - **双写漂移**：WorldState 与 ProjectMemory 边界（章节内状态 vs 项目级 canon）需在 M1 用一条规则钉死：跨会话、跨文档、需要 provenance 的进 ProjectMemory；其余留在 WorldState/DocumentState。
 - ** envelope 兼容性**：envelope hash 进入 lineage 后，编译器任何行为变更都是新版本；需要与 rollout 相同的"policy 固化 + dump 工具"走查模式，避免 hash 漂移导致证据挂空。
+
+
+---
+
+## 18.9 M1 实施矫正记录（2026-09-02，代码落地后回写）
+
+M1 已按本设计实现（迁移 099 + `internal/projectmemory` + `writingstore` 扩展）。实现过程中对照真实代码做了如下矫正：
+
+1. **Project 成为一级对象，而非假设存在**。内核现有键位是 `writing_documents(doc_*) + owner_user_id`，没有任何 project 概念。M1 新增 `writing_projects(prj_*)`，并给 `writing_documents` 加 nullable `project_id`（FK，`ON DELETE SET NULL`）——文档可以挂到项目上，但不强制，legacy 文档行为不变。
+2. **HITL 用 Actor 类型硬门禁，不引入 Memory Keeper 角色**。内核已有 7 种 ActorType（user/system/model/worker/validator/policy/capability）。M1 的 canon 变更（commit / reject / supersede）在 store 层强制 `ActorType == user`，模型只能走候选暂存道。这比原设计的"Memory Keeper 角色 + 候选写入"更强：角色是可配置的，Actor 类型是内核事实。
+3. **Append-only 直接复用 089 机制**。`project_facts` 挂 `writing_reject_immutable_columns` 触发器：内容列（subject/predicate/object/valid_from/provenance/hash）不可变，只有 `valid_to`/`superseded_by` 可变。未发明新的 append-only 触发器。
+4. **词表不进 DB CHECK**。受控谓词（8 个）+ `x-` 扩展版本化在 Go 侧（`VocabularyVersion`，当前 v1），DB 只存 `vocabulary_version` 整数。词表演进 = 新版本 + content hash 全量变化，与 rollout policy hash 覆盖全部字段的纪律一致。
+5. **单值/多值谓词二分（设计稿未预见）**。identity/location/possession/goal/state 是状态，一个 (subject, predicate) 只允许一条 active fact——新状态自动盖旧状态 `valid_to` 并拒绝早于现有 valid_from 的回填（区间必须保持 valid_to > valid_from）。relationship/style_rule/constraint/`x-` 扩展是多值的，各自共存。relationship 的内容键折叠端点对（无序化），反向提交命中同一 fact。
+6. **M1 裁剪**。entities/terminology/decisions/open_questions/through_line 表全部推迟到 M2+；M1 只交付 projects + facts 区间行 + 候选道 + HITL 门。理由：Context Compiler（M3）的最小输入只需要 facts + provenance，先把"事实进 canon 的唯一路径"钉死，再扩对象类型。
+7. **幂等语义**。同一内容三元组（content hash + project + 词表版本）在活跃行中唯一（partial unique index）；重复提交返回既有 fact 并关闭候选，不报错——replay 安全。
+
+后续里程碑仍按 §18.7：M2 claims→canon 晋升与实体/术语，M3 编译器 MVP，M4 Manifest 契约，M5 Context Runtime。
