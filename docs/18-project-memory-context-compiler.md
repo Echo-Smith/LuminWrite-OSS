@@ -182,3 +182,19 @@ M1 已按本设计实现（迁移 099 + `internal/projectmemory` + `writingstore
 2. **实体类型按非虚构设计**：`person / organization / place / concept / term / product / event / work`。没有"角色卡"概念；实体仍只存"出生证明"（不可变标识），演化真值在 facts。
 3. **词表 v1 维持现状**。identity/location/possession/goal/state 等谓词同样适用于真实主体（机构、产品、人物）；领域新谓词（如引用、论证、数据口径）走 `x-` 扩展积累真实用法后升 v2，不预设。
 4. **M2 范围**：claims 待证池（证据累积 → supported → user 提交晋升 canon）+ entities 候选池（出生证明 + candidate→promoted）。terminology / decisions / open_questions / through_line 顺延 M2.5。
+
+
+---
+
+## 18.11 M3 实施矫正记录（2026-09-02，代码落地后回写）
+
+Context Compiler MVP 已按 §18.5 实现（迁移 102 + `internal/contextcompiler` + writingstore 落库）。实现中确定/矫正的点：
+
+1. **编译器是纯函数，不直连任何 store**。输入全部由调用方预装载（类型化切片），同一输入 + 同一 `CompilerVersion` 产出逐字节相同的 envelope。`Input` 收"预渲染行"而非结构化对象——相关性过滤（哪些 facts 与本 Node 相关）是调用方职责，编译器只负责确定性装配，MVP 阶段保持这个边界。
+2. **token 记账用"行数"近似**（每行 1 token）。真实分词器归 M5 运行时预算工作；记账要求是确定性而非精确性。分块限额按总预算加权分摊（canon_facts 22% 最重，style_directives 8% 最轻），驻留层 `ResidentBudget=1200` 独立于分摊——总预算小于驻留预算直接编译失败。
+3. **裁剪是行粒度**，不是字符切断——整行保留或整行丢弃，截掉的行不进包内；`Trimmed` 元数据（原始/保留行数）与 `Diagnostics`（工程通道）走包外，**envelope hash 只覆盖模型可见的 Blocks**，元数据变化不影响 hash（语义：hash 回答"模型看到了什么"）。
+4. **缺省通道按 wanted 声明**：只有 Node 声明需要的块，缺数据才进 `missing`（`no data supplied` / `dropped over budget` / `no resident threads supplied`），未声明的空块保持沉默——避免噪音淹没真缺口。
+5. **落库形态矫正**：设计原稿写"作为 run 事件落库"，实现改为专表 `project_context_envelopes`（FK writing_runs，绑定 run/node/attempt），`(run, node, attempt, hash)` 唯一——同一编译重放幂等，同 attempt 的不同编译（版本升级或输入变化）作为独立行保留，形成完整审计链。run 事件体系继续承载路由/权威证据。
+6. **executor 接线未做**（M4 范围）：编译器当前不进入执行路径，落库由调用方（未来的 runtime 适配层）显式调用。
+
+后续 M4：CapabilityManifest 的 required/optional/forbidden_context 接入 Executor 权限模型，编译器成为 Node 执行的数据入口。

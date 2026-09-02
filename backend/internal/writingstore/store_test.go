@@ -3,6 +3,7 @@ package writingstore
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/projectmemory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
@@ -1315,5 +1317,80 @@ func TestProjectMemoryCuratedStateLifecycle(t *testing.T) {
 	// for curated references too).
 	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_threads SET label='篡改' WHERE thread_id=$1`, "thr_store_1"); err == nil {
 		t.Fatal("immutable thread accepted a content update")
+	}
+}
+
+func TestContextEnvelopePersistenceIsReplayIdempotent(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+
+	envelope, err := contextcompiler.Compile(contextcompiler.Input{
+		ProjectID:      "prj_env",
+		ContractDigest: "长文报告：检索优于重排",
+		ThreadLabels:   []string{"论点链：检索优于重排"},
+		FactLines:      []string{"luminbuddy | state | 开源"},
+		Wanted:         []string{contextcompiler.ResidentBlock},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := ContextEnvelopeRecord{EnvelopeID: "env_store_1", RunID: fixture.runID,
+		NodeID: fixture.nodeID, Attempt: 1, CompilerVersion: envelope.CompilerVersion,
+		EnvelopeHash: envelope.Hash, Payload: rendered,
+		Missing: envelope.Missing, Trimmed: envelope.Trimmed, Diagnostics: envelope.Diagnostics()}
+	if err := store.SaveContextEnvelope(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	// Re-saving the identical compilation is a no-op (unique index) and must
+	// not duplicate the row.
+	if err := store.SaveContextEnvelope(ctx, record); err != nil {
+		t.Fatalf("replay save: %v", err)
+	}
+	envelopes, err := store.ListContextEnvelopes(ctx, fixture.runID, fixture.nodeID, 1)
+	if err != nil || len(envelopes) != 1 {
+		t.Fatalf("envelopes=%d err=%v", len(envelopes), err)
+	}
+	persisted := envelopes[0]
+	if persisted.EnvelopeHash != envelope.Hash || persisted.CompilerVersion != contextcompiler.CompilerVersion {
+		t.Fatalf("persisted=%#v", persisted)
+	}
+	var replayed contextcompiler.Envelope
+	if err := json.Unmarshal(persisted.Payload, &replayed); err != nil {
+		t.Fatal(err)
+	}
+	// Replay: the persisted payload re-hashes to the same envelope hash.
+	if replayed.Hash != envelope.Hash {
+		t.Fatal("persisted payload does not replay to the recorded hash")
+	}
+	renderedBlocks, err := json.Marshal(replayed.Blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(renderedBlocks)
+	if "sha256:"+fmt.Sprintf("%x", sum[:]) != envelope.Hash {
+		t.Fatal("persisted blocks do not re-hash to the recorded hash")
+	}
+
+	// A different compilation for the same attempt is retained separately.
+	changed := record
+	changed.EnvelopeID = "env_store_2"
+	changed.EnvelopeHash = testHash("changed-envelope")
+	changed.Payload = json.RawMessage(`{"compiler_version":1,"blocks":[{"name":"contract_digest","body":"其它输入","tokens":1}],"hash":"sha256:dead"}`)
+	if err := store.SaveContextEnvelope(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	envelopes, err = store.ListContextEnvelopes(ctx, fixture.runID, fixture.nodeID, 1)
+	if err != nil || len(envelopes) != 2 {
+		t.Fatalf("envelopes after change=%d err=%v", len(envelopes), err)
+	}
+	if _, err := store.GetContextEnvelope(ctx, "env_store_2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetContextEnvelope(ctx, "env_absent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("absent envelope err=%v", err)
 	}
 }
