@@ -83,6 +83,7 @@ type createWritingRunCommand struct {
 	ContractVersion int
 	ContractHash    string
 	BaseVersionID   string
+	StyleSlug       string
 	Plan            writingplan.WritingPlanEnvelope
 	Budget          writingplan.PlanBudget
 	Permissions     []writingplan.Permission
@@ -135,6 +136,7 @@ type persistentWritingAPI struct {
 	capabilities *writingplan.CapabilityRegistry
 	templates    *writingplan.TemplateRegistry
 	controller   writingRunController
+	trigger      *governedRunTrigger
 }
 
 func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {
@@ -317,10 +319,16 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 		status = "awaiting_approval"
 	}
 	trace := writingTrace(access, "run.create")
-	run := writingstore.RunRecord{RunID: runID, DocumentID: command.DocumentID, ContractID: command.ContractID, ContractVersion: command.ContractVersion, ContractHash: command.ContractHash, BaseVersionID: command.BaseVersionID, Status: status, ApprovalMode: contract.Contract.Collaboration.ApprovalMode, RequestedAssurance: contract.Contract.Collaboration.AssuranceLevel, Budget: command.Budget, Permissions: permissions, Trace: trace}
+	run := writingstore.RunRecord{RunID: runID, DocumentID: command.DocumentID, ContractID: command.ContractID, ContractVersion: command.ContractVersion, ContractHash: command.ContractHash, BaseVersionID: command.BaseVersionID, StyleSlug: command.StyleSlug, Status: status, ApprovalMode: contract.Contract.Collaboration.ApprovalMode, RequestedAssurance: contract.Contract.Collaboration.AssuranceLevel, Budget: command.Budget, Permissions: permissions, Trace: trace}
 	plan := writingstore.PlanRecord{RunID: runID, PlanVersion: 1, Envelope: command.Plan, Budget: command.Budget, Permissions: permissions, Trace: trace}
 	if err := service.store.CreateRunWithPlan(ctx, run, plan, status); err != nil {
 		return writingstore.RuntimeRun{}, err
+	}
+	// M1.4 execution trigger: a plan that needs no approval is dispatchable
+	// the moment its run exists (planned state); an approval-required plan
+	// waits for ApproveRun's trigger instead.
+	if !command.Plan.StrategyDecision.ApprovalRequired {
+		service.triggerGovernedRun(runID)
 	}
 	return service.store.LoadRuntimeRun(ctx, runID)
 }
@@ -373,7 +381,20 @@ func (service *persistentWritingAPI) ApproveRun(ctx context.Context, access writ
 	if err != nil {
 		return writingstore.RuntimeRun{}, err
 	}
+	// M1.4 execution trigger: the approval transition above is the sole
+	// authority that moved the run to running; fire the governed executor in
+	// the background (idempotent per run per process).
+	service.triggerGovernedRun(command.RunID)
 	return service.store.LoadRuntimeRun(ctx, command.RunID)
+}
+
+// triggerGovernedRun launches background execution for an approved run when
+// the governed runtime is mounted. Nil trigger (mode=off) is a no-op.
+func (service *persistentWritingAPI) triggerGovernedRun(runID string) {
+	if service.trigger == nil {
+		return
+	}
+	service.trigger.TriggerAfterApproval(runID)
 }
 
 func (service *persistentWritingAPI) ControlRun(ctx context.Context, access writingAccess, command controlWritingRunCommand) (writingstore.RuntimeRun, error) {

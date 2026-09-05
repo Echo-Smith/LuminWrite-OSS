@@ -59,6 +59,7 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 		ContractVersion int                             `json:"contract_version"`
 		ContractHash    string                          `json:"contract_hash"`
 		BaseVersionID   string                          `json:"base_version_id"`
+		StyleSlug       string                          `json:"style_slug"`
 		Plan            writingplan.WritingPlanEnvelope `json:"plan"`
 		Budget          writingplan.PlanBudget          `json:"budget"`
 		Permissions     []writingplan.Permission        `json:"permissions"`
@@ -67,7 +68,7 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 		s.writeWritingError(w, err)
 		return
 	}
-	run, err := s.writingAPI.CreateRun(r.Context(), access, createWritingRunCommand{IdempotencyKey: key, DocumentID: body.DocumentID, ContractID: body.ContractID, ContractVersion: body.ContractVersion, ContractHash: body.ContractHash, BaseVersionID: body.BaseVersionID, Plan: body.Plan, Budget: body.Budget, Permissions: body.Permissions})
+	run, err := s.writingAPI.CreateRun(r.Context(), access, createWritingRunCommand{IdempotencyKey: key, DocumentID: body.DocumentID, ContractID: body.ContractID, ContractVersion: body.ContractVersion, ContractHash: body.ContractHash, BaseVersionID: body.BaseVersionID, StyleSlug: body.StyleSlug, Plan: body.Plan, Budget: body.Budget, Permissions: body.Permissions})
 	if err != nil {
 		s.writeWritingError(w, err)
 		return

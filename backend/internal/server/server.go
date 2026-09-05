@@ -103,6 +103,10 @@ type Server struct {
 	// Governed writing API. Nil only when persistence is unavailable.
 	writingAPI      writingAPIService
 	governedRollout *governedRolloutDependencies
+	governedTrigger *governedRunTrigger
+	kbSearch        tools.KnowledgeSearcher
+	editorialTools  *editorial.EditorialToolRegistry
+	editorialAgents *editorial.DynamicAgentRegistry
 
 	// Billing
 billingRepo *database.BillingRepo
@@ -530,6 +534,10 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		s.writingAPI = newPersistentWritingAPI(governedStore)
 		s.governedRollout = newGovernedRolloutDependencies(governedStore, s.metrics)
+		// M1.4: mount the governed runtime behind WRITING_RUNTIME_MODE
+		// (default off — zero behavior change) and wire its controller into
+		// the writing API's control routes plus the post-approval trigger.
+		s.mountGovernedRuntime(governedStore)
 	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
@@ -658,8 +666,9 @@ func New(cfg *config.Config) (*Server, error) {
 		// 传入 LLMResolver 而非静态 LLMClient，使 admin 面板模型配置变更即时生效
 		if s.llmSvc != nil {
 			s.planner = editorial.NewPlanner(s.llmSvc)
+			agentRegistry := editorial.NewDynamicAgentRegistry()
 			s.dagExecutor = editorial.NewDAGExecutor(
-				editorial.NewDynamicAgentRegistry(), edStore, edEmitter,
+				agentRegistry, edStore, edEmitter,
 			)
 			// 注册预设 Agent 执行器到 DAGExecutor（以 BaseRole 作为 key）
 			kbAdapter := services.NewKbSearchAdapter(s.kbMgr)
@@ -667,6 +676,10 @@ func New(cfg *config.Config) (*Server, error) {
 			// ── 初始化编辑部工具注册中心（DAG 模式独立实例）──
 			dagToolRegistry := editorial.NewEditorialToolRegistry()
 			editorial.RegisterBuiltinTools(dagToolRegistry)
+			// Keep the unified capability view able to see the editorial
+			// surface (M1.5); registration authority stays with the DAG.
+			s.editorialTools = dagToolRegistry
+			s.editorialAgents = agentRegistry
 
 			researchExec := editorial.NewResearchAgentExecutor(s.llmSvc, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("researcher", researchExec)
@@ -975,6 +988,8 @@ r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions
 			r.Get("/stats", s.handleAdminStats)
 			r.Get("/exit-stats", s.handleAdminExitStats)
 			r.Get("/routes", s.handleAdminRoutes)
+			// Unified capability inventory (M1.5 slice 2)
+			r.Get("/capabilities", s.handleAdminCapabilities)
 
 			// Traces (audit.view)
 			r.Group(func(r chi.Router) {
