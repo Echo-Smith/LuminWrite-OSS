@@ -14,33 +14,34 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	Server    ServerConfig
-	Database  DatabaseConfig
-	Redis     RedisConfig
-	JWT       JWTConfig
-	Admin     AdminConfig
-	WS        WSConfig
-	RateLimit RateLimitConfig
-	DeepSeek  DeepSeekConfig
-	Dashscope DashscopeConfig
-	Kb        KbInternalConfig
-	Zhihu     ZhihuConfig
-	Tavily    TavilyConfig
-	Tencent   TencentConfig
-	Weibo      WeiboConfig
-	ExtraHot   ExtraHotConfig
-	Bing       BingConfig
-	AnySearch  AnySearchConfig
-	WebAuthn  WebAuthnConfig
-	Jiaozhen  JiaozhenConfig
-	SMTP      SMTPConfig
-	Alipay    AlipayConfig
-	Log       LogConfig
-	HotTopics HotTopicsConfig
-	Agent     AgentConfig
-	Evaluation EvaluationConfig
-	MCPServers []MCPServerConfig
-	MCPServer  InProcessMCPServerConfig
+	Server         ServerConfig
+	Database       DatabaseConfig
+	Redis          RedisConfig
+	JWT            JWTConfig
+	Admin          AdminConfig
+	WS             WSConfig
+	RateLimit      RateLimitConfig
+	DeepSeek       DeepSeekConfig
+	Dashscope      DashscopeConfig
+	Kb             KbInternalConfig
+	Zhihu          ZhihuConfig
+	Tavily         TavilyConfig
+	Tencent        TencentConfig
+	Weibo          WeiboConfig
+	ExtraHot       ExtraHotConfig
+	Bing           BingConfig
+	AnySearch      AnySearchConfig
+	WebAuthn       WebAuthnConfig
+	Jiaozhen       JiaozhenConfig
+	SMTP           SMTPConfig
+	Alipay         AlipayConfig
+	Log            LogConfig
+	HotTopics      HotTopicsConfig
+	Agent          AgentConfig
+	WritingRuntime WritingRuntimeConfig
+	Evaluation     EvaluationConfig
+	MCPServers     []MCPServerConfig
+	MCPServer      InProcessMCPServerConfig
 }
 
 type WebAuthnConfig struct {
@@ -65,6 +66,12 @@ type ServerConfig struct {
 	WriteTimeout time.Duration
 }
 
+// WritingRuntimeConfig gates the V3.0 governed writing runtime (docs/20 §20.2).
+// Mode is off (default) | shadow | allowlist; an unknown value collapses to off.
+type WritingRuntimeConfig struct {
+	Mode string
+}
+
 type DatabaseConfig struct {
 	URL          string
 	MaxOpenConns int
@@ -82,12 +89,12 @@ type RedisConfig struct {
 
 // SMTPConfig holds email server configuration for verification code sending.
 type SMTPConfig struct {
-	Host       string // SMTP server host (e.g. smtp.qiye.aliyun.com)
-	Port       int    // SMTP server port (e.g. 465 for SSL)
-	Username   string // Sender email address
-	Password   string // Email password or authorization code
-	FromName   string // Display name for outgoing emails
-	Enabled    bool   // Whether email verification is enabled
+	Host     string // SMTP server host (e.g. smtp.qiye.aliyun.com)
+	Port     int    // SMTP server port (e.g. 465 for SSL)
+	Username string // Sender email address
+	Password string // Email password or authorization code
+	FromName string // Display name for outgoing emails
+	Enabled  bool   // Whether email verification is enabled
 }
 
 type AlipayConfig struct {
@@ -109,8 +116,8 @@ type JWTConfig struct {
 }
 
 type AdminConfig struct {
-Token         string
-EncryptionKey string // 32-byte key for AES-256 API key encryption
+	Token         string
+	EncryptionKey string // 32-byte key for AES-256 API key encryption
 }
 
 type WSConfig struct {
@@ -124,13 +131,13 @@ type RateLimitConfig struct {
 }
 
 type DeepSeekConfig struct {
-	BaseURL            string
-	APIKey             string
-	DefaultModel       string
-	Timeout            time.Duration
-	MaxTokens          int
-	Temperature        float64
-	ResponsesAPIRatio  float64 // A/B test ratio for Responses API (0.0=off, 1.0=full)
+	BaseURL           string
+	APIKey            string
+	DefaultModel      string
+	Timeout           time.Duration
+	MaxTokens         int
+	Temperature       float64
+	ResponsesAPIRatio float64 // A/B test ratio for Responses API (0.0=off, 1.0=full)
 }
 
 type DashscopeConfig struct {
@@ -190,15 +197,15 @@ type AnySearchConfig struct {
 // (replaces the external WeKnora integration).
 type KbInternalConfig struct {
 	// Docreader TCP sidecar address (for PDF/Word/image parsing)
-	DocreaderAddr     string
+	DocreaderAddr      string
 	DocreaderTransport string
 	// Chunking configuration
-	ChunkSize  int
+	ChunkSize    int
 	ChunkOverlap int
 	// Hybrid search weights (BM25 + Dense + GraphRAG)
-	BM25Weight   float64
-	DenseWeight  float64
-	GraphWeight  float64
+	BM25Weight  float64
+	DenseWeight float64
+	GraphWeight float64
 }
 
 type HotTopicsConfig struct {
@@ -214,15 +221,15 @@ type LogConfig struct {
 //   - "harness" (default): Harness-LLM single-layer continuous session (架构 C)
 //   - "pipeline": use the fixed []Step pipeline (AgentEngine)
 type AgentConfig struct {
-	Mode                string        // "harness" | "pipeline"
-	Timeout             time.Duration // global agent execution timeout (default 5m)
-	MaxTokens           int           // token budget per execution (default 300000, 0=unlimited)
-	MaxFixAttempts      int           // max review→fix loop iterations (default 2)
-	MaxConcurrent       int           // max concurrent agent executions globally (default 10)
-	MaxConcurrentPerUser int          // max concurrent per user (default 1)
-	ConfirmTimeout      time.Duration // user confirm (await_input) timeout (default 5m)
-	CircuitBreakerFails int           // consecutive LLM failures before tripping (default 3)
-	PausedSessionTTL    time.Duration // how long to keep paused sessions in memory after disconnect (default 2m)
+	Mode                 string        // "harness" | "pipeline"
+	Timeout              time.Duration // global agent execution timeout (default 5m)
+	MaxTokens            int           // token budget per execution (default 300000, 0=unlimited)
+	MaxFixAttempts       int           // max review→fix loop iterations (default 2)
+	MaxConcurrent        int           // max concurrent agent executions globally (default 10)
+	MaxConcurrentPerUser int           // max concurrent per user (default 1)
+	ConfirmTimeout       time.Duration // user confirm (await_input) timeout (default 5m)
+	CircuitBreakerFails  int           // consecutive LLM failures before tripping (default 3)
+	PausedSessionTTL     time.Duration // how long to keep paused sessions in memory after disconnect (default 2m)
 }
 
 // MCPServerConfig holds configuration for a single MCP server.
@@ -272,10 +279,10 @@ func Load() *Config {
 			Secret: getEnv("JWT_SECRET", "dev-secret-change-in-production"),
 			Expiry: getEnvDuration("JWT_EXPIRY", 24*time.Hour),
 		},
-Admin: AdminConfig{
-Token: getEnv("ADMIN_TOKEN", "dev-admin-token"),
-EncryptionKey: getEnv("API_KEY_ENCRYPTION_KEY", ""),
-},
+		Admin: AdminConfig{
+			Token:         getEnv("ADMIN_TOKEN", "dev-admin-token"),
+			EncryptionKey: getEnv("API_KEY_ENCRYPTION_KEY", ""),
+		},
 		WS: WSConfig{
 			AuthEnabled: getEnvBool("WS_AUTH_ENABLED", false),
 		},
@@ -284,15 +291,15 @@ EncryptionKey: getEnv("API_KEY_ENCRYPTION_KEY", ""),
 			Requests: getEnvInt("RATE_LIMIT_REQUESTS", 120),
 			Window:   getEnvDuration("RATE_LIMIT_WINDOW", time.Minute),
 		},
-DeepSeek: DeepSeekConfig{
-BaseURL:           getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), // 不带 /v1 — 代码自动拼接 /chat/completions 和 /responses
-APIKey:            getEnv("AI_API_KEY", ""),
-DefaultModel:      getEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-v4-flash"),
-Timeout:           getEnvDuration("DEEPSEEK_TIMEOUT", 120*time.Second),
-MaxTokens:         getEnvInt("DEEPSEEK_MAX_TOKENS", 131072), // 128K, 模型支持384K输出，按需可调高
-Temperature:       getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
-ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
-},
+		DeepSeek: DeepSeekConfig{
+			BaseURL:           getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), // 不带 /v1 — 代码自动拼接 /chat/completions 和 /responses
+			APIKey:            getEnv("AI_API_KEY", ""),
+			DefaultModel:      getEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-v4-flash"),
+			Timeout:           getEnvDuration("DEEPSEEK_TIMEOUT", 120*time.Second),
+			MaxTokens:         getEnvInt("DEEPSEEK_MAX_TOKENS", 131072), // 128K, 模型支持384K输出，按需可调高
+			Temperature:       getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
+			ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
+		},
 		Dashscope: DashscopeConfig{
 			APIKey:    getEnv("DASHSCOPE_API_KEY", ""),
 			BaseURL:   getEnv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -317,11 +324,11 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 		},
 		Weibo: WeiboConfig{
 			Enabled:       getEnvBool("WEIBO_ENABLED", false),
-			BaseURL:        getEnv("WEIBO_BASE_URL", "https://weibo.com/ajax"),
-			Timeout:        getEnvDuration("WEIBO_TIMEOUT", 15*time.Second),
-			AppID:          getEnv("WEIBO_APP_ID", ""),
-			AppSecret:      getEnv("WEIBO_APP_SECRET", ""),
-			TokenEndpoint:  getEnv("WEIBO_TOKEN_ENDPOINT", "http://open-im.api.weibo.com/open/auth/ws_token"),
+			BaseURL:       getEnv("WEIBO_BASE_URL", "https://weibo.com/ajax"),
+			Timeout:       getEnvDuration("WEIBO_TIMEOUT", 15*time.Second),
+			AppID:         getEnv("WEIBO_APP_ID", ""),
+			AppSecret:     getEnv("WEIBO_APP_SECRET", ""),
+			TokenEndpoint: getEnv("WEIBO_TOKEN_ENDPOINT", "http://open-im.api.weibo.com/open/auth/ws_token"),
 		},
 		ExtraHot: ExtraHotConfig{
 			Enabled: getEnvBool("EXTRA_HOT_ENABLED", true),
@@ -339,13 +346,13 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 30*time.Second),
 		},
 		Kb: KbInternalConfig{
-			DocreaderAddr:     getEnv("DOCREADER_ADDR", "docreader:50051"),
+			DocreaderAddr:      getEnv("DOCREADER_ADDR", "docreader:50051"),
 			DocreaderTransport: getEnv("DOCREADER_TRANSPORT", "grpc"),
-			ChunkSize:         getEnvInt("KB_CHUNK_SIZE", 512),
-			ChunkOverlap:      getEnvInt("KB_CHUNK_OVERLAP", 50),
-			BM25Weight:       getEnvFloat("KB_BM25_WEIGHT", 0.3),
-			DenseWeight:      getEnvFloat("KB_DENSE_WEIGHT", 0.5),
-			GraphWeight:      getEnvFloat("KB_GRAPH_WEIGHT", 0.2),
+			ChunkSize:          getEnvInt("KB_CHUNK_SIZE", 512),
+			ChunkOverlap:       getEnvInt("KB_CHUNK_OVERLAP", 50),
+			BM25Weight:         getEnvFloat("KB_BM25_WEIGHT", 0.3),
+			DenseWeight:        getEnvFloat("KB_DENSE_WEIGHT", 0.5),
+			GraphWeight:        getEnvFloat("KB_GRAPH_WEIGHT", 0.2),
 		},
 		WebAuthn: WebAuthnConfig{
 			RPID:     getEnv("WEBAUTHN_RP_ID", "localhost"),
@@ -368,15 +375,18 @@ ResponsesAPIRatio: getEnvFloat("DEEPSEEK_RESPONSES_API_RATIO", 0),
 			FetchInterval: getEnvDuration("HOT_TOPICS_FETCH_INTERVAL", 10*time.Minute),
 		},
 		Agent: AgentConfig{
-			Mode:                getEnv("AGENT_MODE", "harness"),
-			Timeout:             getEnvDuration("AGENT_TIMEOUT", 5*time.Minute),
-			MaxTokens:           getEnvInt("AGENT_MAX_TOKENS", 300000),
-			MaxFixAttempts:      getEnvInt("AGENT_MAX_FIX_ATTEMPTS", 2),
-			MaxConcurrent:       getEnvInt("AGENT_MAX_CONCURRENT", 10),
+			Mode:                 getEnv("AGENT_MODE", "harness"),
+			Timeout:              getEnvDuration("AGENT_TIMEOUT", 5*time.Minute),
+			MaxTokens:            getEnvInt("AGENT_MAX_TOKENS", 300000),
+			MaxFixAttempts:       getEnvInt("AGENT_MAX_FIX_ATTEMPTS", 2),
+			MaxConcurrent:        getEnvInt("AGENT_MAX_CONCURRENT", 10),
 			MaxConcurrentPerUser: getEnvInt("AGENT_MAX_CONCURRENT_PER_USER", 3),
-			ConfirmTimeout:      getEnvDuration("AGENT_CONFIRM_TIMEOUT", 5*time.Minute),
-			CircuitBreakerFails: getEnvInt("AGENT_CIRCUIT_BREAKER_FAILS", 3),
-			PausedSessionTTL:    getEnvDuration("AGENT_PAUSED_SESSION_TTL", 2*time.Minute),
+			ConfirmTimeout:       getEnvDuration("AGENT_CONFIRM_TIMEOUT", 5*time.Minute),
+			CircuitBreakerFails:  getEnvInt("AGENT_CIRCUIT_BREAKER_FAILS", 3),
+			PausedSessionTTL:     getEnvDuration("AGENT_PAUSED_SESSION_TTL", 2*time.Minute),
+		},
+		WritingRuntime: WritingRuntimeConfig{
+			Mode: getEnv("WRITING_RUNTIME_MODE", "off"),
 		},
 		SMTP: SMTPConfig{
 			Host:     getEnv("SMTP_HOST", "smtp.qiye.aliyun.com"),
