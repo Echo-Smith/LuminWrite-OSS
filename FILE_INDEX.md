@@ -44,3 +44,14 @@
 - `docs/19-governed-writing-runtime.md`：目标架构与不可绕过的协议、质量和提交规则；`docs/releases/2026-09-01-task13-governance-productionization.md`：最新验收证据与授权边界。
 - **发布状态**：双版本 local shadow 已完成持久化、晋升门禁和 `deepseek-v4-flash` 三场景本地验收；尚未创建真实发布审批、激活 allowlist subject 或积累生产 shadow 证据，因此 allowlist 仍未放行，percentage / production 均未获授权。
 - **仓库边界**：本索引所在 `codex/v2-stabilization-oss` 与商业版对应稳定化分支为当前代码基线；仓库根目录的旧 `writing-agent-v2` 检出停在 2026-08-25，且有大规模未提交整合改动，只可作为工作副本，不可作为发布事实源。
+
+## V2.9 ProjectMemory & Context Runtime (2026-09-03)
+
+- `backend/internal/projectmemory/`：项目级 canon——受控词表 v1、候选暂存与 user-only commit（M1）、claims 佐证道与实体出生证明（M2）、terminology/decisions/open_questions/threads 四类策展对象（M2.5）、`forgetting.go` 版本化遗忘策略 v1（M6，canon 无 horizon 字段）。
+- `backend/internal/contextcompiler/`：确定性上下文编译器（纯函数、`CompilerVersion` 钉死、hash 仅覆盖 Blocks）；M5 起为分段感知分词 + 压力报告（0.70/0.85）+ 优先级保留遍历。
+- `backend/internal/writingruntime/context.go`、`context_runtime.go`、`documentstate.go`：orchestrator 的 envelope 编译→落库→注入接线、required fail-closed（M4b）、per-capability 预压缩守卫与命名恢复路径（M5）、document_state 子树渲染（M5）。
+- `backend/internal/writingplan/capability.go`：`ContextContract`（required/optional/forbidden + budget + enforce 开关 + retention_priority）与 5 个内置 capability 的契约；draft/quality/finalize 已激活 enforce。
+- `backend/internal/database/migrations/099_project_memory.*.sql` 至 `103_memory_forgetting_log.*.sql`：project/facts/candidates（099）、claims/entities（100）、curated 四类（101）、context envelopes 专表（102）、append-only 遗忘台账（103）。
+- `backend/internal/writingstore/projectmemory*.go`、`context_envelope.go`、`projectmemory_forgetting.go`：上述表族的 store 事务边界；遗忘 sweep 的 preview/apply（policy|user 门禁、幂等、台账落账）。
+- `backend/cmd/memory-forget/`：遗忘 sweep CLI（policy-dump / preview / apply / log）；`docs/runbook.md` §9.9 为其走查程序。
+- `docs/18-project-memory-context-compiler.md`：设计与 M1–M6 实施矫正记录（§18.9–§18.15）；`docs/releases/2026-09-02-*` 与 `2026-09-03-*` 为各里程碑验收证据。
