@@ -233,11 +233,18 @@ func adapterFamilyForExecutor(executorID string) AdapterFamily {
 	}
 }
 
+// EngineStepRunner adapts one legacy engine step as a governed node runner.
+// The step is built per attempt through StepFactory with a StepEnv carrying
+// the request and the per-request style profile resolution (M1.3): the
+// composition stays style-agnostic, the run decides.
 type EngineStepRunner struct {
-	StepFactory func() engine.Step
-	Emitter     engine.EventEmitter
-	Seed        engine.CompatibilityInput
-	Usage       func(*engine.ExecutionContext) (LegacyUsage, error)
+	StepFactory func(StepEnv) (engine.Step, error)
+	// Styles resolves the run's style slug to a profile. Nil (or a resolution
+	// miss/failure) means default profile semantics — never a node failure.
+	Styles  StyleResolver
+	Emitter engine.EventEmitter
+	Seed    engine.CompatibilityInput
+	Usage   func(*engine.ExecutionContext) (LegacyUsage, error)
 }
 
 func NewEngineStepExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, runner EngineStepRunner) (*LegacyExecutor, error) {
@@ -318,7 +325,10 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 			}
 		}
 	}
-	step := runner.StepFactory()
+	step, err := runner.StepFactory(StepEnv{Request: input.Request, Profile: resolveStepProfile(runner.Styles, input.Request)})
+	if err != nil {
+		return nil, LegacyUsage{}, err
+	}
 	if step == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
 	}

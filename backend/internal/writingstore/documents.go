@@ -190,6 +190,26 @@ func (tx *Tx) CommitDocumentVersion(ctx context.Context, params CommitDocumentVe
 		QualityState: QualityCandidateDraft, CreatedAt: createdAt, Trace: params.Trace}, nil
 }
 
+// CurrentDocumentVersionID resolves the document's current version id (the
+// candidate the delivery protocol promotes). Empty string means the document
+// has no committed version yet.
+func (s *Store) CurrentDocumentVersionID(ctx context.Context, documentID string) (string, error) {
+	if err := validateID(documentID, "doc_", "document_id"); err != nil {
+		return "", err
+	}
+	var currentVersionID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(current_version_id, '') FROM writing_documents WHERE document_id=$1
+	`, documentID).Scan(&currentVersionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get current document version id: %w", err)
+	}
+	return currentVersionID, nil
+}
+
 func (s *Store) GetDocumentVersion(ctx context.Context, documentID, versionID string) (StoredDocumentVersion, error) {
 	var stored StoredDocumentVersion
 	var documentAST, provenance, sources []byte

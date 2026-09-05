@@ -29,6 +29,12 @@ var (
 	ErrNoReadyNode      = errors.New("writingruntime: no ready node")
 )
 
+// InitialCaptureNodeID is the synthetic node id the M1.0 delivery protocol's
+// initial-artifact capture is recorded under. It is bookkeeping, not a plan
+// node: recovery ignores it, and the checkpoint manifest counts only plan
+// nodes toward completion.
+const InitialCaptureNodeID = "initial"
+
 type RuntimeStore interface {
 	LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error)
 	LoadActivePlan(context.Context, string) (writingstore.PlanRecord, error)
@@ -36,6 +42,11 @@ type RuntimeStore interface {
 	ListRunArtifacts(context.Context, string) ([]writingstore.ArtifactRecord, error)
 	StartNodeAttempt(context.Context, writingstore.NodeAttempt, writingstore.TraceContext) (writingstore.NodeAttempt, bool, error)
 	CompleteNodeAttempt(context.Context, writingstore.AttemptCompletion) error
+	// SaveInitialArtifacts persists the run's initial artifacts as real
+	// artifact rows on first capture: the lineage edges of every downstream
+	// node output reference them, and the artifact FKs require the rows.
+	// Idempotent: re-running a capture must not duplicate rows.
+	SaveInitialArtifacts(context.Context, []writingstore.ArtifactRecord) error
 }
 
 // MaterialSnapshotRepository persists the run-level initial material manifest.
@@ -159,6 +170,11 @@ type Orchestrator struct {
 	Materials    MaterialSnapshotRepository
 	Telemetry    RuntimeTelemetry
 	Now          func() time.Time
+	// Delivery drives the M1.0 delivery-commit protocol after a successful
+	// node (docs/21 §21.8): draft commits its candidate document version,
+	// quality commits the delivery bundle. Nil disables the protocol (mode
+	// off / harness keeps its current behavior).
+	Delivery *DeliveryProtocol
 	// Subject resolves the rollout audience (user/tenant) for allowlist and
 	// percentage routing. Nil means executions route by run id.
 	Subject func(writingstore.RuntimeRun) string
@@ -168,10 +184,21 @@ type Orchestrator struct {
 	// blocks going unsupplied never fail the node).
 	Context   ContextSource
 	Envelopes ContextEnvelopeSink
+	// ContextRuntime consumes envelope lifecycles for the M5 Context
+	// Runtime (docs/18 §18.5.6): pressure warn/compress with guarded
+	// pre-compression and named recovery paths. Nil disables pressure
+	// handling; Execute defaults it whenever Context wiring is present.
+	ContextRuntime *ContextRuntime
+	// Hooks are the M3 lifecycle observers (docs/27). Nil is the zero
+	// posture; Execute also auto-registers the telemetry projection hook
+	// whenever Telemetry is present, so the metric stream and the hook bus
+	// stay one pipeline.
+	Hooks []RuntimeHook
 
 	mu       sync.Mutex
 	controls map[string]*runControl
 	commands atomic.Uint64
+	bus      *hookBus
 }
 
 type runControl struct {
@@ -198,6 +225,15 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if orchestrator.Now == nil {
 		orchestrator.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if orchestrator.Context != nil && orchestrator.ContextRuntime == nil {
+		orchestrator.ContextRuntime = &ContextRuntime{}
+	}
+	// M3 lifecycle bus (docs/27): the telemetry projection hook rides the
+	// bus so metrics and hook observers share one pipeline.
+	orchestrator.bus = newHookBus(orchestrator.Hooks...)
+	if orchestrator.Telemetry != nil {
+		orchestrator.bus.register(lifecycleTelemetryHook{telemetry: orchestrator.Telemetry})
+	}
 	control, err := orchestrator.acquire(runID)
 	if err != nil {
 		return RunOutcome{}, err
@@ -208,6 +244,8 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if err != nil {
 		return RunOutcome{}, err
 	}
+	orchestrator.bus.emit(ctx, LifecycleRunDispatched, LifecycleSnapshot{RunID: runID, DocumentID: run.DocumentID,
+		State: RunState(run.Status)})
 	planRecord, err := orchestrator.Store.LoadActivePlan(ctx, runID)
 	if err != nil {
 		return RunOutcome{}, err
@@ -246,6 +284,9 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if err != nil {
 		return RunOutcome{}, err
 	}
+	// pendingDelivery carries the quality node's delivery payload to the
+	// next checkpoint save (M1.0 delivery protocol, docs/21 §21.8).
+	var pendingDelivery *QualityDelivery
 	manifests := make(map[string]writingplan.CapabilityManifest)
 	for _, node := range plan.Nodes {
 		if manifest, ok := orchestrator.Capabilities.Get(node.Capability); ok {
@@ -282,6 +323,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	nextAttempts := recovery.NextAttempts
 	spentCost, spentDuration := recovery.SpentCostUSD, recovery.SpentDurationMS
 	for len(completed) < len(plan.Nodes) {
+		// ── Decide: control intents and node readiness ──
 		if intent := controlIntent(control); intent != "" {
 			return orchestrator.finishControl(ctx, run, plan, completed, artifacts, spentCost, spentDuration, intent)
 		}
@@ -293,61 +335,34 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		if node.Kind == writingplan.NodeHumanGate {
 			_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "human_gate")
 			_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "human_gate")
-			_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID})
+			_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
 			return outcome(runID, StatePaused, completed, artifacts, spentCost), ErrApprovalRequired
 		}
-		manifest, exists := manifests[node.Capability]
-		if !exists || !manifest.Available {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, ErrExecutorNotFound)
-		}
-		if !permissionsContain(run.Permissions, manifest.Permissions) {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, ErrPermissionDenied)
-		}
-		if spentCost+manifest.EstimatedCostUSD > run.Budget.MaxCostUSD || spentDuration+manifest.EstimatedDurationMS > run.Budget.MaxDurationMS {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, ErrRuntimeBudget)
-		}
-		executor, err := orchestrator.Executors.Resolve(manifest, node)
-		if err != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
-		}
-		inputs, err := selectInputs(node, artifacts)
-		if err != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
+		// ── Resolve + Authorize: manifest, permissions, budget, executor ──
+		manifest, executor, authorizeErr := orchestrator.authorizeNode(run, node, manifests, spentCost, spentDuration)
+		if authorizeErr != nil {
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, authorizeErr)
 		}
 		attemptNumber := nextAttempts[node.NodeID]
 		if attemptNumber < 1 {
 			attemptNumber = 1
 		}
 		if attemptNumber > node.Bounds.MaxAttempts {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, errors.New("attempt bound exhausted"))
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, errAttemptExhausted)
 		}
-		key, _ := writingstore.NodeAttemptKey(runID, node.NodeID, attemptNumber)
-		request := ExecutionRequest{RunID: runID, PlanID: plan.PlanID, PlanVersion: planRecord.PlanVersion,
-			NodeID: node.NodeID, Attempt: attemptNumber, IdempotencyKey: key,
-			ContractRef: planRecord.Envelope.IntentPlan.ContractRef, Node: node,
-			Inputs: inputs, Permissions: append([]writingplan.Permission(nil), run.Permissions...)}
-		if orchestrator.Subject != nil {
-			request.Subject = orchestrator.Subject(run)
+		// ── Dispatch setup: inputs, request, context, attempt ledger ──
+		request, prepErr := orchestrator.prepareDispatch(ctx, run, planRecord, plan, node, manifest, artifacts, attemptNumber)
+		if prepErr != nil {
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, prepErr)
 		}
-		if err := request.Validate(); err != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
-		}
-		// Context wiring (M4a shadow, M4b activation): compile and persist the
-		// envelope, then inject it into the request. Infrastructure failures
-		// degrade to a nil envelope; a capability that opted into
-		// EnforceRequiredContext fails the node on required-missing (M4b).
-		envelope, contextErr := orchestrator.compileNodeContext(ctx, run, node, attemptNumber, manifest)
-		if contextErr != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, contextErr)
-		}
-		request.Context = envelope
-		attempt := writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,
+		// M3: before-capability observation (docs/27).
+		orchestrator.bus.emit(ctx, LifecycleBeforeCapability, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, nil))
+		saved, dispatch, err := orchestrator.Store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,
 			PlanVersion: planRecord.PlanVersion, NodeID: node.NodeID, Attempt: attemptNumber,
-			IdempotencyKey: key, NodeKind: node.Kind, CapabilityID: node.Capability,
+			IdempotencyKey: request.IdempotencyKey, NodeKind: node.Kind, CapabilityID: node.Capability,
 			CapabilityVersion: node.CapabilityVersion, ExecutorID: manifest.Executor,
-			FailurePath: node.FailurePath, Bounds: node.Bounds, InputHash: hashInputs(inputs),
-			InputArtifactIDs: artifactIDs(inputs)}
-		saved, dispatch, err := orchestrator.Store.StartNodeAttempt(ctx, attempt, runtimeTrace(node.Capability))
+			FailurePath: node.FailurePath, Bounds: node.Bounds, InputHash: hashInputs(request.Inputs),
+			InputArtifactIDs: artifactIDs(request.Inputs)}, runtimeTrace(node.Capability))
 		if err != nil {
 			return RunOutcome{}, err
 		}
@@ -358,12 +373,8 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			}
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, fmt.Errorf("attempt is %s", saved.Status))
 		}
-
-		execCtx, cancel := context.WithTimeout(ctx, time.Duration(node.Bounds.TimeoutMS)*time.Millisecond)
-		setActiveExecution(control, executor, request.Handle(), cancel)
-		result, executeErr := executor.Execute(execCtx, request)
-		cancel()
-		clearActiveExecution(control)
+		// ── Dispatch: the timed executor invocation ──
+		result, executeErr := dispatchAttempt(ctx, orchestrator, control, executor, request, node.Bounds.TimeoutMS)
 		if intent := controlIntent(control); intent != "" {
 			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 				NodeID: node.NodeID, Attempt: attemptNumber, Status: map[string]string{"pause": "paused", "cancel": "cancelled"}[intent],
@@ -371,15 +382,9 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 				Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
 			return orchestrator.finishControl(ctx, run, plan, completed, artifacts, spentCost, spentDuration, intent)
 		}
+		// ── Observe: result validation, budget, kernel invariants ──
 		if executeErr == nil {
-			executeErr = result.Validate(request)
-		}
-		if executeErr == nil && (result.Usage.CostUSD > node.Bounds.MaxCostUSD || spentCost+result.Usage.CostUSD > run.Budget.MaxCostUSD || result.Usage.DurationMS > node.Bounds.TimeoutMS || spentDuration+result.Usage.DurationMS > run.Budget.MaxDurationMS) {
-			executeErr = ErrRuntimeBudget
-		}
-		if executeErr == nil && containsShadowContentRef(result.Artifacts) {
-			executeErr = runtimeError(CodeArtifactCommitFailed, RetryNever,
-				"canonical artifacts cannot reference shadow content", ErrShadowContentLeak)
+			executeErr = observeResult(result, request, node, spentCost, spentDuration, run)
 		}
 		if executeErr != nil {
 			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
@@ -392,13 +397,14 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			if manifest.Idempotency != writingplan.IdempotencySafe {
 				_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "unsafe_retry")
 				_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "unsafe_retry")
-				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID})
+				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
 				out := outcome(runID, StatePaused, completed, artifacts, spentCost)
 				out.HumanRequired = []string{node.NodeID}
 				return out, fmt.Errorf("%w: %s", ErrHumanRecoveryRequired, node.NodeID)
 			}
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, executeErr)
 		}
+		// ── Observe: commit the attempt ledger and artifact lineage ──
 		storedArtifacts := make([]writingstore.ArtifactRecord, 0, len(result.Artifacts))
 		for _, draft := range result.Artifacts {
 			storedArtifacts = append(storedArtifacts, artifactRecord(request, draft, runtimeTrace(node.Capability), orchestrator.Now()))
@@ -417,13 +423,40 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		nextAttempts[node.NodeID] = attemptNumber + 1
 		spentCost += result.Usage.CostUSD
 		spentDuration += result.Usage.DurationMS
-		if err := orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{}); err != nil {
+		// M3: artifact-submitted observation (artifacts durable, delivery not
+		// yet driven) then after-capability once the node fully commits.
+		artifactTypes := make([]string, 0, len(storedArtifacts))
+		for _, artifact := range storedArtifacts {
+			artifactTypes = append(artifactTypes, artifact.ArtifactType)
+		}
+		orchestrator.bus.emit(ctx, LifecycleArtifactSubmitted, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, artifactTypes))
+		// M1.0 delivery protocol (docs/21 §21.8) via the M2 routing table
+		// (docs/26): the delivery protocol owns its class→driver table, so
+		// the loop asks "does this class carry delivery?" instead of
+		// hard-coding draft/quality branches. A protocol failure is a node
+		// failure (evidence gap, fail closed).
+		if orchestrator.Delivery != nil {
+			delivery, deliveryErr := orchestrator.Delivery.Drive(ctx, manifest.Class, run, node, storedArtifacts)
+			if deliveryErr != nil {
+				return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetryNever, "delivery commit failed", deliveryErr)
+			}
+			if delivery != nil {
+				pendingDelivery = delivery
+			}
+		}
+		if err := orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{}, pendingDelivery); err != nil {
 			return RunOutcome{}, err
 		}
+		pendingDelivery = nil
+		// M3: after-capability observation (artifacts + delivery + checkpoint
+		// all committed — the node is fully done).
+		orchestrator.bus.emit(ctx, LifecycleAfterCapability, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, artifactTypes))
 	}
 	if _, err := orchestrator.transition(ctx, runID, StateRunning, StateCompleted, "plan_completed"); err != nil {
 		return RunOutcome{}, err
 	}
+	// M3: terminal lifecycle observation (docs/27).
+	orchestrator.bus.emit(ctx, LifecycleRunCompleted, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, writingplan.PlanNode{}, 0, StateCompleted, completed, spentCost, spentDuration, nil))
 	return outcome(runID, StateCompleted, completed, artifacts, spentCost), nil
 }
 
@@ -467,6 +500,29 @@ func (orchestrator *Orchestrator) initialArtifacts(ctx context.Context, run writ
 	if !created {
 		// A concurrent dispatch captured first; adopt its snapshot verbatim.
 		return orchestrator.initialArtifacts(ctx, run, planRecord)
+	}
+	// Persist the initial artifacts as real artifact rows: downstream node
+	// outputs record lineage edges to them, and the artifact FKs require the
+	// rows to exist. The rows bind to a synthetic succeeded "initial" attempt
+	// so the attempt FK resolves. Idempotent at the store layer.
+	initialKey, err := writingstore.NodeAttemptKey(run.RunID, "initial", 1)
+	if err != nil {
+		return nil, runtimeError(CodeArtifactCommitFailed, RetrySafe, "initial attempt key", err)
+	}
+	initialRows := make([]writingstore.ArtifactRecord, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		initialRows = append(initialRows, writingstore.ArtifactRecord{ArtifactID: artifact.ArtifactID,
+			Version: artifact.Version, RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID,
+			PlanVersion: planRecord.PlanVersion,
+			NodeID:      InitialCaptureNodeID, Attempt: 1, IdempotencyKey: initialKey,
+			OutputKey: string(artifact.ArtifactType), ArtifactType: string(artifact.ArtifactType),
+			Status: "provisional", ContentHash: artifact.ContentHash, MediaType: artifact.MediaType,
+			ContentRef: artifact.ContentRef, Producer: "initial." + string(artifact.ArtifactType),
+			CapabilityVersion: "initial", Trace: writingstore.TraceContext{
+				Provenance: map[string]any{"initial": true}, SourceRefs: []string{}, Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime.initial"}}})
+	}
+	if err := orchestrator.Store.SaveInitialArtifacts(ctx, initialRows); err != nil {
+		return nil, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not persist initial artifacts", err)
 	}
 	return artifacts, nil
 }
@@ -540,31 +596,38 @@ func (orchestrator *Orchestrator) transition(ctx context.Context, runID string, 
 func (orchestrator *Orchestrator) failNode(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, node writingplan.PlanNode, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, cause error) (RunOutcome, error) {
 	if node.FailurePath == writingplan.FailureFallback {
 		_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StateReplanning, "fallback_requested")
-		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID})
+		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
 		return outcome(run.RunID, StateReplanning, completed, artifacts, cost), fmt.Errorf("%w: %v", ErrRunReplanning, cause)
 	}
 	if node.FailurePath == writingplan.FailurePause || node.FailurePath == writingplan.FailurePartial {
 		_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StatePausing, "node_failure")
 		_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, "node_failure")
-		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID})
+		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
+		orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StatePaused, completed, cost, duration, nil))
 		return outcome(run.RunID, StatePaused, completed, artifacts, cost), fmt.Errorf("%w: %v", ErrRunPaused, cause)
 	}
 	_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StateFailed, "node_failure")
+	orchestrator.bus.emit(ctx, LifecycleRunFailed, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StateFailed, completed, cost, duration, nil))
 	return outcome(run.RunID, StateFailed, completed, artifacts, cost), cause
 }
 
 func (orchestrator *Orchestrator) finishControl(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, intent string) (RunOutcome, error) {
 	unsafe := []string{}
-	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, unsafe)
+	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, unsafe, nil)
 	if intent == "cancel" {
 		_, _ = orchestrator.transition(ctx, run.RunID, StateCancelling, StateCancelled, "cancelled")
+		orchestrator.bus.emit(ctx, LifecycleRunCancelled, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, writingplan.PlanNode{}, 0, StateCancelled, completed, cost, duration, nil))
 		return outcome(run.RunID, StateCancelled, completed, artifacts, cost), ErrRunCancelled
 	}
 	_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, "paused")
+	orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, writingplan.PlanNode{}, 0, StatePaused, completed, cost, duration, nil))
 	return outcome(run.RunID, StatePaused, completed, artifacts, cost), ErrRunPaused
 }
 
-func (orchestrator *Orchestrator) saveCheckpoint(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, unsafe []string) error {
+func (orchestrator *Orchestrator) saveCheckpoint(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, unsafe []string, delivery *QualityDelivery) error {
+	// M3: before-checkpoint observation (the BeforeQualityGate/BeforeCommit
+	// moments of the reference sequence — quality deliveries ride this save).
+	orchestrator.bus.emit(ctx, LifecycleCheckpointBefore, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, writingplan.PlanNode{}, 0, StateRunning, completed, cost, duration, nil))
 	copyCompleted := make(map[string]int, len(completed))
 	for key, value := range completed {
 		copyCompleted[key] = value
@@ -574,10 +637,16 @@ func (orchestrator *Orchestrator) saveCheckpoint(ctx context.Context, run writin
 		refs = append(refs, artifactIdentity(artifact.ArtifactID, artifact.Version))
 	}
 	now := orchestrator.Now()
+	// append([]string(nil), empty...) yields nil; the checkpoint invariant
+	// requires non-nil slices (docs/20 §20.2 M1.0 wiring).
+	unsafeInFlight := append([]string(nil), unsafe...)
+	if unsafeInFlight == nil {
+		unsafeInFlight = []string{}
+	}
 	return orchestrator.Checkpoints.Save(ctx, Checkpoint{CheckpointID: checkpointID(run.RunID, plan.PlanHash, completed, artifacts),
 		RunID: run.RunID, PlanID: plan.PlanID, PlanVersion: run.ActivePlanVersion, PlanHash: plan.PlanHash,
 		CompletedNodes: copyCompleted, ArtifactRefs: refs, SpentCostUSD: cost,
-		SpentDurationMS: duration, UnsafeInFlight: append([]string(nil), unsafe...), CreatedAt: now})
+		SpentDurationMS: duration, UnsafeInFlight: unsafeInFlight, CreatedAt: now, Delivery: delivery})
 }
 
 func (orchestrator *Orchestrator) acquire(runID string) (*runControl, error) {

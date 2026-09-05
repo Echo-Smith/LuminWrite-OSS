@@ -171,6 +171,12 @@ type ExecutionRequest struct {
 	// wiring). Nil means context compilation is disabled or degraded —
 	// executors treat it as advisory, never authoritative.
 	Context *contextcompiler.Envelope
+	// StyleSlug is the per-request style the run asked for (M1.3,
+	// writing_runs.style_slug). Empty means default profile semantics. The
+	// resolved profile itself is handed to engine-step factories via StepEnv.
+	StyleSlug string
+	// UserID scopes user-owned style resolution ("my_" slugs).
+	UserID string
 }
 
 func (request ExecutionRequest) Validate() error {

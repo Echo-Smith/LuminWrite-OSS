@@ -37,6 +37,12 @@ func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Check
 		if attempt.PlanID != plan.PlanID || attempt.PlanVersion != planVersion {
 			continue
 		}
+		// The M1.0 delivery protocol's synthetic "initial" capture attempt is
+		// bookkeeping, not a plan node: it neither completes a plan node nor
+		// counts toward the loop-exit condition.
+		if attempt.NodeID == InitialCaptureNodeID {
+			continue
+		}
 		if attempt.Attempt >= state.NextAttempts[attempt.NodeID] {
 			state.NextAttempts[attempt.NodeID] = attempt.Attempt + 1
 		}

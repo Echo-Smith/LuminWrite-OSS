@@ -21,7 +21,9 @@ func TestOrchestratorCompletesReadyNodeAndPersistsCheckpoint(t *testing.T) {
 	if out.State != StateCompleted || len(out.CompletedNodes) != 1 || fixture.executor.calls != 1 {
 		t.Fatalf("outcome=%#v calls=%d", out, fixture.executor.calls)
 	}
-	if len(fixture.store.artifacts) != 1 || len(fixture.checkpoints.saved) != 1 {
+	// The M1.0 initial capture adds the contract's artifact row beside the
+	// node's own output (docs/21 §21.8).
+	if len(fixture.store.artifacts) != 2 || len(fixture.checkpoints.saved) != 1 {
 		t.Fatalf("artifacts=%#v checkpoints=%#v", fixture.store.artifacts, fixture.checkpoints.saved)
 	}
 }
@@ -111,7 +113,7 @@ func TestOrchestratorPersistsStableExecutorErrorCode(t *testing.T) {
 	if ErrorCodeOf(err) != CodeSourceSnapshotFailed {
 		t.Fatalf("error=%v code=%s", err, ErrorCodeOf(err))
 	}
-	if len(fixture.store.completions) == 0 || fixture.store.completions[0].ErrorCode != string(CodeSourceSnapshotFailed) || len(fixture.store.artifacts) != 0 {
+	if len(fixture.store.completions) == 0 || fixture.store.completions[0].ErrorCode != string(CodeSourceSnapshotFailed) || len(fixture.store.artifacts) != 1 {
 		t.Fatalf("completions=%#v artifacts=%#v", fixture.store.completions, fixture.store.artifacts)
 	}
 }
@@ -134,7 +136,7 @@ func TestCanonicalCommitFailureIsStableAndProducesNoArtifact(t *testing.T) {
 	metrics := &metricCapture{}
 	fixture.orchestrator.Telemetry = metrics
 	_, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID)
-	if ErrorCodeOf(err) != CodeArtifactCommitFailed || len(fixture.store.artifacts) != 0 {
+	if ErrorCodeOf(err) != CodeArtifactCommitFailed || len(fixture.store.artifacts) != 1 {
 		t.Fatalf("error=%v code=%s artifacts=%#v", err, ErrorCodeOf(err), fixture.store.artifacts)
 	}
 	if !metrics.has(MetricCanonicalCommit, "failed") {
@@ -214,7 +216,18 @@ type fakeRuntimeStore struct {
 	transitions   []TransitionRecord
 	completionErr error
 
+	envelopes []writingstore.ContextEnvelopeRecord
+
 	materialSnapshots map[string]writingstore.MaterialSnapshotRecord
+}
+
+// SaveContextEnvelope lets the vertical harness exercise the V2.9 context
+// wiring: the orchestrator persists one compiled envelope per node attempt.
+func (store *fakeRuntimeStore) SaveContextEnvelope(_ context.Context, record writingstore.ContextEnvelopeRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.envelopes = append(store.envelopes, record)
+	return nil
 }
 
 func (store *fakeRuntimeStore) LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error) {
@@ -242,6 +255,15 @@ func (store *fakeRuntimeStore) StartNodeAttempt(_ context.Context, attempt writi
 	store.attempts = append(store.attempts, attempt)
 	return attempt, true, nil
 }
+
+// SaveInitialArtifacts: the fake accepts the initial artifact rows verbatim.
+func (store *fakeRuntimeStore) SaveInitialArtifacts(_ context.Context, artifacts []writingstore.ArtifactRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.artifacts = append(store.artifacts, artifacts...)
+	return nil
+}
+
 func (store *fakeRuntimeStore) CompleteNodeAttempt(_ context.Context, completion writingstore.AttemptCompletion) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()

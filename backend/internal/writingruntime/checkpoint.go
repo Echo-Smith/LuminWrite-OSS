@@ -27,6 +27,11 @@ type Checkpoint struct {
 	SpentDurationMS int64          `json:"spent_duration_ms"`
 	UnsafeInFlight  []string       `json:"unsafe_in_flight"`
 	CreatedAt       time.Time      `json:"created_at"`
+	// Delivery carries the M1.0 delivery payload (docs/21 §21.8) when the
+	// checkpoint follows a quality node: the quality report binds the
+	// candidate version and the promotion advances quality_state in the same
+	// transaction as the snapshot. Nil for progress checkpoints.
+	Delivery *QualityDelivery `json:"delivery,omitempty"`
 }
 
 func (checkpoint Checkpoint) Validate() error {
@@ -77,7 +82,7 @@ func (repository PersistentCheckpointRepository) Save(ctx context.Context, check
 		version = 1
 	}
 	snapshotID := writingstore.StableID("snap_", checkpoint.RunID, checkpoint.CheckpointID)
-	_, err = repository.Store.CommitCheckpoint(ctx, writingstore.CheckpointBundle{Snapshot: writingstore.SnapshotRecord{
+	bundle := writingstore.CheckpointBundle{Snapshot: writingstore.SnapshotRecord{
 		SnapshotID: snapshotID, SnapshotVersion: version, RunID: checkpoint.RunID,
 		CheckpointID: checkpoint.CheckpointID, PlanID: checkpoint.PlanID,
 		PlanVersion: checkpoint.PlanVersion, ContractID: run.ContractID,
@@ -86,7 +91,26 @@ func (repository PersistentCheckpointRepository) Save(ctx context.Context, check
 		Complete: true, Manifest: manifest,
 		StorageRef: "db://writing_snapshots/" + snapshotID, Trace: repository.Trace,
 		CreatedAt: checkpoint.CreatedAt, PersistedAt: checkpoint.CreatedAt,
-	}})
+	}}
+	// M1.0 delivery: a checkpoint following a quality node carries the
+	// quality report + document promotion, committed in the same transaction
+	// as the snapshot (docs/21 §21.8). The snapshot identity is resolved
+	// here, so the report's bindings are stamped to match before the store's
+	// cross-validation runs.
+	if checkpoint.Delivery != nil {
+		report := checkpoint.Delivery.Report
+		report.SnapshotID = snapshotID
+		report.SnapshotVersion = version
+		report.SnapshotPersisted = true
+		bundle.QualityReport = &report
+		promotion := checkpoint.Delivery.Promotion
+		bundle.DocumentPromotion = &promotion
+		bundle.Snapshot.CandidateVersionID = report.CandidateVersionID
+		bundle.Snapshot.QualityReportID = report.ReportID
+		bundle.Snapshot.QualityReportVersion = report.ReportVersion
+		bundle.AchievedAssurance = report.AchievedAssurance
+	}
+	_, err = repository.Store.CommitCheckpoint(ctx, bundle)
 	return err
 }
 
@@ -108,6 +132,14 @@ func (repository PersistentCheckpointRepository) LoadLatest(ctx context.Context,
 	var checkpoint Checkpoint
 	if err := json.Unmarshal(payload, &checkpoint); err != nil {
 		return Checkpoint{}, fmt.Errorf("decode runtime checkpoint: %w", err)
+	}
+	// A JSON round-trip can turn empty slices into nil; normalize so the
+	// decoded checkpoint satisfies the same invariants as a freshly built one.
+	if checkpoint.ArtifactRefs == nil {
+		checkpoint.ArtifactRefs = []string{}
+	}
+	if checkpoint.UnsafeInFlight == nil {
+		checkpoint.UnsafeInFlight = []string{}
 	}
 	return checkpoint, checkpoint.Validate()
 }

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -613,18 +614,43 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	}
 	orchestrator := &Orchestrator{Store: store, Capabilities: capabilities, Executors: executors,
 		State: NewStateMachine(store), Checkpoints: &memoryCheckpoints{}, Initial: initial,
-		Materials: store, Now: func() time.Time { return now }}
+		Materials: store, Now: func() time.Time { return now },
+		// V2.9 context wiring: every vertical run compiles + persists one
+		// envelope per node attempt, so the governed runtime's context path
+		// is exercised in every vertical scenario (live and offline).
+		Context:        &fixedContextSource{input: contextcompiler.Input{ContractDigest: "vertical governed contract"}},
+		Envelopes:      store,
+		ContextRuntime: &ContextRuntime{}}
 	out, err := orchestrator.Execute(context.Background(), runID)
 	if err != nil || out.State != StateCompleted || len(out.CompletedNodes) != len(nodes) {
 		t.Fatalf("vertical scenario %s: out=%#v err=%v", name, out, err)
+	}
+	// One compiled envelope per node attempt proves the V2.9 context
+	// compilation ran inside the governed execution, not just alongside it.
+	if len(store.envelopes) != len(nodes) {
+		t.Fatalf("context envelopes=%d want %d (one per node)", len(store.envelopes), len(nodes))
+	}
+	for _, envelope := range store.envelopes {
+		if envelope.EnvelopeHash == "" || envelope.CompilerVersion == 0 {
+			t.Fatalf("persisted envelope unattributed: %#v", envelope)
+		}
 	}
 	result := verticalResult{store: store, canonical: canonical, outcome: out, runID: runID,
 		evidenceRecords: func(t *testing.T) []RuntimeEvidence { return backend.records(t, runID) },
 		shadowKeys:      func(t *testing.T) []string { return backend.keys(t, runID) },
 		policyHashes:    governedHashes}
 	persisted, err := store.ListRunArtifacts(context.Background(), runID)
-	if err != nil || len(persisted) != len(nodes) {
-		t.Fatalf("artifacts=%#v err=%v", persisted, err)
+	// M1.0: the initial capture persists the run's initial artifacts as real
+	// rows, so the ledger holds the initial rows plus one per node output.
+	// Count node-output artifacts by excluding the synthetic initial rows.
+	nodeOutputs := 0
+	for _, artifact := range persisted {
+		if artifact.NodeID != InitialCaptureNodeID {
+			nodeOutputs++
+		}
+	}
+	if err != nil || nodeOutputs != len(nodes) {
+		t.Fatalf("node outputs=%d want %d (artifacts=%#v)", nodeOutputs, len(nodes), persisted)
 	}
 	for _, artifact := range persisted {
 		if artifact.Status != "provisional" || IsShadowContentRef(artifact.ContentRef) {
@@ -671,7 +697,7 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 
 func verticalEngineRunner(step engine.Step) func(t *testing.T, documentID string) LegacyNodeRunner {
 	return func(t *testing.T, documentID string) LegacyNodeRunner {
-		return EngineStepRunner{StepFactory: func() engine.Step { return step },
+		return EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return step, nil },
 			Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
 				return LegacyUsage{Measured: true, InputTokens: 5, OutputTokens: 5}, nil
 			}}

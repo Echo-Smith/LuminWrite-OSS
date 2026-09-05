@@ -40,7 +40,9 @@ func TestTask12WritingScenariosTraverseGovernedArtifactGraph(t *testing.T) {
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
 			out, store := executeScenario(t, scenario)
-			if out.State != StateCompleted || len(out.CompletedNodes) != len(scenario.nodes) || len(store.artifacts) != len(scenario.nodes) {
+			// M1.0: the ledger holds one initial artifact row per initial
+			// artifact plus one row per node output.
+			if out.State != StateCompleted || len(out.CompletedNodes) != len(scenario.nodes) || len(store.artifacts) != len(scenario.nodes)+len(scenario.initial) {
 				t.Fatalf("out=%#v artifacts=%#v", out, store.artifacts)
 			}
 			if store.artifacts[len(store.artifacts)-1].ArtifactType != "revision_set" {
@@ -92,7 +94,7 @@ func TestTask12ScenariosRouteRealB2AdaptersThroughShadowRollout(t *testing.T) {
 		runner func(t *testing.T) LegacyNodeRunner
 	}{
 		{"engine_step", AdapterFamilyEngine, func(t *testing.T) LegacyNodeRunner {
-			return EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} },
+			return EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &emittingEngineStep{}, nil },
 				Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
 					return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil
 				}}
@@ -185,7 +187,8 @@ func TestTask12ScenariosRouteRealB2AdaptersThroughShadowRollout(t *testing.T) {
 				t.Fatalf("out=%#v err=%v", out, err)
 			}
 			persisted, err := store.ListRunArtifacts(context.Background(), runID)
-			if err != nil || len(persisted) != 1 {
+			// M1.0: one initial artifact row plus one per node output.
+			if err != nil || len(persisted) != 2 {
 				t.Fatalf("artifacts=%#v err=%v", persisted, err)
 			}
 			if persisted[0].Status != "provisional" || IsShadowContentRef(persisted[0].ContentRef) {
