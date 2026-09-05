@@ -22,6 +22,8 @@ const (
 	MetricCanonicalCommit    MetricKind = "canonical_commit"
 	MetricAuthorityViolation MetricKind = "authority_violation"
 	MetricContextEnvelope    MetricKind = "context_envelope"
+	MetricContextPressure    MetricKind = "context_pressure"
+	MetricLifecycle          MetricKind = "lifecycle"
 )
 
 type ExecutionLane string
