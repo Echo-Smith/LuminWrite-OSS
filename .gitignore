@@ -34,6 +34,9 @@ docker-compose.override.yml
 *~
 .DS_Store
 
+# ─── 本地工具状态（Mimosa hook 会话缓存，不入库）───
+.mimosa/
+
 # ─── 日志 / 临时文件 ──────────────────────────────────
 *.log
 logs/
