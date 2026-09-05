@@ -14,6 +14,7 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database/dbtest"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/projectmemory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -22,27 +23,23 @@ import (
 var integrationDB *database.DB
 
 func TestMain(m *testing.M) {
-	databaseURL := os.Getenv("TEST_DATABASE_URL")
-	if databaseURL == "" {
+	// Each test binary gets its own database: parallel packages must not
+	// TRUNCATE each other's rows (dbtest package doc explains the history).
+	db, cleanup, err := dbtest.Open(os.Getenv("TEST_DATABASE_URL"), 5, 2)
+	if errors.Is(err, dbtest.ErrNoDatabaseURL) {
 		if os.Getenv("CI") == "true" {
 			fmt.Fprintln(os.Stderr, "CI=true but TEST_DATABASE_URL is not set")
 			os.Exit(1)
 		}
 		os.Exit(m.Run())
 	}
-	db, err := database.NewPostgres(databaseURL, 5, 2)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect writingstore test database: %v\n", err)
-		os.Exit(1)
-	}
-	if err := database.Migrate(db); err != nil {
-		fmt.Fprintf(os.Stderr, "migrate writingstore test database: %v\n", err)
-		_ = db.Close()
+		fmt.Fprintf(os.Stderr, "open writingstore test database: %v\n", err)
 		os.Exit(1)
 	}
 	integrationDB = db
 	code := m.Run()
-	_ = db.Close()
+	cleanup()
 	os.Exit(code)
 }
 

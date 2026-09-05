@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database/dbtest"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
@@ -128,21 +129,17 @@ func TestTask13LiveModelVerticalAcceptance(t *testing.T) {
 	apiKey := strings.TrimSpace(os.Getenv("TASK13_LLM_API_KEY"))
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("TASK13_LLM_BASE_URL")), "/")
 	model := strings.TrimSpace(os.Getenv("TASK13_LLM_MODEL"))
-	databaseURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if apiKey == "" || baseURL == "" || model == "" || databaseURL == "" {
+	if apiKey == "" || baseURL == "" || model == "" || strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" {
 		t.Skip("Task13 live acceptance requires TASK13_LLM_API_KEY, TASK13_LLM_BASE_URL, TASK13_LLM_MODEL, and TEST_DATABASE_URL")
 	}
 	if model != task13LiveModel {
 		t.Fatalf("TASK13_LLM_MODEL=%q; acceptance is pinned to %s", model, task13LiveModel)
 	}
-	db, err := database.NewPostgres(databaseURL, 8, 2)
+	db, cleanup, err := dbtest.Open(os.Getenv("TEST_DATABASE_URL"), 8, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if err := database.Migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	defer cleanup()
 	if _, err := db.ExecContext(context.Background(), `TRUNCATE writing_rollout_approvals, writing_documents CASCADE`); err != nil {
 		t.Fatal(err)
 	}
