@@ -2,9 +2,11 @@ package database
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -645,4 +647,104 @@ func requireDropBefore(t *testing.T, downSQL, child, parent string) {
 	if childOffset > parentOffset {
 		t.Errorf("down migrations must drop child %s before parent %s", child, parent)
 	}
+}
+
+// TestMigrateDB_ConcurrentMigratorsSerialize reproduces the fresh-database
+// race the advisory lock fixes: several migrators start against an empty
+// schema at once. Without serialization they both read an empty
+// schema_migrations and collide applying the same migration (primary-key
+// conflict, or non-idempotent DDL like CREATE TABLE). With the lock every
+// migrator succeeds and the full set is applied exactly once. The pool is
+// sized to exactly the number of migrators, so the single-pinned-connection
+// design is also proven not to need a second connection per migrator.
+func TestMigrateDB_ConcurrentMigratorsSerialize(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("CI=true but TEST_DATABASE_URL is not set — migration tests cannot run")
+		}
+		t.Skip("TEST_DATABASE_URL not set, skipping migration test")
+	}
+
+	admin, err := NewPostgres(dbURL, 2, 1)
+	if err != nil {
+		t.Fatalf("admin connect: %v", err)
+	}
+	defer admin.Close()
+	ctx := context.Background()
+	raceDB := "luminbuddy_migrate_race"
+	// Requires createdb + DROP ... FORCE privileges; skip cleanly otherwise.
+	if _, err := admin.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(raceDB)+" WITH (FORCE)"); err != nil {
+		t.Skipf("cannot manage test databases (need createdb + FORCE): %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+quoteIdent(raceDB)); err != nil {
+		t.Skipf("cannot create race database: %v", err)
+	}
+	defer func() {
+		dropCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, _ = admin.ExecContext(dropCtx, "DROP DATABASE IF EXISTS "+quoteIdent(raceDB)+" WITH (FORCE)")
+	}()
+	raceURL, err := swapDatabase(dbURL, raceDB)
+	if err != nil {
+		t.Fatalf("build race URL: %v", err)
+	}
+
+	const migrators = 4
+	db, err := NewPostgres(raceURL, migrators, 2)
+	if err != nil {
+		t.Fatalf("race db connect: %v", err)
+	}
+	defer db.Close()
+
+	migrateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	errs := make([]error, migrators)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < migrators; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = MigrateDB(migrateCtx, db, migrationFS)
+		}(i)
+	}
+	close(start) // fire all migrators at once for maximum contention
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("migrator %d failed (advisory lock did not serialize): %v", i, err)
+		}
+	}
+
+	applied, err := getAppliedMigrations(migrateCtx, db)
+	if err != nil {
+		t.Fatalf("getAppliedMigrations: %v", err)
+	}
+	versions, err := discoverMigrations(migrationFS)
+	if err != nil {
+		t.Fatalf("discoverMigrations: %v", err)
+	}
+	if len(applied) != len(versions) {
+		t.Fatalf("applied %d != discovered %d (a migration was double-applied or lost)", len(applied), len(versions))
+	}
+}
+
+// quoteIdent wraps a PostgreSQL identifier in double quotes, escaping any
+// embedded quotes — used for the throwaway database name.
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// swapDatabase returns dbURL with its database name replaced by name.
+func swapDatabase(dbURL, name string) (string, error) {
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = "/" + name
+	parsed.RawPath = ""
+	return parsed.String(), nil
 }
