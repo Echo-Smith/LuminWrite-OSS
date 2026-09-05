@@ -62,6 +62,11 @@ type ContextContract struct {
 	// is recorded and observed, never fatal. Activation is a per-manifest
 	// reviewed decision.
 	EnforceRequiredContext bool `json:"enforce_required_context,omitempty"`
+	// RetentionPriority overrides the compiler's default overflow retention
+	// order (docs/18 §18.5.5): earlier names claim leftover budget first
+	// when the total binds. Names must be compiler blocks; the resident
+	// block is always ranked first regardless of this list.
+	RetentionPriority []ContextBlockName `json:"retention_priority,omitempty"`
 }
 
 type CapabilityManifest struct {
@@ -110,6 +115,11 @@ func (contract ContextContract) ValidateContextContract() error {
 			seen[name] = group.kind
 		}
 	}
+	for _, name := range contract.RetentionPriority {
+		if !ValidContextBlock(name) {
+			return fmt.Errorf("CONTEXT_BLOCK_UNKNOWN: retention priority %s is not a compiler block", name)
+		}
+	}
 	if contract.ContextTokenBudget < 0 {
 		return fmt.Errorf("CONTEXT_TOKEN_BUDGET_INVALID: %d", contract.ContextTokenBudget)
 	}
@@ -127,6 +137,19 @@ func (contract ContextContract) ContextWanted() []string {
 		wanted = append(wanted, string(name))
 	}
 	return wanted
+}
+
+// ContextRetentionPriority returns the contract's retention order as
+// compiler block names, or nil when the contract keeps the default.
+func (contract ContextContract) ContextRetentionPriority() []string {
+	if len(contract.RetentionPriority) == 0 {
+		return nil
+	}
+	priority := make([]string, 0, len(contract.RetentionPriority))
+	for _, name := range contract.RetentionPriority {
+		priority = append(priority, string(name))
+	}
+	return priority
 }
 
 type ExecutionRequest struct {
@@ -220,6 +243,33 @@ func (r *CapabilityRegistry) registerLocked(manifest CapabilityManifest) error {
 		return fmt.Errorf("DUPLICATE_CAPABILITY: %s", manifest.ID)
 	}
 	r.manifests[manifest.ID] = cloneManifest(manifest)
+	return nil
+}
+
+// Activate re-registers an already-declared capability as dispatchable
+// through the given executor binding. This is the runtime-composition seam:
+// the default catalog ships declared-only (fail-closed), and the governed
+// composition — the one authority allowed to serve a capability — flips its
+// copy of the registry to available with the binding the rollout executor
+// dispatches through. The executor binding must already exist.
+func (r *CapabilityRegistry) Activate(id, executorID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	manifest, exists := r.manifests[id]
+	if !exists {
+		return fmt.Errorf("UNKNOWN_CAPABILITY: %s", id)
+	}
+	binding, ok := r.executors[executorID]
+	if !ok || binding.Dispatch == nil {
+		return fmt.Errorf("UNKNOWN_EXECUTOR: %s", executorID)
+	}
+	acceptedInputs := append(append([]ArtifactType(nil), manifest.InputTypes...), manifest.OptionalInputTypes...)
+	if !artifactSubset(acceptedInputs, binding.AcceptedInputTypes) || !artifactSubset(manifest.OutputTypes, binding.ProducedOutputTypes) {
+		return fmt.Errorf("EXECUTOR_TYPE_MISMATCH: %s", executorID)
+	}
+	manifest.Executor = executorID
+	manifest.Available = true
+	r.manifests[id] = cloneManifest(manifest)
 	return nil
 }
 
@@ -339,17 +389,48 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	register(outline)
 	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"full_draft"}, []Permission{"model.invoke", "materials.read"}, false)
 	draft.OptionalInputTypes = []ArtifactType{"outline", "source_pack"}
+	// M5 activation (docs/18 §18.13): document_state is sourced from the
+	// run document's committed current version, so draft's required set is
+	// enforceable from the first run on. Evidence is style-neutral by
+	// contract and quality reports stay out of the draft's context.
 	draft.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
-		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextStyleDirectives}}
+		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextStyleDirectives},
+		// The evolving document is exactly what a continuation needs most:
+		// keep it when the budget binds, ahead of the default tail order.
+		RetentionPriority:      []ContextBlockName{ContextDocumentState},
+		EnforceRequiredContext: true}
 	register(draft)
 	quality := base("core.validation.quality", "validation.quality", "engine.step.post_review", []ArtifactType{"full_draft"}, []ArtifactType{"quality_report"}, []Permission{"model.invoke", "validation.run"}, true)
 	quality.OptionalInputTypes = []ArtifactType{"evidence_report", "fact_report"}
+	// M5 activation: the report reviews the committed document, so its
+	// required document_state has the same stable source as draft's.
 	quality.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
-		OptionalContext: []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextStyleDirectives}}
+		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextStyleDirectives},
+		EnforceRequiredContext: true}
 	register(quality)
+	// M1.2 (docs/22): the sourced/strict templates and the compiler's
+	// validatorsForAssurance floor reference the evidence and fact validators;
+	// until these manifests existed those templates could only fail closed as
+	// T4. Validators are report producers, not gates — the quality node stays
+	// the sole acceptance authority — so they never fail a node on findings.
+	evidence := base("core.validation.evidence", "validation.evidence", "engine.step.evidence", []ArtifactType{"source_pack", "full_draft"}, []ArtifactType{"evidence_report"}, []Permission{"model.invoke", "validation.run"}, true)
+	// The evidence check reviews the draft against the run's own source pack;
+	// the pack arrives as an input artifact, not through the context blocks.
+	evidence.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence},
+		EnforceRequiredContext: true}
+	register(evidence)
+	fact := base("core.validation.fact", "validation.fact", "engine.step.fact", []ArtifactType{"source_pack", "full_draft"}, []ArtifactType{"fact_report"}, []Permission{"model.invoke", "validation.run"}, true)
+	fact.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence},
+		EnforceRequiredContext: true}
+	register(fact)
 	finalize := base("core.document.finalize", "document.finalize", "kernel.document.finalize", []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}, []Permission{"document.revision"}, false)
+	// M5 activation: the revision set is computed against the committed
+	// document version; finalize without document state would guess.
 	finalize.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
-		OptionalContext: []ContextBlockName{ContextTerminology}}
+		OptionalContext:        []ContextBlockName{ContextTerminology},
+		EnforceRequiredContext: true}
 	register(finalize)
 	research := base("core.retrieval.search", "research.collect", "engine.step.search", []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}, []Permission{"external.research", "materials.read"}, false)
 	research.SupportsEvidence = true
@@ -360,6 +441,17 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
 		EnforceRequiredContext: true}
 	register(research)
+	// M1.2 (docs/22): the strict template's research node references the
+	// research.strict class, which had no catalog entry either. The strict
+	// variant shares the collect executor; its stricter bounds live in the
+	// per-request profile resolution (M1.3), not in a second capability.
+	strictResearch := base("core.retrieval.strict_search", "research.strict", "engine.step.search", []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}, []Permission{"external.research", "materials.read"}, false)
+	strictResearch.SupportsEvidence = true
+	strictResearch.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		OptionalContext:        []ContextBlockName{ContextCanonFacts, ContextOpenDecisions, ContextTerminology, ContextEntitiesCards},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(strictResearch)
 	return registry
 }
 

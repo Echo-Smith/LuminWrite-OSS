@@ -117,6 +117,61 @@ func TestStrictAssuranceNeverSilentlyUsesIncompleteFastTemplate(t *testing.T) {
 	}
 }
 
+// TestSourcedAndStrictTemplatesCompileOnceValidatorsDeclared pins the M1.2
+// acceptance (docs/22): with the evidence/fact validators and the strict
+// research class declared, the sourced and strict templates compile to
+// executable validated plans that actually contain the validator nodes.
+func TestSourcedAndStrictTemplatesCompileOnceValidatorsDeclared(t *testing.T) {
+	cases := []struct {
+		name           string
+		assurance      writingkernel.AssuranceLevel
+		evidence       writingkernel.EvidenceLevel
+		mode           writingkernel.OrchestrationMode
+		recommendation writingkernel.OrchestrationMode
+		wantValidators []string
+	}{
+		{name: "sourced", assurance: writingkernel.AssuranceLevelSourced, evidence: writingkernel.EvidenceLevelSourced,
+			mode: writingkernel.OrchestrationModeSourced, recommendation: writingkernel.OrchestrationModeSourced,
+			wantValidators: []string{"core.validation.evidence", "core.validation.quality"}},
+		{name: "strict", assurance: writingkernel.AssuranceLevelStrict, evidence: writingkernel.EvidenceLevelStrict,
+			mode: writingkernel.OrchestrationModeStrictResearch, recommendation: writingkernel.OrchestrationModeStrictResearch,
+			wantValidators: []string{"core.validation.fact", "core.validation.evidence", "core.validation.quality"}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := baseCompileRequest(t)
+			contract := contractWithAssurance(t, validContract(t, testCase.mode), testCase.assurance, testCase.evidence)
+			rebindContract(&request, contract)
+			request.Registry = boundDefaultCapabilityRegistry(t)
+			request.Templates = DefaultTemplateRegistry()
+			request.InitialArtifactTypes = []ArtifactType{"contract", "materials"}
+			request.AllowedPermissions = []Permission{"model.invoke", "materials.read", "validation.run", "document.revision", "external.research"}
+			request.RequiredFinalArtifact = "revision_set"
+			request.Budget = PlanBudget{MaxCostUSD: 20, MaxDurationMS: 1000000, MaxConcurrency: 4, MaxNodes: 20, MaxItems: 20}
+			request.SystemRecommendation = testCase.recommendation
+
+			result, err := Compile(request)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			if result.Plan.TrustLevel != TrustT1 || !result.Plan.StaticValidation.Valid {
+				t.Fatalf("template did not compile to a validated T1 plan: %#v", result.Plan)
+			}
+			validators := map[string]bool{}
+			for _, node := range result.Plan.Nodes {
+				if node.Kind == NodeValidate {
+					validators[node.Capability] = true
+				}
+			}
+			for _, want := range testCase.wantValidators {
+				if !validators[want] {
+					t.Fatalf("plan missing validator %s: nodes=%#v", want, result.Plan.Nodes)
+				}
+			}
+		})
+	}
+}
+
 func contractWithAssurance(t *testing.T, contract writingkernel.WritingContract, assurance writingkernel.AssuranceLevel, evidence writingkernel.EvidenceLevel) writingkernel.WritingContract {
 	t.Helper()
 	contract.Collaboration.AssuranceLevel = assurance
@@ -183,9 +238,13 @@ func boundDefaultCapabilityRegistry(t *testing.T) *CapabilityRegistry {
 	t.Helper()
 	catalog := DefaultCapabilityRegistry()
 	registry := NewCapabilityRegistry(catalog.Version())
+	bound := map[string]bool{}
 	for _, declared := range catalog.All() {
-		inputs := append(append([]ArtifactType(nil), declared.InputTypes...), declared.OptionalInputTypes...)
-		registerTestExecutor(t, registry, declared.Executor, inputs, declared.OutputTypes)
+		if !bound[declared.Executor] {
+			inputs := append(append([]ArtifactType(nil), declared.InputTypes...), declared.OptionalInputTypes...)
+			registerTestExecutor(t, registry, declared.Executor, inputs, declared.OutputTypes)
+			bound[declared.Executor] = true
+		}
 		declared.Available = true
 		if err := registry.Register(declared); err != nil {
 			t.Fatal(err)
