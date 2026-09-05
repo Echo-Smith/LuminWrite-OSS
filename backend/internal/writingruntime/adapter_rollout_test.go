@@ -17,7 +17,7 @@ func TestThreeB2AdaptersShareOfflineAuthorityBoundary(t *testing.T) {
 	}
 	engineAdapter, err := NewEngineStepExecutorAdapter(descriptor("candidate.engine"), request.Node.Capability,
 		request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")},
-		EngineStepRunner{StepFactory: func() engine.Step { return &fixedEngineStep{} }, Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
+		EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &fixedEngineStep{}, nil }, Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
 			return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil
 		}})
 	if err != nil {
@@ -169,7 +169,7 @@ func (emitter *foreignStepEmitter) Compaction(int, int, string, uint64, string) 
 
 func TestEngineStepAdapterRejectsLegacyEmitters(t *testing.T) {
 	request := legacyRequest([]byte("contract"))
-	runner := EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} }, Emitter: &foreignStepEmitter{},
+	runner := EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &emittingEngineStep{}, nil }, Emitter: &foreignStepEmitter{},
 		Usage: func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true}, nil }}
 	adapter, err := NewEngineStepExecutorAdapter(ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
 		request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, runner)
@@ -195,7 +195,7 @@ func TestEngineStepAdapterRunsOnNilOrGovernedEmitterOnly(t *testing.T) {
 		{"governed observer emitter", NewGovernedStepEmitter()},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			runner := EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} }, Emitter: tt.emitter, Usage: usage}
+			runner := EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &emittingEngineStep{}, nil }, Emitter: tt.emitter, Usage: usage}
 			adapter, err := NewEngineStepExecutorAdapter(ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
 				request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, runner)
 			if err != nil {

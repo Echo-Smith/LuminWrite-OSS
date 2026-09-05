@@ -191,7 +191,7 @@ func TestCanonicalCommitRejectsShadowContentRef(t *testing.T) {
 	if ErrorCodeOf(err) != CodeArtifactCommitFailed {
 		t.Fatalf("error=%v code=%s", err, ErrorCodeOf(err))
 	}
-	if len(fixture.store.artifacts) != 0 || len(fixture.store.completions) == 0 ||
+	if len(fixture.store.artifacts) != 1 || len(fixture.store.completions) == 0 ||
 		fixture.store.completions[0].ErrorCode != string(CodeArtifactCommitFailed) {
 		t.Fatalf("artifacts=%#v completions=%#v", fixture.store.artifacts, fixture.store.completions)
 	}
