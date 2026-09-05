@@ -46,6 +46,9 @@ func TestContextShadowWiringCompilesPersistsAndInjects(t *testing.T) {
 		ContractDigest: "长文报告：检索优于重排",
 		ThreadLabels:   []string{"论点链：检索优于重排"},
 		FactLines:      []string{"luminbuddy | state | 开源"},
+		// M5 activation: draft enforces its contract, so the fixture source
+		// supplies document_state the way StoreContextSource now does.
+		DocumentState: "第三章草稿中",
 	}}
 	envelopes := &envelopeCaptureStore{fakeRuntimeStore: fixture.store}
 	fixture.orchestrator.Context = source
@@ -74,8 +77,9 @@ func TestContextShadowWiringCompilesPersistsAndInjects(t *testing.T) {
 		t.Fatalf("persisted=%#v", persisted)
 	}
 	// The envelope is bound to the manifest contract: declared blocks with
-	// data render; document_state was required but unsupplied, so it is an
-	// explicit missing entry — recorded, not fatal (M4a shadow semantics).
+	// data render, and the required document_state is now supplied (M5
+	// activation — the store-backed source provides it from the first run).
+	// Optional blocks without data stay explicit missing entries.
 	var compiled contextcompiler.Envelope
 	if err := json.Unmarshal(persisted.Payload, &compiled); err != nil {
 		t.Fatal(err)
@@ -83,12 +87,21 @@ func TestContextShadowWiringCompilesPersistsAndInjects(t *testing.T) {
 	if compiled.Hash != persisted.EnvelopeHash {
 		t.Fatalf("hash mismatch %s vs %s", compiled.Hash, persisted.EnvelopeHash)
 	}
+	supplied := false
+	for _, block := range compiled.Blocks {
+		if block.Name == "document_state" {
+			supplied = true
+		}
+	}
 	missing := map[string]string{}
 	for _, entry := range compiled.Missing {
 		missing[entry.Block] = entry.Reason
 	}
-	if missing["document_state"] != "no data supplied" {
-		t.Fatalf("missing=%v", compiled.Missing)
+	if !supplied {
+		t.Fatalf("document_state not rendered: %v", compiled.Blocks)
+	}
+	if _, absent := missing["document_state"]; absent {
+		t.Fatalf("required block recorded missing despite data: %v", compiled.Missing)
 	}
 	// The executor observed the injected envelope.
 	select {

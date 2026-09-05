@@ -36,10 +36,9 @@ type ContextEnvelopeSink interface {
 }
 
 // StoreContextSource compiles inputs from the writingstore project-memory
-// tables, scoped through the run's document project. Blocks without a data
-// source in this milestone (document state, source evidence, style
-// directives) stay empty — the manifest contract decides whether their
-// absence is flagged.
+// tables, scoped through the run's document project. Blocks whose backing
+// data does not exist yet (source evidence, style directives) stay empty —
+// the manifest contract decides whether their absence is flagged.
 type StoreContextSource struct {
 	Store *writingstore.Store
 }
@@ -49,6 +48,26 @@ func (source StoreContextSource) CompileInputs(ctx context.Context, run writings
 	input := contextcompiler.Input{
 		ContractDigest: fmt.Sprintf("contract %s v%d | node %s | capability %s@%s",
 			run.ContractID, run.ContractVersion, node.NodeID, node.Capability, node.CapabilityVersion),
+	}
+	// M5 document_state (docs/18 §18.5.2): the run document's committed
+	// current version, rendered as the subtree summary. It belongs to the
+	// run's document, not to project memory, so it is resolved before the
+	// project branch — a document without a project still satisfies required
+	// document_state (M1.4 e2e finding). A missing document record (or a
+	// dangling current-version pointer) stays empty: that is a real data
+	// gap, and fail-closed records it explicitly.
+	if document, err := source.Store.GetDocument(ctx, run.DocumentID); err != nil {
+		if !errors.Is(err, writingstore.ErrNotFound) {
+			return input, err
+		}
+	} else if document.CurrentVersionID == "" {
+		input.DocumentState = documentStateEmpty
+	} else if version, err := source.Store.GetDocumentVersion(ctx, run.DocumentID, document.CurrentVersionID); err != nil {
+		if !errors.Is(err, writingstore.ErrNotFound) {
+			return input, err
+		}
+	} else {
+		input.DocumentState = renderDocumentState(version)
 	}
 	projectID, err := source.Store.DocumentProjectID(ctx, run.DocumentID)
 	if err != nil {
@@ -127,6 +146,11 @@ func (source StoreContextSource) CompileInputs(ctx context.Context, run writings
 //   - a capability that opted into EnforceRequiredContext and compiled an
 //     envelope missing a required block fails the node with
 //     CONTEXT_REQUIRED_MISSING (M4b activation, per-manifest).
+//
+// M5 runtime (docs/18 §18.5.6): a compiled envelope is observed for context
+// pressure — 0.70 warns, 0.85 schedules one guarded pre-compression
+// (cooldown + in-flight) whose smaller envelope replaces the injected one
+// and is persisted with a "-p" envelope id suffix so evidence keeps both.
 func (orchestrator *Orchestrator) compileNodeContext(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode, attempt int, manifest writingplan.CapabilityManifest) (*contextcompiler.Envelope, error) {
 	if orchestrator.Context == nil {
 		return nil, nil
@@ -136,20 +160,75 @@ func (orchestrator *Orchestrator) compileNodeContext(ctx context.Context, run wr
 			ExecutorID: manifest.Executor, Capability: node.Capability, Mode: "shadow",
 			Lane: LaneBaseline, Status: status})
 	}
+	observeRecovery := func(status string, path RecoveryPath) {
+		observeRuntime(ctx, orchestrator.Telemetry, RuntimeMetric{Kind: MetricContextEnvelope,
+			ExecutorID: manifest.Executor, Capability: node.Capability, Mode: "shadow",
+			Lane: LaneBaseline, Status: status, Reason: string(path)})
+	}
 	input, err := orchestrator.Context.CompileInputs(ctx, run, node)
 	if err != nil {
-		observe("source_failed")
+		// M5d: the failure category names its recovery path in telemetry.
+		observeRecovery("source_failed", RecoveryPathFor(ContextFailureSource, 0))
 		return nil, nil
 	}
 	input.Wanted = manifest.Context.ContextWanted()
+	input.RetentionPriority = manifest.Context.ContextRetentionPriority()
 	if manifest.Context.ContextTokenBudget > 0 {
 		input.TotalBudget = manifest.Context.ContextTokenBudget
 	}
 	envelope, err := contextcompiler.Compile(input)
 	if err != nil {
-		observe("compile_failed")
+		if errors.Is(err, contextcompiler.ErrResidentOverflow) {
+			observeRecovery("compile_failed", RecoveryPathFor(ContextFailureResidentOverflow, 0))
+		} else {
+			observeRecovery("compile_failed", RecoveryPathFor(ContextFailureCompile, 0))
+		}
 		return nil, nil
 	}
+
+	// M5 pre-compression (docs/18 §18.5.6): at >= 0.85 pressure recompile
+	// once against a reduced budget under cooldown and in-flight guards.
+	// A recompression failure degrades to the original envelope — the guard
+	// component refines pressure, it never creates a context gap.
+	if orchestrator.ContextRuntime != nil {
+		observePressure := func(status string) {
+			observeRuntime(ctx, orchestrator.Telemetry, RuntimeMetric{Kind: MetricContextPressure,
+				ExecutorID: manifest.Executor, Capability: node.Capability, Mode: "shadow",
+				Lane: LaneBaseline, Status: status})
+		}
+		switch orchestrator.ContextRuntime.Observe(node.Capability, &envelope) {
+		case PrecompressionWarn:
+			observe("pressure_warn")
+			observePressure("warn")
+		case PrecompressionRecompile:
+			defer orchestrator.ContextRuntime.ReleaseRecompression(node.Capability)
+			observePressure("recompile")
+			if budget, budgetErr := orchestrator.ContextRuntime.CompressedBudget(&envelope); budgetErr == nil {
+				recompressed := input
+				recompressed.TotalBudget = budget
+				if smaller, compileErr := contextcompiler.Compile(recompressed); compileErr == nil {
+					observe("precompressed")
+					observePressure("recompiled")
+					envelope = smaller
+				} else {
+					// One self-compression already failed: canon is beyond
+					// what the runtime may fix alone.
+					observeRecovery("precompress_failed", RecoveryPathFor(ContextFailureCompile, 1))
+					observePressure("recompile_failed")
+				}
+			} else {
+				observeRecovery("precompress_refused", RecoveryPathFor(ContextFailureBudget, 0))
+				observePressure("recompile_refused")
+			}
+		case PrecompressionCooling:
+			observe("pressure_cooling")
+			observePressure("cooling")
+		case PrecompressionInFlight:
+			observe("pressure_in_flight")
+			observePressure("in_flight")
+		}
+	}
+
 	if manifest.Context.EnforceRequiredContext {
 		missing := map[string]bool{}
 		for _, entry := range envelope.Missing {

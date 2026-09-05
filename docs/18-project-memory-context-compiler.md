@@ -223,3 +223,24 @@ M4b 激活 required fail-closed，按"声明与强制分离"的阶梯纪律落�
 2. **失败语义双通道**（对 §18.11 第 2 条的延伸）：基础设施降级（source 失败/编译失败/落库失败）永远不拒绝节点——基础设施缺口不是上下文缺口的证据；只有"编译成功但 required 块缺失"才在 enforce 开启时拒绝。错误码 `CONTEXT_REQUIRED_MISSING`（RetryNever：数据缺口不会因重跑愈合），消息列出缺失块名。
 3. **attempt 台账完整性**：拒绝点在 `StartNodeAttempt` 之后，因此拒绝时同步写 attempt completion（status=failed + 稳定错误码），不留下悬空的 running 行——这是测试驱动的修正，最初实现直接 return。
 4. **遥测新增 `context_envelope`**（MetricKind，有界基数）：succeeded/required_missing/source_failed/compile_failed/persist_failed 五状态，替代 M4a 的内联字符串。
+
+## 18.14 M5 实施矫正记录（2026-09-03，代码落地后回写）
+
+M5 Context Runtime 按 §18.5.6 落地（真实分词、0.70/0.85 预算监控、溢出优先级保留、恢复路径、document_state 数据源与 draft/quality/finalize 激活）。实现中确定/矫正的点：
+
+1. **"真实分词"落地为确定性分段感知估算器，而非 provider BPE**：纯函数契约（零 LLM、无网络、无词表资产、逐字节可复现）与双仓纪律优先。CJK/假名/谚文 + 全半角形式块 ~1 token/rune、其他文字按词 ~rune/4、标点逐 rune 计，对 CJK 重型 provider 分词器有意高估（预算是安全限，低估不可恢复）。provider-exact 分词留作后续可选项，届时同样走 CompilerVersion 升版。
+2. **驻留层闲置预算回收进保留池**（对 §18.5.3 的实施矫正）：M3 实现里驻留层闲置空间被锁死且每块 share 独立裁剪，全局溢出在 Σ share ≤ total − ResidentBudget 下不会发生，"溢出按优先级保留"无从谈起。M5 的保留遍历让每块保留至 share + 未认领预算（驻留闲置 + share 表 floor 空隙 + 高优先块未用额）；驻留层的保护语义不变——从不裁剪、自身溢出 fail-closed——只是其闲置不再冻结。这是 CompilerVersion 1→2 的第二个理由（裁剪存活内容变化即行为变化）。
+3. **M3 测试随之重写**：旧断言（canon_facts ≤ 静态 share）与新保留语义直接冲突——canon 合法回收闲置后高于静态 share。新测试钉住预算不变式（Σ used ≤ pool）、裁剪记录与装配块一致、裁剪为 0 即显式 missing、TotalTokens 元数据不进 hash。
+4. **压缩是运行时组件而非编译器职责**（§18.5.6"compaction/recovery 不进 kernel 不变量"的具体化）：编译器只报告压力（包外诊断，不进 payload 不动 hash）；预压缩的冷却 + 进行中守卫、压缩预算下限（不低于驻留保护）在 `writingruntime.ContextRuntime`，压缩失败一律降级回原 envelope——守卫组件细化压力，绝不制造上下文缺口。
+5. **恢复路径是按失败类别命名的决策表**：`RecoveryPathFor(category, recompiles)` 五类失败 × 重试次数 → 四条命名路径（recompile / recompile_compressed / reload_source / human_escalation），遥测 Reason 携带路径名供证据消费方按名路由；与 §18.13 的双通道纪律一致，persist_failed 永不阻断执行。
+6. **document_state 的"有数据"与"数据缺口"分离**：文档记录存在但无版本 → 渲染真实空态（"尚未提交任何版本"是当前状态，不是缺口），required 自首次 run 可满足；文档记录缺失或 current-version 指针悬空 → 留空走 fail-closed missing 通道。基于此激活 draft/quality/finalize 的 enforce（per-manifest 评审流程同 M4b）；draft 契约声明 `retention_priority: [document_state]`——续写最需要的是演化中的文档。
+
+## 18.15 M6 实施矫正记录（2026-09-03，代码落地后回写）
+
+M6 Memory Forgetting 收口 V2.9 清单第 12 项（roadmap §12 的 Active→Decay→Consolidated→Archived 投影到 ProjectMemory）。实现中确定/矫正的点：
+
+1. **遗忘 = 状态转换 + append-only 台账，不是删除**：全部转换落在各表既有 CHECK 状态值内（零 schema 侵入），历史行保留可审计；迁移 103 的 `project_memory_forgetting_log` 记录真实 from_status→to_status、规则名、policy version+hash、actor 与时间——"忘了什么、为什么忘、谁忘的"成为可重放证据。候选池卫生的实际收益是"归档释放唯一槽位"（术语/实体），测试钉住。
+2. **canon 不变量做成结构性的**（对 §18.8 "canon 膨胀"风险条目的正面回答）：`ForgetPolicy` 没有 fact horizon 字段、sweep 表集合没有 `project_facts`——"Canon 不能因为时间过去而被自动遗忘"不依赖运行时检查或约定，类型与表集合本身排除。canon 的退出路径仍是且仅是区间失效与 user supersede（M1 既有）。
+3. **sweep 与交互式归档分离**：既有 `ArchiveTerminology/Thread/Entity` 保持 user-only（HITL 交互路径）；policy sweep 是独立治理路径（policy|user actor + 台账落账），model/capability/validator 永远无权遗忘。两条路径不互相冒充。
+4. **策略版本化与 hash 绑定**（对齐词表/预算表/rollout policy 的既有教训）：horizon 改动即换 hash，台账行携带 hash，重放可归因；零值 horizon = 该类永不遗忘，遗忘是 opt-in 卫生。
+5. **范围诚实切分**：UserMemory 四层（偏好慢衰减、行为模式强化）不在 v1——属旧记忆系统，需单独设计衰减信号；open_questions 的 answered/dropped 终态已被编译排除，不引入额外 archived 层。sweep 不接调度器，按 runbook §9.9 显式 preview→走查→apply，与证据采集纪律一致。

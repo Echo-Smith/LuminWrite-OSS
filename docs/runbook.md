@@ -842,6 +842,17 @@ enabled 是阶梯最后一级：所有主体走候选 lane，运行时不再产�
 
 审批 ≠ 激活。把生产 policy 部署到运行时并让流量真正走候选 lane，仍是独立的受控变更（§9.7），需要：双仓回归 + 迁移检查 + 真实模型纵向验收 + 审批在有效期内 + 显式授权。
 
+### 9.9 Memory Forgetting sweep（V2.9 M6，显式运行）
+
+遗忘 sweep 是治理卫生操作，不是后台自动行为：preview → 走查 → apply，与证据采集纪律一致。canon（`project_facts`）结构性不在 sweep 范围内——策略没有 fact horizon，sweep 表集合没有 facts 表；canon 的退出路径只有区间失效与 user supersede。
+
+1. **查看策略**（无库）：`memory-forget -policy-dump` 输出 v1 默认配置（候选 30d / claim 60d / 决策冷却 90d）与 `policy_hash`。覆盖配置写 JSON 文件经 `-policy` 传入——horizon 改动即换 hash，台账按 hash 归因。
+2. **preview（默认，只数不动）**：`memory-forget -project prj_x` 输出各 lane 将被转换的计数。走查要点：计数是否异常（大量 claim 同时到期 = 佐证采集停了，先修采集再谈遗忘）；canon 相关计数恒为 0（本命令无 canon 字段，出现即工具被改坏）。
+3. **apply**：`memory-forget -project prj_x -apply -operator <id>` 单事务执行，逐行落 `project_memory_forgetting_log`（真实 from→to、规则、policy version+hash、actor、时间）。幂等：重跑零转换零落账。actor 门禁 = policy 或 user；model/capability/validator 无权。
+4. **审计**：`memory-forget -project prj_x -log N` 读台账；或直接查 `project_memory_forgetting_log`。"忘了什么、为什么忘、谁忘的"全部可重放。
+
+禁止：把 sweep 接成无人走查的定时任务（v1 刻意不接调度器）；用 sweep 绕过 HITL 动 canon 或 user-promoted 对象（sweep 只动 candidate/staged/终态冷却行）；把 preview 计数当作授权——apply 仍是显式操作。
+
 ### 9.7 明确禁止
 
 - 不得把 `assess` 或 `approve` 的成功等同于生产授权。
@@ -851,5 +862,5 @@ enabled 是阶梯最后一级：所有主体走候选 lane，运行时不再产�
 
 ---
 
-*最后更新：2026-09-02*
+*最后更新：2026-09-03*
 *维护者：Writing Agent V2 Team*
