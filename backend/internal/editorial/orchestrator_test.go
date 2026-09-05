@@ -46,7 +46,7 @@ func setupTaskAtStatus(t *testing.T, store *Store, userID string, status TaskSta
 	// Manually set status for test setup
 	assignee := defaultAssignee(status)
 	_, err = store.db.ExecContext(context.Background(), `
-		UPDATE editorial_tasks SET status = $2, assignee_type = $3 WHERE id = $1
+		UPDATE agent_traces SET editorial_status = $2, assignee_type = $3 WHERE trace_id = $1
 	`, task.ID, status, assignee)
 	if err != nil {
 		t.Fatalf("failed to set task status to %s: %v", status, err)
