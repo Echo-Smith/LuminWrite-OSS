@@ -90,6 +90,17 @@ func (r *EditorialToolRegistry) Get(name string) (EditorialTool, bool) {
 	return t, ok
 }
 
+// All 返回全部已注册工具的快照（M1.5 统一能力视图的只读入口，注册权威不变）。
+func (r *EditorialToolRegistry) All() []EditorialTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snapshot := make([]EditorialTool, 0, len(r.tools))
+	for _, t := range r.tools {
+		snapshot = append(snapshot, t)
+	}
+	return snapshot
+}
+
 // ToolsForRole 返回角色可用的所有工具定义（ToolDef 格式）
 func (r *EditorialToolRegistry) ToolsForRole(role string, hasSearch, hasKB bool) []tools.ToolDef {
 	r.mu.RLock()

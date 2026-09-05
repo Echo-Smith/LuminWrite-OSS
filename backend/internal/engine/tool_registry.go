@@ -93,11 +93,11 @@ type ToolDescriptor struct {
 // It is thread-safe and supports dynamic registration (e.g. MCP tools
 // discovered at runtime).
 type ToolRegistry struct {
-	mu           sync.RWMutex
-	tools        map[string]AgentTool
-	descriptors  map[string]ToolDescriptor
-	plugins      *pluginManager
-	callCounts   map[string]int // per-session tool invocation counts (guard)
+	mu          sync.RWMutex
+	tools       map[string]AgentTool
+	descriptors map[string]ToolDescriptor
+	plugins     *pluginManager
+	callCounts  map[string]int // per-session tool invocation counts (guard)
 }
 
 // NewToolRegistry creates an empty registry.
@@ -169,6 +169,18 @@ func (r *ToolRegistry) All() []AgentTool {
 		result = append(result, t)
 	}
 	return result
+}
+
+// Descriptors snapshots the registered descriptors by tool name (read-only
+// view for the unified capability catalog; registration authority unchanged).
+func (r *ToolRegistry) Descriptors() map[string]ToolDescriptor {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snapshot := make(map[string]ToolDescriptor, len(r.descriptors))
+	for name, descriptor := range r.descriptors {
+		snapshot[name] = descriptor
+	}
+	return snapshot
 }
 
 // GetDescriptor returns the descriptor for a tool, or a default if not found.
