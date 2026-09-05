@@ -21,6 +21,7 @@ type RuntimeRun struct {
 	ContractHash        string                   `json:"contract_hash"`
 	ContractVersion     int                      `json:"contract_version"`
 	BaseVersionID       string                   `json:"base_version_id,omitempty"`
+	StyleSlug           string                   `json:"style_slug,omitempty"`
 	Status              string                   `json:"status"`
 	ActivePlanID        string                   `json:"active_plan_id,omitempty"`
 	ActivePlanVersion   int                      `json:"active_plan_version,omitempty"`
@@ -38,12 +39,12 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 		return RuntimeRun{}, err
 	}
 	var run RuntimeRun
-	var baseVersionID, planID, approvalStatus, snapshotID sql.NullString
+	var baseVersionID, planID, approvalStatus, snapshotID, styleSlug sql.NullString
 	var planVersion, snapshotVersion sql.NullInt64
 	var budget, permissions []byte
 	err := s.db.QueryRowContext(ctx, `
 		SELECT r.run_id, r.document_id, r.contract_id, r.contract_version,
-		       r.contract_hash, r.base_version_id, r.status, r.active_plan_id, r.active_plan_version,
+		       r.contract_hash, r.base_version_id, r.style_slug, r.status, r.active_plan_id, r.active_plan_version,
 		       r.approval_mode, COALESCE(p.approval_status, ''), r.budget,
 		       r.permissions, r.last_event_sequence, r.last_snapshot_id,
 		       r.last_snapshot_version
@@ -52,7 +53,7 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 		 AND p.plan_id=r.active_plan_id AND p.plan_version=r.active_plan_version
 		WHERE r.run_id=$1
 	`, runID).Scan(&run.RunID, &run.DocumentID, &run.ContractID, &run.ContractVersion,
-		&run.ContractHash, &baseVersionID, &run.Status, &planID, &planVersion, &run.ApprovalMode,
+		&run.ContractHash, &baseVersionID, &styleSlug, &run.Status, &planID, &planVersion, &run.ApprovalMode,
 		&approvalStatus, &budget, &permissions, &run.LastEventSequence,
 		&snapshotID, &snapshotVersion)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -61,7 +62,7 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 	if err != nil {
 		return RuntimeRun{}, fmt.Errorf("load runtime run: %w", err)
 	}
-	run.BaseVersionID, run.ActivePlanID, run.ApprovalStatus, run.LastSnapshotID = baseVersionID.String, planID.String, approvalStatus.String, snapshotID.String
+	run.BaseVersionID, run.ActivePlanID, run.ApprovalStatus, run.LastSnapshotID, run.StyleSlug = baseVersionID.String, planID.String, approvalStatus.String, snapshotID.String, styleSlug.String
 	run.ActivePlanVersion, run.LastSnapshotVersion = int(planVersion.Int64), int(snapshotVersion.Int64)
 	if err := json.Unmarshal(budget, &run.Budget); err != nil {
 		return RuntimeRun{}, fmt.Errorf("decode run budget: %w", err)
@@ -463,7 +464,7 @@ func (s *Store) CompleteNodeAttempt(ctx context.Context, completion AttemptCompl
 			 actual_duration_ms=$6, error_code=$7, error_detail=$8,
 			 completed_at=CASE WHEN $1::varchar IN ('succeeded','failed','cancelled') THEN $9 ELSE completed_at END,
 			 lease_owner=NULL, lease_token_hash=NULL, lease_expires_at=NULL, updated_at=$9
-			WHERE idempotency_key=$10 AND status IN ('running','paused')
+			WHERE idempotency_key=$10 AND status IN ('pending','running','paused')
 		`, completion.Status, outputs, completion.CostUSD, completion.InputTokens,
 			completion.OutputTokens, completion.DurationMS, nullString(completion.ErrorCode),
 			errorDetail, completion.CompletedAt, key)
