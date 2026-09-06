@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,8 +40,16 @@ func newGovernedE2EServer(t *testing.T) (*Server, http.Handler, bool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(cleanup)
-	_ = db
-	cfg := &config.Config{Database: config.DatabaseConfig{URL: os.Getenv("TEST_DATABASE_URL")}}
+	var isolatedName string
+	if err := db.QueryRow("SELECT current_database()").Scan(&isolatedName); err != nil {
+		t.Fatal(err)
+	}
+	isolatedURL, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolatedURL.Path = "/" + isolatedName
+	cfg := &config.Config{Database: config.DatabaseConfig{URL: isolatedURL.String(), MaxOpenConns: 12, MaxIdleConns: 4}}
 	cfg.JWT.Secret = "e2e-secret"
 	cfg.JWT.Expiry = time.Hour
 	cfg.WritingRuntime.Mode = "shadow"
@@ -48,7 +57,7 @@ func newGovernedE2EServer(t *testing.T) (*Server, http.Handler, bool) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("TASK13_LLM_BASE_URL")), "/")
 	model := strings.TrimSpace(os.Getenv("TASK13_LLM_MODEL"))
 	live := false
-	if apiKey != "" && baseURL != "" && model != "" {
+	if apiKey != "" && baseURL != "" && model != "" && os.Getenv("P0_OFFLINE") != "1" {
 		live = true
 		cfg.DeepSeek = config.DeepSeekConfig{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model,
 			MaxTokens: 4096, Temperature: .2, Timeout: 150 * time.Second}
@@ -57,6 +66,11 @@ func newGovernedE2EServer(t *testing.T) (*Server, http.Handler, bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if server.db != nil {
+			server.db.Close()
+		}
+	})
 	if server.writingAPI == nil {
 		t.Fatal("writing API was not constructed")
 	}
@@ -149,6 +163,15 @@ func e2eNestedField(t *testing.T, payload map[string]any, parent, field string) 
 // executes in the background to a completed state with the whole delivery
 // lineage (candidate version, promotion, revision_set) on the real store.
 func TestGovernedRunEndToEndThroughHTTP(t *testing.T) {
+	testGovernedHTTPMode(t, writingkernel.OrchestrationModeOutlineFirst)
+}
+func TestGovernedP0HTTPTemplates(t *testing.T) {
+	t.Setenv("P0_OFFLINE", "1")
+	for _, mode := range []writingkernel.OrchestrationMode{writingkernel.OrchestrationModeFast, writingkernel.OrchestrationModeSourced, writingkernel.OrchestrationModeStrictResearch} {
+		t.Run(string(mode), func(t *testing.T) { testGovernedHTTPMode(t, mode) })
+	}
+}
+func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	server, router, live := newGovernedE2EServer(t)
 	ctx := context.Background()
 
@@ -180,6 +203,7 @@ func TestGovernedRunEndToEndThroughHTTP(t *testing.T) {
 	// assurance compiles to outline→draft→quality→finalize, which needs no
 	// user materials (the sourced template would demand a materials input).
 	contract.Collaboration.AssuranceLevel = writingkernel.AssuranceLevelStandard
+	contract.Collaboration.OrchestrationMode = mode
 	contract.EvidencePolicy.Level = writingkernel.EvidenceLevelStandard
 	// The source attributions pin field-value hashes; recompute them for the
 	// fields the test just changed.
@@ -221,7 +245,7 @@ func TestGovernedRunEndToEndThroughHTTP(t *testing.T) {
 	plan := e2eRequest(t, router, token, "POST", "/api/v2/writing/documents/"+documentID+"/plans", map[string]any{
 		"contract_id": contractID, "contract_version": 2, "base_version_id": baseVersion.VersionID,
 		"intent_plan":             e2eIntentPlan(t, sealedContract),
-		"budget":                  map[string]any{"max_cost_usd": 20, "max_duration_ms": 1000000, "max_concurrency": 2, "max_nodes": 10, "max_items": 10},
+		"budget":                  map[string]any{"max_cost_usd": 100, "max_duration_ms": 3000000, "max_concurrency": 2, "max_nodes": 10, "max_items": 10},
 		"required_final_artifact": "revision_set",
 	})
 	envelopeData, _ := plan["data"].(map[string]any)["plan"].(map[string]any)
@@ -234,11 +258,16 @@ func TestGovernedRunEndToEndThroughHTTP(t *testing.T) {
 		"document_id": documentID, "contract_id": contractID, "contract_version": 2,
 		"contract_hash": sealedContract.ContractHash, "base_version_id": baseVersion.VersionID,
 		"style_slug": "yinyue", "plan": envelopeData,
-		"budget":      map[string]any{"max_cost_usd": 20, "max_duration_ms": 1000000, "max_concurrency": 2, "max_nodes": 10, "max_items": 10},
-		"permissions": []string{"model.invoke", "materials.read", "document.revision", "validation.run"},
+		"budget":      map[string]any{"max_cost_usd": 100, "max_duration_ms": 3000000, "max_concurrency": 2, "max_nodes": 10, "max_items": 10},
+		"permissions": plan["data"].(map[string]any)["permissions"],
 	})
 	runID := e2eJSONField(t, run, "run_id")
 
+	// An expensive plan may require explicit approval even in the fixture.
+	initialStatus := e2eJSONField(t, run, "status")
+	if initialStatus == "awaiting_approval" {
+		e2eRequest(t, router, token, "POST", "/api/v2/writing/runs/"+runID+"/approve", map[string]any{"plan_id": envelopeData["executable_plan"].(map[string]any)["plan_id"], "plan_version": 1, "plan_hash": envelopeData["executable_plan"].(map[string]any)["plan_hash"], "permissions": plan["data"].(map[string]any)["permissions"]})
+	}
 	// 7. Poll until the background execution reaches a terminal state. The
 	// expected terminal depends on the deployment: with a live model the run
 	// completes; without one, the first model step fails and the governed

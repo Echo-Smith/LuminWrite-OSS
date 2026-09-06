@@ -67,6 +67,7 @@ func (orchestrator *Orchestrator) prepareDispatch(ctx context.Context, run writi
 	// it knows the requesting user (M1.4); absent that, resolution degrades
 	// to default profile semantics.
 	request.StyleSlug = run.StyleSlug
+	request.UserID = run.OwnerUserID
 	if orchestrator.Subject != nil {
 		request.Subject = orchestrator.Subject(run)
 	}

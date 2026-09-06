@@ -18,11 +18,12 @@ type RolloutExecutor struct {
 	// shadowOnly marks an executor built for shadow rollout: the candidate is
 	// provably shadow-isolated and candidate-authoritative lanes are refused
 	// at execution time.
-	shadowOnly bool
-	policies   RolloutPolicyProvider
-	evidence   RolloutEvidenceStore
-	telemetry  RuntimeTelemetry
-	now        func() time.Time
+	observeOnly bool
+	shadowOnly  bool
+	policies    RolloutPolicyProvider
+	evidence    RolloutEvidenceStore
+	telemetry   RuntimeTelemetry
+	now         func() time.Time
 
 	shadowFailures    atomic.Int64
 	shadowCircuitOpen atomic.Bool
@@ -54,6 +55,16 @@ func NewShadowRolloutExecutor(baseline Executor, candidate ExecutorAdapter, poli
 		return nil, rolloutPolicyError("shadow rollout requires a shadow-isolated candidate adapter")
 	}
 	return newRolloutExecutor(baseline, candidate, true, policies, evidence, telemetry)
+}
+
+// NewObservationRolloutExecutor gathers evidence under the proposed policy's
+// exact hash even for future allowlisted subjects. It can never serve candidate output.
+func NewObservationRolloutExecutor(baseline Executor, candidate ExecutorAdapter, policies RolloutPolicyProvider, evidence RolloutEvidenceStore, telemetry RuntimeTelemetry) (*RolloutExecutor, error) {
+	executor, err := NewShadowRolloutExecutor(baseline, candidate, policies, evidence, telemetry)
+	if err == nil {
+		executor.observeOnly = true
+	}
+	return executor, err
 }
 
 func candidateFamily(candidate ExecutorAdapter) AdapterFamily {
@@ -118,6 +129,9 @@ func (executor *RolloutExecutor) Execute(ctx context.Context, request ExecutionR
 			ExecutorID: policy.ExecutorID, Capability: request.Node.Capability, Mode: policy.Mode,
 			Lane: LaneBaseline, Status: "policy_failed", Reason: "fail_closed", ErrorCode: ErrorCodeOf(err)})
 		return executor.executeLane(ctx, LaneBaseline, executor.baseline, request, RolloutOff)
+	}
+	if executor.observeOnly && decision.Lane == LaneCandidate {
+		decision.Lane, decision.RunShadow, decision.Reason = LaneBaseline, true, "shadow_observation"
 	}
 	observeRuntime(ctx, executor.telemetry, RuntimeMetric{Kind: MetricRouteDecision, Family: policy.Family,
 		ExecutorID: policy.ExecutorID, Capability: request.Node.Capability, Mode: decision.Mode,

@@ -300,13 +300,20 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 	}
 	execCtx := engine.NewCompatibilityExecutionContext(runner.Seed)
 	execCtx.TraceID = input.Request.IdempotencyKey
+	execCtx.UserID = input.Request.UserID
+	execCtx.StyleSlug = input.Request.StyleSlug
 	for _, artifactType := range sortedPayloadTypes(input.Payloads) {
 		for _, payload := range input.Payloads[artifactType] {
 			switch artifactType {
 			case "contract":
 				execCtx.UserInput = string(payload)
 			case "materials":
-				execCtx.UserMaterials = append(execCtx.UserMaterials, string(payload))
+				var texts []string
+				if json.Unmarshal(payload, &texts) == nil {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, texts...)
+				} else {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, string(payload))
+				}
 			case "source_pack":
 				var wrapper struct {
 					Results []engine.SearchResult `json:"results"`
@@ -414,6 +421,8 @@ func (runner EditorialRoleNodeRunner) Run(ctx context.Context, input LegacyNodeI
 	}
 	execCtx := engine.NewCompatibilityExecutionContext(runner.Seed)
 	execCtx.TraceID = input.Request.IdempotencyKey
+	execCtx.UserID = input.Request.UserID
+	execCtx.StyleSlug = input.Request.StyleSlug
 	task := &editorial.Task{ID: input.Request.NodeID, Title: input.Request.Node.Capability,
 		Description: execCtx.UserInput, OwnerID: runner.Seed.UserID, TokenBudget: runner.Seed.MaxTokens,
 		StyleSlug: runner.Seed.StyleSlug, CreatedBy: "writingruntime"}

@@ -31,6 +31,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=v3 \
     go build -ldflags='-s -w -extldflags "-static"' \
     -trimpath \
     -o /bin/server ./cmd/server/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=v3 go build -trimpath -ldflags='-s -w' -o /bin/governance-gate ./cmd/governance-gate/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=v3 go build -trimpath -ldflags='-s -w' -o /bin/runtime-policy ./cmd/runtime-policy/
 
 # ── Stage 2: Runtime (minimal Alpine) ──────────────────
 # golang:1.25-alpine is ~350MB; alpine:3.20 is ~7MB.
@@ -54,6 +56,8 @@ RUN mkdir -p /app/certs
 
 # Copy binary from builder
 COPY --link --from=builder /bin/server /app/server
+COPY --link --from=builder /bin/governance-gate /app/governance-gate
+COPY --link --from=builder /bin/runtime-policy /app/runtime-policy
 COPY --link --from=builder /build/.env.example /app/.env.example
 
 # Copy CLI init script

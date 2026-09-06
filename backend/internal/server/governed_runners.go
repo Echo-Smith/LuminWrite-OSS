@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
@@ -27,6 +26,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
@@ -58,7 +58,7 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 	switch capability {
 	case "core.draft.generate":
 		return writingruntime.EngineStepRunner{
-			Styles: writingruntime.LoaderStyleResolver{Loader: server.profiles},
+			Styles: governedStyleResolver{server: server},
 			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
 				return steps.NewWriteStepWithKB(factory.llm(), env.Profile, server.search, factory.kb), nil
 			},
@@ -66,7 +66,7 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 		}
 	case "core.validation.quality":
 		return writingruntime.EngineStepRunner{
-			Styles: writingruntime.LoaderStyleResolver{Loader: server.profiles},
+			Styles: governedStyleResolver{server: server},
 			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
 				return server.newGovernedPostReviewStep(factory.llm(), env.Profile), nil
 			},
@@ -78,24 +78,25 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 		return &writingruntime.ValidatorRunner{LLM: factory.llm()}
 	case "core.outline.generate":
 		return writingruntime.EngineStepRunner{
-			Styles: writingruntime.LoaderStyleResolver{Loader: server.profiles},
+			Styles: governedStyleResolver{server: server},
 			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
 				return governedOutlineStep{inner: steps.NewOutlineStepWithProfile(factory.llm(), env.Profile)}, nil
 			},
 			Usage: engineUsage,
 		}
-	case "core.retrieval.search":
+	case "core.retrieval.search", "core.retrieval.strict_search":
 		// The research capability runs the legacy multi-step search chain as
 		// one composite governed step (M0b-2b SequentialGroup). Without an
 		// embedding client the relevance step degrades to score-only mode,
 		// mirroring the legacy pipeline's fallback.
 		return writingruntime.EngineStepRunner{
 			StepFactory: func(writingruntime.StepEnv) (engine.Step, error) {
-				return engine.NewSequentialGroup("governed_research",
-					steps.NewQueryPlanStep(factory.llm()),
-					steps.NewSearchStep(factory.llm(), server.search),
-					steps.NewRelevanceStepWithEmbedding(server.embedding),
-					steps.NewCompressStep(factory.llm())), nil
+				return governedResearchStep{
+					query:     steps.NewQueryPlanStep(factory.llm()),
+					search:    steps.NewSearchStep(nil, server.search), // no LLM-generated search evidence
+					relevance: steps.NewRelevanceStepWithEmbedding(server.embedding),
+					compress:  steps.NewCompressStep(factory.llm()),
+				}, nil
 			},
 			Usage: engineUsage,
 		}
@@ -169,7 +170,7 @@ func (s *Server) governedCapabilitySpecs(store *writingstore.Store, canonical wr
 	factory := newGovernedRunnerFactory(s, s.governedKBSearcher())
 	defaults := writingplan.DefaultCapabilityRegistry()
 	specs := []governedCapabilitySpec{}
-	for _, capability := range []string{"core.draft.generate", "core.outline.generate", "core.retrieval.search", "core.validation.quality", "core.validation.evidence", "core.validation.fact", "core.document.finalize"} {
+	for _, capability := range []string{"core.draft.generate", "core.outline.generate", "core.retrieval.search", "core.retrieval.strict_search", "core.validation.quality", "core.validation.evidence", "core.validation.fact", "core.document.finalize"} {
 		manifest, ok := defaults.Get(capability)
 		if !ok {
 			continue
@@ -236,9 +237,10 @@ func (s *Server) mountGovernedRuntime(store *writingstore.Store) {
 		checkpoints: writingruntime.PersistentCheckpointRepository{Store: store,
 			Trace: writingstore.TraceContext{Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime"},
 				Provenance: map[string]any{}, SourceRefs: []string{}}},
-		initial:   governedInitialProvider{store: store},
+		initial:   governedInitialProvider{store: store, server: s},
 		materials: store,
 		context:   writingruntime.StoreContextSource{Store: store},
+		telemetry: s.metrics,
 	}
 	runtime, err := newGovernedWritingRuntime(store, mode, deps, specs)
 	if err != nil {
@@ -249,8 +251,8 @@ func (s *Server) mountGovernedRuntime(store *writingstore.Store) {
 		return
 	}
 	if api, ok := s.writingAPI.(*persistentWritingAPI); ok {
-		api.controller = runtime.controller
-		api.trigger = &governedRunTrigger{orchestrator: runtime.orchestrator}
+		api.controller = governedRunController{orchestrator: runtime.orchestrator, store: store}
+		api.trigger = &governedRunTrigger{orchestrator: runtime.orchestrator, store: store}
 		// CompilePlan/CreateRun validate against the same executable
 		// registry the orchestrator dispatches through; the declared-only
 		// default catalog would fail every plan compile as T4.
@@ -262,7 +264,10 @@ func (s *Server) mountGovernedRuntime(store *writingstore.Store) {
 
 // governedInitialProvider supplies the contract artifact from the run's
 // stored contract so node 1 has its input from the canonical content store.
-type governedInitialProvider struct{ store *writingstore.Store }
+type governedInitialProvider struct {
+	store  *writingstore.Store
+	server *Server
+}
 
 func (provider governedInitialProvider) InitialArtifacts(ctx context.Context, run writingstore.RuntimeRun, _ writingstore.PlanRecord) ([]writingruntime.InputArtifact, error) {
 	contract, err := provider.store.GetContract(ctx, run.ContractID, run.ContractVersion)
@@ -278,45 +283,41 @@ func (provider governedInitialProvider) InitialArtifacts(ctx context.Context, ru
 	if err := provider.store.PutArtifactContent(ctx, hash, "application/json", body); err != nil {
 		return nil, err
 	}
-	return []writingruntime.InputArtifact{{ArtifactID: "art_" + run.RunID + "_contract", Version: 1,
+	materials := []string{}
+	document, err := provider.store.GetDocument(ctx, run.DocumentID)
+	if err != nil {
+		return nil, err
+	}
+	if raw, ok := document.Metadata["material_refs"]; ok {
+		payload, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		var refs []websocket.MaterialReference
+		if err = json.Unmarshal(payload, &refs); err != nil {
+			return nil, err
+		}
+		if len(refs) > 0 {
+			if provider.server == nil {
+				return nil, fmt.Errorf("selected material store unavailable")
+			}
+			materials, err = provider.server.resolveLegacyMaterialReferences(ctx, document.OwnerUserID, refs)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	// An empty selection is represented honestly; it is not a fabricated source.
+	materialBody, err := json.Marshal(materials)
+	if err != nil {
+		return nil, err
+	}
+	materialSum := sha256.Sum256(materialBody)
+	materialHash := "sha256:" + hex.EncodeToString(materialSum[:])
+	if err = provider.store.PutArtifactContent(ctx, materialHash, "application/json", materialBody); err != nil {
+		return nil, err
+	}
+	return []writingruntime.InputArtifact{{ArtifactID: "art_" + run.RunID + "_materials", Version: 1, ArtifactType: "materials", ContentHash: materialHash, MediaType: "application/json", ContentRef: "artifact://" + materialHash}, {ArtifactID: "art_" + run.RunID + "_contract", Version: 1,
 		ArtifactType: "contract", ContentHash: hash, MediaType: "application/json",
 		ContentRef: "artifact://" + hash}}, nil
-}
-
-// governedRunTrigger executes approved runs exactly once per run per
-// process. The store's approval transition is the authority; this trigger
-// only turns the approved state into background execution.
-type governedRunTrigger struct {
-	orchestrator *writingruntime.Orchestrator
-
-	mu      sync.Mutex
-	started map[string]bool
-}
-
-// TriggerAfterApproval launches execution for an approved run unless this
-// process already started it. Idempotent across handler retries and safe
-// under concurrency.
-func (trigger *governedRunTrigger) TriggerAfterApproval(runID string) {
-	if trigger == nil || trigger.orchestrator == nil {
-		return
-	}
-	trigger.mu.Lock()
-	if trigger.started == nil {
-		trigger.started = map[string]bool{}
-	}
-	if trigger.started[runID] {
-		trigger.mu.Unlock()
-		return
-	}
-	trigger.started[runID] = true
-	trigger.mu.Unlock()
-	go func() {
-		outcome, err := trigger.orchestrator.Execute(context.Background(), runID)
-		if err != nil {
-			// The orchestrator has already recorded the failure on the run
-			// (state transition + attempt ledger); this log is for operators.
-			slog.Error("governed run execution failed", "run_id", runID,
-				"state", string(outcome.State), "error_type", fmt.Sprintf("%T", err), "error", err)
-		}
-	}()
 }

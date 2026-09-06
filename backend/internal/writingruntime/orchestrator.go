@@ -195,6 +195,7 @@ type Orchestrator struct {
 	// stay one pipeline.
 	Hooks []RuntimeHook
 
+	initOnce sync.Once
 	mu       sync.Mutex
 	controls map[string]*runControl
 	commands atomic.Uint64
@@ -202,6 +203,7 @@ type Orchestrator struct {
 }
 
 type runControl struct {
+	initOnce sync.Once
 	mu       sync.Mutex
 	intent   string
 	cancel   context.CancelFunc
@@ -222,18 +224,20 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if orchestrator == nil || orchestrator.Store == nil || orchestrator.Capabilities == nil || orchestrator.Executors == nil || orchestrator.State == nil || orchestrator.Checkpoints == nil || orchestrator.Initial == nil || orchestrator.Materials == nil {
 		return RunOutcome{}, ErrRuntimeNotReady
 	}
-	if orchestrator.Now == nil {
-		orchestrator.Now = func() time.Time { return time.Now().UTC() }
-	}
-	if orchestrator.Context != nil && orchestrator.ContextRuntime == nil {
-		orchestrator.ContextRuntime = &ContextRuntime{}
-	}
-	// M3 lifecycle bus (docs/27): the telemetry projection hook rides the
-	// bus so metrics and hook observers share one pipeline.
-	orchestrator.bus = newHookBus(orchestrator.Hooks...)
-	if orchestrator.Telemetry != nil {
-		orchestrator.bus.register(lifecycleTelemetryHook{telemetry: orchestrator.Telemetry})
-	}
+	orchestrator.initOnce.Do(func() {
+		if orchestrator.Now == nil {
+			orchestrator.Now = func() time.Time { return time.Now().UTC() }
+		}
+		if orchestrator.Context != nil && orchestrator.ContextRuntime == nil {
+			orchestrator.ContextRuntime = &ContextRuntime{}
+		}
+		// M3 lifecycle bus (docs/27): the telemetry projection hook rides the
+		// bus so metrics and hook observers share one pipeline.
+		orchestrator.bus = newHookBus(orchestrator.Hooks...)
+		if orchestrator.Telemetry != nil {
+			orchestrator.bus.register(lifecycleTelemetryHook{telemetry: orchestrator.Telemetry})
+		}
+	})
 	control, err := orchestrator.acquire(runID)
 	if err != nil {
 		return RunOutcome{}, err
@@ -668,6 +672,17 @@ func (orchestrator *Orchestrator) release(runID string, control *runControl) {
 		delete(orchestrator.controls, runID)
 	}
 	orchestrator.mu.Unlock()
+}
+
+// NotifyPersistedControl wakes the local worker after a different instance has
+// committed pausing/cancelling. The database transition remains authoritative.
+func (orchestrator *Orchestrator) NotifyPersistedControl(runID, state string) {
+	if state == "pausing" {
+		orchestrator.signal(runID, "pause")
+	}
+	if state == "cancelling" {
+		orchestrator.signal(runID, "cancel")
+	}
 }
 func (orchestrator *Orchestrator) signal(runID, intent string) {
 	orchestrator.mu.Lock()

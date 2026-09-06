@@ -15,6 +15,7 @@ import (
 )
 
 type RuntimeRun struct {
+	OwnerUserID         string                   `json:"owner_user_id"`
 	RunID               string                   `json:"run_id"`
 	DocumentID          string                   `json:"document_id"`
 	ContractID          string                   `json:"contract_id"`
@@ -47,15 +48,16 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 		       r.contract_hash, r.base_version_id, r.style_slug, r.status, r.active_plan_id, r.active_plan_version,
 		       r.approval_mode, COALESCE(p.approval_status, ''), r.budget,
 		       r.permissions, r.last_event_sequence, r.last_snapshot_id,
-		       r.last_snapshot_version
+		       r.last_snapshot_version, d.owner_user_id::text
 		FROM writing_runs r
+		JOIN writing_documents d ON d.document_id=r.document_id
 		LEFT JOIN writing_run_plans p ON p.run_id=r.run_id
 		 AND p.plan_id=r.active_plan_id AND p.plan_version=r.active_plan_version
 		WHERE r.run_id=$1
 	`, runID).Scan(&run.RunID, &run.DocumentID, &run.ContractID, &run.ContractVersion,
 		&run.ContractHash, &baseVersionID, &styleSlug, &run.Status, &planID, &planVersion, &run.ApprovalMode,
 		&approvalStatus, &budget, &permissions, &run.LastEventSequence,
-		&snapshotID, &snapshotVersion)
+		&snapshotID, &snapshotVersion, &run.OwnerUserID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RuntimeRun{}, ErrNotFound
 	}

@@ -260,14 +260,14 @@ func (service *persistentWritingAPI) CompilePlan(ctx context.Context, access wri
 	if document.CurrentVersionID != command.BaseVersionID {
 		return writingPlanPreview{}, errWritingVersionConflict
 	}
-	if len(command.InitialArtifactTypes) > 0 && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) {
+	if len(command.InitialArtifactTypes) > 0 && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract", "materials"}) {
 		return writingPlanPreview{}, fmt.Errorf("%w: initial artifacts must be backed by persisted server references", writingstore.ErrInvalidRecord)
 	}
 	if command.RequiredFinalArtifact != "" && command.RequiredFinalArtifact != "revision_set" {
 		return writingPlanPreview{}, fmt.Errorf("%w: governed writing plans must produce revision_set", writingstore.ErrInvalidRecord)
 	}
 	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel), command.RequiredValidators)
-	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
+	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
 	envelope := writingplan.WritingPlanEnvelope{SchemaVersion: writingplan.SchemaVersion, IntentPlan: command.IntentPlan, ExecutablePlan: result.Plan, StrategyDecision: result.Decision}
 	permissions := permissionsForPlan(result.Plan, service.capabilities)
 	preview := writingPlanPreview{Envelope: envelope, Budget: command.Budget, Permissions: permissions, BaseVersionID: command.BaseVersionID}
@@ -306,7 +306,7 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 		return writingstore.RuntimeRun{}, errWritingApprovalScope
 	}
 	validators := writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel)
-	validation := writingplan.ValidationContext{Registry: service.capabilities, InitialArtifactTypes: []writingplan.ArtifactType{"contract"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: validators, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: contract.Contract.MaterialPolicy.AllowExternalResearch}
+	validation := writingplan.ValidationContext{Registry: service.capabilities, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: validators, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: contract.Contract.MaterialPolicy.AllowExternalResearch}
 	if err := command.Plan.ValidateForDispatch(validation); err != nil {
 		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %v", errWritingPlanRequired, err)
 	}

@@ -1258,6 +1258,8 @@ func (s *Server) Start(ctx context.Context) error {
 		srv.Shutdown(shutdownCtx)
 	}()
 
+	if s.governedTrigger != nil { go s.governedTrigger.Serve(ctx) }
+
 	// Start SSE topic push background task
 	go s.PushTopicsFromDB(ctx, 30*time.Second)
 

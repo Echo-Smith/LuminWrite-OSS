@@ -19,7 +19,7 @@ func TestNewGovernedWritingRuntimeModeGating(t *testing.T) {
 	// allowlist is not wired in M0b-1 — it errors rather than silently
 	// serving shadow under an allowlist label.
 	if _, err := newGovernedWritingRuntime(nil, writingruntime.RuntimeModeAllowlist, governedRuntimeDependencies{}, nil); err == nil ||
-		!strings.Contains(err.Error(), "not wired") {
+		!strings.Contains(err.Error(), "dependencies are required") {
 		t.Fatalf("allowlist should error as not-wired, got %v", err)
 	}
 

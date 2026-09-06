@@ -44,7 +44,10 @@ type governedWritingRuntime struct {
 // governedRunController adapts the Orchestrator to the writing API's
 // writingRunController: Orchestrator.Resume returns a RunOutcome, the
 // controller contract returns only an error.
-type governedRunController struct{ orchestrator *writingruntime.Orchestrator }
+type governedRunController struct {
+	orchestrator *writingruntime.Orchestrator
+	store        *writingstore.Store
+}
 
 // Compile-time proof the adapter satisfies the writing API's controller
 // contract (Orchestrator.Resume returns a RunOutcome; the contract wants error).
@@ -55,7 +58,18 @@ func (controller governedRunController) Pause(ctx context.Context, runID, comman
 }
 
 func (controller governedRunController) Resume(ctx context.Context, runID, commandID string, actor writingstore.Actor) error {
-	_, err := controller.orchestrator.Resume(ctx, runID, commandID, actor)
+	if controller.store == nil {
+		return writingruntime.ErrRuntimeNotReady
+	}
+	acquired, err := controller.store.WithRunExecutionLock(ctx, runID, func(owned context.Context) error {
+		stop := watchGovernedControl(owned, controller.store, controller.orchestrator, runID)
+		defer stop()
+		_, err := controller.orchestrator.Resume(owned, runID, commandID, actor)
+		return err
+	})
+	if !acquired && err == nil {
+		return writingstore.ErrConflict
+	}
 	return err
 }
 
@@ -90,7 +104,7 @@ func newGovernedWritingRuntime(store *writingstore.Store, mode writingruntime.Ru
 	if mode == writingruntime.RuntimeModeOff {
 		return nil, nil
 	}
-	if mode != writingruntime.RuntimeModeShadow {
+	if mode != writingruntime.RuntimeModeShadow && mode != writingruntime.RuntimeModeAllowlist {
 		return nil, fmt.Errorf("governed runtime mode %q is not wired yet (only off and shadow are implemented in M0b-1)", mode)
 	}
 	if store == nil || deps.canonical == nil || deps.sink == nil || deps.evidence == nil ||
@@ -125,33 +139,13 @@ func newGovernedWritingRuntime(store *writingstore.Store, mode writingruntime.Ru
 		if err := capabilities.Activate(spec.CapabilityID, spec.BindingID); err != nil {
 			return nil, fmt.Errorf("activate capability %s: %w", spec.CapabilityID, err)
 		}
-		policy := writingruntime.DefaultShadowPolicy(spec.CandidateID, writingruntime.AdapterFamilyEngine, spec.CapabilityID, spec.CapabilityVersion)
-		nodeGateway, err := writingruntime.NewShadowContentGateway(deps.canonical, deps.sink, policy)
+		descriptor := writingruntime.ExecutorDescriptor{ExecutorID: spec.BindingID, Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction, writingplan.NodeValidate}}
+		baseline, err := writingruntime.NewLegacyExecutorAdapter(writingruntime.AdapterFamilyEngine, descriptor, spec.CapabilityID, spec.CapabilityVersion, spec.Permissions, deps.canonical, spec.Runner)
 		if err != nil {
-			return nil, fmt.Errorf("shadow gateway %s: %w", spec.CapabilityID, err)
+			return nil, err
 		}
-		descriptor := func(executorID string) writingruntime.ExecutorDescriptor {
-			return writingruntime.ExecutorDescriptor{ExecutorID: executorID, Version: "1",
-				SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction, writingplan.NodeValidate}}
-		}
-		baseline, err := writingruntime.NewLegacyExecutorAdapter(writingruntime.AdapterFamilyEngine,
-			descriptor(spec.BindingID), spec.CapabilityID, spec.CapabilityVersion, spec.Permissions, deps.canonical, spec.Runner)
-		if err != nil {
-			return nil, fmt.Errorf("baseline executor %s: %w", spec.CapabilityID, err)
-		}
-		candidate, err := writingruntime.NewShadowIsolatedExecutorAdapter(writingruntime.AdapterFamilyEngine,
-			descriptor(spec.CandidateID), spec.CapabilityID, spec.CapabilityVersion, spec.Permissions, nodeGateway, spec.Runner)
-		if err != nil {
-			return nil, fmt.Errorf("candidate executor %s: %w", spec.CapabilityID, err)
-		}
-		provider, err := writingruntime.NewMutableRolloutPolicyProvider(policy)
-		if err != nil {
-			return nil, fmt.Errorf("policy provider %s: %w", spec.CapabilityID, err)
-		}
-		rollout, err := writingruntime.NewShadowRolloutExecutor(baseline, candidate, provider, deps.evidence, deps.telemetry)
-		if err != nil {
-			return nil, fmt.Errorf("shadow rollout %s: %w", spec.CapabilityID, err)
-		}
+		rollout := &servicePolicyExecutor{baseline: baseline, spec: spec, deps: deps, store: store, mode: mode}
+
 		if err := executors.Register(rollout); err != nil {
 			return nil, fmt.Errorf("register rollout executor %s: %w", spec.CapabilityID, err)
 		}
@@ -159,6 +153,7 @@ func newGovernedWritingRuntime(store *writingstore.Store, mode writingruntime.Ru
 	orchestrator := &writingruntime.Orchestrator{Store: store, Capabilities: capabilities, Executors: executors,
 		State: writingruntime.NewStateMachine(deps.transitionStore), Checkpoints: deps.checkpoints, Initial: deps.initial,
 		Materials: deps.materials, Telemetry: deps.telemetry, Now: now,
+		Subject: func(run writingstore.RuntimeRun) string { return run.OwnerUserID },
 		Context: deps.context, Envelopes: store,
 		ContextRuntime: &writingruntime.ContextRuntime{},
 		// M1.0 delivery protocol: draft commits its candidate version, quality
