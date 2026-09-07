@@ -26,23 +26,28 @@ const (
 	t02APIGateCapability = "core.research.gate.evidence"
 	t02APIUser           = "00000000-0000-0000-0000-0000000002e2"
 	t02APIOtherUser      = "00000000-0000-0000-0000-0000000002e3"
+	// t02PackCapability is the T02 test-owned IdempotencySafe producer whose
+	// scripted output feeds the gate's input binding (the kernel gate
+	// capability pins research_evidence_pack I/O since T06).
+	t02PackCapability = "core.t02.pack_producer"
 )
 
-// t02APIPlanNodes: research read (safe, scripted) → human gate. The gate
-// consumes the read node's output artifact; its decision binds that ref.
+// t02APIPlanNodes: scripted pack producer → human gate. The gate consumes the
+// read node's research_evidence_pack output; its decision binds that ref.
 func t02APIPlanNodes() []writingplan.PlanNode {
 	return []writingplan.PlanNode{
-		t00PlanNode("node_t02_read", t00SafeCapability, writingplan.NodeAction, nil,
-			[]writingplan.ArtifactType{"contract"}, []writingplan.ArtifactType{"full_draft"}, writingplan.FailureFail, 2),
+		t00PlanNode("node_t02_read", t02PackCapability, writingplan.NodeAction, nil,
+			[]writingplan.ArtifactType{"contract"}, []writingplan.ArtifactType{"full_draft", "research_evidence_pack"}, writingplan.FailureFail, 2),
 		{NodeID: "node_t02_gate", Kind: writingplan.NodeHumanGate, Capability: t02APIGateCapability,
 			CapabilityVersion: "1.0.0", DependsOn: []string{"node_t02_read"},
-			InputArtifactTypes:  []writingplan.ArtifactType{"full_draft"},
+			InputArtifactTypes:  []writingplan.ArtifactType{"research_evidence_pack"},
 			OutputArtifactTypes: []writingplan.ArtifactType{"evidence_approval"},
 			Bounds:              writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 0, TimeoutMS: 120000},
 			FailurePath:         writingplan.FailurePause},
 		// The standard-assurance validator floor + finalize tail keep the
-		// scripted plan dispatch-valid (quality + revision_set), mirroring
-		// t00PlanNodes' shape with the gate inserted before validation.
+		// scripted plan dispatch-valid (quality + revision_set). The gate's
+		// decision artifact (evidence_approval) is not the quality input — the
+		// scripted pack producer also emits the full_draft the tail consumes.
 		t00PlanNode("node_t02_q", "core.validation.quality", writingplan.NodeValidate, []string{"node_t02_gate"},
 			[]writingplan.ArtifactType{"full_draft"}, []writingplan.ArtifactType{"quality_report"}, writingplan.FailurePause, 2),
 		t00PlanNode("node_t02_f", "core.document.finalize", writingplan.NodeAction, []string{"node_t02_gate", "node_t02_q"},
@@ -50,10 +55,63 @@ func t02APIPlanNodes() []writingplan.PlanNode {
 	}
 }
 
-// t02APIGateCapabilityRegistration declares the kernel-owned gate capability.
-// The orchestrator never dispatches gate nodes, so the executor binding is a
-// never-invoked no-op that satisfies manifest validation (design.md §3).
+// t02RegisterPackCapability declares the test-owned pack-producer capability
+// and mounts its scripted runner (mirrors the t00 safe capability mount).
+func t02RegisterPackCapability(t *testing.T, h *t02APIHarness) {
+	t.Helper()
+	manifest := writingplan.CapabilityManifest{ID: t02PackCapability, Class: "writing.draft",
+		Executor: t02PackBinding, InputTypes: []writingplan.ArtifactType{"contract"},
+		OutputTypes:      []writingplan.ArtifactType{"full_draft", "research_evidence_pack"},
+		Permissions:      []writingplan.Permission{"model.invoke", "materials.read"},
+		EstimatedCostUSD: .5, EstimatedDurationMS: 30000, PreservesVoice: true, Version: "1.0.0",
+		SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction},
+		MaxBounds:          writingplan.Bounds{MaxAttempts: 2, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 2, TimeoutMS: 120000},
+		Idempotency:        writingplan.IdempotencySafe, Available: true,
+		Context: writingplan.ContextContract{RequiredContext: []writingplan.ContextBlockName{writingplan.ContextContractDigest},
+			OptionalContext:        []writingplan.ContextBlockName{},
+			EnforceRequiredContext: true}}
+	capabilities := h.api.capabilities
+	if err := capabilities.RegisterExecutor(writingplan.ExecutorBinding{ID: t02PackBinding,
+		AcceptedInputTypes:  []writingplan.ArtifactType{"contract"},
+		ProducedOutputTypes: []writingplan.ArtifactType{"full_draft", "research_evidence_pack"},
+		Dispatch: func(context.Context, writingplan.ExecutionRequest) (writingplan.ExecutionResult, error) {
+			return writingplan.ExecutionResult{}, nil
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := capabilities.Register(manifest); err != nil {
+		t.Fatal(err)
+	}
+	runner := newT00ScriptedRunner()
+	h.runners[t02PackCapability] = runner
+
+	canonical := writingruntime.WritingStoreContentGateway{Store: h.store}
+	deps := governedRuntimeDependencies{canonical: canonical, sink: h.server.governedRollout.shadow,
+		evidence:        h.server.governedRollout.evidence,
+		transitionStore: writingruntime.WritingStoreTransitionRecorder{Store: h.store},
+		checkpoints: writingruntime.PersistentCheckpointRepository{Store: h.store,
+			Trace: writingstore.TraceContext{Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime"},
+				Provenance: map[string]any{}, SourceRefs: []string{}}},
+		initial: governedInitialProvider{store: h.store, server: h.server}, materials: h.store,
+		context: writingruntime.StoreContextSource{Store: h.store}, telemetry: h.server.metrics}
+	spec := governedCapabilitySpec{BindingID: t02PackBinding, CandidateID: "governed.candidate." + t02PackCapability,
+		CapabilityID: t02PackCapability, CapabilityVersion: "1.0.0",
+		Inputs: []writingplan.ArtifactType{"contract"}, Outputs: manifest.OutputTypes, Permissions: manifest.Permissions}
+	if err := t00MountScriptedCapability(capabilities, h.api.trigger.orchestrator.Executors, spec, runner, deps, canonical); err != nil {
+		t.Fatal(err)
+	}
+	_ = runner
+}
+
+const t02PackBinding = "governed.baseline.core.t02.pack_producer"
+
+// t02APIGateCapabilityRegistration keeps the gate capability available in the
+// harness registry. Since T06 the kernel-owned gate capability ships in the
+// default catalog, so registration is a no-op when it is already present.
 func t02APIGateCapabilityRegistration(capabilities *writingplan.CapabilityRegistry) error {
+	if _, exists := capabilities.Get(t02APIGateCapability); exists {
+		return nil
+	}
 	const gateBinding = "kernel.human_gate"
 	manifest := writingplan.CapabilityManifest{ID: t02APIGateCapability, Class: "research.gate.evidence",
 		Executor: gateBinding, InputTypes: []writingplan.ArtifactType{"full_draft"},
@@ -87,17 +145,16 @@ type t02APIHarness struct {
 
 func newT02APIHarness(t *testing.T) *t02APIHarness {
 	t.Helper()
-	h := newT00Harness(t)
+	base := newT00Harness(t)
+	h := &t02APIHarness{t00Harness: base}
 	// The t00 harness mounts a registry built from the catalog; swap in the
-	// gate capability so the scripted plan compiles. The read node reuses the
-	// already-registered IdempotencySafe t00 capability and its runner.
-	capabilities := h.api.capabilities
-	if err := t02APIGateCapabilityRegistration(capabilities); err != nil {
-		t.Fatalf("register gate capability: %v", err)
-	}
+	// gate capability so the scripted plan compiles, plus the test-owned pack
+	// producer that feeds the gate its research_evidence_pack input (and
+	// carries the full_draft the quality/finalize tail consumes).
+	t02RegisterPackCapability(t, h)
 	// Research API surface: wire the decision runtime (mirrors
 	// mountGovernedRuntime's production wiring).
-	h.api.gateOrchestrator = h.api.trigger.orchestrator
+	base.api.gateOrchestrator = base.api.trigger.orchestrator
 	h.api.gateCheckpoints = &writingruntime.PersistentCheckpointRepository{Store: h.store,
 		Trace: writingstore.TraceContext{Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime"},
 			Provenance: map[string]any{}, SourceRefs: []string{}}}
@@ -106,11 +163,12 @@ func newT02APIHarness(t *testing.T) *t02APIHarness {
 		ON CONFLICT (uid) DO UPDATE SET name = EXCLUDED.name RETURNING id::text`, t02APIOtherUser).Scan(&otherID); err != nil {
 		t.Fatal(err)
 	}
-	otherToken, err := h.server.GenerateJWT(otherID, "user", "session_t02other")
+	otherToken, err := base.server.GenerateJWT(otherID, "user", "session_t02other")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &t02APIHarness{t00Harness: h, otherToken: otherToken, otherID: otherID}
+	h.otherToken, h.otherID = otherToken, otherID
+	return h
 }
 
 // t02APIIdempotencyKey returns a unique, header-safe key.

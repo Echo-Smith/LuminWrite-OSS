@@ -30,6 +30,12 @@ type governedCapabilitySpec struct {
 	Outputs           []writingplan.ArtifactType
 	Permissions       []writingplan.Permission
 	Runner            writingruntime.LegacyNodeRunner
+	// Direct, when set, replaces the LegacyExecutorAdapter baseline with a
+	// typed runtime executor (the research path's design.md §3 wiring: these
+	// executors consume typed artifacts and stage through the ContentGateway
+	// themselves — no legacy payload collection). The candidate stays the
+	// same DirectExecutor in the servicePolicyExecutor's shadow assembly.
+	Direct writingruntime.Executor
 }
 
 // governedWritingRuntime is the assembled governed runtime plus the controller
@@ -138,6 +144,21 @@ func newGovernedWritingRuntime(store *writingstore.Store, mode writingruntime.Ru
 		// catalog and every compile fails closed as T4 (M1.4 seam fix).
 		if err := capabilities.Activate(spec.CapabilityID, spec.BindingID); err != nil {
 			return nil, fmt.Errorf("activate capability %s: %w", spec.CapabilityID, err)
+		}
+		if spec.Direct != nil {
+			// Research executors (T06, design.md §3) are typed runtime
+			// executors: they register directly — no LegacyExecutorAdapter and
+			// no shadow-lane wrapping (there is no legacy baseline to compare
+			// against). The binding above satisfies the compile-time existence
+			// check; the direct executor's descriptor must carry the same id.
+			if spec.Direct.Descriptor().ExecutorID != spec.BindingID {
+				return nil, fmt.Errorf("governed runtime: direct executor %s does not match binding %s",
+					spec.Direct.Descriptor().ExecutorID, spec.BindingID)
+			}
+			if err := executors.Register(spec.Direct); err != nil {
+				return nil, fmt.Errorf("register research executor %s: %w", spec.CapabilityID, err)
+			}
+			continue
 		}
 		descriptor := writingruntime.ExecutorDescriptor{ExecutorID: spec.BindingID, Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction, writingplan.NodeValidate}}
 		baseline, err := writingruntime.NewLegacyExecutorAdapter(writingruntime.AdapterFamilyEngine, descriptor, spec.CapabilityID, spec.CapabilityVersion, spec.Permissions, deps.canonical, spec.Runner)

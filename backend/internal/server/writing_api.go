@@ -294,7 +294,7 @@ func (service *persistentWritingAPI) CompilePlan(ctx context.Context, access wri
 	if command.RequiredFinalArtifact != "" && command.RequiredFinalArtifact != "revision_set" {
 		return writingPlanPreview{}, fmt.Errorf("%w: governed writing plans must produce revision_set", writingstore.ErrInvalidRecord)
 	}
-	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel), command.RequiredValidators)
+	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForContract(contract.Contract), command.RequiredValidators)
 	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
 	envelope := writingplan.WritingPlanEnvelope{SchemaVersion: writingplan.SchemaVersion, IntentPlan: command.IntentPlan, ExecutablePlan: result.Plan, StrategyDecision: result.Decision}
 	permissions := permissionsForPlan(result.Plan, service.capabilities)
@@ -333,7 +333,7 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	if !sameWritingPermissions(permissions, command.Permissions) || !permissionSubset(permissions, governedWritingPermissions) {
 		return writingstore.RuntimeRun{}, errWritingApprovalScope
 	}
-	validators := writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel)
+	validators := writingplan.RequiredValidatorsForContract(contract.Contract)
 	validation := writingplan.ValidationContext{Registry: service.capabilities, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: validators, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: contract.Contract.MaterialPolicy.AllowExternalResearch}
 	if err := command.Plan.ValidateForDispatch(validation); err != nil {
 		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %v", errWritingPlanRequired, err)

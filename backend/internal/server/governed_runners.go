@@ -18,8 +18,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/scholar"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
@@ -193,8 +196,101 @@ func (s *Server) governedCapabilitySpecs(store *writingstore.Store, canonical wr
 			Runner:      runner,
 		})
 	}
+	// T06 research_review executors (design.md §3): typed direct executors,
+	// registered without the legacy adapter path. The scholar worker client
+	// is wired only when a worker URL is configured; the draft generator is
+	// wired only when a model client exists — otherwise the draft node
+	// pauses with RESEARCH_UNAVAILABLE (the honest no-model deployment).
+	specs = append(specs, s.governedResearchSpecs(store, canonical, defaults)...)
 	return specs, nil
 }
+
+// governedResearchSpecs wires the research capabilities' direct executors.
+// The worker client comes from the scholar worker configuration; when absent
+// the discover/read nodes surface RESEARCH_UNAVAILABLE at dispatch instead of
+// being silently skipped (the plan would otherwise compile into a dead end).
+func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writingruntime.ContentGateway, defaults *writingplan.CapabilityRegistry) []governedCapabilitySpec {
+	var discover writingruntime.Executor
+	var read writingruntime.Executor
+	if workerURL := strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_URL")); workerURL != "" {
+		scholarClient, scholarErr := scholar.NewClient(workerURL, strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_TOKEN")))
+		if scholarErr != nil {
+			slog.Warn("governed runtime: scholar worker client invalid; research discover/read pause on dispatch", "error", scholarErr)
+		} else {
+			if executor, err := writingruntime.NewResearchDiscoverExecutor(scholarClient, canonical); err == nil {
+				discover = executor
+			} else {
+				slog.Warn("governed runtime: research discover executor construction failed", "error", err)
+			}
+			// Executor-level budget guard: nil in T06 (the wall-clock proactive
+			// budget policy lands with the ops rollout); the orchestrator's
+			// BudgetBoundary hook and the executor sentinel mechanics stay the
+			// seam the E2E exercises.
+			var budget writingruntime.ResearchBudgetBoundary
+			if executor, err := writingruntime.NewResearchReadExecutor(writingruntime.ScholarParseRead{Client: scholarClient}, canonical, store, budget); err == nil {
+				read = executor
+			} else {
+				slog.Warn("governed runtime: research read executor construction failed", "error", err)
+			}
+		}
+	} else {
+		discover = writingruntime.NewUnavailableResearchExecutor("engine.step.research_discover", "scholar worker is not configured")
+		read = writingruntime.NewUnavailableResearchExecutor("engine.step.research_read", "scholar worker is not configured")
+	}
+	// Outline: deterministic v1 assembly (no model call, no generator wired).
+	outline, err := writingruntime.NewResearchOutlineExecutor(canonical, nil)
+	if err != nil {
+		slog.Warn("governed runtime: research outline executor construction failed", "error", err)
+	}
+	// Draft: the LLM generator over the server's existing model config; nil
+	// LLM defers to an honest RESEARCH_UNAVAILABLE pause at dispatch.
+	draft, err := writingruntime.NewResearchDraftExecutor(canonical, writingruntime.LLMResearchDraftGenerator{LLM: factoryLLM(s)})
+	if err != nil {
+		slog.Warn("governed runtime: research draft executor construction failed", "error", err)
+	}
+	citations, err := writingruntime.NewResearchCitationValidator(canonical)
+	if err != nil {
+		slog.Warn("governed runtime: research citation validator construction failed", "error", err)
+	}
+	fact, err := writingruntime.NewResearchFactValidator(canonical)
+	if err != nil {
+		slog.Warn("governed runtime: research fact validator construction failed", "error", err)
+	}
+	direct := map[string]writingruntime.Executor{
+		writingplan.CapabilityResearchDiscover:  discover,
+		writingplan.CapabilityResearchRead:      read,
+		writingplan.CapabilityResearchOutline:   outline,
+		writingplan.CapabilityResearchDraft:     draft,
+		writingplan.CapabilityResearchCitations: citations,
+		writingplan.CapabilityResearchFact:      fact,
+	}
+	specs := []governedCapabilitySpec{}
+	for _, capability := range []string{writingplan.CapabilityResearchDiscover, writingplan.CapabilityResearchRead,
+		writingplan.CapabilityResearchOutline, writingplan.CapabilityResearchDraft,
+		writingplan.CapabilityResearchCitations, writingplan.CapabilityResearchFact} {
+		executor := direct[capability]
+		if executor == nil {
+			continue
+		}
+		manifest, ok := defaults.Get(capability)
+		if !ok {
+			continue
+		}
+		specs = append(specs, governedCapabilitySpec{
+			BindingID: executor.Descriptor().ExecutorID, CandidateID: "governed.candidate." + capability,
+			CapabilityID: capability, CapabilityVersion: "1.0.0",
+			Inputs:      append(append([]writingplan.ArtifactType(nil), manifest.InputTypes...), manifest.OptionalInputTypes...),
+			Outputs:     append([]writingplan.ArtifactType(nil), manifest.OutputTypes...),
+			Permissions: append([]writingplan.Permission(nil), manifest.Permissions...),
+			Direct:      executor,
+		})
+	}
+	return specs
+}
+
+// factoryLLM resolves the server's LLM client lazily (the server may rebuild
+// clients after DB-backed configuration loads).
+func factoryLLM(s *Server) *tools.LLMClient { return s.llm }
 
 // governedKBSearcher adapts the local knowledge base when configured.
 func (s *Server) governedKBSearcher() tools.KnowledgeSearcher {
