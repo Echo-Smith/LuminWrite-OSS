@@ -48,6 +48,10 @@ type t06FakeWorker struct {
 	ranks    int
 	reads    map[string]int
 	papers   int
+	// withFullText makes Discover advertise OA URLs so the read executor can
+	// fetch and parse real full text (the T07 scope-overclaim scenario needs
+	// genuinely full-text-read papers to overclaim against).
+	withFullText bool
 }
 
 func newT06FakeWorker(papers int) *t06FakeWorker {
@@ -63,8 +67,13 @@ func (fake *t06FakeWorker) Discover(_ context.Context, _ string, _ []string, _ i
 		paperID := fmt.Sprintf("t06-paper-%02d", index)
 		title := "研究综述论文 " + paperID
 		abstract := "背景与结论：" + paperID + " 的确定性摘要内容，用于引用验证。"
-		papers = append(papers, scholar.PaperCandidate{PaperID: paperID,
-			Title: &title, Authors: []string{"作者"}, Aliases: []string{paperID}, Abstract: &abstract})
+		candidate := scholar.PaperCandidate{PaperID: paperID,
+			Title: &title, Authors: []string{"作者"}, Aliases: []string{paperID}, Abstract: &abstract}
+		if fake.withFullText {
+			oaURL := "https://oa.example.org/" + paperID + ".txt"
+			candidate.OAURL = &oaURL
+		}
+		papers = append(papers, candidate)
 	}
 	return &scholar.DiscoverOutputs{Papers: papers,
 			ProviderResults: []scholar.ProviderResult{{Provider: "openalex", Status: "ok"}}},
@@ -226,6 +235,10 @@ type t06Harness struct {
 	orchestr  *writingruntime.Orchestrator
 	executors *writingruntime.ExecutorRegistry
 	caps      *writingplan.CapabilityRegistry
+	// qualityWrap lets T07 tests mount the real mechanical quality gate
+	// (ResearchQualityGateRunner) around the scripted quality runner; nil
+	// keeps the T06 behavior unchanged.
+	qualityWrap func(writingruntime.LegacyNodeRunner) writingruntime.LegacyNodeRunner
 }
 
 // newT06E2EHarness rebuilds the mounted orchestrator with research executors
@@ -256,11 +269,11 @@ func newT06E2EHarness(t *testing.T, papers int, boundaryAt int) *t06Harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	citations, err := writingruntime.NewResearchCitationValidator(canonical)
+	citations, err := writingruntime.NewResearchCitationValidator(canonical, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fact, err := writingruntime.NewResearchFactValidator(canonical)
+	fact, err := writingruntime.NewResearchFactValidator(canonical, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,9 +336,12 @@ func (h *t06Harness) remount(t *testing.T, research map[string]writingruntime.Ex
 			continue
 		}
 		// Scripted legacy capability via the T00 mount helper.
-		runner := base.runners[spec.CapabilityID]
+		var runner writingruntime.LegacyNodeRunner = base.runners[spec.CapabilityID]
 		if runner == nil {
 			continue
+		}
+		if spec.CapabilityID == "core.validation.quality" && h.qualityWrap != nil {
+			runner = h.qualityWrap(runner)
 		}
 		if err := t00MountScriptedCapability(capabilities, executors, spec, runner, deps, canonical); err != nil {
 			t.Fatalf("mount scripted capability %s: %v", spec.CapabilityID, err)
@@ -373,6 +389,12 @@ func (h *t06Harness) remount(t *testing.T, research map[string]writingruntime.Ex
 
 // fixture uses the T00 fixture with a v1.1 research contract instead.
 func (h *t06Harness) fixture(t *testing.T) *t00Fixture {
+	return h.fixtureMutate(t, nil)
+}
+
+// fixtureMutate builds the same fixture while letting a test mutate the
+// contract before it is sealed (e.g. evidence_requirement for T07).
+func (h *t06Harness) fixtureMutate(t *testing.T, mutate func(*writingkernel.WritingContract)) *t00Fixture {
 	t.Helper()
 	document := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/documents", map[string]any{"title": "T06 研究综述"})
 	documentID := e2eJSONField(t, document, "document_id")
@@ -389,6 +411,9 @@ func (h *t06Harness) fixture(t *testing.T) *t00Fixture {
 	// workset, so the contract is resealed with a matching floor (the same
 	// re-seal discipline the T05 runtime fixture uses).
 	contract.Research.MinCitableSources = 1
+	if mutate != nil {
+		mutate(&contract)
+	}
 	for i := range contract.SourceAttributions {
 		valueHash, hashErr := contract.FieldValueHash(contract.SourceAttributions[i].FieldPath)
 		if hashErr != nil {

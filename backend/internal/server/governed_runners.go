@@ -68,13 +68,19 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 			Usage: engineUsage,
 		}
 	case "core.validation.quality":
-		return writingruntime.EngineStepRunner{
-			Styles: governedStyleResolver{server: server},
-			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
-				return server.newGovernedPostReviewStep(factory.llm(), env.Profile), nil
-			},
-			Usage: engineUsage,
-		}
+		// T07 research quality gate: the mechanical half consumes the
+		// citations validator's evidence_report blocker mapping and fails
+		// closed on blockers before the inner post-review runs. Legacy
+		// evidence reports (core.validation.evidence/fact) carry no research
+		// blockers and pass through unchanged.
+		return ResearchQualityGateAdapter{
+			Inner: writingruntime.EngineStepRunner{
+				Styles: governedStyleResolver{server: server},
+				StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
+					return server.newGovernedPostReviewStep(factory.llm(), env.Profile), nil
+				},
+				Usage: engineUsage,
+			}}
 	case "core.validation.evidence", "core.validation.fact":
 		// Validators degrade honestly when no LLM is wired (docs/22 D2); a
 		// missing factory LLM is exactly that deployment shape.
@@ -248,11 +254,18 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 	if err != nil {
 		slog.Warn("governed runtime: research draft executor construction failed", "error", err)
 	}
-	citations, err := writingruntime.NewResearchCitationValidator(canonical)
+	// Citations: the full deterministic T07 check. The run store is wired so
+	// the validator resolves the confirmed contract (full_text_required
+	// drives the scope-overclaim class) from the run artifacts.
+	citations, err := writingruntime.NewResearchCitationValidator(canonical, store)
 	if err != nil {
 		slog.Warn("governed runtime: research citation validator construction failed", "error", err)
 	}
-	fact, err := writingruntime.NewResearchFactValidator(canonical)
+	// Fact: the lightweight semantic review runs when a model client exists;
+	// a nil reviewer degrades honestly (no-model deployment). The reviewer is
+	// resolved lazily through the factory closure so DB-backed config reloads
+	// are picked up per dispatch.
+	fact, err := writingruntime.NewResearchFactValidator(canonical, writingruntime.LLMResearchFactReviewer{LLM: factoryLLM(s)})
 	if err != nil {
 		slog.Warn("governed runtime: research fact validator construction failed", "error", err)
 	}
@@ -286,6 +299,19 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 		})
 	}
 	return specs
+}
+
+// ResearchQualityGateAdapter is the server-side runner wrapper: the runtime's
+// mechanical research gate (evidence_report blocker consumption) wraps the
+// legacy model post-review step, so research blockers short-circuit the node
+// and the model review only ever runs on a mechanically clean report.
+type ResearchQualityGateAdapter struct {
+	Inner writingruntime.LegacyNodeRunner
+}
+
+// Run implements LegacyNodeRunner.
+func (adapter ResearchQualityGateAdapter) Run(ctx context.Context, input writingruntime.LegacyNodeInput) ([]writingruntime.LegacyPayload, writingruntime.LegacyUsage, error) {
+	return writingruntime.ResearchQualityGateRunner{Inner: adapter.Inner}.Run(ctx, input)
 }
 
 // factoryLLM resolves the server's LLM client lazily (the server may rebuild
