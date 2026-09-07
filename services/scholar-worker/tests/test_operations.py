@@ -1,26 +1,31 @@
-"""Unit tests for the five mock operations (pure functions, offline).
+"""Unit tests for the five operations (offline; T04 real implementations).
 
-Locks down behaviors the Go client and later tasks (T04/T05) rely on:
-- discover: limit clamping and synthetic canonical metadata
-- rank: every input paper_id scored exactly once; missing abstract ok;
-  too many candidates rejected
-- fetch_full_text: content hash matches content; size_limit rejection;
-  local-path oa_url rejected
-- parse: codepoint offsets and per-block hashes are consistent
-- read: evidence/claims reference the supplied blocks only
+Locks down behaviors the Go client and later tasks (T05) rely on:
+- discover: provider allowlist subset validation, limit clamping, per-source
+  status aggregation, all-sources-failed vs empty-result distinction
+- rank: payload validation and fail-closed LLM config (successful LLM paths
+  are covered in test_ranking.py with injected transports)
+- fetch_full_text: URL/scheme validation, size cap, missing-OA-URL handling
+  (network-side SSRF/redirect/size behaviour is in test_downloader.py)
+- parse: codepoint offsets and per-block hashes are consistent (T03 mock)
+- read: evidence/claims reference the supplied blocks only (T03 mock)
 """
 
 from __future__ import annotations
 
 import hashlib
 
+import httpx
 import pytest
 
 from lumin_scholar.operations import (
+    MAX_DISCOVER_LIMIT,
     MAX_FETCH_SIZE_BYTES,
     MAX_RANK_CANDIDATES,
     MAX_READ_BLOCKS,
     OperationError,
+    WorkerDeps,
+    build_handlers,
     run_operation,
 )
 
@@ -29,98 +34,187 @@ def _sha256(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _mock_deps(handler) -> WorkerDeps:
+    """Deps whose discovery/fetch clients use the given MockTransport handler;
+    rank is fail-closed (no LLM configured)."""
+    factory = lambda: httpx.Client(  # noqa: E731
+        transport=httpx.MockTransport(handler), timeout=5.0
+    )
+    return WorkerDeps(
+        discover_client_factory=factory,
+        download_client_factory=factory,
+        llm_config_provider=lambda: None,
+        llm_client_factory=None,
+    )
+
+
+def _openalex_ok(handler_body):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "openalex" in str(request.url):
+            return httpx.Response(200, json={"results": handler_body})
+        return httpx.Response(503, text="down")
+
+    return handler
+
+
 class TestDiscover:
-    def test_returns_at_most_limit_records(self):
-        result = run_operation("discover", {"query": "anything", "limit": 2})
-        assert len(result.outputs["records"]) == 2
-        record = result.outputs["records"][0]
-        assert record["paper_id"] == "mock-paper-0001"
-        assert record["doi"] == "10.0000/mock.0001"
-        assert record["year"] == 2024
+    def test_returns_papers_and_provider_status(self):
+        deps = _mock_deps(
+            _openalex_ok(
+                [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "title": "Mock Replacement Study",
+                        "doi": "https://doi.org/10.0000/mock.0001",
+                        "publication_year": 2024,
+                        "authorships": [{"author": {"display_name": "A. Author"}}],
+                    }
+                ]
+            )
+        )
+        result = run_operation(
+            "discover",
+            {"query": "anything", "limit": 2, "provider_allowlist": ["openalex"]},
+            handlers=build_handlers(deps),
+        )
+        assert len(result.outputs["papers"]) == 1
+        paper = result.outputs["papers"][0]
+        assert paper["doi"] == "10.0000/mock.0001"
+        assert paper["year"] == 2024
+        assert paper["paper_id"].startswith("p_")
+        assert result.outputs["provider_results"] == [
+            {"provider": "openalex", "status": "ok", "returned": 1}
+        ]
 
     def test_limit_above_cap_rejected(self):
+        deps = _mock_deps(lambda request: httpx.Response(200, json={"results": []}))
         with pytest.raises(OperationError):
-            run_operation("discover", {"query": "x", "limit": 51})
+            run_operation(
+                "discover", {"query": "x", "limit": MAX_DISCOVER_LIMIT + 1},
+                handlers=build_handlers(deps),
+            )
 
-    def test_provider_not_in_allowlist_returns_empty(self):
-        result = run_operation(
-            "discover", {"query": "x", "provider_allowlist": ["arxiv"]}
-        )
-        assert result.outputs["records"] == []
-        assert result.outputs["provider_status"][0]["status"] == "not_available"
+    def test_unknown_provider_rejected(self):
+        deps = _mock_deps(lambda request: httpx.Response(200, json={"results": []}))
+        with pytest.raises(OperationError) as excinfo:
+            run_operation(
+                "discover", {"query": "x", "provider_allowlist": ["arxiv"]},
+                handlers=build_handlers(deps),
+            )
+        assert excinfo.value.code == "invalid_payload"
 
     def test_unknown_payload_key_rejected(self):
+        deps = _mock_deps(lambda request: httpx.Response(200, json={"results": []}))
         with pytest.raises(OperationError) as excinfo:
-            run_operation("discover", {"query": "x", "api_key": "leak"})
+            run_operation("discover", {"query": "x", "api_key": "leak"}, handlers=build_handlers(deps))
         assert excinfo.value.code == "invalid_payload"
+
+    def test_all_sources_failed_is_aggregate_error_not_empty_result(self):
+        deps = _mock_deps(lambda request: httpx.Response(503, text="down"))
+        with pytest.raises(OperationError) as excinfo:
+            run_operation(
+                "discover",
+                {"query": "x", "provider_allowlist": ["openalex", "crossref"]},
+                handlers=build_handlers(deps),
+            )
+        assert excinfo.value.code == "all_providers_failed"
+        assert excinfo.value.retryable is True
+        assert excinfo.value.http_status == 502
 
 
 class TestRank:
-    def test_scores_every_input_exactly_once(self):
-        candidates = [
-            {"paper_id": f"p{i}", "abstract": f"abstract {i}"} for i in range(5)
-        ]
-        result = run_operation(
-            "rank", {"research_question": "why", "candidates": candidates}
-        )
-        scores = result.outputs["scores"]
-        assert [s["paper_id"] for s in scores] == [f"p{i}" for i in range(5)]
-        assert len({s["paper_id"] for s in scores}) == 5
-        for s in scores:
-            assert 0.0 <= s["score"] <= 1.0
-            assert s["reason"]
-
-    def test_missing_abstract_is_allowed(self):
-        result = run_operation(
-            "rank",
-            {"research_question": "q", "candidates": [{"paper_id": "only"}]},
-        )
-        assert result.outputs["scores"][0]["paper_id"] == "only"
-
-    def test_duplicate_id_raises(self):
+    def test_payload_validation(self):
+        deps = _mock_deps(lambda request: httpx.Response(200))
+        handlers = build_handlers(deps)
         with pytest.raises(OperationError) as excinfo:
             run_operation(
                 "rank",
                 {
                     "research_question": "q",
-                    "candidates": [
-                        {"paper_id": "a", "abstract": ""},
-                        {"paper_id": "a", "abstract": ""},
-                    ],
+                    "candidates": [{"paper_id": "a", "abstract": ""}, {"paper_id": "a"}],
                 },
+                handlers=handlers,
             )
         assert excinfo.value.code == "duplicate_paper_id"
 
-    def test_too_many_candidates_rejected(self):
         candidates = [{"paper_id": f"p{i}", "abstract": ""} for i in range(MAX_RANK_CANDIDATES + 1)]
+        with pytest.raises(OperationError):
+            run_operation(
+                "rank", {"research_question": "q", "candidates": candidates}, handlers=handlers
+            )
+
+    def test_unconfigured_llm_fails_closed_not_silent_zero(self):
+        deps = _mock_deps(lambda request: httpx.Response(200))
         with pytest.raises(OperationError) as excinfo:
-            run_operation("rank", {"research_question": "q", "candidates": candidates})
-        assert excinfo.value.code == "invalid_payload"
+            run_operation(
+                "rank",
+                {
+                    "research_question": "q",
+                    "candidates": [{"paper_id": "p1", "abstract": "a"}],
+                },
+                handlers=build_handlers(deps),
+            )
+        assert excinfo.value.code == "llm_not_configured"
+        assert excinfo.value.retryable is False
 
 
 class TestFetchFullText:
-    def test_content_hash_matches_content(self):
-        result = run_operation("fetch_full_text", {"paper_id": "p1"})
-        assert result.outputs["content_hash"] == _sha256(result.outputs["content"])
-        assert result.outputs["acquisition_status"] == "acquired"
-        assert result.outputs["media_type"] == "text/plain"
+    def test_missing_oa_url_fails_explicitly(self):
+        deps = _mock_deps(lambda request: httpx.Response(200, text="x"))
+        with pytest.raises(OperationError) as excinfo:
+            run_operation("fetch_full_text", {"paper_id": "p1"}, handlers=build_handlers(deps))
+        assert excinfo.value.code == "no_open_access_url"
+        assert excinfo.value.retryable is False
 
     def test_local_path_oa_url_rejected(self):
+        deps = _mock_deps(lambda request: httpx.Response(200, text="x"))
         for bad in ("file:///etc/passwd", "/etc/passwd"):
             with pytest.raises(OperationError) as excinfo:
-                run_operation("fetch_full_text", {"paper_id": "p1", "oa_url": bad})
+                run_operation(
+                    "fetch_full_text", {"paper_id": "p1", "oa_url": bad},
+                    handlers=build_handlers(deps),
+                )
             assert excinfo.value.code == "invalid_oa_url"
 
-    def test_size_limit_too_small_rejected(self):
-        with pytest.raises(OperationError) as excinfo:
-            run_operation("fetch_full_text", {"paper_id": "p1", "size_limit": 10})
-        assert excinfo.value.code == "content_too_large"
-
     def test_size_limit_cap_enforced(self):
+        deps = _mock_deps(lambda request: httpx.Response(200, text="x"))
         with pytest.raises(OperationError):
             run_operation(
-                "fetch_full_text", {"paper_id": "p1", "size_limit": MAX_FETCH_SIZE_BYTES + 1}
+                "fetch_full_text",
+                {"paper_id": "p1", "oa_url": "https://example.org/a.pdf",
+                 "size_limit": MAX_FETCH_SIZE_BYTES + 1},
+                handlers=build_handlers(deps),
             )
+
+    def test_forbidden_target_reports_block(self):
+        # 127.0.0.1 via a *production-style* deps bundle (default IP policy) —
+        # the guard must reject before any bytes are read.
+        with pytest.raises(OperationError) as excinfo:
+            run_operation(
+                "fetch_full_text",
+                {"paper_id": "p1", "oa_url": "http://127.0.0.1:9/x.pdf"},
+                handlers=build_handlers(
+                    WorkerDeps(
+                        discover_client_factory=lambda: httpx.Client(),
+                        download_client_factory=lambda: httpx.Client(follow_redirects=False),
+                        llm_config_provider=lambda: None,
+                    )
+                ),
+            )
+        assert excinfo.value.code == "forbidden_target_ip"
+
+
+class TestFetchFullTextBlocked:
+    def test_loopback_target_blocked_in_default_wiring(self):
+        # run_operation's default handlers == production wiring; the loopback
+        # target must be refused by the SSRF guard, never connected to.
+        with pytest.raises(OperationError) as excinfo:
+            run_operation(
+                "fetch_full_text",
+                {"paper_id": "p1", "oa_url": "http://127.0.0.1:9/x.pdf"},
+            )
+        assert excinfo.value.code == "forbidden_target_ip"
+        assert excinfo.value.retryable is False
 
 
 class TestParse:
@@ -191,6 +285,6 @@ class TestRead:
 class TestRegistryParity:
     def test_registry_covers_whitelist(self):
         from lumin_scholar.contracts import OPERATIONS
-        from lumin_scholar.operations import OPERATION_HANDLERS
+        from lumin_scholar.operations import build_handlers, default_worker_deps
 
-        assert set(OPERATION_HANDLERS) == set(OPERATIONS)
+        assert set(build_handlers(default_worker_deps())) == set(OPERATIONS)

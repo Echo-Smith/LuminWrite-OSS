@@ -1,12 +1,17 @@
 [project]
 name = "lumin-scholar"
 version = "0.1.0"
-description = "LuminBuddy Scholar Worker — private-network bounded research operations (T03 mock skeleton)"
+description = "LuminBuddy Scholar Worker — private-network bounded research operations"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "LuminBuddy" }]
-dependencies = []
+# httpx (T04): the only third-party dependency, pinned exactly.
+# Rationale: discovery providers, the constrained downloader and the rank LLM
+# call all need reliable per-request connect/read timeouts, streaming downloads
+# with byte caps, and an injectable transport (httpx.MockTransport) so every
+# unit test runs fully offline. urllib offers none of these cleanly.
+dependencies = ["httpx==0.28.1"]
 
 [project.optional-dependencies]
 dev = [

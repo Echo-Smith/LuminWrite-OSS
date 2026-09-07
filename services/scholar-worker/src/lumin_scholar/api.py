@@ -59,10 +59,14 @@ class ScholarWorkerAPI:
         *,
         now_ms: Callable[[], int] | None = None,
         max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+        handlers: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
     ) -> None:
         self._token = token or ""
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
         self._max_body_bytes = max_body_bytes
+        # Optional handler registry override (tests inject offline fakes via
+        # operations.build_handlers(WorkerDeps(...))); None = production deps.
+        self._handlers = handlers
 
     # -- health ------------------------------------------------------------
     def healthz(self) -> tuple[int, dict[str, Any]]:
@@ -130,7 +134,7 @@ class ScholarWorkerAPI:
             )
 
         try:
-            result = run_operation(operation, request.payload)
+            result = run_operation(operation, request.payload, handlers=self._handlers)
         except OperationError as exc:
             return self._error_response(
                 ErrorResponse(

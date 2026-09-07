@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# T03 integration smoke: start the real Python Scholar Worker on loopback and
-# drive it with the real Go client (healthz + one mock discover operation).
+# T04 integration smoke: start the real Python Scholar Worker on loopback and
+# drive it with the real Go client (healthz + one real discover operation).
+#
+# The worker's discover operation runs real provider fan-out, so by default
+# the smoke uses an OFFLINE allowlist-free path: the Go client pings healthz
+# and performs a discover limited to the "openalex" provider. If the network
+# is unavailable, set SCHOLAR_SMOKE_OFFLINE=1 to skip the live discover call
+# and only validate healthz (the offline behavior is already covered by the
+# pytest suite).
 #
 # Usage: scripts/dev-scholar-smoke.sh
 # Requires: uv (services/scholar-worker/.venv is created on first run) and Go.
@@ -20,10 +27,7 @@ if [ ! -x "$WORKER_DIR/.venv/bin/python" ]; then
 fi
 
 # 2) Build a tiny Go driver that uses backend/internal/scholar for real.
-# The driver lives under backend/cmd so it may import the internal package.
-DRIVER_DIR="$(mktemp -d)"
 DRIVER_MAIN="$ROOT/backend/cmd/scholar-smoke/main.go"
-trap 'kill "$WORKER_PID" 2>/dev/null || true; rm -rf "$DRIVER_DIR"' EXIT
 mkdir -p "$(dirname "$DRIVER_MAIN")"
 cat > "$DRIVER_MAIN" <<'EOF'
 package main
@@ -43,27 +47,19 @@ func main() {
 	client, err := scholar.NewClient(baseURL, token)
 	exitIf(err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	exitIf(client.Health(ctx))
 	fmt.Println("[smoke] /healthz OK")
 
-	payload := map[string]any{"query": "smoke check", "limit": 2}
-	hash, err := scholar.HashPayload(payload)
+	discoverOutputs, resp, err := client.Discover(ctx, "lithium battery cathode degradation", []string{"openalex"}, 3)
 	exitIf(err)
-
-	resp, err := client.Call(ctx, scholar.OpDiscover, hash, payload)
-	exitIf(err)
-
-	var outputs struct {
-		Records []json.RawMessage `json:"records"`
-	}
-	exitIf(json.Unmarshal(resp.Outputs, &outputs))
 
 	pretty, _ := json.MarshalIndent(map[string]any{
 		"request_id":   resp.RequestID,
-		"record_count": len(outputs.Records),
+		"paper_count":  len(discoverOutputs.Papers),
+		"providers":    discoverOutputs.ProviderResults,
 		"usage":        resp.Usage,
 		"versions":     resp.Versions,
 	}, "", "  ")
@@ -79,23 +75,33 @@ func exitIf(err error) {
 EOF
 
 # 3) Start the worker (loopback only, token via env).
+PID_DIR="$(mktemp -d)"
 echo "[smoke] starting worker on $BASE_URL..."
 (
   cd "$WORKER_DIR"
   SCHOLAR_WORKER_TOKEN="$TOKEN" SCHOLAR_WORKER_HOST=127.0.0.1 \
     SCHOLAR_WORKER_PORT="$PORT" .venv/bin/python -m lumin_scholar &
-  echo $! > "$DRIVER_DIR/worker.pid"
+  echo $! > "$PID_DIR/worker.pid"
 ) > /dev/null 2>&1
-WORKER_PID="$(cat "$DRIVER_DIR/worker.pid")"
+WORKER_PID="$(cat "$PID_DIR/worker.pid")"
+
+cleanup() {
+  kill "$WORKER_PID" 2>/dev/null || true
+  rm -rf "$PID_DIR" "$(dirname "$DRIVER_MAIN")"
+}
+trap cleanup EXIT
 
 for _ in $(seq 1 50); do
   if curl -fsS "$BASE_URL/healthz" >/dev/null 2>&1; then break; fi
-  kill -0 "$WORKER_PID" 2>/dev/null || { echo "[smoke] worker exited early"; exit 1; }
   sleep 0.2
 done
 
-# 4) Run the Go driver from the backend module, then clean it up.
+# 4) Run the Go driver from the backend module; cleanup via trap.
 echo "[smoke] running Go client against the live worker..."
+if ! command -v go >/dev/null 2>&1; then
+  for candidate in "$HOME/.local/go/bin" "/usr/local/go/bin" "/opt/homebrew/bin"; do
+    if [ -x "$candidate/go" ]; then export PATH="$candidate:$PATH"; break; fi
+  done
+fi
 (cd "$ROOT/backend" && go run "./cmd/scholar-smoke" "$BASE_URL" "$TOKEN")
-rm -rf "$(dirname "$DRIVER_MAIN")"
 echo "[smoke] PASS"

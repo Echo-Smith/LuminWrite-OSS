@@ -246,7 +246,7 @@ func decodeResponse(resp *http.Response, requestID, inputHash string) (*Operatio
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, &Error{Kind: ErrProtocol, HTTPStatus: resp.StatusCode,
-			Code: "client_malformed_success_body",
+			Code:    "client_malformed_success_body",
 			Message: fmt.Sprintf("success response is not valid JSON: %v", err)}
 	}
 	got := decoded.OperationResponse
@@ -256,12 +256,12 @@ func decodeResponse(resp *http.Response, requestID, inputHash string) (*Operatio
 	// not process the payload we sent. Both are protocol violations.
 	if got.RequestID == "" || got.RequestID != requestID {
 		return nil, &Error{Kind: ErrProtocol, HTTPStatus: resp.StatusCode,
-			Code: "client_request_id_mismatch",
+			Code:    "client_request_id_mismatch",
 			Message: fmt.Sprintf("response request_id %q does not match request %q", got.RequestID, requestID)}
 	}
 	if !inputHashPattern.MatchString(got.InputHash) || got.InputHash != inputHash {
 		return nil, &Error{Kind: ErrProtocol, HTTPStatus: resp.StatusCode,
-			Code: "client_input_hash_mismatch",
+			Code:    "client_input_hash_mismatch",
 			Message: fmt.Sprintf("response input_hash %q does not match request %q", got.InputHash, inputHash)}
 	}
 	if len(got.Outputs) == 0 {

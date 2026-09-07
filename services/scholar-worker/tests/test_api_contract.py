@@ -23,12 +23,41 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+import httpx
 import pytest
 
 from lumin_scholar.api import ScholarWorkerAPI, make_server
 from lumin_scholar.contracts import compute_input_hash
+from lumin_scholar.operations import WorkerDeps, build_handlers
 
 TEST_TOKEN = "test-token-123"
+
+
+def _offline_deps() -> WorkerDeps:
+    """Deps that keep every operation offline: OpenAlex served by a fixture
+    handler, everything else failing fast; rank fail-closed (no LLM)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "openalex" in str(request.url):
+            return httpx.Response(200, json={"results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "title": "Fixture Cathode Study",
+                    "doi": "https://doi.org/10.0000/fixture.0001",
+                    "publication_year": 2024,
+                    "authorships": [{"author": {"display_name": "F. Fixture"}}],
+                }
+            ]})
+        return httpx.Response(503, text="offline fixture")
+
+    factory = lambda: httpx.Client(  # noqa: E731
+        transport=httpx.MockTransport(handler), timeout=5.0
+    )
+    return WorkerDeps(
+        discover_client_factory=factory,
+        download_client_factory=factory,
+        llm_config_provider=lambda: None,
+    )
 
 _NOW_MS = lambda: int(time.time() * 1000)  # noqa: E731
 
@@ -89,7 +118,7 @@ def _post_operation(
 
 @pytest.fixture()
 def base_url():
-    api = ScholarWorkerAPI(TEST_TOKEN)
+    api = ScholarWorkerAPI(TEST_TOKEN, handlers=build_handlers(_offline_deps()))
     server = make_server("127.0.0.1", 0, api)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -102,23 +131,23 @@ def base_url():
 
 
 class TestOperationSuccess:
-    def test_discover_returns_mock_records_and_echoes_envelope(self, base_url):
-        payload = {"query": "mock materials", "limit": 2}
+    def test_discover_returns_records_and_echoes_envelope(self, base_url):
+        payload = {"query": "mock materials", "limit": 2, "provider_allowlist": ["openalex"]}
         status, body = _post_operation(base_url, "discover", _envelope(payload))
 
         assert status == 200
         assert body["request_id"] == "req-test-0001"
         assert body["input_hash"] == compute_input_hash(payload)
-        assert len(body["outputs"]["records"]) == 2
-        assert body["outputs"]["records"][0]["paper_id"] == "mock-paper-0001"
-        assert body["outputs"]["provider_status"] == [
-            {"provider": "mock", "status": "ok", "returned": 2}
+        papers = body["outputs"]["papers"]
+        assert len(papers) == 1
+        assert papers[0]["doi"] == "10.0000/fixture.0001"
+        assert papers[0]["paper_id"].startswith("p_")
+        assert body["outputs"]["provider_results"] == [
+            {"provider": "openalex", "status": "ok", "returned": 1}
         ]
         usage = body["usage"]
-        assert usage["measured"] is True
+        assert usage["measured"] is False  # no model call in discover
         assert usage["cost_usd"] is None
-        assert usage["provider"] == "mock"
-        assert usage["input_tokens"] > 0
         assert body["versions"]["operation_version"] == "1"
         assert body["versions"]["worker_version"]
         assert isinstance(body["warnings"], list)

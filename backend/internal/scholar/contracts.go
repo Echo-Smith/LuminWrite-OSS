@@ -90,12 +90,15 @@ type ErrorBody struct {
 }
 
 // HashPayload computes the canonical input_hash for a payload: sha256 over
-// compact JSON with sorted keys (encoding/json already sorts map keys and
-// escapes HTML-sensitive bytes deterministically; the worker validates format
-// only for now). The canonicalisation must be pinned jointly with the worker
-// before real (T04+) operations depend on cross-language hash equality.
+// the canonical JSON form defined in canonical.go — recursively key-sorted,
+// UTF-8 without ASCII/HTML escaping, compact separators. That rule is a
+// cross-language contract with the worker's compute_input_hash
+// (json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":")));
+// the golden fixture in canonical_test.go and
+// services/scholar-worker/tests/test_canonical_hash.py pins the digest on
+// both sides. Floats are rejected (fail closed) — see canonical.go.
 func HashPayload(payload map[string]any) (string, error) {
-	encoded, err := json.Marshal(payload)
+	encoded, err := CanonicalPayloadJSON(payload)
 	if err != nil {
 		return "", fmt.Errorf("scholar: hash payload: %w", err)
 	}

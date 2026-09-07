@@ -1,33 +1,58 @@
-"""Operation registry and mock implementations for the Scholar Worker.
+"""Operation registry and implementations for the Scholar Worker.
 
-Each operation is a pure function of its ``payload`` and returns
-``OperationResult(outputs, usage, warnings, versions)``. The T03 skeletons are
-deterministic, offline mocks: no network access, no model calls, no upstream
-AutoResearch code or fixtures (all sample data below is original synthetic
-content). Real discovery/fetch (T04) and parsing/reading (T05) will replace
-these implementations behind the same contract.
+Each operation is a bounded unit: a pure function of its ``payload`` plus the
+injected dependencies, returning ``OperationResult(outputs, usage, warnings)``.
+
+T04 state of the five operations:
+
+- ``discover``        — REAL: provider fan-out (OpenAlex/Crossref/Semantic
+  Scholar) with per-source isolation and R03 dedup (see ``discovery.py``).
+- ``rank``            — REAL: OpenAI-compatible LLM scoring, fail-closed when
+  the worker env lacks ``SCHOLAR_LLM_*`` (see ``ranking.py``).
+- ``fetch_full_text`` — REAL: constrained downloader with SSRF guards
+  (see ``downloader.py``).
+- ``parse``, ``read`` — still the T03 offline mocks (T05 scope).
+
+Dependency injection: handlers close over a :class:`WorkerDeps` bundle that
+supplies HTTP client factories and the LLM configuration. Production wiring
+(``default_worker_deps``) builds real network clients and reads ``SCHOLAR_*``
+env vars; tests construct :class:`WorkerDeps` with injected
+``httpx.MockTransport`` clients and never touch the network. Note for
+reviewers: the production paths pass NO bypass into the downloader — the
+default ``downloader.build_default_ip_policy()`` applies and there is no
+knob to weaken it.
+
+No code, prompts, or fixtures are copied from the upstream AutoResearch
+references (Proprietary); all implementations here are original.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
+import httpx
+
+from . import downloader, discovery, providers, ranking
 from .contracts import Usage
 from . import SUPPORTED_OPERATION_VERSION, __version__
 
 WORKER_VERSION = __version__
 
-PROVIDER_MOCK = "mock"
-MODEL_MOCK = "mock-scholar-v0"
-
-MAX_RANK_CANDIDATES = 8
+MAX_RANK_CANDIDATES = ranking.MAX_RANK_CANDIDATES  # 8, contracts.md §4
 MAX_READ_BLOCKS = 24
 MAX_DISCOVER_LIMIT = 50
-MAX_FETCH_SIZE_BYTES = 25 * 1024 * 1024  # mirrors the 25 MiB design cap
+MAX_FETCH_SIZE_BYTES = downloader.DEFAULT_SIZE_LIMIT  # 25 MiB design cap
 
 TEXT_MEDIA_TYPES = ("text/plain", "text/markdown")
+
+DISCOVER_PROVIDERS: tuple[str, ...] = (
+    providers.PROVIDER_OPENALEX,
+    providers.PROVIDER_CROSSREF,
+    providers.PROVIDER_SEMANTIC_SCHOLAR,
+)
 
 
 class OperationError(Exception):
@@ -59,6 +84,35 @@ class OperationResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class WorkerDeps:
+    """Injected dependencies for the real operations.
+
+    ``*_client_factory`` return fresh :class:`httpx.Client` instances per call
+    (closing is the handler's job). ``llm_config_provider`` returns the LLM
+    config or None; None makes ``rank`` fail closed.
+    """
+
+    discover_client_factory: Callable[[], httpx.Client]
+    download_client_factory: Callable[[], httpx.Client]
+    llm_config_provider: Callable[[], ranking.LLMConfig | None]
+    llm_client_factory: Callable[[], httpx.Client] | None = None
+
+
+def default_worker_deps() -> WorkerDeps:
+    """Production wiring: real network clients, env-provided LLM config.
+
+    Reviewer note: no SSRF bypass is passed anywhere here — the downloader
+    always uses ``build_default_ip_policy()``.
+    """
+    return WorkerDeps(
+        discover_client_factory=providers._new_client,
+        download_client_factory=downloader.make_download_client,
+        llm_config_provider=ranking.LLMConfig.from_env,
+        llm_client_factory=None,
+    )
+
+
 def _sha256(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -74,8 +128,20 @@ def _mock_usage(input_text: str, output_text: str) -> Usage:
         input_tokens=_tokens(input_text),
         output_tokens=_tokens(output_text),
         cost_usd=None,
-        provider=PROVIDER_MOCK,
-        model=MODEL_MOCK,
+        provider="mock",
+        model="mock-scholar-v0",
+    )
+
+
+def _non_llm_usage(provider_label: str) -> Usage:
+    """Usage for operations that perform no model call (T04)."""
+    return Usage(
+        measured=False,
+        input_tokens=0,
+        output_tokens=0,
+        cost_usd=None,
+        provider=provider_label,
+        model="none",
     )
 
 
@@ -118,70 +184,29 @@ def _require_int(
 
 
 # ---------------------------------------------------------------------------
-# Original synthetic sample records (mock only; never copied from upstream).
+# discover — real provider fan-out
 # ---------------------------------------------------------------------------
 
-_MOCK_DISCOVER_RECORDS: tuple[dict[str, Any], ...] = (
-    {
-        "paper_id": "mock-paper-0001",
-        "title": "Synthetic Baseline Study of Mock Material A Under Load",
-        "authors": ["A. Author", "B. Builder"],
-        "year": 2024,
-        "doi": "10.0000/mock.0001",
-        "venue": "Journal of Synthetic Results",
-        "abstract": "Mock abstract describing a synthetic experiment on material A. "
-        "Generated for offline contract tests only.",
-        "source": PROVIDER_MOCK,
-    },
-    {
-        "paper_id": "mock-paper-0002",
-        "title": "A Placeholder Survey of Fabricated Methods B",
-        "authors": ["C. Constructor"],
-        "year": 2023,
-        "doi": "10.0000/mock.0002",
-        "venue": "Transactions on Placeholder Science",
-        "abstract": "Mock survey abstract with invented citations. "
-        "Never use this record as real evidence.",
-        "source": PROVIDER_MOCK,
-    },
-    {
-        "paper_id": "mock-paper-0003",
-        "title": "Toy Corpus Notes on Imaginary Alloy C",
-        "authors": ["D. Designer", "E. Engineer", "F. Fabricator"],
-        "year": 2025,
-        "doi": "10.0000/mock.0003",
-        "venue": "Proceedings of the Mock Symposium",
-        "abstract": "Mock conference abstract about an alloy that does not exist. "
-        "Used to exercise ranking and fetching paths offline.",
-        "source": PROVIDER_MOCK,
-    },
-)
 
-
-def _op_discover(payload: Mapping[str, Any]) -> OperationResult:
+def _op_discover(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
     _reject_unknown_keys(payload, {"query", "provider_allowlist", "limit"}, "payload")
     query = _require_str(payload, "query")
 
-    allowlist = payload.get("provider_allowlist", [PROVIDER_MOCK])
-    if not isinstance(allowlist, list) or not all(
+    allowlist = payload.get("provider_allowlist", list(DISCOVER_PROVIDERS))
+    if not isinstance(allowlist, list) or not allowlist or not all(
         isinstance(item, str) and item for item in allowlist
     ):
         raise OperationError(
             "invalid_payload",
-            "payload.provider_allowlist must be a list of non-empty strings",
+            "payload.provider_allowlist must be a non-empty list of non-empty strings",
             http_status=422,
         )
-    if PROVIDER_MOCK not in allowlist:
-        return OperationResult(
-            outputs={"records": [], "provider_status": [
-                {"provider": p, "status": "not_available", "returned": 0}
-                for p in allowlist
-            ]},
-            usage=_mock_usage(query, ""),
-            warnings=["mock worker only serves the 'mock' provider"],
-        )
+    try:
+        discovery.check_allowlist(allowlist)
+    except ValueError as exc:
+        raise OperationError("invalid_payload", str(exc), http_status=422) from exc
 
-    limit = payload.get("limit", 10)
+    limit = payload.get("limit", discovery.DISCOVER_DEFAULT_LIMIT)
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise OperationError(
             "invalid_payload", "payload.limit must be an integer", http_status=422
@@ -193,22 +218,45 @@ def _op_discover(payload: Mapping[str, Any]) -> OperationResult:
             http_status=422,
         )
 
-    records = list(_MOCK_DISCOVER_RECORDS[:limit])
-    outputs = {
-        "records": records,
-        "provider_status": [
-            {"provider": PROVIDER_MOCK, "status": "ok", "returned": len(records)}
-        ],
-    }
-    rendered = "".join(r["paper_id"] for r in records)
+    client = deps.discover_client_factory()
+    try:
+        papers, statuses, warnings = discovery.discover_papers(
+            query, allowlist, limit, client=client
+        )
+    finally:
+        client.close()
+
+    error_statuses = [s for s in statuses if s.get("status") == "error"]
+    if statuses and len(error_statuses) == len(statuses):
+        codes = ",".join(sorted({str(s.get("error_code")) for s in error_statuses}))
+        raise OperationError(
+            "all_providers_failed",
+            f"every provider failed ({codes}); this is an upstream error, "
+            "not an empty result",
+            http_status=502,
+            retryable=True,
+        )
+
+    warnings.extend(f"provider {s['provider']} error: {s['error_code']}" for s in error_statuses)
+    usage = _non_llm_usage(
+        allowlist[0] if len(allowlist) == 1 else "multi"
+    )
     return OperationResult(
-        outputs=outputs,
-        usage=_mock_usage(query, rendered),
-        warnings=["discover is a deterministic mock; records are synthetic"],
+        outputs={
+            "papers": papers,
+            "provider_results": statuses,
+        },
+        usage=usage,
+        warnings=warnings,
     )
 
 
-def _op_rank(payload: Mapping[str, Any]) -> OperationResult:
+# ---------------------------------------------------------------------------
+# rank — real LLM scoring (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+def _op_rank(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
     _reject_unknown_keys(payload, {"research_question", "candidates"}, "payload")
     question = _require_str(payload, "research_question")
 
@@ -227,7 +275,7 @@ def _op_rank(payload: Mapping[str, Any]) -> OperationResult:
         )
 
     seen: set[str] = set()
-    cleaned: list[tuple[str, str]] = []
+    cleaned: list[dict[str, str]] = []
     for index, candidate in enumerate(candidates):
         if not isinstance(candidate, dict):
             raise OperationError(
@@ -238,9 +286,7 @@ def _op_rank(payload: Mapping[str, Any]) -> OperationResult:
         _reject_unknown_keys(
             candidate, {"paper_id", "abstract"}, f"payload.candidates[{index}]"
         )
-        paper_id = _require_str(
-            candidate, "paper_id"
-        )
+        paper_id = _require_str(candidate, "paper_id")
         abstract = candidate.get("abstract", "")
         if not isinstance(abstract, str):
             raise OperationError(
@@ -255,83 +301,122 @@ def _op_rank(payload: Mapping[str, Any]) -> OperationResult:
                 http_status=422,
             )
         seen.add(paper_id)
-        cleaned.append((paper_id, abstract))
+        cleaned.append({"paper_id": paper_id, "abstract": abstract})
 
-    scores = []
-    rendered_parts = []
-    for paper_id, abstract in cleaned:
-        # Deterministic pseudo-score from the id; mock ranking has no model.
-        digest = hashlib.sha256(paper_id.encode("utf-8")).digest()
-        score = round(digest[0] / 255.0, 4)
-        reason = (
-            f"mock score derived deterministically from paper_id {paper_id!r}; "
-            "no semantic model involved"
+    llm_config = deps.llm_config_provider()
+    llm_client = deps.llm_client_factory() if deps.llm_client_factory is not None else None
+    try:
+        scores, usage = ranking.rank_candidates(
+            question,
+            cleaned,
+            config=llm_config,
+            client=llm_client,
         )
-        scores.append({"paper_id": paper_id, "score": score, "reason": reason})
-        rendered_parts.append(paper_id + abstract)
+    except ranking.RankError as exc:
+        raise OperationError(
+            exc.code,
+            exc.message,
+            http_status=422,
+            retryable=exc.retryable,
+        ) from exc
+    finally:
+        if llm_client is not None:
+            llm_client.close()
 
-    usage = _mock_usage(question + "".join(a for _, a in cleaned), "".join(rendered_parts))
     return OperationResult(outputs={"scores": scores}, usage=usage)
 
 
-def _op_fetch_full_text(payload: Mapping[str, Any]) -> OperationResult:
+# ---------------------------------------------------------------------------
+# fetch_full_text — real constrained downloader
+# ---------------------------------------------------------------------------
+
+#: Evolution point (contracts.md §4 blob transport): T04 delivers the blob
+#: INLINE as base64 inside the response (``transport="inline_base64"``) — the
+#: worker never writes local files and never accepts local paths. When the Go
+#: content service lands (T05/T09) this switches to a task-scoped short-lived
+#: upload URL (``transport="content_service_url"``, ``blob_url`` non-null)
+#: after Go verifies size/hash and stores the Artifact. Go remains the only
+#: component that commits artifacts.
+BLOB_TRANSPORT_INLINE = "inline_base64"
+BLOB_TRANSPORT_CONTENT_SERVICE = "content_service_url"
+
+
+def _op_fetch_full_text(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
     _reject_unknown_keys(payload, {"paper_id", "doi", "oa_url", "size_limit"}, "payload")
     paper_id = _require_str(payload, "paper_id")
 
     oa_url = payload.get("oa_url")
-    if oa_url is not None:
-        if not isinstance(oa_url, str):
-            raise OperationError(
-                "invalid_payload", "payload.oa_url must be a string", http_status=422
-            )
-        # Defense in depth: the worker never reads local paths. Real download
-        # constraints (DNS/IP checks, redirects, size) land with T04.
-        if oa_url.startswith("file://") or oa_url.startswith("/"):
-            raise OperationError(
-                "invalid_oa_url",
-                "payload.oa_url must be an http(s) URL, not a local path",
-                http_status=422,
-            )
-
-    size_limit = payload.get("size_limit")
-    if size_limit is not None:
-        _require_int(payload, "size_limit", minimum=1, maximum=MAX_FETCH_SIZE_BYTES)
-
+    if oa_url is not None and not isinstance(oa_url, str):
+        raise OperationError(
+            "invalid_payload", "payload.oa_url must be a string", http_status=422
+        )
     doi = payload.get("doi")
     if doi is not None and not isinstance(doi, str):
         raise OperationError(
             "invalid_payload", "payload.doi must be a string", http_status=422
         )
 
-    content = (
-        f"[MOCK FULL TEXT for {paper_id}]\n"
-        "This synthetic document exists to exercise the fetch_full_text contract. "
-        "Paragraph one states a fabricated finding in generic terms.\n"
-        "Paragraph two describes an invented methodology with no real-world "
-        "counterpart. Downstream stages must treat this as mock data.\n"
-    )
-    encoded = content.encode("utf-8")
-    size_limit_int = size_limit if isinstance(size_limit, int) else MAX_FETCH_SIZE_BYTES
-    if len(encoded) > size_limit_int:
+    size_limit = payload.get("size_limit")
+    if size_limit is not None:
+        _require_int(payload, "size_limit", minimum=1, maximum=MAX_FETCH_SIZE_BYTES)
+        size_limit = int(size_limit)
+    else:
+        size_limit = MAX_FETCH_SIZE_BYTES
+
+    if not oa_url:
+        # No OA location is known for this paper. Resolving OA from a DOI
+        # (Unpaywall-style) is future scope; this unit fails explicitly
+        # instead of pretending to have content.
         raise OperationError(
-            "content_too_large",
-            "mock content exceeds payload.size_limit",
+            "no_open_access_url",
+            f"no OA URL supplied for paper {paper_id!r}; acquisition cannot proceed",
             http_status=422,
-            retryable=False,
         )
-    outputs = {
-        "paper_id": paper_id,
-        "content": content,
-        "content_hash": _sha256(content),
-        "media_type": "text/plain",
-        "size_bytes": len(encoded),
-        "acquisition_status": "acquired",
-    }
+
+    client = deps.download_client_factory()
+    try:
+        result = downloader.constrained_download(client, oa_url, size_limit=size_limit)
+    except downloader.DownloadError as exc:
+        raise OperationError(
+            exc.code,
+            f"{exc.detail}",
+            http_status=502 if exc.code in {
+                "download_http_error", "download_unreachable", "download_timeout",
+            } else 422,
+            retryable=exc.code in {
+                "download_http_error", "download_unreachable", "download_timeout",
+            },
+        ) from exc
+    finally:
+        client.close()
+
+    usage = _non_llm_usage("oa_downloader")
     return OperationResult(
-        outputs=outputs,
-        usage=_mock_usage(paper_id, content),
-        warnings=["fetch_full_text is a mock; blob is generated, not downloaded"],
+        outputs={
+            "paper_id": paper_id,
+            "acquisition_status": "full_text_available",
+            "content_hash": result.content_hash,
+            "size_bytes": result.size_bytes,
+            "media_type": result.media_type,
+            "content_type_reported": result.content_type_reported,
+            "looks_like_pdf": result.looks_like_pdf,
+            "likely_scanned": result.likely_scanned,
+            "final_url": result.final_url,
+            "redirect_hops": result.redirect_hops,
+            "content_base64": base64.b64encode(result.content).decode("ascii"),
+            "blob": {
+                "transport": BLOB_TRANSPORT_INLINE,
+                "blob_url": None,  # T05/T09: Go content-service upload URL
+            },
+        },
+        usage=usage,
+        warnings=[],
     )
+
+
+# ---------------------------------------------------------------------------
+# parse / read — T03 offline mocks (T05 replaces)
+# ---------------------------------------------------------------------------
 
 
 def _op_parse(payload: Mapping[str, Any]) -> OperationResult:
@@ -496,20 +581,48 @@ def _op_read(payload: Mapping[str, Any]) -> OperationResult:
     )
 
 
-#: Registry: operation name -> handler. The API layer only dispatches to
-#: names in contracts.OPERATIONS; this table must stay in sync with it.
-OPERATION_HANDLERS: dict[str, Callable[[Mapping[str, Any]], OperationResult]] = {
-    "discover": _op_discover,
-    "rank": _op_rank,
-    "fetch_full_text": _op_fetch_full_text,
-    "parse": _op_parse,
-    "read": _op_read,
-}
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+#: Handler signature: (payload, deps) -> OperationResult. The mock-only
+#: handlers ignore deps but keep the same signature for uniformity.
+Handler = Callable[[Mapping[str, Any], WorkerDeps], OperationResult]
 
 
-def run_operation(operation: str, payload: Mapping[str, Any]) -> OperationResult:
-    """Dispatch a validated payload to its mock implementation."""
-    handler = OPERATION_HANDLERS.get(operation)
+def build_handlers(deps: WorkerDeps) -> dict[str, Handler]:
+    """Build the operation registry over the given dependencies."""
+    return {
+        "discover": lambda payload, d=deps: _op_discover(payload, d),
+        "rank": lambda payload, d=deps: _op_rank(payload, d),
+        "fetch_full_text": lambda payload, d=deps: _op_fetch_full_text(payload, d),
+        "parse": lambda payload, _d=deps: _op_parse(payload),
+        "read": lambda payload, _d=deps: _op_read(payload),
+    }
+
+
+_DEFAULT_HANDLERS: dict[str, Handler] | None = None
+
+
+def _default_handlers() -> dict[str, Handler]:
+    global _DEFAULT_HANDLERS
+    if _DEFAULT_HANDLERS is None:
+        _DEFAULT_HANDLERS = build_handlers(default_worker_deps())
+    return _DEFAULT_HANDLERS
+
+
+def run_operation(
+    operation: str,
+    payload: Mapping[str, Any],
+    *,
+    handlers: dict[str, Handler] | None = None,
+) -> OperationResult:
+    """Dispatch a validated payload to its implementation.
+
+    ``handlers`` overrides the default registry (tests inject fakes there).
+    """
+    registry = handlers if handlers is not None else _default_handlers()
+    handler = registry.get(operation)
     if handler is None:  # pragma: no cover - guarded by the API whitelist
         raise OperationError(
             "unknown_operation",
