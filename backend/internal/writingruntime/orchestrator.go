@@ -439,6 +439,21 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			executeErr = observeResult(result, request, node, spentCost, spentDuration, run)
 		}
 		if executeErr != nil {
+			// T05→T06 sentinel integration: the research read executor's
+			// budget-boundary sentinel is a CLEAN pause (design.md §7), not a
+			// failure — the completed sub-tasks stay in the ledger and the
+			// resume re-dispatch continues the remaining papers. The node's
+			// FailurePath is pause; the attempt records the paused outcome
+			// with the sentinel code, and the run keeps a plainly resumable
+			// checkpoint (no unsafe marker).
+			if errors.Is(executeErr, ErrResearchBudgetBoundary) {
+				_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
+					NodeID: node.NodeID, Attempt: attemptNumber, Status: "paused",
+					ErrorCode: string(CodeResearchBudgetBoundary), ErrorMessage: executeErr.Error(),
+					Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
+				nextAttempts[node.NodeID] = attemptNumber + 1
+				return orchestrator.pauseAtBudgetBoundary(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, "budget_boundary")
+			}
 			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 				NodeID: node.NodeID, Attempt: attemptNumber, Status: "failed", ErrorCode: string(ErrorCodeOf(executeErr)),
 				ErrorMessage: executeErr.Error(), Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})

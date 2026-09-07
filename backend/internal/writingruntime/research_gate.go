@@ -300,32 +300,48 @@ func DecideGate(ctx context.Context, store GateDecisionStore, checkpoints Checkp
 	input := writingstore.ArtifactContentRef{ArtifactID: request.InputArtifactID,
 		Version: request.InputVersion, ContentHash: request.InputContentHash}
 	decidedAt := orchestrator.Now()
-	approval := EvidenceApprovalBody(gate.GateID, request.ActorID, decidedAt, gate.PlanHash, input)
-	if err := approval.Validate(); err != nil {
-		return writingstore.GateDecisionResult{}, fmt.Errorf("writingruntime: server-created approval artifact rejected: %w", err)
+	var decisionArtifact writingstore.ArtifactRecord
+	switch gate.GateKind {
+	case writingstore.GateKindOutline:
+		// The outline gate's decision artifact is the approved_research_outline
+		// (contracts.md §2): the server loads the gate's input outline (the
+		// revision the decision binds), verifies its hash, and seals it with
+		// the source outline ref and the gate decision ref. Clients can never
+		// write actor/decision content — this is server-created in the same
+		// transaction as the decision row.
+		artifact, buildErr := approvedOutlineArtifact(run, gate, gateNode, input, request.ActorID, decidedAt, store)
+		if buildErr != nil {
+			return writingstore.GateDecisionResult{}, buildErr
+		}
+		decisionArtifact = artifact
+	default:
+		approval := EvidenceApprovalBody(gate.GateID, request.ActorID, decidedAt, gate.PlanHash, input)
+		if err := approval.Validate(); err != nil {
+			return writingstore.GateDecisionResult{}, fmt.Errorf("writingruntime: server-created approval artifact rejected: %w", err)
+		}
+		body, err := json.Marshal(approval)
+		if err != nil {
+			return writingstore.GateDecisionResult{}, err
+		}
+		approvalHash := contentHash(body)
+		if err := store.PutArtifactContent(ctx, approvalHash, "application/json", body); err != nil {
+			return writingstore.GateDecisionResult{}, err
+		}
+		decisionArtifact = writingstore.ArtifactRecord{ArtifactID: writingstore.StableID("art_", request.RunID, gate.NodeID, "approval"),
+			Version: 1, RunID: run.RunID, PlanID: plan.PlanID, PlanVersion: planRecord.PlanVersion,
+			NodeID: gate.NodeID, Attempt: 1, OutputKey: "evidence_approval",
+			ArtifactType: "evidence_approval", Status: "validated", ContentHash: approvalHash,
+			MediaType: "application/json", ContentRef: "artifact://" + strings.TrimPrefix(approvalHash, "sha256:"),
+			Parents: []writingstore.ArtifactRef{}, Producer: "kernel.human_gate",
+			CapabilityVersion: gateNode.CapabilityVersion, InputHashes: []string{request.InputContentHash},
+			Trace: DecisionTrace(request.ActorID)}
 	}
-	body, err := json.Marshal(approval)
-	if err != nil {
-		return writingstore.GateDecisionResult{}, err
-	}
-	approvalHash := contentHash(body)
-	if err := store.PutArtifactContent(ctx, approvalHash, "application/json", body); err != nil {
-		return writingstore.GateDecisionResult{}, err
-	}
-	approvalRecord := writingstore.ArtifactRecord{ArtifactID: writingstore.StableID("art_", request.RunID, gate.NodeID, "approval"),
-		Version: 1, RunID: run.RunID, PlanID: plan.PlanID, PlanVersion: planRecord.PlanVersion,
-		NodeID: gate.NodeID, Attempt: 1, OutputKey: "evidence_approval",
-		ArtifactType: "evidence_approval", Status: "validated", ContentHash: approvalHash,
-		MediaType: "application/json", ContentRef: "artifact://" + strings.TrimPrefix(approvalHash, "sha256:"),
-		Parents: []writingstore.ArtifactRef{}, Producer: "kernel.human_gate",
-		CapabilityVersion: gateNode.CapabilityVersion, InputHashes: []string{request.InputContentHash},
-		Trace: DecisionTrace(request.ActorID)}
 	command := writingstore.GateDecisionCommand{RunID: request.RunID, GateID: request.GateID,
 		PlanID: request.PlanID, PlanVersion: request.PlanVersion, PlanHash: request.PlanHash,
 		GateRevision: request.GateRevision, Input: input, Decision: request.Decision,
 		ActorID: request.ActorID, IdempotencyKey: request.IdempotencyKey, RequestHash: request.RequestHash,
 		Attempt: gateAttemptFor(run, planRecord.PlanVersion, *gateNode),
-		AttemptCompletion: writingstore.AttemptCompletion{Artifacts: []writingstore.ArtifactRecord{approvalRecord},
+		AttemptCompletion: writingstore.AttemptCompletion{Artifacts: []writingstore.ArtifactRecord{decisionArtifact},
 			CompletedAt: decidedAt, Trace: DecisionTrace(request.ActorID)},
 		Trace: DecisionTrace(request.ActorID)}
 	command.AfterDecision = func(tx *writingstore.Tx) error {
@@ -354,6 +370,59 @@ func DecideGate(ctx context.Context, store GateDecisionStore, checkpoints Checkp
 		return writingstore.GateDecisionResult{}, err
 	}
 	return result, nil
+}
+
+// approvedOutlineArtifact builds the outline gate's decision artifact: the
+// approved_research_outline content sealed over the gate's input outline
+// (the exact revision the decision binds — an outline revision bumped the
+// gate's input ref before the confirm). The GateDecisionRef points at the
+// gate row itself (gate_id + revision + plan hash), the durable decision
+// record this artifact exists to witness.
+func approvedOutlineArtifact(run writingstore.RuntimeRun, gate writingstore.GateRecord, gateNode *writingplan.PlanNode,
+	input writingstore.ArtifactContentRef, actorID string, decidedAt time.Time, store GateDecisionStore) (writingstore.ArtifactRecord, error) {
+	_, outlineBody, err := store.GetArtifactContent(context.Background(), input.ContentHash)
+	if err != nil {
+		return writingstore.ArtifactRecord{}, fmt.Errorf("writingruntime: load outline gate input content: %w", err)
+	}
+	if contentHash(outlineBody) != input.ContentHash {
+		return writingstore.ArtifactRecord{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+			"outline gate input content failed hash verification", nil)
+	}
+	var outline writingkernel.ResearchOutline
+	if err := json.Unmarshal(outlineBody, &outline); err != nil {
+		return writingstore.ArtifactRecord{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+			"outline gate input is not a research outline", err)
+	}
+	if err := outline.Validate(); err != nil {
+		return writingstore.ArtifactRecord{}, runtimeError(CodeOutlineEvidenceMismatch, RetryNever,
+			"outline gate input failed kernel validation", err)
+	}
+	approved := writingkernel.ApprovedResearchOutline{ResearchOutline: outline,
+		SourceOutlineRef: writingkernel.ArtifactRef{ArtifactID: input.ArtifactID, Version: input.Version, ContentHash: input.ContentHash},
+		GateDecisionRef:  writingkernel.ArtifactRef{ArtifactID: gate.GateID, Version: gate.Revision, ContentHash: gate.PlanHash}}
+	if err := approved.Validate(); err != nil {
+		return writingstore.ArtifactRecord{}, runtimeError(CodeOutlineEvidenceMismatch, RetryNever,
+			"approved outline failed kernel validation", err)
+	}
+	body, err := json.Marshal(approved)
+	if err != nil {
+		return writingstore.ArtifactRecord{}, err
+	}
+	hash := contentHash(body)
+	// The decision transaction's artifact row references this content; stage
+	// it before the transaction commits (same discipline as the evidence
+	// approval artifact).
+	if err := store.PutArtifactContent(context.Background(), hash, "application/json", body); err != nil {
+		return writingstore.ArtifactRecord{}, fmt.Errorf("writingruntime: stage approved outline content: %w", err)
+	}
+	return writingstore.ArtifactRecord{ArtifactID: writingstore.StableID("art_", run.RunID, gate.NodeID, "approval"),
+		Version: 1, RunID: run.RunID, PlanID: gate.PlanID, PlanVersion: gate.PlanVersion,
+		NodeID: gate.NodeID, Attempt: 1, OutputKey: "approved_research_outline",
+		ArtifactType: "approved_research_outline", Status: "validated", ContentHash: hash,
+		MediaType: "application/json", ContentRef: "artifact://" + strings.TrimPrefix(hash, "sha256:"),
+		Parents: []writingstore.ArtifactRef{}, Producer: "kernel.human_gate",
+		CapabilityVersion: gateNode.CapabilityVersion, InputHashes: []string{input.ContentHash},
+		Trace: DecisionTrace(actorID)}, nil
 }
 
 // artifactsFromRefs rebuilds input artifacts (identity only) from checkpoint

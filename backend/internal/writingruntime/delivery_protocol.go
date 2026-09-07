@@ -34,6 +34,11 @@ import (
 const (
 	DeliveryClassDraft   = "writing.draft"
 	DeliveryClassQuality = "validation.quality"
+	// DeliveryClassResearchDraft routes the research draft node (class
+	// research.draft, T06) through the same candidate-version commit: the
+	// full_draft artifact carries [@ev_] markers, but the document lineage
+	// the quality gate consumes is identical to the ordinary draft's.
+	DeliveryClassResearchDraft = "research.draft"
 )
 
 // DeliveryProtocol implements the delivery commits for draft/quality nodes.
@@ -152,6 +157,12 @@ func (protocol *DeliveryProtocol) deliveryDrivers() map[string]deliveryDriver {
 				return nil, err
 			}
 			return &delivery, nil
+		},
+		DeliveryClassResearchDraft: func(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode, artifacts []writingstore.ArtifactRecord) (*QualityDelivery, error) {
+			if err := protocol.CommitDraftCandidate(ctx, run, node, artifacts); err != nil {
+				return nil, err
+			}
+			return nil, nil
 		},
 	}
 }

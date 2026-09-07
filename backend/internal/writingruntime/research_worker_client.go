@@ -106,6 +106,13 @@ type ResearchWorkerClient interface {
 // ScholarParseRead adapts *scholar.Client to ResearchWorkerClient.
 type ScholarParseRead struct{ Client *scholar.Client }
 
+// FetchFullText delegates to the client's typed fetch operation so the
+// adapter satisfies the full ResearchWorkerClient surface (the production
+// wiring passes one adapter to the read executor; T05 tests used fakes).
+func (adapter ScholarParseRead) FetchFullText(ctx context.Context, paperID, oaURL string, sizeLimit int64, opts ...scholar.CallOption) (*scholar.FetchFullTextOutputs, *scholar.OperationResponse, error) {
+	return adapter.Client.FetchFullText(ctx, paperID, oaURL, sizeLimit, opts...)
+}
+
 // ParseDocument calls the worker parse op with an inline base64 document.
 func (adapter ScholarParseRead) ParseDocument(ctx context.Context, document []byte, mediaType, parserVersion string, opts ...scholar.CallOption) (*ParseOutputs, *scholar.OperationResponse, error) {
 	payload := map[string]any{
