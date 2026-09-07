@@ -86,6 +86,16 @@ type researchTaskView struct {
 	ErrorCode string `json:"error_code,omitempty"`
 }
 
+// researchSpecView projects the run contract's ResearchSpec for the research
+// frontend (T09 contract with T09b: exact field names).
+type researchSpecView struct {
+	MaxPapers           int    `json:"max_papers"`
+	MinCitableSources   int    `json:"min_citable_sources"`
+	EvidenceRequirement string `json:"evidence_requirement"`
+	MaxQueries          int    `json:"max_queries"`
+	MaxCandidates       int    `json:"max_candidates"`
+}
+
 type researchProgressView struct {
 	RunID             string             `json:"run_id"`
 	Phase             string             `json:"phase"`
@@ -95,6 +105,9 @@ type researchProgressView struct {
 	ActiveGate        *gateView          `json:"active_gate,omitempty"`
 	Errors            []researchTaskView `json:"errors"`
 	LastEventSequence int64              `json:"last_event_sequence"`
+	// Spec carries the v1.1 research contract projection; nil (and omitted)
+	// for legacy runs, whose response shape stays byte-identical.
+	Spec *researchSpecView `json:"spec,omitempty"`
 }
 
 type artifactContentView struct {
@@ -218,7 +231,65 @@ func (service *persistentWritingAPI) GetResearchProgress(ctx context.Context, ac
 		view.ActiveGate = &projected
 		view.Phase = "gate_" + activeGate.GateKind
 	}
+	// T09 view enhancement: research-review runs project their contract's
+	// ResearchSpec and the evidence pack's per-paper reading-scope counts
+	// (papers_full_text / papers_abstract / papers_unread; 0 before a pack
+	// exists). Legacy runs (no research spec) keep the previous shape.
+	if contractRecord, contractErr := service.store.GetContract(ctx, run.ContractID, run.ContractVersion); contractErr == nil && contractRecord.Contract.Research != nil {
+		spec := contractRecord.Contract.Research
+		view.Spec = &researchSpecView{MaxPapers: spec.MaxPapers, MinCitableSources: spec.MinCitableSources,
+			EvidenceRequirement: spec.EvidenceRequirement, MaxQueries: spec.MaxQueries, MaxCandidates: spec.MaxCandidates}
+		pack, packErr := service.runEvidencePack(ctx, runID)
+		if packErr != nil {
+			pack = writingkernel.ResearchEvidencePack{}
+		}
+		view.Counts["papers_full_text"] = 0
+		view.Counts["papers_abstract"] = 0
+		view.Counts["papers_unread"] = 0
+		for _, paper := range pack.Papers {
+			switch paper.ReadingScope {
+			case writingkernel.ReadingScopeFullText:
+				view.Counts["papers_full_text"]++
+			case writingkernel.ReadingScopeAbstract:
+				view.Counts["papers_abstract"]++
+			default:
+				view.Counts["papers_unread"]++
+			}
+		}
+	}
 	return view, nil
+}
+
+// runEvidencePack loads the run's newest frozen evidence pack for view
+// projection. Projection is best-effort: any resolution/decode failure yields
+// a zero pack, never a failed progress request.
+func (service *persistentWritingAPI) runEvidencePack(ctx context.Context, runID string) (writingkernel.ResearchEvidencePack, error) {
+	artifacts, err := service.store.ListRunArtifacts(ctx, runID)
+	if err != nil {
+		return writingkernel.ResearchEvidencePack{}, err
+	}
+	packHash := ""
+	packVersion := 0
+	for _, artifact := range artifacts {
+		if artifact.ArtifactType != "research_evidence_pack" {
+			continue
+		}
+		if artifact.Version >= packVersion {
+			packHash, packVersion = artifact.ContentHash, artifact.Version
+		}
+	}
+	if packHash == "" {
+		return writingkernel.ResearchEvidencePack{}, writingstore.ErrNotFound
+	}
+	_, body, err := service.store.GetArtifactContent(ctx, packHash)
+	if err != nil {
+		return writingkernel.ResearchEvidencePack{}, err
+	}
+	var pack writingkernel.ResearchEvidencePack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		return writingkernel.ResearchEvidencePack{}, err
+	}
+	return pack, nil
 }
 
 // GetGate serves GET /runs/{runId}/gates/{gateId}.
