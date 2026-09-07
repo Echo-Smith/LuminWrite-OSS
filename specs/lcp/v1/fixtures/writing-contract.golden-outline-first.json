@@ -1,0 +1,95 @@
+{
+  "schema_version": "lcp/1.0",
+  "contract_id": "ctr_01HZZGOLDEN00000000000000001",
+  "version": 1,
+  "contract_hash": "sha256:3a60737bb64c40e46fd063eaa2aa12ae67895bb5cd15d38b9af46f70f42347ce",
+  "status": "confirmed",
+  "intent": {
+    "operation": "create",
+    "genre": "industry_analysis",
+    "purpose": "为研究综述路径固化历史合同基线"
+  },
+  "audience": {
+    "role": "研究分析负责人",
+    "knowledge_level": "professional"
+  },
+  "content": {
+    "topic": "合同哈希金样本",
+    "central_question": "历史 v1.0 合同哈希是否逐字节稳定",
+    "required_points": [
+      "覆盖全部既有模式"
+    ],
+    "prohibited_points": [
+      "允许未记录的哈希漂移"
+    ]
+  },
+  "voice": {
+    "tone": "professional",
+    "preserve_user_voice": true
+  },
+  "material_policy": {
+    "user_material_priority": "highest",
+    "allow_external_research": false,
+    "conflict_handling": "ask_user"
+  },
+  "evidence_policy": {
+    "level": "standard",
+    "unsupported_claims": "prohibit"
+  },
+  "delivery": {
+    "format": "markdown",
+    "language": "zh-CN",
+    "length": {
+      "min": 5000,
+      "max": 7000
+    }
+  },
+  "collaboration": {
+    "task_mode": "guided",
+    "orchestration_mode": "outline_first",
+    "assurance_level": "standard",
+    "approval_mode": "conditional"
+  },
+  "source_attributions": [
+    {
+      "field_path": "/collaboration/task_mode",
+      "source": "user",
+      "value_hash": "sha256:bd408650ebb365982c0aeccd65a20f5901e5621d1f5c621c466030e722de6fd4",
+      "recorded_at": "2026-09-07T00:00:00Z"
+    },
+    {
+      "field_path": "/collaboration/orchestration_mode",
+      "source": "user",
+      "value_hash": "sha256:6e85e350da1b455885f9ed7e6cf5b4c9514635c38c7c43e8575b27f9bf431aff",
+      "recorded_at": "2026-09-07T00:00:00Z"
+    },
+    {
+      "field_path": "/collaboration/assurance_level",
+      "source": "user",
+      "value_hash": "sha256:cb2842d6687d19c69a6c0d4eb6a0f1af02951cef170de56ab331046ea5baac08",
+      "recorded_at": "2026-09-07T00:00:00Z"
+    },
+    {
+      "field_path": "/collaboration/approval_mode",
+      "source": "user",
+      "value_hash": "sha256:c1e2aa5c07548e5df4c6ae909941b717e3bc08e407168cba2d01c9d2f9dde7a6",
+      "recorded_at": "2026-09-07T00:00:00Z"
+    },
+    {
+      "field_path": "/material_policy/allow_external_research",
+      "source": "user",
+      "value_hash": "sha256:fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+      "recorded_at": "2026-09-07T00:00:00Z"
+    }
+  ],
+  "inferences": [
+    {
+      "field_path": "/content/topic",
+      "proposed_value": "研究综述路径金样本主题",
+      "confidence": 0.9,
+      "status": "accepted",
+      "reason_code": "golden_sample",
+      "summary": "由金样本测试固化的已接受推断"
+    }
+  ]
+}

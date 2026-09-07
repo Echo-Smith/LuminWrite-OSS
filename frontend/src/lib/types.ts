@@ -129,8 +129,8 @@ export interface AgentStartPayload {
   topic_url?: string;
   /** 是否启用素材库自动检索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
   kb_enabled?: boolean;
-  /** Task10 治理控制：旧入口仅作兼容适配，正式运行以 WritingContract 为准。 */
-  orchestration_mode?: "auto" | "fast" | "outline_first" | "sourced" | "strict_research";
+  /** Task10 治理控制：旧入口仅作兼容适配，正式运行以 WritingContract 为准。与 writing-runtime-types 的 OrchestrationMode（含 research_review）保持一致。 */
+  orchestration_mode?: "auto" | "fast" | "outline_first" | "sourced" | "strict_research" | "research_review";
   assurance_level?: "flexible" | "standard" | "sourced" | "strict";
   approval_mode?: "conditional" | "always" | "auto";
 }

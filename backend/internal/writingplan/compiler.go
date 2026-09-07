@@ -167,6 +167,14 @@ func (c *Compiler) Compile(req CompileRequest) (CompileResult, error) {
 	}
 	requested := resolved.Requested.OrchestrationMode
 	effective := resolved.Effective.OrchestrationMode
+	// Fail closed: the research_review mode exists only on lcp/1.1 contracts
+	// with a non-empty ResearchSpec. This covers both an explicit user
+	// selection and a system recommendation applied to an auto field —
+	// neither may route a v1.0 contract into the research path.
+	if (requested == writingkernel.OrchestrationModeResearchReview || effective == writingkernel.OrchestrationModeResearchReview) &&
+		(req.Contract.SchemaVersion != writingkernel.SchemaVersionV11 || req.Contract.Research == nil) {
+		return CompileResult{}, fmt.Errorf("RESEARCH_REVIEW_CONTRACT_INVALID: orchestration mode research_review requires schema_version %q with a non-empty research spec", writingkernel.SchemaVersionV11)
+	}
 	if effective == writingkernel.OrchestrationModeAuto {
 		effective = recommendMode(req.Contract)
 	}
