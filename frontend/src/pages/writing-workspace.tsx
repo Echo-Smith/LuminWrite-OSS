@@ -1,9 +1,10 @@
 /**
  * 未来写作工作台：全局导航 | Codex 式内联对话 | 连续文档纸面 | 详情分页。
  * 运行资源与布局偏好是两套独立状态，任何事件都不能替用户展开或切换面板。
+ * 研究综述（research_review）的面板在运行激活时出现在文档区域上方。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { Menu, PanelRightOpen, RefreshCw } from "lucide-react";
+import { BookOpenText, ChevronDown, Menu, PanelRightOpen, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -12,14 +13,22 @@ import { DocumentSurface } from "@/components/document/document-surface";
 import { RevisionDiff } from "@/components/document/revision-diff";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { PulseIndicator } from "@/components/animation";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
+import { pendingGate, researchSliceActive, type ResearchSlice } from "@/stores/research-slice";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { useAgentWebSocket } from "@/hooks/use-agent-websocket";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { ResearchProgress } from "@/components/writing/research-progress";
+import { ResearchGatePanel } from "@/components/writing/research-gate-panel";
+import { ResearchEvidencePanel } from "@/components/writing/research-evidence-panel";
+import { CitationMarker, findCitationMarkers } from "@/components/writing/research-citation-popover";
+import { fetchEvidencePack, fetchRunArtifactContent, getLastResearchSpec, type ResearchCitationIndex, type ResearchEvidencePack } from "@/lib/research-api";
+import type { DocumentNode } from "@/lib/writing-runtime-types";
 import type { RevisionSet } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +54,121 @@ function clampDetailWidth(width: number, sidebarOpen: boolean): number {
   return Math.min(Math.max(width, DETAIL_WIDTH_MIN), safeMaximum);
 }
 
+/** 从正式文档版本树收集纯文本，用于扫描 [@ev_xxx] 引用标记。 */
+function collectDocumentText(node: DocumentNode | null | undefined): string {
+  if (!node) return "";
+  let text = typeof node.text === "string" ? node.text : "";
+  for (const child of node.children ?? []) text += collectDocumentText(child);
+  return text;
+}
+
+/**
+ * 研究综述工作台：进度投影 + 待确认 gate + 证据包 + 草稿引用核对。
+ * 只在研究切片活跃时渲染；数据以 GET 兜底（refreshResearch）+ 事件流合并。
+ */
+function ResearchWorkbench({ runId }: { runId: string }) {
+  const research: ResearchSlice = useWritingRuntimeStore((state) => state.research);
+  const applyGateView = useWritingRuntimeStore((state) => state.applyGateView);
+  const artifacts = useWritingRuntimeStore((state) => state.artifacts);
+  const provisionalDeltas = useWritingRuntimeStore((state) => state.provisionalDeltas);
+  const versions = useWritingRuntimeStore((state) => state.versions);
+
+  const [evidenceOpen, setEvidenceOpen] = useState(true);
+  const [citations, setCitations] = useState<ResearchCitationIndex | null>(null);
+  const [pack, setPack] = useState<ResearchEvidencePack | null>(null);
+
+  const packRef = research.progress?.pack_ref ?? null;
+  const gate = pendingGate(research);
+  const decidedGates = Object.values(research.gates).filter((item) => item.status !== "pending");
+  const maxPapers = getLastResearchSpec()?.max_papers ?? null;
+  const packArtifactId = packRef?.artifact_id ?? null;
+
+  useEffect(() => {
+    if (!packRef || !packArtifactId) { setPack(null); return; }
+    let cancelled = false;
+    fetchEvidencePack(runId, packRef)
+      .then((content) => { if (!cancelled) setPack(content); })
+      .catch(() => { if (!cancelled) setPack(null); });
+    return () => { cancelled = true; };
+  }, [runId, packArtifactId]);
+
+  const citationArtifactId = useMemo(
+    () => artifacts.find((artifact) => artifact.artifact_type === "research_citation_index")?.artifact_id ?? "art_citation_index_demo",
+    [artifacts],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRunArtifactContent(runId, citationArtifactId)
+      .then((content) => {
+        if (!cancelled && (content as ResearchCitationIndex)?.schema_version === "research-citation-index/1") setCitations(content as ResearchCitationIndex);
+      })
+      .catch(() => { /* 引用索引不可用时不阻塞工作台 */ });
+    return () => { cancelled = true; };
+  }, [runId, citationArtifactId]);
+
+  const provisionalText = Object.values(provisionalDeltas).join("");
+  const draftText = provisionalText || collectDocumentText(versions[versions.length - 1]?.document.root ?? null);
+  const markers = findCitationMarkers(draftText);
+
+  return (
+    <section className="research-workbench" aria-label="研究综述工作台">
+      <div className="research-workbench-grid">
+        <div className="research-workbench-main">
+          <ResearchProgress runId={runId} slice={research} maxPapers={maxPapers} />
+          {gate && (
+            <ResearchGatePanel runId={runId} gate={gate} pack={pack} onGateUpdated={applyGateView} />
+          )}
+          {!gate && decidedGates.length > 0 && (
+            <p className="research-workbench-decided">已确认 {decidedGates.length} 个确认点（运行按计划继续）。</p>
+          )}
+          <Collapsible open={evidenceOpen} onOpenChange={setEvidenceOpen}>
+            <CollapsibleTrigger asChild>
+              <button className="research-workbench-toggle" aria-expanded={evidenceOpen}>
+                <BookOpenText className="h-3.5 w-3.5" />
+                <span>来源与证据包</span>
+                <ChevronDown className={cn("h-4 w-4 opacity-50 transition-transform", evidenceOpen && "rotate-180")} />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <ResearchEvidencePanel runId={runId} packRef={packRef} />
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
+
+        <aside className="research-workbench-citations" aria-label="草稿引用核对">
+          <h4 className="text-xs font-semibold">草稿引用核对（[@ev_xxx]）</h4>
+          {citations && markers.length > 0 ? (
+            <ul className="research-citation-list">
+              {markers.map((marker, index) => {
+                const citation = citations.citations.find((item) => item.evidence_id === marker);
+                return (
+                  <li key={marker}>
+                    <CitationMarker index={citations} evidenceId={marker} ordinal={index + 1} />
+                    {citation ? (
+                      <span className="min-w-0">
+                        <strong className="block truncate text-xs">{citation.paper_title}</strong>
+                        <small className="block text-[10px] text-muted-foreground">
+                          {citation.evidence_scope === "abstract" ? "摘要证据 · " : "全文证据 · "}页码 {citation.page}
+                          {citation.partial ? " · 部分覆盖" : ""}
+                        </small>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-destructive">引用索引中不存在 {marker}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="text-xs text-muted-foreground">草稿中出现 [@ev_xxx] 标记后，可在此核对原文摘录、页码与覆盖范围。</p>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
 export function WritingWorkspace() {
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
   const [detailWidth, setDetailWidth] = useState(360);
@@ -68,9 +192,11 @@ export function WritingWorkspace() {
   const provisionalDeltas = useWritingRuntimeStore((state) => state.provisionalDeltas);
   const quality = useWritingRuntimeStore((state) => state.quality);
   const runtimeError = useWritingRuntimeStore((state) => state.error);
+  const research = useWritingRuntimeStore((state) => state.research);
   const loadDocument = useWritingRuntimeStore((state) => state.loadDocument);
   const loadRun = useWritingRuntimeStore((state) => state.loadRun);
   const refreshRunEvents = useWritingRuntimeStore((state) => state.refreshRunEvents);
+  const refreshResearch = useWritingRuntimeStore((state) => state.refreshResearch);
 
   const detailPanel = useWorkspaceLayoutStore((state) => state.detailPanel);
   const composerWidth = useWorkspaceLayoutStore((state) => state.composerWidth);
@@ -140,6 +266,20 @@ export function WritingWorkspace() {
     return () => window.clearInterval(timer);
   }, [refreshRunEvents, run?.run_id, token]);
 
+  // 研究综述：以 GET 为准的兜底轮询（断线重连/刷新恢复后由 GET 重建待确认页面）。
+  // 每次载入运行先做一次 GET 探测；确认切片活跃后才持续轮询。
+  const researchActive = researchSliceActive(research);
+  const researchRunId = research.runId;
+  useEffect(() => {
+    if (!run?.run_id) return;
+    if (!researchActive && researchRunId === run.run_id && researchRunId !== null) return;
+    const sync = () => void refreshResearch(run.run_id, token ?? undefined);
+    sync();
+    if (!researchActive) return;
+    const timer = window.setInterval(sync, 4000);
+    return () => window.clearInterval(timer);
+  }, [refreshResearch, researchActive, researchRunId, run?.run_id, token]);
+
   useEffect(() => {
     setLayoutScope({
       userId: user?.userId ?? "guest",
@@ -196,6 +336,8 @@ export function WritingWorkspace() {
         </header>
 
         {runtimeError && <div className="runtime-error" role="alert">{runtimeError}</div>}
+
+        {researchActive && run?.run_id && <ResearchWorkbench runId={run.run_id} />}
 
         <div className="workspace-document-region">
           <DocumentSurface

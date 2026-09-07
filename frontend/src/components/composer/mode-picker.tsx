@@ -6,9 +6,10 @@ import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
-import { ChevronDown, ChevronRight, PenLine, Sparkles, Zap } from "lucide-react";
+import { BookOpenText, ChevronDown, ChevronRight, PenLine, Sparkles, Zap } from "lucide-react";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
+import { isResearchReviewEnabled, researchReviewDisabledReason } from "@/lib/research-api";
 import { cn } from "@/lib/utils";
 
 interface ModePickerProps {
@@ -21,6 +22,8 @@ interface ModePickerProps {
   approvalValue?: ApprovalMode;
   onApprovalChange?: (mode: ApprovalMode) => void;
   compact?: boolean;
+  /** 选择「研究综述」时回调（打开 ResearchSpec 表单）；未提供则只同步 orchestration。 */
+  onResearchReviewSelect?: () => void;
 }
 
 const MODE_OPTIONS: Array<{ value: Exclude<WriteMode, "guided">; label: string; icon: typeof Zap; description: string }> = [
@@ -35,6 +38,9 @@ const RESEARCH_PRESETS: Array<{ value: string; label: string; description: strin
   { value: "strict", label: "严格验证", description: "检索并逐项核查关键信息", orchestration: "strict_research", assurance: "strict" },
 ];
 
+/** 研究综述是独立入口（research_review 编排模式 + lcp/1.1 合同），不与普通资料要求混排。 */
+const RESEARCH_REVIEW_PRESET = { value: "review", label: "研究综述", description: "多源文献检索与逐条引用核查（两个确认点）" };
+
 const APPROVAL_OPTIONS: Array<{ value: ApprovalMode; label: string; description: string }> = [
   { value: "conditional", label: "风险时询问", description: "一般步骤自动执行，遇到风险再确认" },
   { value: "always", label: "每次询问", description: "执行关键步骤前都先确认" },
@@ -47,14 +53,27 @@ export function ModePicker({
   assuranceValue = "standard", onAssuranceChange,
   approvalValue = "conditional", onApprovalChange,
   compact = false,
+  onResearchReviewSelect,
 }: ModePickerProps) {
   const [open, setOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const primaryValue = value === "guided" ? "writing" : value;
   const selected = MODE_OPTIONS.find((option) => option.value === primaryValue) ?? MODE_OPTIONS[0];
-  const researchPreset = RESEARCH_PRESETS.find((option) => option.orchestration === orchestrationValue && option.assurance === assuranceValue);
+  const researchReviewActive = orchestrationValue === "research_review";
+  const researchPreset = researchReviewActive
+    ? null
+    : RESEARCH_PRESETS.find((option) => option.orchestration === orchestrationValue && option.assurance === assuranceValue);
   const approvalOption = APPROVAL_OPTIONS.find((option) => option.value === approvalValue) ?? APPROVAL_OPTIONS[0];
   const canConfigureExecution = Boolean(onOrchestrationChange && onAssuranceChange) || Boolean(onApprovalChange);
+  const researchEnabled = isResearchReviewEnabled();
+  const researchDisabledReason = researchReviewDisabledReason();
+
+  const handleResearchReviewSelect = () => {
+    onOrchestrationChange?.("research_review");
+    onAssuranceChange?.("strict");
+    onResearchReviewSelect?.();
+    setOpen(false);
+  };
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -81,13 +100,36 @@ export function ModePicker({
           <Switch checked={value === "guided"} onCheckedChange={(checked) => onChange(checked ? "guided" : "writing")} aria-label="生成前先确认提纲" />
         </label>
 
+        {onOrchestrationChange && (
+          <>
+            <div className="mx-2 my-1 border-t" />
+            <button
+              onClick={researchEnabled ? handleResearchReviewSelect : undefined}
+              disabled={!researchEnabled}
+              aria-disabled={!researchEnabled}
+              className={cn("flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors",
+                researchEnabled && "hover:bg-accent",
+                researchReviewActive && "bg-accent/50",
+                !researchEnabled && "cursor-not-allowed opacity-60")}
+            >
+              <BookOpenText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{RESEARCH_REVIEW_PRESET.label}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {researchEnabled ? RESEARCH_REVIEW_PRESET.description : `${researchDisabledReason}，入口已禁用`}
+                </span>
+              </span>
+            </button>
+          </>
+        )}
+
         {canConfigureExecution && (
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <div className="mx-2 my-1 border-t" />
             <CollapsibleTrigger asChild>
               <button className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent">
                 <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", advancedOpen && "rotate-90")} />
-                <span className="min-w-0 flex-1"><span className="block text-sm font-medium">高级设置</span><span className="block truncate text-xs text-muted-foreground">{researchPreset?.label ?? "自定义资料策略"} · {approvalOption.label}</span></span>
+                <span className="min-w-0 flex-1"><span className="block text-sm font-medium">高级设置</span><span className="block truncate text-xs text-muted-foreground">{researchReviewActive ? "研究综述（逐条引用核查）" : researchPreset?.label ?? "自定义资料策略"} · {approvalOption.label}</span></span>
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent className="pb-1">

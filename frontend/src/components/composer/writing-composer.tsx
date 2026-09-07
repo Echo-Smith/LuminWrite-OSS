@@ -11,17 +11,19 @@
  *   - 基于 Tiptap/ProseMirror 的富文本编辑器
  */
 import { useState, useRef, useCallback, useEffect, useMemo, forwardRef, useImperativeHandle, type ChangeEvent, type DragEvent } from "react";
-import { Square, Plus, X, PenLine, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus, FileUp, Upload, ChevronRight } from "lucide-react";
+import { Square, Plus, X, PenLine, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus, FileUp, Upload, ChevronRight, BookOpenText } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
 import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
 import { KnowledgeMaterialDialog } from "./knowledge-material-dialog";
+import { ResearchSettings } from "@/components/writing/research-settings";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
@@ -126,6 +128,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("auto");
   const [assuranceLevel, setAssuranceLevel] = useState<AssuranceLevel>("standard");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("conditional");
+  const [researchSettingsOpen, setResearchSettingsOpen] = useState(false);
+
+  const handleResearchReviewSelect = useCallback(() => setResearchSettingsOpen(true), []);
 
   // Update local state when session changes (e.g. new session from topic center)
   useEffect(() => { setMode(sessionMode); }, [sessionMode]);
@@ -383,6 +388,28 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
           </section>
         )}
 
+        {/* 研究综述设置表单：选择 research_review 模式后展开 */}
+        {researchSettingsOpen && orchestrationMode === "research_review" && (
+          <section className="composer-research-settings anim-fade-in">
+            <ResearchSettings
+              centralQuestion={message.trim()}
+              audience=""
+              language="中文"
+              lengthMin=""
+              lengthMax=""
+              allowExternalResearch
+              onClose={() => setResearchSettingsOpen(false)}
+              onStarted={(runId) => {
+                setResearchSettingsOpen(false);
+                // mock 优先：直接把工作台切到该运行（真实环境由后端返回 run 后同样处理）。
+                window.history.replaceState(null, "", `?run=${encodeURIComponent(runId)}`);
+                const runtime = useWritingRuntimeStore.getState();
+                void runtime.loadRun(runId);
+              }}
+            />
+          </section>
+        )}
+
         {/* 主输入区 — Tiptap 富文本编辑器 */}
         <TiptapEditor
           ref={editorRef}
@@ -479,7 +506,21 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
             onAssuranceChange={setAssuranceLevel}
             approvalValue={approvalMode}
             onApprovalChange={setApprovalMode}
+            onResearchReviewSelect={handleResearchReviewSelect}
           />
+
+          {/* 研究综述激活时显示入口标签（点击重新打开设置） */}
+          {orchestrationMode === "research_review" && !researchSettingsOpen && (
+            <button
+              onClick={() => setResearchSettingsOpen(true)}
+              className="composer-research-tag flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+              aria-label="编辑研究综述设置"
+              title="编辑研究综述设置"
+            >
+              <BookOpenText className="h-[18px] w-[18px]" />
+              <span className={cn("composer-control-label", compact && "sr-only")}>研究综述设置</span>
+            </button>
+          )}
 
           {/* 左侧：风格选择（紧挨模式右侧） */}
           <StylePicker value={style} onChange={handleStyleChange} compact={compact} />
