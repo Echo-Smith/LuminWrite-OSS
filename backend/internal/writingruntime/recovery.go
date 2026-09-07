@@ -21,8 +21,19 @@ type RecoveryState struct {
 	SpentDurationMS int64
 }
 
+// nodeAttemptOutcome aggregates one plan node's attempt-ledger evidence for
+// the unsafe-in-flight reconciliation: live means an attempt whose outcome is
+// still unresolved (running, leased, or expired); terminal means the node's
+// latest work reached a final ledger status (succeeded, failed, paused, or
+// cancelled).
+type nodeAttemptOutcome struct {
+	live     bool
+	terminal bool
+}
+
 func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Checkpoint, attempts []writingstore.NodeAttempt, manifests map[string]writingplan.CapabilityManifest) (RecoveryState, error) {
 	state := RecoveryState{CompletedNodes: map[string]int{}, NextAttempts: map[string]int{}, HumanRequired: []string{}}
+	outcomes := map[string]nodeAttemptOutcome{}
 	if checkpoint != nil {
 		if checkpoint.PlanID != plan.PlanID || checkpoint.PlanVersion != planVersion || checkpoint.PlanHash != plan.PlanHash {
 			return RecoveryState{}, ErrPlanChangedDuringRecovery
@@ -43,6 +54,14 @@ func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Check
 		if attempt.NodeID == InitialCaptureNodeID {
 			continue
 		}
+		outcome := outcomes[attempt.NodeID]
+		switch attempt.Status {
+		case "running", "leased", "expired":
+			outcome.live = true
+		case "succeeded", "failed", "paused", "cancelled":
+			outcome.terminal = true
+		}
+		outcomes[attempt.NodeID] = outcome
 		if attempt.Attempt >= state.NextAttempts[attempt.NodeID] {
 			state.NextAttempts[attempt.NodeID] = attempt.Attempt + 1
 		}
@@ -65,10 +84,40 @@ func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Check
 			state.HumanRequired = appendUniqueString(state.HumanRequired, attempt.NodeID)
 		}
 	}
+	// T00 root-cause fix (docs/plans/2026-09-07-research-review-integration.md):
+	// the failure-pause paths checkpoint the failed node as UnsafeInFlight, and
+	// Recover used to merge that marker into HumanRequired unconditionally —
+	// so a paused run could never be resumed past a terminally failed node:
+	// every resume re-entered unsafe_recovery and re-paused with no state
+	// change (the resume-after-pause dead end). A terminally recorded attempt
+	// is no longer in flight, so the marker is stale: the ledger below already
+	// re-flags genuinely unresolved attempts (running/leased/expired) for
+	// non-idempotent-safe capabilities, and node bounds still cap how often a
+	// resumed retry may run. Nodes without any terminal attempt (human-gate
+	// pauses, which record no attempt) keep blocking human recovery.
+	state.HumanRequired = dropResolvedUnsafeNodes(state.HumanRequired, outcomes)
 	if len(state.HumanRequired) > 0 {
 		return state, fmt.Errorf("%w: %v", ErrHumanRecoveryRequired, state.HumanRequired)
 	}
 	return state, nil
+}
+
+// dropResolvedUnsafeNodes removes a node from the human-required set when its
+// attempt ledger shows terminal work and nothing live: the paused "in-flight"
+// concern has since resolved into an inspectable outcome, and an explicit
+// user resume may retry it within the node's bounds.
+func dropResolvedUnsafeNodes(humanRequired []string, outcomes map[string]nodeAttemptOutcome) []string {
+	if len(humanRequired) == 0 {
+		return humanRequired
+	}
+	kept := make([]string, 0, len(humanRequired))
+	for _, nodeID := range humanRequired {
+		if outcome := outcomes[nodeID]; outcome.terminal && !outcome.live {
+			continue
+		}
+		kept = append(kept, nodeID)
+	}
+	return kept
 }
 
 func appendUniqueString(values []string, value string) []string {
