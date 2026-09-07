@@ -3,6 +3,7 @@ import { FilePenLine, FileText, Radio } from "lucide-react";
 import { DocumentBlock } from "./document-block";
 import type { DocumentVersion, QualityState, Revision, RevisionSet } from "@/lib/writing-runtime-types";
 import { QUALITY_STATE_COPY } from "@/lib/writing-runtime-types";
+import { CitationAwareText, CitationRenderContext, InlineCitationText, type CitationRenderContextValue } from "@/components/writing/research-citation-popover";
 
 interface DocumentSurfaceProps {
   title: string;
@@ -13,6 +14,11 @@ interface DocumentSurfaceProps {
   onRevisionSet?: (set: RevisionSet) => void;
   beforePaper?: ReactNode;
   afterPaper?: ReactNode;
+  /**
+   * 纸面内联引用上下文（T09）：提供后，正文中的 [@ev_xxx] 标记在渲染时转换为
+   * 上标编号链接并打开引用气泡；数据不改写。缺省时正文原样渲染。
+   */
+  citationContext?: CitationRenderContextValue | null;
 }
 
 export function DocumentSurface({
@@ -24,6 +30,7 @@ export function DocumentSurface({
   onRevisionSet,
   beforePaper,
   afterPaper,
+  citationContext = null,
 }: DocumentSurfaceProps) {
   const deltas = Object.entries(provisionalDeltas).filter(([, value]) => value.trim());
   const hasDraft = Boolean(version || legacyDraft?.trim());
@@ -48,14 +55,20 @@ export function DocumentSurface({
           </header>
 
           <div className="document-body">
-            {version ? (
-              <DocumentBlock node={version.root} onRevision={onRevisionSet ? handleRevision : undefined} />
-            ) : legacyDraft ? (
-              <div className="legacy-draft" data-lifecycle="provisional">
-                <div className="legacy-draft-label"><FilePenLine className="h-3.5 w-3.5" />兼容预览 · 尚未提交为文档版本</div>
-                <div className="whitespace-pre-wrap">{legacyDraft}</div>
-              </div>
-            ) : null}
+            <CitationRenderContext.Provider value={citationContext}>
+              {version ? (
+                <DocumentBlock node={version.root} onRevision={onRevisionSet ? handleRevision : undefined} />
+              ) : legacyDraft ? (
+                <div className="legacy-draft" data-lifecycle="provisional">
+                  <div className="legacy-draft-label"><FilePenLine className="h-3.5 w-3.5" />兼容预览 · 尚未提交为文档版本</div>
+                  <div className="whitespace-pre-wrap">
+                    {citationContext?.index
+                      ? <InlineCitationText text={legacyDraft} index={citationContext.index} numbers={citationContext.numbers} />
+                      : <CitationAwareText text={legacyDraft} />}
+                  </div>
+                </div>
+              ) : null}
+            </CitationRenderContext.Provider>
           </div>
 
           {deltas.length > 0 && (

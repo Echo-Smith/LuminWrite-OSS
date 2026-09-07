@@ -6,11 +6,16 @@
  * 以及未来可能原生透传的 research.* / gate.* 事件类型——两种形态都消费。
  * GET 快照按 last_event_sequence 合并：旧 GET 不得覆盖新事件已推进的状态。
  */
-import type { GateView, ResearchProgressView, ResearchTaskView } from "../lib/research-api.ts";
+import type { GateView, ResearchProgressView, ResearchSpecProjection, ResearchTaskView } from "../lib/research-api.ts";
 
 export interface ResearchSlice {
   runId: string | null;
   progress: ResearchProgressView | null;
+  /**
+   * 运行合同的 spec 投影（GET /runs/{id}/research 响应新增字段）。事件流不携带
+   * spec；GET 快照合并时写入并保留——上限等展示以它优先，缺省回退启动表单值。
+   */
+  spec: ResearchSpecProjection | null;
   gates: Record<string, GateView>;
   /** 研究家族已消费的最大序列（事件或 GET 快照）；旧事件/旧 GET 在此被拒。 */
   lastEventSequence: number;
@@ -22,6 +27,7 @@ export interface ResearchSlice {
 export const initialResearchSlice: ResearchSlice = {
   runId: null,
   progress: null,
+  spec: null,
   gates: {},
   lastEventSequence: 0,
   restoredFromGet: 0,
@@ -146,7 +152,12 @@ export function mergeResearchProgress(slice: ResearchSlice, view: ResearchProgre
   if (view.last_event_sequence < slice.lastEventSequence) {
     // 旧 GET：仅当事件流尚未建立 progress 时整体采用，否则只补充事件不携带的字段。
     if (!slice.progress) {
-      return { ...slice, runId: slice.runId ?? view.run_id, progress: { ...view, tasks: view.tasks ?? [] } };
+      return {
+        ...slice,
+        runId: slice.runId ?? view.run_id,
+        progress: { ...view, tasks: view.tasks ?? [] },
+        spec: view.spec ?? slice.spec,
+      };
     }
     const progress: ResearchProgressView = {
       ...slice.progress,
@@ -155,7 +166,7 @@ export function mergeResearchProgress(slice: ResearchSlice, view: ResearchProgre
       pack_ref: view.pack_ref ?? slice.progress.pack_ref,
       run_id: view.run_id,
     };
-    return { ...slice, progress, runId: slice.runId ?? view.run_id };
+    return { ...slice, progress, spec: view.spec ?? slice.spec, runId: slice.runId ?? view.run_id };
   }
   const gates = { ...slice.gates };
   if (view.active_gate) {
@@ -168,6 +179,7 @@ export function mergeResearchProgress(slice: ResearchSlice, view: ResearchProgre
     ...slice,
     runId: view.run_id,
     progress: { ...view, tasks: view.tasks ?? [] },
+    spec: view.spec ?? slice.spec,
     gates,
     lastEventSequence: Math.max(slice.lastEventSequence, view.last_event_sequence),
   };

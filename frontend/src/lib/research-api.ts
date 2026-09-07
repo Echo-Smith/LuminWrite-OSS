@@ -80,10 +80,28 @@ export interface ResearchTaskView {
   error_code?: string;
 }
 
+/**
+ * 运行合同的 spec 投影（T09：GET /runs/{id}/research 响应新增字段，
+ * 从 research-spec/1 运行合同投影，字段为 UI 展示所需子集）。
+ */
+export interface ResearchSpecProjection {
+  max_papers: number;
+  min_citable_sources: number;
+  evidence_requirement: EvidenceRequirement;
+  max_queries: number;
+  max_candidates: number;
+}
+
 export interface ResearchProgressView {
   run_id: string;
   phase: string;
+  /**
+   * 任务与论文计数。T09 起新增论文阅读键族：papers_full_text / papers_abstract /
+   * papers_unread（按阅读范围统计的论文篇数）；既有键（total/completed/…）保留。
+   */
   counts: Record<string, number>;
+  /** 运行合同投影（T09 起提供）；旧后端缺省为 null/undefined，前端回退启动表单值。 */
+  spec?: ResearchSpecProjection | null;
   tasks: ResearchTaskView[];
   pack_ref?: ArtifactRef;
   active_gate?: GateView;
@@ -97,6 +115,59 @@ export interface ArtifactContentView {
   content_hash: string;
   media_type: string;
   content: unknown;
+}
+
+// ─── 校验产物视图（T07 evidence_report / research_validation_details，UI 需要的字段子集） ───
+
+/** evidence_report.issues（validatorReport 的 issues 数组条目）。 */
+export interface EvidenceReportIssueView {
+  severity: string;
+  type: string;
+  message: string;
+}
+
+export interface EvidenceReportView {
+  validator?: string;
+  mode?: string;
+  passed?: boolean;
+  issues?: EvidenceReportIssueView[];
+}
+
+/** research_validation_details.findings 条目：可检查到句/证据的具体发现。 */
+export interface ResearchValidationFindingView {
+  type: string;
+  /** blocker 在质量门阻断正式交付；review 仅等待人工复核，不自行阻断。 */
+  severity: string;
+  evidence_id?: string;
+  claim_id?: string;
+  excerpt?: string;
+  message: string;
+  source?: string;
+}
+
+/** research_validation_details.bibliography 条目：编号仅是显示顺序（T07）。 */
+export interface ResearchBibliographyEntryView {
+  number: number;
+  evidence_id: string;
+  paper_id?: string;
+  title?: string;
+  authors?: string[];
+  year?: number | null;
+  venue?: string;
+  doi?: string;
+  url?: string;
+}
+
+export interface ResearchValidationDetailsView {
+  schema_version?: string;
+  invalid_citations?: string[];
+  unsupported_claims?: string[];
+  scope_overclaims?: string[];
+  unreviewed_claims?: string[];
+  omitted_evidence?: string[];
+  findings?: ResearchValidationFindingView[];
+  bibliography?: ResearchBibliographyEntryView[];
+  checked_at?: string;
 }
 
 // ─── 证据包 / 提纲 / 引用索引（contracts.md §2，UI 需要的字段子集） ───
@@ -365,12 +436,24 @@ export interface ResearchCounts {
   deferred?: number;
 }
 
+/** counts.papers_* 的投影（T09：按阅读范围统计的论文篇数）。 */
+export interface PaperReadingCounts {
+  fullText: number;
+  abstract: number;
+  unread: number;
+}
+
 export interface ResearchCountSummary {
   label: string;
   /** 阅读上限是预算配置值，不等于已读篇数；未完成时必须显式标注。 */
   capNote: string | null;
 }
 
+/**
+ * T08 任务计数摘要（保持不变）：阅读上限是预算配置值，不等于已读篇数，
+ * 任务未全部完成时必须显式标注。T09 的「全文 x / 摘要 y / 未读 z」论文计数
+ * 由面板直接消费 counts.papers_* 渲染，不混入本摘要。
+ */
 export function describeResearchCounts(counts: ResearchCounts, maxPapers: number | null): ResearchCountSummary {
   const total = counts.total ?? 0;
   const completed = counts.completed ?? 0;
@@ -382,6 +465,25 @@ export function describeResearchCounts(counts: ResearchCounts, maxPapers: number
   return { label, capNote: null };
 }
 
+/**
+ * T09：counts.papers_*（按阅读范围统计的论文篇数）投影。
+ * 键族完全缺失时返回 null（面板回退到任务计数摘要）。
+ */
+export function paperReadingCounts(counts: Record<string, number>): PaperReadingCounts | null {
+  const fullText = counts["papers_full_text"];
+  const abstract = counts["papers_abstract"];
+  const unread = counts["papers_unread"];
+  if (typeof fullText !== "number" && typeof abstract !== "number" && typeof unread !== "number") return null;
+  return { fullText: fullText ?? 0, abstract: abstract ?? 0, unread: unread ?? 0 };
+}
+
+/** 阅读上限解析：服务端运行合同投影（spec.max_papers）优先，缺省回退启动表单值。 */
+export function resolveReadingCap(specMaxPapers: number | null | undefined, formMaxPapers: number | null | undefined): number | null {
+  if (typeof specMaxPapers === "number" && Number.isFinite(specMaxPapers)) return specMaxPapers;
+  if (typeof formMaxPapers === "number" && Number.isFinite(formMaxPapers)) return formMaxPapers;
+  return null;
+}
+
 export const CITATION_MARKER_PATTERN = /\[@(ev_[A-Za-z0-9_-]+)\]/g;
 
 /** 扫描草稿文本中的 [@ev_xxx] 引用标记，按出现顺序去重。 */
@@ -391,6 +493,115 @@ export function findCitationMarkers(text: string): string[] {
     if (!found.includes(match[1])) found.push(match[1]);
   }
   return found;
+}
+
+// ─── 纸面内联引用（T09：仅渲染时转换，模型层数据不改写） ───
+
+export type CitationSegment =
+  | { kind: "text"; text: string }
+  | { kind: "citation"; evidenceId: string; number: number; known: boolean };
+
+/**
+ * 把含 [@ev_xxx] 的文本切成渲染分段。
+ * 编号优先取 bibliography 顺序（T07 research_validation_details 投影，即草稿
+ * 首次出现顺序），没有编号数据时按文本内出现顺序本地编号。known=false 表示
+ * 引用索引中不存在该证据——渲染为警示样式，绝不静默消失。
+ */
+export function splitCitationSegments(
+  text: string,
+  options: { numbers?: Record<string, number> | null; knownEvidenceIds?: ReadonlySet<string> | null } = {},
+): CitationSegment[] {
+  const segments: CitationSegment[] = [];
+  const numbers = options.numbers ?? null;
+  const knownEvidenceIds = options.knownEvidenceIds ?? null;
+  const localNumbers = new Map<string, number>();
+  let cursor = 0;
+  for (const match of text.matchAll(CITATION_MARKER_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > cursor) segments.push({ kind: "text", text: text.slice(cursor, start) });
+    const evidenceId = match[1];
+    let localNumber = localNumbers.get(evidenceId);
+    if (localNumber === undefined) {
+      localNumber = localNumbers.size + 1;
+      localNumbers.set(evidenceId, localNumber);
+    }
+    const number = numbers?.[evidenceId] ?? localNumber;
+    segments.push({ kind: "citation", evidenceId, number, known: knownEvidenceIds ? knownEvidenceIds.has(evidenceId) : true });
+    cursor = start + match[0].length;
+  }
+  if (cursor < text.length || segments.length === 0) segments.push({ kind: "text", text: text.slice(cursor) });
+  return segments;
+}
+
+/** T07 bibliography 投影 → evidence_id → 显示编号；无编号数据时返回 null（本地编号回退）。 */
+export function buildBibliographyNumbers(details: ResearchValidationDetailsView | null | undefined): Record<string, number> | null {
+  const numbers: Record<string, number> = {};
+  for (const entry of details?.bibliography ?? []) {
+    if (entry?.evidence_id && typeof entry.number === "number") numbers[entry.evidence_id] = entry.number;
+  }
+  return Object.keys(numbers).length > 0 ? numbers : null;
+}
+
+// ─── 质量门暂停引导（T09） ───
+
+export interface QualityGateGuidanceInput {
+  runStatus: string | null | undefined;
+  /** writing.node.status 投影：node_id → status（node_quality failed 语义为 EVIDENCE_INVALID）。 */
+  nodeStatuses: Record<string, string>;
+  /** evidence_report（T07 校验产物）中的 issues。 */
+  reportIssues?: EvidenceReportIssueView[] | null;
+  /** research_validation_details 中的可检查发现。 */
+  validationFindings?: ResearchValidationFindingView[] | null;
+  /** 运行级服务端错误码（如 run gate 记录的 EVIDENCE_INVALID）。 */
+  serverErrorCode?: string | null;
+}
+
+export interface QualityGateGuidance {
+  headline: string;
+  note: string;
+  findings: string[];
+}
+
+const QUALITY_GATE_FINDING_PREFIX = "质量门拦截：";
+
+/**
+ * run 处于 paused 且 node_quality failed（EVIDENCE_INVALID 语义：引用校验
+ * blocker 让质量节点 fail closed）时给出引导；没有「继续」路径——必须修正
+ * 草稿引用后创建新运行。列出 evidence_report / 校验明细 / 服务端错误里的
+ * 具体发现，用户看到可检查的句子而不只是总分。
+ */
+export function qualityGatePauseGuidance(input: QualityGateGuidanceInput): QualityGateGuidance | null {
+  if (input.runStatus !== "paused") return null;
+  const failedQualityNode = Object.entries(input.nodeStatuses ?? {}).some(
+    ([nodeId, status]) => nodeId === "node_quality" && status === "failed",
+  );
+  if (!failedQualityNode) return null;
+
+  const findings: string[] = [];
+  for (const issue of input.reportIssues ?? []) {
+    const message = issue?.message?.trim();
+    if (!message) continue;
+    findings.push(`${QUALITY_GATE_FINDING_PREFIX}${issue.type ?? "unknown"}（${issue.severity ?? "severity 未知"}）：${message}`);
+  }
+  for (const finding of input.validationFindings ?? []) {
+    const message = finding?.message?.trim();
+    if (!message) continue;
+    // 可检查到具体句子和证据（T07 验收：不只有总分）。
+    const where = [
+      finding.evidence_id ? `，证据 ${finding.evidence_id}` : "",
+      finding.excerpt ? `，句子「${finding.excerpt}」` : "",
+    ].join("");
+    findings.push(`校验发现 ${finding.type ?? "unknown"}（${finding.severity ?? "severity 未知"}${where}）：${message}`);
+  }
+  if (input.serverErrorCode) {
+    findings.push(`服务端错误码：${input.serverErrorCode}`);
+  }
+  const deduped = [...new Set(findings)];
+  return {
+    headline: "引用校验未通过——请修正草稿引用后创建新运行（当前运行不会自动重试）",
+    note: "质量门 fail closed：阻断级发现（EVIDENCE_INVALID）会阻止正式交付。当前运行没有可继续的路径；修正草稿中的引用标记后请创建新运行。",
+    findings: deduped,
+  };
 }
 
 // ─── gate 确认请求（全部取服务端 GET 返回值，客户端不计算 hash） ───
@@ -597,6 +808,10 @@ interface MockRun {
   runId: string;
   phase: string;
   counts: Record<string, number>;
+  /** 运行合同投影（T09 GET research 响应新增）；null 演练「无 spec 回退表单值」。 */
+  spec: ResearchSpecProjection | null;
+  /** writing.node.status 投影（node_id → status），loadRun 时灌入 store。 */
+  nodeStatuses: Record<string, string>;
   tasks: ResearchTaskView[];
   errors: ResearchTaskView[];
   packRef: ArtifactRef;
@@ -628,12 +843,40 @@ export const researchMock = {
     const run = ensureMockRun(runId);
     run.phase = phase;
   },
+  /** 覆盖运行合同的 spec 投影（演练「无 spec 回退启动表单值」）。 */
+  setSpec(runId: string, spec: ResearchSpecProjection | null): void {
+    const run = ensureMockRun(runId);
+    run.spec = spec;
+  },
   seedFailed(runId: string): void {
     const run = ensureMockRun(runId);
     run.phase = "failed";
     run.errors = [{ task_key: "fetch_full_text:p_meta_1", node_id: "research_fetch", phase: "fetch", status: "failed", attempt: 2, error_code: "SCHOLAR_UNREACHABLE" }];
   },
+  /**
+   * 演练质量门暂停（EVIDENCE_INVALID 语义）：run 暂停在 node_quality failed，
+   * 没有 pending gate，也没有任何继续路径；发现清单来自 evidence_report /
+   * research_validation_details mock 产物。
+   */
+  seedQualityGateFailure(runId: string): void {
+    const run = ensureMockRun(runId);
+    run.phase = "quality_gate_paused";
+    run.nodeStatuses = { ...run.nodeStatuses, node_quality: "failed" };
+    run.activeGateId = null;
+    run.errors = [
+      { task_key: "quality:node_quality", node_id: "node_quality", phase: "validate", status: "failed", attempt: 1, error_code: "EVIDENCE_INVALID" },
+    ];
+  },
 };
+/**
+ * mock 运行的 writing.node.status 投影（loadRun 灌入 store 的 nodeStatuses，
+ * 与真实事件流投影语义一致）。
+ */
+export function mockNodeStatuses(runId: string): Record<string, string> {
+  if (!researchMockEnabled || !isMockResearchRunId(runId)) return {};
+  const run = mockState.runs.get(runId);
+  return run ? { ...run.nodeStatuses } : {};
+}
 
 async function mockDelay(): Promise<void> {
   if (mockState.fetchDelayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, mockState.fetchDelayMs));
@@ -678,7 +921,10 @@ function seedDemoRun(runId: string): MockRun {
   return {
     runId,
     phase: "gate_evidence",
-    counts: { total: 14, completed: 9, failed: 1, deferred: 2 },
+    // T09 合同形状：counts 既有键保留 + 新增论文阅读键族；spec 从运行合同投影。
+    counts: { total: 14, completed: 9, failed: 1, deferred: 2, papers_full_text: 3, papers_abstract: 2, papers_unread: 1 },
+    spec: { max_papers: 10, min_citable_sources: 5, evidence_requirement: "abstract_allowed", max_queries: 3, max_candidates: 60 },
+    nodeStatuses: { node_research_read: "completed" },
     tasks: [
       { task_key: "discover:q1", node_id: "research_discover", phase: "discover", status: "completed", attempt: 1 },
       { task_key: "discover:q2", node_id: "research_discover", phase: "discover", status: "completed", attempt: 1 },
@@ -705,6 +951,7 @@ async function mockProgress(runId: string): Promise<ResearchProgressView> {
     run_id: runId,
     phase: run.phase,
     counts: { ...run.counts },
+    spec: run.spec,
     tasks: run.tasks,
     pack_ref: run.packRef,
     active_gate: run.activeGateId ? run.gates.get(run.activeGateId)?.gate : undefined,
@@ -826,6 +1073,8 @@ async function mockArtifactContent(runId: string, artifactId: string): Promise<u
   }
   if (artifactId === OUTLINE_ARTIFACT_IDS[0]) return mockOutline();
   if (artifactId === "art_citation_index_demo") return mockCitationIndex();
+  if (artifactId === EVIDENCE_REPORT_ARTIFACT_ID) return mockEvidenceReport();
+  if (artifactId === VALIDATION_DETAILS_ARTIFACT_ID) return mockValidationDetails();
   if (artifactId === "art_parsed_full_1") return mockParsedDocument();
   throw new ResearchApiError("WRITING_RESOURCE_NOT_FOUND", 404, `artifact not found: ${artifactId}`);
 }
@@ -981,5 +1230,58 @@ function mockParsedDocument(): Record<string, unknown> {
       { block_id: "blk_03", text: "本节讨论测量条件的差异：温度设置与循环倍率不同导致结论不可直接比较。", page: 3 },
       { block_id: "blk_04", text: "界面副产物层在循环 200 次后厚度趋于稳定，阻抗增量低于初始值的 15%。", page: 4 },
     ],
+  };
+}
+
+// ─── mock：质量门校验产物（evidence_report + research_validation_details） ───
+
+export const EVIDENCE_REPORT_ARTIFACT_ID = "art_evidence_report_demo";
+export const VALIDATION_DETAILS_ARTIFACT_ID = "art_validation_details_demo";
+
+/**
+ * 引用索引不可用或引用丢失的 blocker 演示：与 T07 五类失败语义对齐
+ * （invalid_citation / wrong_pack / hash_tamper / scope_overclaim / unsupported_assertion）。
+ */
+function mockEvidenceReport(): EvidenceReportView {
+  return {
+    validator: "core.research.validate.citations",
+    mode: "structural",
+    passed: false,
+    issues: [
+      { severity: "blocker", type: "invalid_citation", message: "草稿标记 [@ev_1042] 在引用索引中不存在：引用可能被删除或改写，请核对草稿引用。" },
+      { severity: "review", type: "unreviewed_claim", message: "句子「两组独立测量的偏差可忽略」未经过语义复核，建议人工确认。" },
+    ],
+  };
+}
+
+/** 校验明细演示：findings 可检查到句/证据；bibliography 编号来自 T07 投影（按草稿首次出现顺序）。 */
+function mockValidationDetails(): ResearchValidationDetailsView {
+  return {
+    schema_version: "research-validation-details/1",
+    invalid_citations: ["ev_1042"],
+    findings: [
+      {
+        type: "invalid_citation",
+        severity: "blocker",
+        evidence_id: "ev_1042",
+        excerpt: "阻抗增量在 200 次循环后完全消失 [@ev_1042]。",
+        message: "草稿标记 [@ev_1042] 在引用索引中不存在：引用可能被删除或改写，请核对草稿引用。",
+        source: "structural",
+      },
+      {
+        type: "unreviewed_claim",
+        severity: "review",
+        claim_id: "claim_07",
+        excerpt: "两组独立测量的偏差可忽略。",
+        message: "该断言未经过语义复核（fact reviewer 未给出结论），请人工确认。",
+        source: "heuristic",
+      },
+    ],
+    bibliography: [
+      { number: 1, evidence_id: "ev_1001", paper_id: "p_full_1", title: "固态电解质界面稳定性：机理与改性策略综述", authors: ["陈立", "M. Okada"], year: 2023 },
+      { number: 2, evidence_id: "ev_1002", paper_id: "p_abs_1", title: "Perovskite solar cell stability under thermal cycling", authors: ["J. Rivera", "K. Tanaka"], year: 2024 },
+      { number: 3, evidence_id: "ev_1003", paper_id: "p_full_1", title: "固态电解质界面稳定性：机理与改性策略综述", authors: ["陈立", "M. Okada"], year: 2023 },
+    ],
+    checked_at: "2026-09-07T00:00:00Z",
   };
 }

@@ -9,7 +9,7 @@ import type {
   WritingEvent,
 } from "../lib/writing-runtime-types.ts";
 import type { GateView, ResearchProgressView } from "../lib/research-api.ts";
-import { fetchResearchProgress, fetchRunShim, isMockResearchRunId } from "../lib/research-api.ts";
+import { fetchResearchProgress, fetchRunShim, isMockResearchRunId, mockNodeStatuses } from "../lib/research-api.ts";
 import { applyResearchEvent, initialResearchSlice, mergeGateView, mergeResearchProgress, type ResearchSlice } from "./research-slice.ts";
 
 export interface WritingRuntimeProjection {
@@ -149,13 +149,27 @@ export const useWritingRuntimeStore = create<WritingRuntimeProjection & WritingR
       const run = isMockResearchRunId(runId)
         ? await fetchRunShim(runId)
         : await writingRequest<RuntimeRun>(`/api/v2/runs/${encodeURIComponent(runId)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      set({ run, lastSequence: 0, events: [], nodeStatuses: {}, artifacts: [], provisionalDeltas: {}, research: { ...initialResearchSlice, runId: isMockResearchRunId(runId) ? runId : null }, loading: false });
+      // mock 的 nodeStatuses 投影与真实 writing.node.status 事件语义一致
+      // （质量门暂停演示需要 node_quality=failed）。
+      const mockStatuses = isMockResearchRunId(runId) ? mockNodeStatuses(runId) : {};
+      set({
+        run,
+        lastSequence: 0,
+        events: [],
+        nodeStatuses: Object.keys(mockStatuses).length > 0 ? mockStatuses : {},
+        artifacts: [],
+        provisionalDeltas: {},
+        research: { ...initialResearchSlice, runId: isMockResearchRunId(runId) ? runId : null },
+        loading: false,
+      });
       if (isMockResearchRunId(runId)) await get().refreshResearch(runId, token);
     } catch (error) {
       set({ error: error instanceof Error ? error.message : "无法加载运行", loading: false });
     }
   },
   refreshRunEvents: async (runId, token) => {
+    // mock 运行没有真实事件流；状态由 research-api 的 GET 投影驱动。
+    if (isMockResearchRunId(runId)) return;
     try {
       const page = await writingRequest<{ events: WritingEvent[]; next_sequence: number }>(
         `/api/v2/runs/${encodeURIComponent(runId)}/events?after=${get().lastSequence}`,

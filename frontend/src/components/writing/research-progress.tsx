@@ -1,12 +1,14 @@
 /**
  * 研究进度面板 — 消费 GET /runs/{id}/research 与 research.progress 事件的投影。
  *
+ * T09：优先用服务端 counts.papers_* 展示真实已读篇数（全文 x / 摘要 y / 未读 z），
+ * 阅读上限用运行合同投影 spec.max_papers（缺省回退启动表单值）。
  * 刻意不把 max_papers（阅读上限）显示成「已读 N 篇」：上限是预算配置值，
- * 任务未全部完成时必须显式标注 ≠ 已读篇数。
+ * 未全部读完时必须显式标注 ≠ 已读篇数。
  */
-import { AlertTriangle, CircleCheck, Clock3, Layers, PauseCircle } from "lucide-react";
+import { AlertTriangle, BookOpen, BookOpenCheck, CircleCheck, Clock3, FileQuestion, Layers, PauseCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { describeResearchCounts, type ResearchProgressView } from "@/lib/research-api";
+import { describeResearchCounts, paperReadingCounts, resolveReadingCap, type ResearchProgressView } from "@/lib/research-api";
 import type { ResearchSlice } from "@/stores/research-slice";
 
 const PHASE_LABELS: Record<string, string> = {
@@ -20,6 +22,7 @@ const PHASE_LABELS: Record<string, string> = {
   gate_evidence: "等待证据确认",
   gate_outline: "等待提纲确认",
   writing: "正在撰写正文",
+  quality_gate_paused: "质量门暂停（引用校验未通过）",
   failed: "运行失败",
 };
 
@@ -30,6 +33,7 @@ export function researchPhaseLabel(phase: string): string {
 interface ResearchProgressProps {
   runId: string;
   slice: ResearchSlice;
+  /** 启动表单值回退：spec.max_papers 缺省（旧后端 / 纯事件投影）时使用。 */
   maxPapers?: number | null;
 }
 
@@ -38,9 +42,12 @@ export function ResearchProgress({ runId, slice, maxPapers = null }: ResearchPro
   if (!progress) return null;
 
   const counts = progress.counts ?? {};
-  const summary = describeResearchCounts(counts, maxPapers);
+  // 上限解析：服务端运行合同投影优先，缺省回退启动表单值。
+  const readingCap = resolveReadingCap(slice.spec?.max_papers, maxPapers);
+  const summary = describeResearchCounts(counts, readingCap);
   const failed = counts.failed ?? 0;
   const deferred = counts.deferred ?? 0;
+  const paperCounts = paperReadingCounts(counts);
 
   return (
     <section className="research-progress" aria-label="研究进度">
@@ -51,10 +58,20 @@ export function ResearchProgress({ runId, slice, maxPapers = null }: ResearchPro
 
       <div className="research-progress-counts" data-testid="research-counts">
         <span className="font-medium tabular-nums">{summary.label}</span>
+        {paperCounts && (
+          <span className="research-progress-papers inline-flex items-center gap-2" data-testid="research-paper-counts">
+            <span className="inline-flex items-center gap-1"><BookOpenCheck className="h-3.5 w-3.5" />全文 {paperCounts.fullText}</span>
+            <span className="inline-flex items-center gap-1"><BookOpen className="h-3.5 w-3.5" />摘要 {paperCounts.abstract}</span>
+            <span className="inline-flex items-center gap-1 text-muted-foreground"><FileQuestion className="h-3.5 w-3.5" />未读 {paperCounts.unread}</span>
+          </span>
+        )}
         {failed > 0 && <span className="inline-flex items-center gap-1 text-destructive"><AlertTriangle className="h-3.5 w-3.5" />失败 {failed}</span>}
         {deferred > 0 && <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400"><PauseCircle className="h-3.5 w-3.5" />待补充 {deferred}</span>}
         {counts.total > 0 && counts.completed === counts.total && <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><CircleCheck className="h-3.5 w-3.5" />全部任务完成</span>}
       </div>
+      {readingCap !== null && (
+        <p className="research-progress-cap" data-testid="research-cap">阅读上限 {readingCap} 篇（{slice.spec ? "运行合同投影" : "启动表单值"}；预算配置，非已读数）</p>
+      )}
       {summary.capNote && (
         <p className="research-progress-capnote" data-testid="research-cap-note">{summary.capNote}</p>
       )}

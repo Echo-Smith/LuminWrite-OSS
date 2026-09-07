@@ -785,6 +785,26 @@
 .research-citation-popover footer { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; color: hsl(var(--muted-foreground)); font-size: .58rem; }
 .research-citation-warning { margin-top: 6px; color: hsl(35 80% 42%); font-size: .6rem; }
 
+/* T09：进度面板论文计数与上限行 */
+.research-progress-papers { color: hsl(var(--muted-foreground)); }
+.research-progress-cap { margin-top: 6px; color: hsl(var(--muted-foreground)); font-size: .62rem; }
+
+/* T09：纸面内联引用（渲染时转换，数据不改写） */
+.research-citation-inline { display: inline-flex; margin: 0 1px; }
+.document-body .research-citation { font-size: .58rem; vertical-align: super; }
+.research-citation-missing { display: inline-flex; align-items: center; gap: 2px; border-style: dashed; }
+.research-citation-plain { color: hsl(var(--muted-foreground)); font-size: .6rem; }
+
+/* T09：质量门暂停引导卡（无可继续按钮） */
+.research-quality-gate-card { margin-top: 12px; border: 1px solid hsl(var(--destructive) / .45); padding: 12px; }
+.research-quality-gate-header { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid hsl(var(--destructive) / .3); color: hsl(var(--destructive)); padding-bottom: 9px; }
+.research-quality-gate-headline { margin-top: 10px; font-size: .78rem; font-weight: 600; }
+.research-quality-gate-findings { margin-top: 8px; border: 1px solid hsl(var(--border) / .8); padding: 8px 9px; }
+.research-quality-gate-findings h4 { font-size: .64rem; font-weight: 600; }
+.research-quality-gate-findings li { color: hsl(var(--muted-foreground)); font-size: .68rem; line-height: 1.65; list-style: disc; margin-left: 14px; padding: 2px 0; }
+.research-quality-gate-findings-empty { margin-top: 8px; color: hsl(var(--muted-foreground)); font-size: .66rem; }
+.research-quality-gate-note { margin-top: 9px; color: hsl(var(--muted-foreground)); font-size: .64rem; }
+
 /* ── 研究综述设置表单（composer 内） ─────────────────────────── */
 
 .composer-research-settings { border-top: 1px solid hsl(var(--border) / .6); }

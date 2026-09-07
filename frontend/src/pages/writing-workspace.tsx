@@ -26,8 +26,22 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { ResearchProgress } from "@/components/writing/research-progress";
 import { ResearchGatePanel } from "@/components/writing/research-gate-panel";
 import { ResearchEvidencePanel } from "@/components/writing/research-evidence-panel";
+import { ResearchQualityGateCard } from "@/components/writing/research-quality-gate-card";
 import { CitationMarker, findCitationMarkers } from "@/components/writing/research-citation-popover";
-import { fetchEvidencePack, fetchRunArtifactContent, getLastResearchSpec, type ResearchCitationIndex, type ResearchEvidencePack } from "@/lib/research-api";
+import type { CitationRenderContextValue } from "@/components/writing/research-citation-popover";
+import {
+  EVIDENCE_REPORT_ARTIFACT_ID,
+  VALIDATION_DETAILS_ARTIFACT_ID,
+  buildBibliographyNumbers,
+  fetchEvidencePack,
+  fetchRunArtifactContent,
+  getLastResearchSpec,
+  qualityGatePauseGuidance,
+  type EvidenceReportView,
+  type ResearchCitationIndex,
+  type ResearchEvidencePack,
+  type ResearchValidationDetailsView,
+} from "@/lib/research-api";
 import type { DocumentNode } from "@/lib/writing-runtime-types";
 import type { RevisionSet } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
@@ -70,17 +84,22 @@ function ResearchWorkbench({ runId }: { runId: string }) {
   const research: ResearchSlice = useWritingRuntimeStore((state) => state.research);
   const applyGateView = useWritingRuntimeStore((state) => state.applyGateView);
   const artifacts = useWritingRuntimeStore((state) => state.artifacts);
+  const nodeStatuses = useWritingRuntimeStore((state) => state.nodeStatuses);
+  const runStatus = useWritingRuntimeStore((state) => state.run?.status ?? null);
   const provisionalDeltas = useWritingRuntimeStore((state) => state.provisionalDeltas);
   const versions = useWritingRuntimeStore((state) => state.versions);
 
   const [evidenceOpen, setEvidenceOpen] = useState(true);
   const [citations, setCitations] = useState<ResearchCitationIndex | null>(null);
   const [pack, setPack] = useState<ResearchEvidencePack | null>(null);
+  const [evidenceReport, setEvidenceReport] = useState<EvidenceReportView | null>(null);
+  const [validationDetails, setValidationDetails] = useState<ResearchValidationDetailsView | null>(null);
 
   const packRef = research.progress?.pack_ref ?? null;
   const gate = pendingGate(research);
   const decidedGates = Object.values(research.gates).filter((item) => item.status !== "pending");
-  const maxPapers = getLastResearchSpec()?.max_papers ?? null;
+  // 阅读上限：运行合同投影（GET research 的 spec.max_papers）优先，回退启动表单值。
+  const maxPapers = research.spec?.max_papers ?? getLastResearchSpec()?.max_papers ?? null;
   const packArtifactId = packRef?.artifact_id ?? null;
 
   useEffect(() => {
@@ -107,6 +126,34 @@ function ResearchWorkbench({ runId }: { runId: string }) {
     return () => { cancelled = true; };
   }, [runId, citationArtifactId]);
 
+  // 质量门校验产物：evidence_report（blocker issues）与 research_validation_details
+  // （可检查发现 + bibliography 编号投影）。加载失败不阻塞工作台。
+  useEffect(() => {
+    let cancelled = false;
+    fetchRunArtifactContent(runId, EVIDENCE_REPORT_ARTIFACT_ID)
+      .then((content) => { if (!cancelled) setEvidenceReport(content as EvidenceReportView); })
+      .catch(() => { /* 无校验产物（尚未跑到质量门） */ });
+    fetchRunArtifactContent(runId, VALIDATION_DETAILS_ARTIFACT_ID)
+      .then((content) => { if (!cancelled) setValidationDetails(content as ResearchValidationDetailsView); })
+      .catch(() => { /* 同上 */ });
+    return () => { cancelled = true; };
+  }, [runId]);
+
+  // 质量门暂停引导：paused + node_quality failed（EVIDENCE_INVALID 语义）才出现。
+  const qualityGuidance = qualityGatePauseGuidance({
+    runStatus,
+    nodeStatuses,
+    reportIssues: evidenceReport?.issues ?? null,
+    validationFindings: validationDetails?.findings ?? null,
+    serverErrorCode: evidenceReport?.passed === false ? "EVIDENCE_INVALID" : null,
+  });
+
+  // 纸面内联引用上下文：编号来自 T07 bibliography 顺序投影，缺省按出现顺序本地编号。
+  const citationContext: CitationRenderContextValue | null = useMemo(() => {
+    if (!citations) return null;
+    return { index: citations, numbers: buildBibliographyNumbers(validationDetails) };
+  }, [citations, validationDetails]);
+
   const provisionalText = Object.values(provisionalDeltas).join("");
   const draftText = provisionalText || collectDocumentText(versions[versions.length - 1]?.document.root ?? null);
   const markers = findCitationMarkers(draftText);
@@ -116,10 +163,11 @@ function ResearchWorkbench({ runId }: { runId: string }) {
       <div className="research-workbench-grid">
         <div className="research-workbench-main">
           <ResearchProgress runId={runId} slice={research} maxPapers={maxPapers} />
+          {qualityGuidance && <ResearchQualityGateCard guidance={qualityGuidance} />}
           {gate && (
             <ResearchGatePanel runId={runId} gate={gate} pack={pack} onGateUpdated={applyGateView} />
           )}
-          {!gate && decidedGates.length > 0 && (
+          {!gate && !qualityGuidance && decidedGates.length > 0 && (
             <p className="research-workbench-decided">已确认 {decidedGates.length} 个确认点（运行按计划继续）。</p>
           )}
           <Collapsible open={evidenceOpen} onOpenChange={setEvidenceOpen}>
@@ -142,9 +190,10 @@ function ResearchWorkbench({ runId }: { runId: string }) {
             <ul className="research-citation-list">
               {markers.map((marker, index) => {
                 const citation = citations.citations.find((item) => item.evidence_id === marker);
+                const displayNumber = citationContext?.numbers?.[marker] ?? index + 1;
                 return (
                   <li key={marker}>
-                    <CitationMarker index={citations} evidenceId={marker} ordinal={index + 1} />
+                    <CitationMarker index={citations} evidenceId={marker} ordinal={displayNumber} />
                     {citation ? (
                       <span className="min-w-0">
                         <strong className="block truncate text-xs">{citation.paper_title}</strong>
@@ -167,6 +216,46 @@ function ResearchWorkbench({ runId }: { runId: string }) {
       </div>
     </section>
   );
+}
+
+/**
+ * 纸面内联引用上下文（T09）：引用索引加载后，正文中的 [@ev_xxx] 在渲染时
+ * 转换为上标编号链接（编号来自 T07 bibliography 顺序，缺省本地编号）；
+ * 模型层数据不改写。非研究上下文（无索引）时为 null，正文原样渲染。
+ */
+function useCitationSurfaceContext(): CitationRenderContextValue | null {
+  const artifacts = useWritingRuntimeStore((state) => state.artifacts);
+  const [citations, setCitations] = useState<ResearchCitationIndex | null>(null);
+  const [validationDetails, setValidationDetails] = useState<ResearchValidationDetailsView | null>(null);
+
+  const runId = useWritingRuntimeStore((state) => state.run?.run_id ?? null);
+  const citationArtifactId = useMemo(
+    () => artifacts.find((artifact) => artifact.artifact_type === "research_citation_index")?.artifact_id ?? "art_citation_index_demo",
+    [artifacts],
+  );
+
+  useEffect(() => {
+    if (!runId) { setCitations(null); setValidationDetails(null); return; }
+    let cancelled = false;
+    fetchRunArtifactContent(runId, citationArtifactId)
+      .then((content) => {
+        if (!cancelled && (content as ResearchCitationIndex)?.schema_version === "research-citation-index/1") setCitations(content as ResearchCitationIndex);
+        else if (!cancelled) setCitations(null);
+      })
+      .catch(() => { if (!cancelled) setCitations(null); });
+    fetchRunArtifactContent(runId, VALIDATION_DETAILS_ARTIFACT_ID)
+      .then((content) => {
+        if (!cancelled && (content as ResearchValidationDetailsView)?.schema_version === "research-validation-details/1") setValidationDetails(content as ResearchValidationDetailsView);
+        else if (!cancelled) setValidationDetails(null);
+      })
+      .catch(() => { if (!cancelled) setValidationDetails(null); });
+    return () => { cancelled = true; };
+  }, [runId, citationArtifactId]);
+
+  return useMemo(() => {
+    if (!citations) return null;
+    return { index: citations, numbers: buildBibliographyNumbers(validationDetails) };
+  }, [citations, validationDetails]);
 }
 
 export function WritingWorkspace() {
@@ -203,6 +292,8 @@ export function WritingWorkspace() {
   const setDetailPanel = useWorkspaceLayoutStore((state) => state.setDetailPanel);
   const setComposerWidth = useWorkspaceLayoutStore((state) => state.setComposerWidth);
   const setLayoutScope = useWorkspaceLayoutStore((state) => state.setScope);
+
+  const citationSurfaceContext = useCitationSurfaceContext();
 
   const governedVersion = useMemo(() => {
     return versions.find((item) => item.document.version_id === runtimeDocument?.current_version_id)?.document
@@ -347,6 +438,7 @@ export function WritingWorkspace() {
             provisionalDeltas={provisionalDeltas}
             qualityState={quality?.quality_state ?? versions[versions.length - 1]?.quality_state}
             onRevisionSet={setPendingRevision}
+            citationContext={citationSurfaceContext}
             beforePaper={session?.messages.length ? <Thread variant="flow" /> : undefined}
             afterPaper={feedbackContext ? (
               <FeedbackBar traceId={feedbackContext.traceId} article={feedbackContext.article} hasFeedback={feedbackContext.hasFeedback} />
