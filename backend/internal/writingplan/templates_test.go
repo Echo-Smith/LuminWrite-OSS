@@ -238,13 +238,42 @@ func boundDefaultCapabilityRegistry(t *testing.T) *CapabilityRegistry {
 	t.Helper()
 	catalog := DefaultCapabilityRegistry()
 	registry := NewCapabilityRegistry(catalog.Version())
-	bound := map[string]bool{}
+	// One binding per executor id carrying the UNION of the manifests that
+	// share it — the reserved kernel gate executor serves two gate manifests
+	// with distinct pinned I/O.
+	type executorUnion struct {
+		inputs  map[ArtifactType]bool
+		outputs map[ArtifactType]bool
+	}
+	unions := map[string]*executorUnion{}
+	order := []string{}
 	for _, declared := range catalog.All() {
-		if !bound[declared.Executor] {
-			inputs := append(append([]ArtifactType(nil), declared.InputTypes...), declared.OptionalInputTypes...)
-			registerTestExecutor(t, registry, declared.Executor, inputs, declared.OutputTypes)
-			bound[declared.Executor] = true
+		u, ok := unions[declared.Executor]
+		if !ok {
+			u = &executorUnion{inputs: map[ArtifactType]bool{}, outputs: map[ArtifactType]bool{}}
+			unions[declared.Executor] = u
+			order = append(order, declared.Executor)
 		}
+		for _, input := range append(append([]ArtifactType(nil), declared.InputTypes...), declared.OptionalInputTypes...) {
+			u.inputs[input] = true
+		}
+		for _, output := range declared.OutputTypes {
+			u.outputs[output] = true
+		}
+	}
+	for _, executor := range order {
+		u := unions[executor]
+		inputs := []ArtifactType{}
+		for input := range u.inputs {
+			inputs = append(inputs, input)
+		}
+		outputs := []ArtifactType{}
+		for output := range u.outputs {
+			outputs = append(outputs, output)
+		}
+		registerTestExecutor(t, registry, executor, inputs, outputs)
+	}
+	for _, declared := range catalog.All() {
 		declared.Available = true
 		if err := registry.Register(declared); err != nil {
 			t.Fatal(err)

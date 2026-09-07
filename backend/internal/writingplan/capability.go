@@ -351,6 +351,20 @@ func validateManifest(manifest CapabilityManifest) error {
 	if manifest.DirectDocumentWrite {
 		return errors.New("DIRECT_DOCUMENT_WRITE_FORBIDDEN: capability must emit Artifact or RevisionSet")
 	}
+	// The kernel gate executor is reserved (design.md §3): a manifest may
+	// claim it only when it IS one of the two pinned kernel gate capabilities
+	// — exact id, class, NodeHumanGate-only kinds, version, and I/O — and it
+	// carries no permissions at all (gates have no external call authority).
+	// Every other manifest is rejected here, so the exemption cannot be
+	// forged onto an arbitrary executor-backed capability.
+	if manifest.Executor == KernelGateExecutor {
+		if !IsKernelHumanGateCapability(manifest) {
+			return fmt.Errorf("KERNEL_GATE_FORGERY: %s is not a kernel-owned human gate capability", manifest.ID)
+		}
+		if len(manifest.Permissions) != 0 {
+			return errors.New("KERNEL_GATE_PERMISSIONS_FORBIDDEN: gate manifests carry no permissions")
+		}
+	}
 	if err := manifest.Context.ValidateContextContract(); err != nil {
 		return err
 	}
@@ -452,7 +466,197 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
 		EnforceRequiredContext: true}
 	register(strictResearch)
+	registry.registerResearchReview()
 	return registry
+}
+
+// Research capability classes and ids (design.md §3 fixed node table, v1).
+// Action/validate classes execute through research executors; the two gate
+// classes are kernel-owned: the orchestrator pauses at NodeHumanGate nodes,
+// no executor dispatch ever runs, and only these two catalog ids may pass
+// plan validation without a live executor (see KernelHumanGateCapabilities).
+const (
+	ClassResearchDiscover         = "research.discover"
+	ClassResearchRead             = "research.read"
+	ClassResearchGateEvidence     = "research.gate.evidence"
+	ClassResearchOutline          = "research.outline"
+	ClassResearchGateOutline      = "research.gate.outline"
+	ClassResearchDraft            = "research.draft"
+	ClassResearchValidateCitation = "research.validate.citations"
+	ClassResearchValidateFact     = "research.validate.fact"
+
+	CapabilityResearchDiscover    = "core.research.discover"
+	CapabilityResearchRead        = "core.research.read"
+	CapabilityResearchGateEvidenc = "core.research.gate.evidence"
+	CapabilityResearchOutline     = "core.research.outline"
+	CapabilityResearchGateOutline = "core.research.gate.outline"
+	CapabilityResearchDraft       = "core.research.draft"
+	CapabilityResearchCitations   = "core.research.validate.citations"
+	CapabilityResearchFact        = "core.research.validate.fact"
+)
+
+// KernelHumanGateCapabilities are the only capability ids allowed to compile
+// and dispatch as NodeHumanGate nodes without an executable executor behind
+// their manifest (design.md §3: "gate manifest 无外部调用权限，由内核处理，
+// 编译校验允许其受控无 executor 分支；不能以虚构 runner 绕过注册校验").
+// The exemption is bound to exact ids + the NodeHumanGate kind + the pinned
+// I/O shapes below; ValidatePlan, ValidateForDispatch, and the runtime's
+// recovery all enforce the same predicate, so an arbitrary external manifest
+// can never claim the exemption.
+var KernelHumanGateCapabilities = map[string]KernelHumanGateShape{
+	CapabilityResearchGateEvidenc: {Class: ClassResearchGateEvidence,
+		InputTypes: []ArtifactType{"research_evidence_pack"}, OutputTypes: []ArtifactType{"evidence_approval"}},
+	CapabilityResearchGateOutline: {Class: ClassResearchGateOutline,
+		InputTypes: []ArtifactType{"research_outline"}, OutputTypes: []ArtifactType{"approved_research_outline"}},
+}
+
+// KernelHumanGateShape is the pinned I/O contract one gate capability's
+// manifest must carry to qualify for the kernel exemption.
+type KernelHumanGateShape struct {
+	Class       string
+	InputTypes  []ArtifactType
+	OutputTypes []ArtifactType
+}
+
+// KernelGateExecutor is the reserved executor id of the kernel-owned gate
+// capabilities. No dispatchable executor is ever registered under it by the
+// runtime; the orchestrator pauses at NodeHumanGate nodes and the gate
+// decision transaction completes them (design.md §5).
+const KernelGateExecutor = "kernel.human_gate"
+
+// IsKernelHumanGateCapability reports whether the manifest is exactly one of
+// the two kernel-owned gate capabilities: the id, class, node kinds, and I/O
+// must all match the pinned shape. Anything else — including a foreign
+// manifest that merely renames itself — is rejected.
+func IsKernelHumanGateCapability(manifest CapabilityManifest) bool {
+	shape, ok := KernelHumanGateCapabilities[manifest.ID]
+	if !ok {
+		return false
+	}
+	if manifest.Class != shape.Class {
+		return false
+	}
+	if !containsNodeKind(manifest.SupportedNodeKinds, NodeHumanGate) || len(manifest.SupportedNodeKinds) != 1 {
+		return false
+	}
+	if !artifactSubset(shape.InputTypes, manifest.InputTypes) || len(shape.InputTypes) != len(manifest.InputTypes) ||
+		!artifactSubset(shape.OutputTypes, manifest.OutputTypes) || len(shape.OutputTypes) != len(manifest.OutputTypes) {
+		return false
+	}
+	return manifest.Version == "1.0.0"
+}
+
+// registerResearchReview declares the T06 research_review capability catalog
+// (design.md §3). Every entry is declared-only: the governed composition
+// activates the executable ones via Activate; the two gate entries stay
+// declared + available through the controlled kernel exemption (no executor
+// dispatch exists for a kernel node).
+func (registry *CapabilityRegistry) registerResearchReview() {
+	// declare stores an executable-class capability as declared-only
+	// (fail-closed until the governed composition activates it); gate
+	// capabilities register as available — the kernel owns their dispatch.
+	register := func(manifest CapabilityManifest) {
+		var err error
+		if manifest.Executor == KernelGateExecutor {
+			err = registry.Register(manifest)
+		} else {
+			manifest.Available = false
+			err = registry.Declare(manifest)
+		}
+		if err != nil {
+			panic(err)
+		}
+	}
+	research := func(id, class, executor string, inputs, outputs []ArtifactType, permissions []Permission, validator bool, maxItems int) CapabilityManifest {
+		kinds := []NodeKind{NodeAction}
+		if validator {
+			kinds = []NodeKind{NodeValidate}
+		}
+		return CapabilityManifest{ID: id, Class: class, Executor: executor, InputTypes: inputs, OutputTypes: outputs,
+			Permissions: permissions, EstimatedCostUSD: .5, EstimatedDurationMS: 30000, PreservesVoice: true,
+			Validator: validator, Version: "1.0.0", SupportsEvidence: true,
+			SupportedNodeKinds: kinds,
+			// The read node's 20-paper workset and 20-minute cap (design.md
+			// §3) are template bounds; the catalog's ceilings must admit them.
+			MaxBounds:  Bounds{MaxAttempts: 2, MaxConcurrency: 1, MaxItems: maxItems, MaxCostUSD: 10, TimeoutMS: 1200000},
+			Idempotency: IdempotencyRequired}
+	}
+	// Discovery plans queries and ranks candidates; the read node's research
+	// budget is primarily a duration boundary (design.md §3), so the dollar
+	// estimates stay nominal.
+	discover := research(CapabilityResearchDiscover, ClassResearchDiscover, "engine.step.research_discover",
+		[]ArtifactType{"contract"}, []ArtifactType{"research_candidates"},
+		[]Permission{"external.research", "materials.read", "model.invoke"}, false, 1)
+	// design.md §3: discover consumes the run materials as optional context.
+	discover.OptionalInputTypes = []ArtifactType{"materials"}
+	discover.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(discover)
+	read := research(CapabilityResearchRead, ClassResearchRead, "engine.step.research_read",
+		[]ArtifactType{"contract", "research_candidates"}, []ArtifactType{"research_evidence_pack"},
+		[]Permission{"external.research", "materials.read", "model.invoke"}, false, 20)
+	read.OptionalInputTypes = []ArtifactType{"materials"}
+	read.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(read)
+	// Kernel-owned gate capabilities: declared available with the pinned
+	// kernel.human_gate executor so ValidatePlan's executor-existence check
+	// holds, but no dispatch ever happens — the orchestrator pauses at the
+	// node and the decision transaction completes it.
+	gateExecutor := KernelGateExecutor
+	if _, exists := registry.executors[gateExecutor]; !exists {
+		_ = registry.RegisterExecutor(ExecutorBinding{ID: gateExecutor,
+			AcceptedInputTypes:  []ArtifactType{"research_evidence_pack", "research_outline"},
+			ProducedOutputTypes: []ArtifactType{"evidence_approval", "approved_research_outline"},
+			Dispatch: func(context.Context, ExecutionRequest) (ExecutionResult, error) {
+				return ExecutionResult{}, errors.New("kernel.human_gate is never dispatched")
+			}})
+	}
+	gateEvidence := CapabilityManifest{ID: CapabilityResearchGateEvidenc, Class: ClassResearchGateEvidence,
+		Executor: gateExecutor, InputTypes: []ArtifactType{"research_evidence_pack"},
+		OutputTypes: []ArtifactType{"evidence_approval"}, Permissions: []Permission{},
+		EstimatedCostUSD: 0, EstimatedDurationMS: 0, Version: "1.0.0",
+		SupportedNodeKinds: []NodeKind{NodeHumanGate},
+		MaxBounds:          Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 0, TimeoutMS: 1200000},
+		Idempotency:        IdempotencySafe, Available: true}
+	register(gateEvidence)
+	gateOutline := CapabilityManifest{ID: CapabilityResearchGateOutline, Class: ClassResearchGateOutline,
+		Executor: gateExecutor, InputTypes: []ArtifactType{"research_outline"},
+		OutputTypes: []ArtifactType{"approved_research_outline"}, Permissions: []Permission{},
+		EstimatedCostUSD: 0, EstimatedDurationMS: 0, Version: "1.0.0",
+		SupportedNodeKinds: []NodeKind{NodeHumanGate},
+		MaxBounds:          Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 0, TimeoutMS: 1200000},
+		Idempotency:        IdempotencySafe, Available: true}
+	register(gateOutline)
+	outline := research(CapabilityResearchOutline, ClassResearchOutline, "engine.step.research_outline",
+		[]ArtifactType{"contract", "research_evidence_pack", "evidence_approval"}, []ArtifactType{"research_outline"},
+		[]Permission{"materials.read", "model.invoke"}, false, 1)
+	outline.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(outline)
+	draft := research(CapabilityResearchDraft, ClassResearchDraft, "engine.step.research_draft",
+		[]ArtifactType{"contract", "research_evidence_pack", "evidence_approval", "approved_research_outline"},
+		[]ArtifactType{"full_draft", "research_citation_index"},
+		[]Permission{"materials.read", "model.invoke"}, false, 1)
+	draft.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(draft)
+	// The v1 citation/fact validators are deterministic host-side checks over
+	// the pack + draft + citation index (T07 adds the model-assisted detail
+	// projection); they run as report producers, never gates.
+	citations := research(CapabilityResearchCitations, ClassResearchValidateCitation, "engine.step.research_citations",
+		[]ArtifactType{"research_evidence_pack", "full_draft", "research_citation_index"},
+		[]ArtifactType{"evidence_report", "research_validation_details"},
+		[]Permission{"validation.run"}, true, 1)
+	register(citations)
+	fact := research(CapabilityResearchFact, ClassResearchValidateFact, "engine.step.research_fact",
+		[]ArtifactType{"research_evidence_pack", "full_draft"}, []ArtifactType{"fact_report"},
+		[]Permission{"validation.run"}, true, 1)
+	register(fact)
 }
 
 func validBounds(bounds Bounds) bool {

@@ -205,7 +205,7 @@ func (c *Compiler) Compile(req CompileRequest) (CompileResult, error) {
 		req.RequiredFinalArtifact = "revision_set"
 	}
 	if req.RequiredFinalArtifact == "revision_set" {
-		req.RequiredValidators = unionStrings(req.RequiredValidators, validatorsForAssurance(req.Contract.Collaboration.AssuranceLevel))
+		req.RequiredValidators = unionStrings(req.RequiredValidators, validatorsForContract(req.Contract))
 	}
 	nodesBeforeRequiredValidators := len(plan.Nodes)
 	plan.Nodes, missing = ensureValidators(plan.Nodes, req.RequiredValidators, req.Registry, missing)
@@ -378,12 +378,21 @@ func ValidatePlan(plan ExecutablePlan, ctx ValidationContext) StaticValidation {
 		if !manifest.Available {
 			result.Errors = append(result.Errors, "CAPABILITY_UNAVAILABLE: "+manifest.ID)
 		}
+		// Kernel-owned gate exemption (design.md §3): a NodeHumanGate node
+		// whose capability is EXACTLY one of the two pinned kernel gate ids
+		// passes the cost/timeout bound checks that assume a dispatchable
+		// executor (a gate never runs, so its nominal manifest cost/timeout
+		// do not constrain it). Any other manifest — including a forged one
+		// claiming a different id/version — gets no such treatment.
 		if node.CapabilityVersion != manifest.Version {
 			result.Errors = append(result.Errors, "CAPABILITY_VERSION_MISMATCH: "+node.NodeID)
 		}
 		if !containsNodeKind(manifest.SupportedNodeKinds, node.Kind) {
 			result.Errors = append(result.Errors, "UNSUPPORTED_NODE_KIND: "+node.NodeID)
 		}
+		// Gate cost/timeout bounds: the kernel gate manifests pin zero nominal
+		// cost and zero nominal duration, so the worst-case checks below hold
+		// for gate nodes too; nothing special-cased here.
 		if !validBounds(node.Bounds) || exceedsBounds(node.Bounds, manifest.MaxBounds) {
 			result.BudgetValid = false
 			result.Errors = append(result.Errors, "UNBOUNDED_NODE: "+node.NodeID)
@@ -685,11 +694,29 @@ func validatorsForAssurance(level writingkernel.AssuranceLevel) []string {
 	}
 }
 
+// validatorsForContract is the assurance floor resolved for one contract.
+// Research-review contracts (lcp/1.1 + research spec) swap the generic
+// source-pack evidence validator for the research citation and fact
+// validators (design.md §3): their inputs bind the citation index and the
+// evidence pack, which is what the review path can actually verify.
+func validatorsForContract(contract writingkernel.WritingContract) []string {
+	if contract.Research != nil && contract.SchemaVersion == writingkernel.SchemaVersionV11 {
+		return []string{CapabilityResearchCitations, CapabilityResearchFact, "core.validation.quality"}
+	}
+	return validatorsForAssurance(contract.Collaboration.AssuranceLevel)
+}
+
 // RequiredValidatorsForAssurance exposes the compiler's mandatory quality
 // floor so dispatch authorization cannot trust a validator list supplied by a
 // client or by an older plan snapshot.
 func RequiredValidatorsForAssurance(level writingkernel.AssuranceLevel) []string {
 	return append([]string(nil), validatorsForAssurance(level)...)
+}
+
+// RequiredValidatorsForContract is the dispatch-authorization form of the
+// floor: research contracts resolve to the research validator set.
+func RequiredValidatorsForContract(contract writingkernel.WritingContract) []string {
+	return append([]string(nil), validatorsForContract(contract)...)
 }
 
 func hasErrorPrefix(values []string, prefix string) bool {
