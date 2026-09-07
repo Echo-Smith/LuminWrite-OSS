@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,8 +60,17 @@ func newGovernedE2EServer(t *testing.T) (*Server, http.Handler, bool) {
 	live := false
 	if apiKey != "" && baseURL != "" && model != "" && os.Getenv("P0_OFFLINE") != "1" {
 		live = true
+		maxTokens := 4096
+		if configured := os.Getenv("TASK13_LLM_MAX_TOKENS"); configured != "" {
+			parsed, err := strconv.Atoi(configured)
+			if err != nil || parsed <= 0 {
+				t.Fatal("TASK13_LLM_MAX_TOKENS must be a positive integer")
+			}
+			maxTokens = parsed
+		}
+		t.Logf("live HTTP model=%s max_tokens=%d", model, maxTokens)
 		cfg.DeepSeek = config.DeepSeekConfig{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model,
-			MaxTokens: 4096, Temperature: .2, Timeout: 150 * time.Second}
+			MaxTokens: maxTokens, Temperature: .2, Timeout: 150 * time.Second}
 	}
 	server, err := New(cfg)
 	if err != nil {
@@ -80,6 +90,16 @@ func newGovernedE2EServer(t *testing.T) (*Server, http.Handler, bool) {
 	if api, ok := server.writingAPI.(*persistentWritingAPI); ok {
 		if _, available := api.capabilities.Get("core.retrieval.search"); !available {
 			t.Fatal("compile registry missing executable search capability")
+		}
+	}
+	if live {
+		if raw := os.Getenv("TASK13_LLM_MIN_REQUEST_INTERVAL_MS"); raw != "" {
+			interval, err := strconv.Atoi(raw)
+			if err != nil || interval < 0 {
+				t.Fatal("TASK13_LLM_MIN_REQUEST_INTERVAL_MS must be a nonnegative integer")
+			}
+			server.llm.SetMinRequestInterval(time.Duration(interval) * time.Millisecond)
+			t.Logf("live HTTP min_request_interval_ms=%d", interval)
 		}
 	}
 	if live != (server.llm != nil) {

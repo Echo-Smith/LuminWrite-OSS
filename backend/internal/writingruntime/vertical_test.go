@@ -529,7 +529,7 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	store := &fakeRuntimeStore{run: writingstore.RuntimeRun{RunID: runID, DocumentID: documentID,
 		ContractID: contract.ContractID, ContractVersion: contract.Version, ContractHash: contract.ContractHash,
 		Status: string(StatePlanned), ActivePlanID: plan.PlanID, ActivePlanVersion: 1,
-		Budget:      writingplan.PlanBudget{MaxCostUSD: 40, MaxDurationMS: 60000, MaxConcurrency: 1, MaxNodes: len(nodes) + 2, MaxItems: 4},
+		Budget:      writingplan.PlanBudget{MaxCostUSD: 40, MaxDurationMS: max(int64(60000), nodeTimeout.Milliseconds()*int64(len(nodes))), MaxConcurrency: 1, MaxNodes: len(nodes) + 2, MaxItems: 4},
 		Permissions: []writingplan.Permission{"model.invoke", "materials.read"}},
 		plan: writingstore.PlanRecord{RunID: runID, PlanVersion: 1, ApprovalStatus: "not_required", Envelope: envelope}}
 	capabilities := writingplan.NewCapabilityRegistry("vertical-" + name)

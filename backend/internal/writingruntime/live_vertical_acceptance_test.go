@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,12 +51,15 @@ func (step *liveVerticalStep) Execute(ctx context.Context, execCtx *engine.Execu
 	default:
 		return fmt.Errorf("unsupported live vertical scenario %q", step.scenario)
 	}
-	text, _, err := step.client.Chat(ctx, []tools.LLMMessage{{Role: "system", Content: system}, {Role: "user", Content: request}})
+	text, response, err := step.client.Chat(ctx, []tools.LLMMessage{{Role: "system", Content: system}, {Role: "user", Content: request}})
 	if err != nil {
 		return fmt.Errorf("live model call failed: %w", err)
 	}
 	if strings.TrimSpace(text) == "" {
-		return fmt.Errorf("live model returned an empty response")
+		if response != nil && len(response.Choices) > 0 {
+			return fmt.Errorf("live model returned an empty response (finish_reason=%s completion_tokens=%d reasoning_tokens=%d)", response.Choices[0].FinishReason, response.Usage.CompletionTokens, response.Usage.CompletionTokensDetails.ReasoningTokens)
+		}
+		return fmt.Errorf("live model returned an empty response (no choices)")
 	}
 
 	var builder strings.Builder
@@ -147,7 +151,16 @@ func TestTask13LiveModelVerticalAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := tools.NewLLMClient(baseURL, apiKey, model, 4096, .2, 150*time.Second)
+	maxTokens := 4096
+	if configured := os.Getenv("TASK13_LLM_MAX_TOKENS"); configured != "" {
+		parsed, err := strconv.Atoi(configured)
+		if err != nil || parsed <= 0 {
+			t.Fatal("TASK13_LLM_MAX_TOKENS must be a positive integer")
+		}
+		maxTokens = parsed
+	}
+	t.Logf("live acceptance model=%s max_tokens=%d", model, maxTokens)
+	client := tools.NewLLMClient(baseURL, apiKey, model, maxTokens, .2, 150*time.Second)
 	client.SetReasoningEffort("")
 
 	for _, scenario := range []struct {

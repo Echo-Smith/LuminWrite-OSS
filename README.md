@@ -1,5 +1,7 @@
 # 笔润智谈 LuminBuddy V2
 
+> **2026-09-07 测试更新**：SenseNova 接口下长文、多素材、忠实改写三个独立场景已有通过记录；完整 HTTP 链路仍未通过；曾返回 RPM/分配额度错误，但 9/7 09:57 同凭据最小请求已恢复成功，不能断言账户额度耗尽；人工盲评待做。不同场景测试参数及本次兼容修复见 [真实模型测试记录](docs/releases/2026-09-07-sensenova-live-tests.md)。下文 9/6 额度不足记录为历史状态。
+
 [English](README.en.md) · [在线体验](https://luminbuddy2.ericdocmic.top/v2/) · [更新日志](#更新日志)
 
 > **面向中文内容创作者的 AI 写作工作台**：从需求理解、素材检索、提纲确认，到按风格成稿、写后自检、反馈与记忆沉淀，把一次性生成变成可观察、可干预、可迭代的写作流程。
@@ -15,6 +17,8 @@
 **当前成熟度：工程 Beta**。已实现完整前后端、Harness 单层 Agent 编排、写作 Pipeline、引导式提纲、风格配置、A/B 评测、反馈系统、分层记忆与监控指标；持续迭代中。
 
 ### 治理型写作运行时：目标架构与迁移边界
+
+**P0 状态（2026-09-07）**：A0 文档与 A1–A5 工程实现已完成，治理服务路径已接入，双仓自动化回归通过。当前构建的真实模型验收和人工成对盲评仍待完成（9/6 模型调用因额度不足失败）。默认 `WRITING_RUNTIME_MODE=off`，本轮未激活线上 allowlist，也未确认新版本已在 1Panel 部署。完整的“实现 / 测试 / 服务接入 / 线上启用”分列见 [项目台账](PROJECT_LEDGER.md#2-当前阶段)，验证依据见 [P0 发布记录](docs/releases/2026-09-06-p0-service-readiness.md)。
 
 V2 后续演进以 [治理型写作运行时](docs/19-governed-writing-runtime.md) 为唯一目标架构和协议基线，并按[实施计划](docs/plans/2026-08-27-governed-writing-runtime-implementation.md)逐步落地。新能力必须绑定版本化的 WritingContract、ExecutablePlan、Artifact、质量状态和 Snapshot；文档是主对象，聊天只负责修改合约、解释决策和控制执行。
 

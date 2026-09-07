@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -699,6 +700,11 @@ func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...Cha
 	}
 	for _, opt := range opts {
 		opt(req)
+	}
+	// SenseNova rejects disabled thinking combined with a non-none effort.
+	// Normalize after all options so option order cannot reintroduce the conflict.
+	if endpoint, err := url.Parse(c.baseURL); err == nil && strings.EqualFold(endpoint.Hostname(), "token.sensenova.cn") && req.Thinking != nil && req.Thinking.Type == "disabled" {
+		req.ReasoningEffort = "none"
 	}
 	// If Instructions is set and there's no system message yet, prepend it.
 	// This enables cache-friendly prompting for both APIs:
