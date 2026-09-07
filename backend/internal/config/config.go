@@ -70,6 +70,11 @@ type ServerConfig struct {
 // Mode is off (default) | shadow | allowlist; an unknown value collapses to off.
 type WritingRuntimeConfig struct {
 	Mode string
+	// ResearchReviewEnabled gates the research-review path (R14, default
+	// false): with the flag off, a research_review contract must fail
+	// compile/run creation with an explicit RESEARCH_UNAVAILABLE — never a
+	// silent degrade to a legacy template.
+	ResearchReviewEnabled bool
 }
 
 type DatabaseConfig struct {
@@ -386,7 +391,8 @@ func Load() *Config {
 			PausedSessionTTL:     getEnvDuration("AGENT_PAUSED_SESSION_TTL", 2*time.Minute),
 		},
 		WritingRuntime: WritingRuntimeConfig{
-			Mode: getEnv("WRITING_RUNTIME_MODE", "off"),
+			Mode:                  getEnv("WRITING_RUNTIME_MODE", "off"),
+			ResearchReviewEnabled: getEnvBool("RESEARCH_REVIEW_ENABLED", false),
 		},
 		SMTP: SMTPConfig{
 			Host:     getEnv("SMTP_HOST", "smtp.qiye.aliyun.com"),

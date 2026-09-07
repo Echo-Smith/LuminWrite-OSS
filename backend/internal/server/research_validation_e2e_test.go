@@ -54,7 +54,7 @@ func newT07E2EHarness(t *testing.T, papers int, wrapRead, wrapDraft func(inner w
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := writingruntime.NewResearchReadExecutor(h.worker, canonical, store, h.budget)
+	read, err := writingruntime.NewResearchReadExecutor(h.worker, canonical, store, h.budgetSwap(store))
 	if err != nil {
 		t.Fatal(err)
 	}

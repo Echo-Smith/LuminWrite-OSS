@@ -533,6 +533,12 @@ func New(cfg *config.Config) (*Server, error) {
 			return nil, fmt.Errorf("initialize governed writing store: %w", err)
 		}
 		s.writingAPI = newPersistentWritingAPI(governedStore)
+		// R14 feature flag: RESEARCH_REVIEW_ENABLED (default false) gates the
+		// research_review compile/run entries; read-only research endpoints
+		// and legacy modes are untouched.
+		if api, ok := s.writingAPI.(*persistentWritingAPI); ok {
+			api.researchReviewEnabled = cfg.WritingRuntime.ResearchReviewEnabled
+		}
 		s.governedRollout = newGovernedRolloutDependencies(governedStore, s.metrics)
 		// M1.4: mount the governed runtime behind WRITING_RUNTIME_MODE
 		// (default off — zero behavior change) and wire its controller into

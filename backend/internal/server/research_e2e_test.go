@@ -52,6 +52,10 @@ type t06FakeWorker struct {
 	// fetch and parse real full text (the T07 scope-overclaim scenario needs
 	// genuinely full-text-read papers to overclaim against).
 	withFullText bool
+	// holdReads, when non-nil, blocks every ReadPaper until the channel is
+	// closed (the T09 A13 cancel test parks the first read mid-flight so the
+	// cancel lands while the run is actively executing).
+	holdReads chan struct{}
 }
 
 func newT06FakeWorker(papers int) *t06FakeWorker {
@@ -122,7 +126,11 @@ func (fake *t06FakeWorker) ParseDocument(_ context.Context, document []byte, med
 func (fake *t06FakeWorker) ReadPaper(_ context.Context, _, paperID string, blocks []writingruntime.ReaderBlock, _ writingruntime.ReaderPolicy, _ ...scholar.CallOption) (*writingruntime.ReadOutputs, *scholar.OperationResponse, error) {
 	fake.mu.Lock()
 	fake.reads[paperID]++
+	hold := fake.holdReads
 	fake.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
 	if len(blocks) == 0 {
 		return &writingruntime.ReadOutputs{PaperID: paperID, Claims: []writingruntime.ReaderClaimOutput{},
 				Evidence: []writingruntime.ReaderEvidence{}, BlocksRead: []string{}},
@@ -239,6 +247,10 @@ type t06Harness struct {
 	// (ResearchQualityGateRunner) around the scripted quality runner; nil
 	// keeps the T06 behavior unchanged.
 	qualityWrap func(writingruntime.LegacyNodeRunner) writingruntime.LegacyNodeRunner
+	// budgetSwap replaces the executor-level t06BudgetGuard with another
+	// ResearchBudgetBoundary (the T09 wall-clock guard) before remount; nil
+	// keeps the T06 guard.
+	budgetSwap func(*writingstore.Store) writingruntime.ResearchBudgetBoundary
 }
 
 // newT06E2EHarness rebuilds the mounted orchestrator with research executors
@@ -251,13 +263,34 @@ func newT06E2EHarness(t *testing.T, papers int, boundaryAt int) *t06Harness {
 	budget := &t06BudgetGuard{boundaryAt: boundaryAt}
 	generator := &t06SwappableGenerator{delegate: t06DeterministicGenerator{}}
 	h := &t06Harness{t00Harness: base, worker: worker, budget: budget, generator: generator}
-	store := base.store
+	if boundaryAt > 0 {
+		// The T05 executor-sentinel test drives its scripted boundary.
+		h.budgetSwap = func(*writingstore.Store) writingruntime.ResearchBudgetBoundary { return budget }
+	} else {
+		// T09: every other scenario runs the PRODUCTION executor-level guard
+		// (the wall-clock proactive budget) — the happy-path E2E suite doubles
+		// as its no-false-trigger regression under a real plan budget.
+		h.budgetSwap = func(store *writingstore.Store) writingruntime.ResearchBudgetBoundary {
+			return NewWallClockResearchBudgetBoundary(store)
+		}
+	}
+	h.remountResearchExecutors(t)
+	return h
+}
+
+// remountResearchExecutors rebuilds the standard six research executors over
+// the current worker/generator/budget seams and remounts the runtime. Tests
+// that swap a seam (e.g. the budget guard) call this again after the swap.
+func (h *t06Harness) remountResearchExecutors(t *testing.T) {
+	t.Helper()
+	store := h.store
+	worker, generator := h.worker, h.generator
 	canonical := writingruntime.WritingStoreContentGateway{Store: store}
 	discover, err := writingruntime.NewResearchDiscoverExecutor(worker, canonical)
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := writingruntime.NewResearchReadExecutor(worker, canonical, store, budget)
+	read, err := writingruntime.NewResearchReadExecutor(worker, canonical, store, h.budgetSwap(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +318,6 @@ func newT06E2EHarness(t *testing.T, papers int, boundaryAt int) *t06Harness {
 		"engine.step.research_citations": citations,
 		"engine.step.research_fact":      fact,
 	})
-	return h
 }
 
 // remount assembles a fresh governed runtime whose executor registry serves

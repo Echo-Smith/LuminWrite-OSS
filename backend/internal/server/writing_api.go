@@ -165,10 +165,33 @@ type persistentWritingAPI struct {
 	// runtime is unmounted — the research API then reports unavailable.
 	gateCheckpoints  *writingruntime.PersistentCheckpointRepository
 	gateOrchestrator *writingruntime.Orchestrator
+	// researchReviewEnabled mirrors cfg.WritingRuntime.ResearchReviewEnabled
+	// (RESEARCH_REVIEW_ENABLED, R14 default false): with the flag off, the
+	// research_review entries (compile / run creation) refuse with
+	// errResearchReviewDisabled — read-only research endpoints and legacy
+	// modes keep working for the rollback drill.
+	researchReviewEnabled bool
 }
 
 func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {
 	return &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(), templates: writingplan.DefaultTemplateRegistry()}
+}
+
+// errResearchReviewDisabled is R14's explicit refusal: the research_review
+// path is disabled by configuration. It maps to 503 RESEARCH_UNAVAILABLE —
+// the spec/contract itself is valid, so a 400 INVALID_RESEARCH_SPEC would
+// mislead clients into "fixing" a perfectly valid request; and it matches the
+// worker-unavailable error code so the frontend's unavailable state covers
+// both deployment shapes.
+var errResearchReviewDisabled = errors.New("writing api: research review is disabled by configuration")
+
+// requireResearchReviewEnabled rejects research_review entries while the
+// feature flag is off (R14: 明确不可用，绝不静默降级到普通模板).
+func (service *persistentWritingAPI) requireResearchReviewEnabled(contract writingkernel.WritingContract) error {
+	if service.researchReviewEnabled || contract.Collaboration.OrchestrationMode != writingkernel.OrchestrationModeResearchReview {
+		return nil
+	}
+	return errResearchReviewDisabled
 }
 
 func writingAccessFromRequest(r *http.Request) (writingAccess, error) {
@@ -288,6 +311,13 @@ func (service *persistentWritingAPI) CompilePlan(ctx context.Context, access wri
 	if document.CurrentVersionID != command.BaseVersionID {
 		return writingPlanPreview{}, errWritingVersionConflict
 	}
+	// R14: the research_review entry is configuration-gated; with the flag
+	// off the request fails explicitly instead of degrading to a legacy
+	// template (the system recommendation stays authoritative for legacy
+	// modes, which this check never touches).
+	if err := service.requireResearchReviewEnabled(contract.Contract); err != nil {
+		return writingPlanPreview{}, err
+	}
 	if len(command.InitialArtifactTypes) > 0 && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract", "materials"}) {
 		return writingPlanPreview{}, fmt.Errorf("%w: initial artifacts must be backed by persisted server references", writingstore.ErrInvalidRecord)
 	}
@@ -322,6 +352,12 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	}
 	if document.CurrentVersionID != command.BaseVersionID {
 		return writingstore.RuntimeRun{}, errWritingVersionConflict
+	}
+	// R14: run creation for a research_review contract is configuration-gated
+	// (compile plan already refuses while disabled; this is the second gate on
+	// the dispatch path).
+	if err := service.requireResearchReviewEnabled(contract.Contract); err != nil {
+		return writingstore.RuntimeRun{}, err
 	}
 	if err := command.Plan.Validate(); err != nil || !command.Plan.ExecutablePlan.StaticValidation.Valid {
 		return writingstore.RuntimeRun{}, errWritingPlanRequired
@@ -685,7 +721,7 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusConflict, researchErrorCode(err)
 	case errors.Is(err, writingruntime.ErrGateApprovalRequired):
 		status, code = http.StatusConflict, "GATE_APPROVAL_REQUIRED"
-	case errors.Is(err, errResearchUnavailable):
+	case errors.Is(err, errResearchUnavailable), errors.Is(err, errResearchReviewDisabled):
 		status, code = http.StatusServiceUnavailable, "RESEARCH_UNAVAILABLE"
 	case errors.Is(err, errInsufficientEvidence), errors.Is(err, errEvidenceInvalid), errors.Is(err, errOutlineEvidenceMismatch):
 		status, code = http.StatusUnprocessableEntity, researchErrorCode(err)
