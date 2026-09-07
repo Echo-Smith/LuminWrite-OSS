@@ -65,7 +65,7 @@
 
 **修改**：backend/internal/writingruntime/orchestrator.go、recovery.go；backend/internal/writingstore/runtime.go；backend/internal/server/writing_routes.go、writing_api.go、handlers_writing_run.go、governed_worker.go。
 
-**新增**：backend/internal/writingstore/research_tasks.go、research_gates.go 及 _test.go；backend/internal/writingruntime/research_gate.go、research_gate_test.go；backend/internal/server/handlers_writing_research.go；backend/internal/database/migrations/107_research_workflow.up.sql 和 .down.sql（编号开工确认）。
+**新增**：backend/internal/writingstore/research_tasks.go、research_gates.go 及 _test.go；backend/internal/writingruntime/research_gate.go、research_gate_test.go；backend/internal/server/handlers_writing_research.go；backend/internal/database/migrations/107_research_workflow.up.sql 和 .down.sql（编号开工确认）。同一迁移扩展 schema_version（lcp/1.1）/ node_kind（human_gate）/ event_type 三处 CHECK（见 design.md §6）；gate 决议后节点恰好完成一次、主循环正常退出作为显式验收。
 
 - [ ] 用数据库测试先表达 gate pending/确认/重复确认/过期确认/越权/重启六条行为。
 - [ ] 建增量表、索引、fencing 租约与 store 事务入口。decision、成功 gate 记录、checkpoint、状态事件与恢复标识必须原子提交。

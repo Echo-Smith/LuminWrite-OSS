@@ -33,7 +33,7 @@ flowchart LR
 ```
 
 - Go 持有用户/文档/合同/计划/运行/审批/预算/最终产物；Python 仅执行有界计算和外部查询，不再持有产品项目数据库。
-- 新增 `services/scholar-worker/`（Python 3.12；版本锁定在实现提交），重用经许可的 PR #7 检索/下载和 PR #6 解析/阅读模块；不依赖其 orchestrator/application/project store。未获许可时同接口独立实现。
+- 新增 `services/scholar-worker/`（Python 3.12；版本锁定在实现提交）。上游 PR #6/#7 仅有 pyproject 的 `Proprietary` 声明（无 LICENSE 文件、无版权人、无授权条款），截至本方案未取得书面许可：T03 先以自有协议与 mock 实现落地，不复制上游代码；取得许可后另行评估模块复用并重估工作量。即使复用也必须重写加固——PR #7 下载仅有 scheme 校验并盲目跟随重定向（无 DNS/IP/私网地址防护），去重为单键 DOI-or-title，均弱于本方案 §9 与 R03 的要求。
 - Go 调用 Python 的短任务：一次 query、一次语义筛选批次、一次全文获取、一次解析、一次论文阅读。首版不创建远端全程异步 review job，不用同步 650 秒请求扮演 durable queue。
 - 子任务进度由 Go 的 `writing_research_tasks` 持久表持有。Python 无长期产品任务队列；HTTP 断开尝试取消底层请求，但已被上游接收的模型调用可能继续计费，Go 标记 outcome_unknown，用户决定是否重试。
 - 正文继续用当前模型配置与 Writer，只增加专用证据输入适配；不在方案中固化或复制任何 API key。
@@ -63,7 +63,7 @@ Compiler、前后端枚举、字段来源校验、JSON Schema、合同编辑/确
 
 每个节点显式依赖提供其输入的上游节点：discover 无依赖；read→discover；gate_evidence→read；outline→read,gate_evidence；gate_outline→outline；draft→read,gate_evidence,gate_outline；citations→read,draft；fact→read,draft；quality→draft,citations,fact；finalize→draft,quality。首版 citations 与 fact 仍按就绪顺序串行调度。首版顺序执行，不把 NodeMap/Parallel 枚举的存在当成动态分片已经实现。新 capability ID 用 `core.` + 新增 class，版本 1；已有 quality 为 class `validation.quality` / ID `core.validation.quality`，finalize 为 class `document.finalize` / ID `core.document.finalize`。gate manifest 无外部调用权限，由内核处理，编译校验允许其受控无 executor 分支；不能以虚构 runner 绕过注册校验。无 executor 例外仅允许这两个明确的 kernel-owned gate ID、NodeHumanGate 和预设 I/O；manifest.Validate、compile、ValidateForDispatch、runtime 恢复均执行相同校验，不能给任意外部 manifest 开通免授权通道。
 
-`research_read` 内部按候选逐项处理并持久化子任务，整节点重试只复用校验通过的子任务产物。MaxItems=20，MaxConcurrency=1；下载/阅读单次超时分别建议 60/180 秒，research_read 节点上限 20 分钟，整个主动执行预算 30 分钟。这些是首版默认配置，要同时进入 manifest 上限、template bounds 与 plan budget 校验，不能只改 HTTP timeout。20 篇是数量上限，不保证在 20 分钟内全部完成；到达预算边界保存进度并暂停，剩余项明确标记未完成，扩预算必须重新审批，不能后台无限续跑。
+`research_read` 内部按候选逐项处理并持久化子任务，整节点重试只复用校验通过的子任务产物。MaxItems=20，MaxConcurrency=1；下载/阅读单次超时分别建议 60/180 秒，research_read 节点上限 20 分钟，整个主动执行预算 30 分钟。这些是首版默认配置，要同时进入 manifest 上限、template bounds 与 plan budget 校验，不能只改 HTTP timeout。20 篇是数量上限，不保证在预算内全部完成；到达预算边界保存进度并暂停评估：若可用可引用来源已达 min_citable_sources，携带部分包（未完成项明确标记）进入 evidence gate 由用户决定；不足则按 INSUFFICIENT_EVIDENCE 暂停。首版不新增"扩预算审批 gate"；上调数量/预算走新合同版本 + 新运行（按输入哈希复用缓存），不能后台无限续跑。默认 max_papers 取 10（合同上限仍 20），使默认 30 分钟预算大概率覆盖单次运行。
 
 ## 4. 证据存储与引用
 
@@ -73,6 +73,8 @@ ResearchEvidencePack 是独立 Artifact 类型，内容通过现有 ContentGatew
 
 阅读卡中的 claim 分 source_assertion / interpretation / hypothesis；前者必须有有效 evidence 绑定，后两者不能自动升级为论文事实。使用者确认整个证据包只代表允许写作，不把所有 claim.review_status 改成事实已核验。
 
+论文全文/摘要属不可信外部文本：在所有模型提示中一律按数据框定（明确分隔与长度上限），Reader 输出仅作为带来源的材料，不触发工具执行、不覆盖系统指令；由此产生的 claim 仍按 claim.kind 与 review_status 流转。
+
 冻结 = 内容入库并得到哈希，而不是改写 JSON 中一个 frozen 布尔值。确认对象是 Artifact ID/version/hash。修改任何材料/claim 产生新包、新 hash、新确认；旧正文引用仍可指向旧包。跨用户不能通过猜 hash 读取文件。
 
 SourcePack 投影只给兼容层；不能丢掉详细 pack 后再把普通摘录当可追溯证据。新研究 Writer adapter 同时读取 pack，构建有界证据上下文，并记录实际送入模型的 evidence ID 清单。上下文溢出按主题保留证据，输出 omitted IDs/原因；关键章节无证据时暂停，不能静默删除绑定。
@@ -81,18 +83,18 @@ SourcePack 投影只给兼容层；不能丢掉详细 pack 后再把普通摘录
 
 ## 5. Gate 与恢复机制
 
-新增 waiting_gate 的持久记录，运行外部状态仍 paused（reason=awaiting_evidence/awaiting_outline），不新增破坏既有状态机的顶层状态值。
+新增 waiting_gate 的持久记录，运行外部状态仍 paused（reason=awaiting_evidence/awaiting_outline），不新增破坏既有状态机的顶层状态值。pause reason 沿用现有机制写入 run.transitioned 事件的 reason_code，不新增 writing_runs 列。
 
 1. 到达 gate：同一数据库事务创建 pending gate、保存 checkpoint（新增 waiting_gate_id，不能放 UnsafeInFlight）、写 paused 状态和事件。
-2. 确认：同一事务核验 actor ownership、当前 run/plan/hash、gate revision、输入 Artifact hash；保存 decision 和批准产物，将 gate 对应完成记录持久化，更新 checkpoint，写事件与待恢复标识。幂等重发返回同一结果。
-3. worker 仅在数据库事务提交后恢复；恢复调度信息必须持久化并可被扫表找回，不能只投内存 channel。GET 立刻可见决议，即使 worker 尚未运行。
+2. 确认：同一事务核验 actor ownership、当前 run/plan/hash、gate revision、输入 Artifact hash；保存 decision 和批准产物，将 gate 对应完成记录持久化，更新 checkpoint，写事件与待恢复标识。幂等重发返回同一结果。现有代码中 NodeHumanGate 没有任何完成路径（含 gate 的 plan 主循环不会退出），本条为纯新增机制；T02 验收含"决议后该节点恰好完成一次、主循环正常退出"用例。
+3. worker 仅在数据库事务提交后恢复；恢复调度信息必须持久化并可被找回，不能只投内存 channel。注意现有 DispatchableRunIDs 只扫 planned/running/pausing/cancelling（不含 paused）：要么扩展扫描覆盖"已决议待恢复"的 run，要么决议事务提交后投递持久恢复标记并经 API/触发器恢复。GET 立刻可见决议，即使 worker 尚未运行。
 4. 普通 resume 遇未确认 gate 返回 `GATE_APPROVAL_REQUIRED`；gate 确认 API 不代替计划权限审批。
 5. outline gate 可先保存 edited outline Artifact，重新验证它引用的证据与 pack hash，再确认新版本。提交过期 revision 返回 409；已开始正文后不能回写这个 gate。
 6. 拒绝或补充证据不在旧运行修改输入：保留 paused，用户创建新合同/运行或取消旧运行；不自动重跑产生费用。
 
 ## 6. 子任务持久化
 
-新增迁移（预留编号 107，开工时检查两仓库是否冲突）：
+新增迁移（预留编号 107，开工时检查两仓库是否冲突）。除建表外还需扩展既有 CHECK 约束，否则 lcp/1.1 合同与 gate 节点无法入库：writing_contracts.schema_version 允许 lcp/1.1（089 行66）、writing_node_attempts.node_kind 增加 human_gate（091 行46）、writing_run_events.event_type 增加新事件类型（091/095）：
 
 - `writing_research_tasks`: id, owner_user_id, run_id, node_id, task_key, phase, input_hash, status, attempt, lease_owner, lease_expires_at, output_artifact_id, output_hash, error_code, retry_after, usage_json, created_at, updated_at；UNIQUE(run_id,node_id,task_key,input_hash)。
 - `writing_gate_decisions`: gate_id, run_id, node_id, plan_id, plan_version, plan_hash, input_artifact_id, input_hash, revision, status, decision_artifact_id, actor_id, idempotency_key, decided_at；UNIQUE(run_id,node_id,plan_version)，幂等键限 owner+operation，并保存 request hash。

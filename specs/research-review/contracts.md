@@ -15,7 +15,7 @@ WritingContract v1.1 顶层新增 research，结构如下；本例参数是完�
   "exclusion_terms": [],
   "max_queries": 3,
   "max_candidates": 60,
-  "max_papers": 20,
+  "max_papers": 10,
   "min_citable_sources": 5,
   "evidence_requirement": "abstract_allowed",
   "selection_policy_version": "selection/1",
@@ -28,6 +28,7 @@ WritingContract v1.1 顶层新增 research，结构如下；本例参数是完�
 - year_from/year_to 可 null，非空时 from <= to；数量整数且 1 <= min_citable_sources <= max_papers <= 20、max_candidates >= max_papers 且 <=60、max_queries 1..3。
 - evidence_requirement 枚举 abstract_allowed/full_text_required；首版 generator 仅 lumin_writer，未来增加 ar012_candidate 时另行版本演进。
 - 外部检索开关只读取现有 material_policy.allow_external_research；语言/长度只读取 delivery，研究问题只读取 content.central_question；不设置相互矛盾的重复字段。
+- 用户材料沿用现有素材上传与 owner manifest 通道；上传侧与下载侧同样适用 25 MiB 与文本型（PDF/TXT/Markdown）限制，扫描件按 R05 标记需补充可读文本。
 - 所有未知字段拒绝；默认值只在合同草稿阶段补齐；确认时没有隐式默认。
 
 ## 2. Artifact 合同
@@ -94,7 +95,7 @@ full_draft 使用原正文合同，增加对应的研究引用索引 Artifact `r
 | GET /runs/{runId}/gates/{gateId} | 200：输入 ref、revision、status、允许的操作、阻塞原因 |
 | POST /runs/{runId}/gates/{gateId}/outline-revisions | 201：保存修改后的提纲 Artifact，返回新 gate_revision 与 outline_ref；仅 outline gate pending 可用 |
 | POST /runs/{runId}/gates/{gateId}/decisions | 202：已持久化确认并安排恢复；GET 查询实际状态。相同 key/body 重发 200 返回同一 decision |
-| GET /runs/{runId}/artifacts/{artifactId}/content | 200：仅返回本运行授权 JSON/文本；大文件另按素材下载权限处理 |
+| GET /runs/{runId}/artifacts/{artifactId}/content | 200：返回 owner 授权且被本运行计划/产物引用（含子任务缓存跨 run 复用的引用）的 JSON/文本；授权在 API 层校验（内容表无 ACL），大文件另按素材下载权限处理 |
 
 所有 POST 要求 Idempotency-Key。不同 body 重用 key 返回409。先完成 owner 校验，再解析目标；越权返回404（不泄露存在性）。保留现有 /approve 计划权限确认、/pause、/resume、/cancel 与事件接口。
 
@@ -119,7 +120,7 @@ full_draft 使用原正文合同，增加对应的研究引用索引 Artifact `r
 
 错误：400 INVALID_RESEARCH_SPEC；404 RESOURCE_NOT_FOUND；409 STALE_GATE / IDEMPOTENCY_CONFLICT / GATE_ALREADY_DECIDED / GATE_APPROVAL_REQUIRED；422 INSUFFICIENT_EVIDENCE / EVIDENCE_INVALID / OUTLINE_EVIDENCE_MISMATCH；503 RESEARCH_UNAVAILABLE。远端调用错误显示在任务结果中，不能将已提交的异步确认返回成 HTTP 500 导致客户端误判未保存。
 
-新增事件：`writing.research.progress`、`writing.gate.pending`、`writing.gate.decided`，沿用 protocol=lumin-writing.v2 与全 run 单调 sequence，存库后发送。progress 包含 phase/completed/total/failed/deferred；gate 事件包含 gate_id/revision/input_ref/status。GET 状态包含 last_event_sequence；重连事件与 GET 按 sequence 合并，不能用旧 GET 覆盖新事件。
+新增事件：`research.progress`、`gate.pending`、`gate.decided`（对齐现有 run.*/node.*/runtime.* 命名家族），沿用 protocol=lumin-writing.v2 与全 run 单调 sequence，存库后发送；event_type 需随 107 迁移扩展 DB CHECK（见 design §6）。progress 包含 phase/completed/total/failed/deferred；gate 事件包含 gate_id/revision/input_ref/status。GET 状态包含 last_event_sequence；重连事件与 GET 按 sequence 合并，不能用旧 GET 覆盖新事件。
 
 ## 4. Python 内部接口（全部拟新增，仅私网调用）
 
