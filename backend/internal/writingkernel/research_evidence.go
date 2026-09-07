@@ -776,10 +776,12 @@ func (a EvidenceApproval) Validate() error {
 	return nil
 }
 
-// CitationEntry locates one citation marker inside the draft: the draft
-// block containing the marker and its code point interval within that block.
-// Rendering-level numbering may drift; CitationID/EvidenceID bindings may
-// not.
+// CitationEntry locates one citation marker inside the draft: BlockID names
+// the draft block (the outline section) containing the marker, and
+// StartChar/EndChar are Unicode code point offsets over the whole draft text
+// (left-closed right-open), so the marker is self-locating for validators and
+// the workbench. Rendering-level numbering may drift; CitationID/EvidenceID
+// bindings may not.
 type CitationEntry struct {
 	CitationID string `json:"citation_id"`
 	EvidenceID string `json:"evidence_id"`

@@ -156,13 +156,25 @@ func TestKernelGateExemptionCannotBeForged(t *testing.T) {
 			Idempotency:        IdempotencySafe, Available: true}
 	}
 	cases := map[string]func(*CapabilityManifest){
-		"foreign_id":            func(m *CapabilityManifest) { m.ID = "cap_foreign_gate" },
-		"foreign_class":         func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.Class = "validation.quality" },
-		"extra_node_kind":       func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.SupportedNodeKinds = []NodeKind{NodeHumanGate, NodeAction} },
-		"swapped_io":            func(m *CapabilityManifest) { m.ID = CapabilityResearchGateOutline; m.InputTypes = []ArtifactType{"research_evidence_pack"} },
-		"wrong_version":         func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.Version = "2.0.0" },
-		"carries_permissions":   func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.Permissions = []Permission{"model.invoke"} },
-		"action_kind_mimic":     func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.SupportedNodeKinds = []NodeKind{NodeAction} },
+		"foreign_id":    func(m *CapabilityManifest) { m.ID = "cap_foreign_gate" },
+		"foreign_class": func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.Class = "validation.quality" },
+		"extra_node_kind": func(m *CapabilityManifest) {
+			m.ID = CapabilityResearchGateEvidenc
+			m.SupportedNodeKinds = []NodeKind{NodeHumanGate, NodeAction}
+		},
+		"swapped_io": func(m *CapabilityManifest) {
+			m.ID = CapabilityResearchGateOutline
+			m.InputTypes = []ArtifactType{"research_evidence_pack"}
+		},
+		"wrong_version": func(m *CapabilityManifest) { m.ID = CapabilityResearchGateEvidenc; m.Version = "2.0.0" },
+		"carries_permissions": func(m *CapabilityManifest) {
+			m.ID = CapabilityResearchGateEvidenc
+			m.Permissions = []Permission{"model.invoke"}
+		},
+		"action_kind_mimic": func(m *CapabilityManifest) {
+			m.ID = CapabilityResearchGateEvidenc
+			m.SupportedNodeKinds = []NodeKind{NodeAction}
+		},
 		"unknown_id_fake_shape": func(m *CapabilityManifest) {},
 	}
 	for name, mutate := range cases {

@@ -121,7 +121,11 @@ func DefaultTemplateRegistry() *TemplateRegistry {
 			[]ArtifactType{"contract", "materials"}, []ArtifactType{"research_candidates"}),
 		researchNode("node_research_read", NodeAction, ClassResearchRead, []string{"node_research_discover"},
 			[]ArtifactType{"contract", "research_candidates", "materials"}, []ArtifactType{"research_evidence_pack"},
-			bounds(1, 1, 20, 20*60*1000)),
+			// MaxAttempts=2: the research budget boundary pauses inside the
+			// node (T05 sentinel); the resume re-dispatch continues the
+			// remaining papers from the sub-task ledger without re-reading
+			// finished ones (design.md §3/§7).
+			bounds(2, 1, 20, 20*60*1000)),
 		researchNode("node_gate_evidence", NodeHumanGate, ClassResearchGateEvidence, []string{"node_research_read"},
 			[]ArtifactType{"research_evidence_pack"}, []ArtifactType{"evidence_approval"}, gateBounds()),
 		researchNode("node_research_outline", NodeAction, ClassResearchOutline, []string{"node_research_read", "node_gate_evidence"},

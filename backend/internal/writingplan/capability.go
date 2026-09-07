@@ -578,7 +578,7 @@ func (registry *CapabilityRegistry) registerResearchReview() {
 			SupportedNodeKinds: kinds,
 			// The read node's 20-paper workset and 20-minute cap (design.md
 			// §3) are template bounds; the catalog's ceilings must admit them.
-			MaxBounds:  Bounds{MaxAttempts: 2, MaxConcurrency: 1, MaxItems: maxItems, MaxCostUSD: 10, TimeoutMS: 1200000},
+			MaxBounds:   Bounds{MaxAttempts: 2, MaxConcurrency: 1, MaxItems: maxItems, MaxCostUSD: 10, TimeoutMS: 1200000},
 			Idempotency: IdempotencyRequired}
 	}
 	// Discovery plans queries and ranks candidates; the read node's research
