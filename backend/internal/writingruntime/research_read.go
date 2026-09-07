@@ -144,6 +144,14 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 	if err != nil {
 		return ExecutionResult{}, err
 	}
+	// A02 fail-closed (defense in depth behind the plan compile's
+	// CONTRACT_FORBIDS_EXTERNAL_RESEARCH check): a contract that forbids
+	// external research must never reach the scholar worker — zero fetch /
+	// parse / read calls (T09 acceptance matrix A02).
+	if !contract.MaterialPolicy.AllowExternalResearch {
+		return ExecutionResult{}, runtimeError(CodeExecutorContractMismatch, RetryNever,
+			"contract material policy forbids external research; read must not call the scholar worker", nil)
+	}
 	spec := contract.Research
 	executor.question = contract.Content.CentralQuestion
 	candidatesInput, err := researchInputByType(request, researchCandidatesType)

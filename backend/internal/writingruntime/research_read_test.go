@@ -203,6 +203,12 @@ type t05Fixture struct {
 }
 
 func newT05Fixture(t *testing.T) *t05Fixture {
+	return newT05FixtureMutate(t, nil)
+}
+
+// newT05FixtureMutate builds the same fixture while letting a test mutate the
+// decoded contract before it is resealed (e.g. material policy for A02).
+func newT05FixtureMutate(t *testing.T, mutate func(*writingkernel.WritingContract)) *t05Fixture {
 	t.Helper()
 	db, cleanup, err := dbtest.Open(os.Getenv("TEST_DATABASE_URL"), 6, 2)
 	if err != nil {
@@ -233,6 +239,9 @@ func newT05Fixture(t *testing.T) *t05Fixture {
 	// The v1.1 fixture requires 5 citable sources; the runtime tests drive a
 	// two-paper workset, so the fixture is resealed with a 1-source floor.
 	contract.Research.MinCitableSources = 1
+	if mutate != nil {
+		mutate(&contract)
+	}
 	sealed, err := contract.WithComputedHash()
 	if err != nil {
 		t.Fatal(err)
