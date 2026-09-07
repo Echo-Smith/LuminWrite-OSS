@@ -3,7 +3,7 @@
 Each operation is a bounded unit: a pure function of its ``payload`` plus the
 injected dependencies, returning ``OperationResult(outputs, usage, warnings)``.
 
-T04 state of the five operations:
+T05 state of the five operations:
 
 - ``discover``        — REAL: provider fan-out (OpenAlex/Crossref/Semantic
   Scholar) with per-source isolation and R03 dedup (see ``discovery.py``).
@@ -11,7 +11,10 @@ T04 state of the five operations:
   the worker env lacks ``SCHOLAR_LLM_*`` (see ``ranking.py``).
 - ``fetch_full_text`` — REAL: constrained downloader with SSRF guards
   (see ``downloader.py``).
-- ``parse``, ``read`` — still the T03 offline mocks (T05 scope).
+- ``parse``           — REAL: pypdf-backed PDF + native TXT/MD bounding into
+  hash-verified blocks (see ``parser.py``).
+- ``read``            — REAL: LLM-backed reader with worker-side evidence
+  self-validation, fail-closed without ``SCHOLAR_LLM_*`` (see ``reader.py``).
 
 Dependency injection: handlers close over a :class:`WorkerDeps` bundle that
 supplies HTTP client factories and the LLM configuration. Production wiring
@@ -29,20 +32,20 @@ references (Proprietary); all implementations here are original.
 from __future__ import annotations
 
 import base64
-import hashlib
+import binascii
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 import httpx
 
-from . import downloader, discovery, providers, ranking
+from . import downloader, discovery, parser, providers, ranking, reader
 from .contracts import Usage
 from . import SUPPORTED_OPERATION_VERSION, __version__
 
 WORKER_VERSION = __version__
 
 MAX_RANK_CANDIDATES = ranking.MAX_RANK_CANDIDATES  # 8, contracts.md §4
-MAX_READ_BLOCKS = 24
+MAX_READ_BLOCKS = reader.MAX_READ_BLOCKS  # 24, contracts.md §4
 MAX_DISCOVER_LIMIT = 50
 MAX_FETCH_SIZE_BYTES = downloader.DEFAULT_SIZE_LIMIT  # 25 MiB design cap
 
@@ -110,26 +113,6 @@ def default_worker_deps() -> WorkerDeps:
         download_client_factory=downloader.make_download_client,
         llm_config_provider=ranking.LLMConfig.from_env,
         llm_client_factory=None,
-    )
-
-
-def _sha256(text: str) -> str:
-    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _tokens(text: str) -> int:
-    """Deterministic pseudo token estimate (mock only; no tokenizer)."""
-    return max(1, len(text) // 4)
-
-
-def _mock_usage(input_text: str, output_text: str) -> Usage:
-    return Usage(
-        measured=True,
-        input_tokens=_tokens(input_text),
-        output_tokens=_tokens(output_text),
-        cost_usd=None,
-        provider="mock",
-        model="mock-scholar-v0",
     )
 
 
@@ -415,81 +398,76 @@ def _op_fetch_full_text(payload: Mapping[str, Any], deps: WorkerDeps) -> Operati
 
 
 # ---------------------------------------------------------------------------
-# parse / read — T03 offline mocks (T05 replaces)
+# parse — real pypdf / plain-text parsing
 # ---------------------------------------------------------------------------
 
 
-def _op_parse(payload: Mapping[str, Any]) -> OperationResult:
+def _op_parse(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
     _reject_unknown_keys(payload, {"document", "media_type", "parser_version"}, "payload")
-    document = _require_str(payload, "document")
 
     media_type = payload.get("media_type")
-    if media_type not in TEXT_MEDIA_TYPES:
+    if media_type not in parser.PDF_MEDIA_TYPE and media_type not in parser.TEXT_MEDIA_TYPES:
         raise OperationError(
             "unsupported_media_type",
-            f"payload.media_type must be one of {', '.join(TEXT_MEDIA_TYPES)}",
+            "payload.media_type must be one of "
+            f"{', '.join((parser.PDF_MEDIA_TYPE, *parser.TEXT_MEDIA_TYPES))}",
             http_status=422,
         )
-    parser_version = payload.get("parser_version", "mock-parser-1")
-    if not isinstance(parser_version, str) or not parser_version:
+
+    parser_version = payload.get("parser_version")
+    if not isinstance(parser_version, str) or not parser_version.strip():
         raise OperationError(
-            "invalid_payload", "payload.parser_version must be a non-empty string",
+            "invalid_payload",
+            "payload.parser_version must be a non-empty string",
+            http_status=422,
+        )
+    if parser_version != parser.PARSER_VERSION:
+        # Fail closed on version skew: the host's ledger input_hash and the
+        # pack's parsed-document refs are pinned to the parser version.
+        raise OperationError(
+            "unsupported_parser_version",
+            f"parser_version {parser_version!r} not supported "
+            f"(supported: {parser.PARSER_VERSION})",
             http_status=422,
         )
 
-    # Python string indices are codepoint offsets, matching the contract's
-    # codepoint-offset requirement (T01).
-    blocks: list[dict[str, Any]] = []
-    cursor = 0
-    for paragraph in document.split("\n\n"):
-        stripped = paragraph.strip("\n")
-        start = document.find(stripped, cursor) if stripped else cursor
-        if stripped and start >= 0:
-            cursor = start + len(stripped)
-            blocks.append(
-                {
-                    "block_id": f"blk-{len(blocks) + 1:04d}",
-                    "text": stripped,
-                    "start_offset": start,
-                    "end_offset": start + len(stripped),
-                    "page": 1,
-                    "block_hash": _sha256(stripped),
-                }
-            )
-    if not blocks:
-        blocks.append(
-            {
-                "block_id": "blk-0001",
-                "text": "",
-                "start_offset": 0,
-                "end_offset": 0,
-                "page": 1,
-                "block_hash": _sha256(""),
-            }
+    document_b64 = payload.get("document")
+    if not isinstance(document_b64, str) or not document_b64:
+        raise OperationError(
+            "invalid_payload",
+            "payload.document must be a non-empty base64 string",
+            http_status=422,
         )
+    try:
+        data = base64.b64decode(document_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise OperationError(
+            "invalid_document_encoding",
+            f"payload.document is not valid base64: {exc}",
+            http_status=422,
+        ) from exc
 
-    outputs = {
-        "blocks": blocks,
-        "coverage": {
-            "media_type": media_type,
-            "parser_version": parser_version,
-            "total_blocks": len(blocks),
-            "total_codepoints": len(document),
-            "complete": True,
-        },
-    }
-    warnings = []
-    if len(blocks) == 1 and not blocks[0]["text"]:
-        warnings.append("document produced no text blocks")
+    try:
+        outputs = parser.parse_document(data, str(media_type))
+    except parser.ParseError as exc:
+        raise OperationError(exc.code, exc.message, http_status=422, retryable=exc.retryable) from exc
+
     return OperationResult(
-        outputs=outputs,
-        usage=_mock_usage(document, "".join(b["text"] for b in blocks)),
-        warnings=warnings,
+        outputs={"blocks": outputs["blocks"], "coverage": outputs["coverage"]},
+        usage=_non_llm_usage("parser"),
+        warnings=outputs["warnings"],
     )
 
 
-def _op_read(payload: Mapping[str, Any]) -> OperationResult:
-    _reject_unknown_keys(payload, {"research_question", "paper_id", "blocks", "reader_policy"}, "payload")
+# ---------------------------------------------------------------------------
+# read — real LLM reading with worker-side evidence validation
+# ---------------------------------------------------------------------------
+
+
+def _op_read(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
+    _reject_unknown_keys(
+        payload, {"research_question", "paper_id", "blocks", "reader_policy"}, "payload"
+    )
     question = _require_str(payload, "research_question")
     paper_id = _require_str(payload, "paper_id")
 
@@ -507,7 +485,7 @@ def _op_read(payload: Mapping[str, Any]) -> OperationResult:
             http_status=422,
         )
 
-    cleaned: list[dict[str, str]] = []
+    cleaned: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         if not isinstance(block, dict):
             raise OperationError(
@@ -516,69 +494,69 @@ def _op_read(payload: Mapping[str, Any]) -> OperationResult:
                 http_status=422,
             )
         _reject_unknown_keys(
-            block, {"block_id", "text"}, f"payload.blocks[{index}]"
+            block, {"block_id", "text", "block_hash", "page"}, f"payload.blocks[{index}]"
         )
         block_id = _require_str(block, "block_id")
-        text = block.get("text", "")
-        if not isinstance(text, str):
+        text = block.get("text")
+        if not isinstance(text, str) or not text:
             raise OperationError(
                 "invalid_payload",
-                f"payload.blocks[{index}].text must be a string",
+                f"payload.blocks[{index}].text must be a non-empty string",
                 http_status=422,
             )
-        cleaned.append({"block_id": block_id, "text": text})
+        block_hash = block.get("block_hash")
+        if not isinstance(block_hash, str) or not block_hash:
+            raise OperationError(
+                "invalid_payload",
+                f"payload.blocks[{index}].block_hash must be a non-empty string",
+                http_status=422,
+            )
+        if block_hash != reader.sha256_text(text):
+            raise OperationError(
+                "block_hash_mismatch",
+                f"payload.blocks[{index}].block_hash does not match its text",
+                http_status=422,
+            )
+        page = block.get("page")
+        if page is not None and (isinstance(page, bool) or not isinstance(page, int) or page < 1):
+            raise OperationError(
+                "invalid_payload",
+                f"payload.blocks[{index}].page must be a positive integer or null",
+                http_status=422,
+            )
+        cleaned.append({"block_id": block_id, "text": text, "block_hash": block_hash, "page": page})
 
     policy = payload.get("reader_policy")
-    if policy is not None and not isinstance(policy, dict):
+    if policy is None or not isinstance(policy, dict):
         raise OperationError(
             "invalid_payload", "payload.reader_policy must be an object", http_status=422
         )
+    _reject_unknown_keys(policy, {"reader_policy_version"}, "payload.reader_policy")
+    policy_version = _require_str(policy, "reader_policy_version")
 
-    claims = []
-    evidence = []
-    for i, block in enumerate(cleaned[:3]):
-        claims.append(
-            {
-                "claim_id": f"claim-{i + 1:03d}",
-                "statement": (
-                    f"Mock claim {i + 1} derived from block {block['block_id']} "
-                    f"for paper {paper_id}."
-                ),
-                "block_ids": [block["block_id"]],
-                "kind": "source_assertion",
-            }
+    llm_config = deps.llm_config_provider()
+    llm_client = deps.llm_client_factory() if deps.llm_client_factory is not None else None
+    try:
+        outputs, usage, warnings = reader.read_paper(
+            question,
+            paper_id,
+            cleaned,
+            policy_version,
+            config=llm_config,
+            client=llm_client,
         )
-        quote = block["text"][:120]
-        evidence.append(
-            {
-                "evidence_id": f"evd-{i + 1:03d}",
-                "block_id": block["block_id"],
-                "quote": quote,
-                "locator": {
-                    "page": 1,
-                    "start_offset": 0,
-                    "end_offset": len(block["text"]),
-                },
-            }
-        )
+    except reader.ReaderError as exc:
+        raise OperationError(
+            exc.code,
+            exc.message,
+            http_status=422,
+            retryable=exc.retryable,
+        ) from exc
+    finally:
+        if llm_client is not None:
+            llm_client.close()
 
-    outputs = {
-        "paper_id": paper_id,
-        "claims": claims,
-        "evidence": evidence,
-        "limitations": [
-            "mock reader: claims are synthetic and must not enter evidence packs",
-            "read covers only the blocks supplied in this request",
-        ],
-        "blocks_read": [b["block_id"] for b in cleaned],
-    }
-    rendered = "".join(b["text"] for b in cleaned)
-    usage = _mock_usage(question + paper_id + rendered, rendered)
-    return OperationResult(
-        outputs=outputs,
-        usage=usage,
-        warnings=["read is a mock; it performs no model inference"],
-    )
+    return OperationResult(outputs=outputs, usage=usage, warnings=warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -596,8 +574,8 @@ def build_handlers(deps: WorkerDeps) -> dict[str, Handler]:
         "discover": lambda payload, d=deps: _op_discover(payload, d),
         "rank": lambda payload, d=deps: _op_rank(payload, d),
         "fetch_full_text": lambda payload, d=deps: _op_fetch_full_text(payload, d),
-        "parse": lambda payload, _d=deps: _op_parse(payload),
-        "read": lambda payload, _d=deps: _op_read(payload),
+        "parse": lambda payload, d=deps: _op_parse(payload, d),
+        "read": lambda payload, d=deps: _op_read(payload, d),
     }
 
 

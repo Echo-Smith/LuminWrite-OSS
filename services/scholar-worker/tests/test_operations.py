@@ -1,23 +1,27 @@
-"""Unit tests for the five operations (offline; T04 real implementations).
+"""Unit tests for the five operations (offline; T05 real implementations).
 
-Locks down behaviors the Go client and later tasks (T05) rely on:
+Locks down behaviors the Go client relies on:
 - discover: provider allowlist subset validation, limit clamping, per-source
   status aggregation, all-sources-failed vs empty-result distinction
 - rank: payload validation and fail-closed LLM config (successful LLM paths
   are covered in test_ranking.py with injected transports)
 - fetch_full_text: URL/scheme validation, size cap, missing-OA-URL handling
   (network-side SSRF/redirect/size behaviour is in test_downloader.py)
-- parse: codepoint offsets and per-block hashes are consistent (T03 mock)
-- read: evidence/claims reference the supplied blocks only (T03 mock)
+- parse: bounded hash-verified blocks over base64 payloads (details in
+  test_parser.py, incl. PDF fixtures)
+- read: fail-closed without LLM config, payload shape validation (details in
+  test_reader.py with injected transports)
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 
 import httpx
 import pytest
 
+from lumin_scholar import parser
 from lumin_scholar.operations import (
     MAX_DISCOVER_LIMIT,
     MAX_FETCH_SIZE_BYTES,
@@ -26,6 +30,7 @@ from lumin_scholar.operations import (
     OperationError,
     WorkerDeps,
     build_handlers,
+    default_worker_deps,
     run_operation,
 )
 
@@ -218,67 +223,116 @@ class TestFetchFullTextBlocked:
 
 
 class TestParse:
-    def test_blocks_have_consistent_offsets_and_hashes(self):
+    def test_blocks_have_consistent_hashes(self):
         document = "First paragraph text.\n\nSecond paragraph with 中文."
         result = run_operation(
-            "parse", {"document": document, "media_type": "text/plain"}
+            "parse",
+            {
+                "document": base64.b64encode(document.encode("utf-8")).decode("ascii"),
+                "media_type": "text/plain",
+                "parser_version": parser.PARSER_VERSION,
+            },
+            handlers=build_handlers(default_worker_deps()),
         )
         blocks = result.outputs["blocks"]
-        assert len(blocks) == 2
+        assert len(blocks) >= 2
         for block in blocks:
-            segment = document[block["start_offset"]:block["end_offset"]]
-            assert segment == block["text"]
             assert block["block_hash"] == _sha256(block["text"])
+            assert block["page"] is None
         assert result.outputs["coverage"]["total_codepoints"] == len(document)
 
     def test_markdown_media_type_supported(self):
         result = run_operation(
-            "parse", {"document": "# Heading\n\nBody", "media_type": "text/markdown"}
+            "parse",
+            {
+                "document": base64.b64encode(b"# Heading\n\nBody").decode("ascii"),
+                "media_type": "text/markdown",
+                "parser_version": parser.PARSER_VERSION,
+            },
+            handlers=build_handlers(default_worker_deps()),
         )
         assert result.outputs["coverage"]["media_type"] == "text/markdown"
 
     def test_unsupported_media_type_rejected(self):
         with pytest.raises(OperationError) as excinfo:
-            run_operation("parse", {"document": "x", "media_type": "application/pdf"})
+            run_operation(
+                "parse",
+                {
+                    "document": base64.b64encode(b"x").decode("ascii"),
+                    "media_type": "application/json",
+                    "parser_version": parser.PARSER_VERSION,
+                },
+                handlers=build_handlers(default_worker_deps()),
+            )
         assert excinfo.value.code == "unsupported_media_type"
 
 
-class TestRead:
-    def test_claims_and_evidence_reference_supplied_blocks(self):
-        blocks = [
-            {"block_id": "blk-1", "text": "alpha " * 40},
-            {"block_id": "blk-2", "text": "beta"},
-        ]
-        result = run_operation(
-            "read",
-            {"research_question": "q", "paper_id": "p1", "blocks": blocks},
-        )
-        assert result.outputs["blocks_read"] == ["blk-1", "blk-2"]
-        block_ids = {b["block_id"] for b in blocks}
-        for claim in result.outputs["claims"]:
-            assert set(claim["block_ids"]) <= block_ids
-        for ev in result.outputs["evidence"]:
-            assert ev["block_id"] in block_ids
-            assert ev["quote"].startswith(("alpha", "beta"))
-        assert result.outputs["limitations"]
+def _read_deps(llm_config) -> WorkerDeps:
+    return WorkerDeps(
+        discover_client_factory=lambda: httpx.Client(),
+        download_client_factory=lambda: httpx.Client(),
+        llm_config_provider=lambda: llm_config,
+    )
 
-    def test_too_many_blocks_rejected(self):
-        blocks = [{"block_id": f"b{i}", "text": "x"} for i in range(MAX_READ_BLOCKS + 1)]
+
+class TestRead:
+    def test_fail_closed_without_llm_config(self):
+        blocks = [{"block_id": "blk-1", "text": "alpha", "block_hash": _sha256("alpha")}]
         with pytest.raises(OperationError) as excinfo:
             run_operation(
-                "read", {"research_question": "q", "paper_id": "p", "blocks": blocks}
+                "read",
+                {
+                    "research_question": "q",
+                    "paper_id": "p1",
+                    "blocks": blocks,
+                    "reader_policy": {"reader_policy_version": "reader/1"},
+                },
+                handlers=build_handlers(_read_deps(None)),
+            )
+        assert excinfo.value.code == "llm_not_configured"
+
+    def test_too_many_blocks_rejected(self):
+        blocks = [{"block_id": f"b{i}", "text": "x", "block_hash": _sha256("x")} for i in range(MAX_READ_BLOCKS + 1)]
+        with pytest.raises(OperationError) as excinfo:
+            run_operation(
+                "read",
+                {
+                    "research_question": "q",
+                    "paper_id": "p",
+                    "blocks": blocks,
+                    "reader_policy": {"reader_policy_version": "reader/1"},
+                },
+                handlers=build_handlers(_read_deps(None)),
             )
         assert excinfo.value.code == "invalid_payload"
 
+    def test_block_hash_mismatch_rejected(self):
+        blocks = [{"block_id": "b1", "text": "x", "block_hash": _sha256("other")}]
+        with pytest.raises(OperationError) as excinfo:
+            run_operation(
+                "read",
+                {
+                    "research_question": "q",
+                    "paper_id": "p",
+                    "blocks": blocks,
+                    "reader_policy": {"reader_policy_version": "reader/1"},
+                },
+                handlers=build_handlers(_read_deps(None)),
+            )
+        assert excinfo.value.code == "block_hash_mismatch"
+
     def test_unknown_block_field_rejected(self):
+        blocks = [{"block_id": "b1", "text": "x", "block_hash": _sha256("x"), "page": 1}]
         with pytest.raises(OperationError):
             run_operation(
                 "read",
                 {
                     "research_question": "q",
                     "paper_id": "p",
-                    "blocks": [{"block_id": "b1", "text": "x", "page": 1}],
+                    "blocks": blocks,
+                    "reader_policy": {"reader_policy_version": "reader/1"},
                 },
+                handlers=build_handlers(_read_deps(None)),
             )
 
 
