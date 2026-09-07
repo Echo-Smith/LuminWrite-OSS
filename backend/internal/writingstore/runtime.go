@@ -39,11 +39,29 @@ func (s *Store) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, e
 	if err := validateID(runID, "run_", "run_id"); err != nil {
 		return RuntimeRun{}, err
 	}
+	return loadRuntimeRun(ctx, s.db, runID)
+}
+
+// LoadRuntimeRun reads the run projection inside the caller's transaction;
+// the gate transactions need the run's snapshot version and contract
+// bindings to build the waiting-gate checkpoint atomically.
+func (tx *Tx) LoadRuntimeRun(ctx context.Context, runID string) (RuntimeRun, error) {
+	if err := validateID(runID, "run_", "run_id"); err != nil {
+		return RuntimeRun{}, err
+	}
+	return loadRuntimeRun(ctx, tx.tx, runID)
+}
+
+type runtimeRowRunner interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func loadRuntimeRun(ctx context.Context, runner runtimeRowRunner, runID string) (RuntimeRun, error) {
 	var run RuntimeRun
 	var baseVersionID, planID, approvalStatus, snapshotID, styleSlug sql.NullString
 	var planVersion, snapshotVersion sql.NullInt64
 	var budget, permissions []byte
-	err := s.db.QueryRowContext(ctx, `
+	err := runner.QueryRowContext(ctx, `
 		SELECT r.run_id, r.document_id, r.contract_id, r.contract_version,
 		       r.contract_hash, r.base_version_id, r.style_slug, r.status, r.active_plan_id, r.active_plan_version,
 		       r.approval_mode, COALESCE(p.approval_status, ''), r.budget,
@@ -131,96 +149,107 @@ type RunTransitionResult struct {
 }
 
 func (s *Store) RecordRunTransition(ctx context.Context, command RunTransitionCommand) (RunTransitionResult, error) {
+	var result RunTransitionResult
+	err := s.InTransaction(ctx, func(tx *Tx) error {
+		var err error
+		result, err = tx.RecordRunTransition(ctx, command)
+		return err
+	})
+	return result, err
+}
+
+// RecordRunTransition records one state transition (event + projection
+// update) inside the caller's transaction. The gate-arrival transaction uses
+// it to make the paused status atomic with the pending gate row and the
+// waiting-gate checkpoint.
+func (tx *Tx) RecordRunTransition(ctx context.Context, command RunTransitionCommand) (RunTransitionResult, error) {
+	var result RunTransitionResult
 	if err := validateTransitionCommand(command); err != nil {
 		return RunTransitionResult{}, err
 	}
-	var result RunTransitionResult
-	err := s.InTransaction(ctx, func(tx *Tx) error {
-		var current string
-		if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_runs WHERE run_id=$1 FOR UPDATE`, command.RunID).Scan(&current); errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		} else if err != nil {
-			return fmt.Errorf("lock run transition: %w", err)
-		}
+	var current string
+	if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_runs WHERE run_id=$1 FOR UPDATE`, command.RunID).Scan(&current); errors.Is(err, sql.ErrNoRows) {
+		return RunTransitionResult{}, ErrNotFound
+	} else if err != nil {
+		return RunTransitionResult{}, fmt.Errorf("lock run transition: %w", err)
+	}
 
-		var existing RunEvent
-		var payload []byte
-		err := tx.tx.QueryRowContext(ctx, `
-			SELECT event_id, sequence, event_type, occurred_at, entity_kind,
-			       entity_id, payload, checksum
-			FROM writing_run_events WHERE run_id=$1 AND idempotency_key=$2
-			  AND event_type IN ('run.transitioned','run.transition_rejected')
-		`, command.RunID, command.IdempotencyKey).Scan(&existing.EventID, &existing.Sequence,
-			&existing.EventType, &existing.OccurredAt, &existing.EntityKind,
-			&existing.EntityID, &payload, &existing.Checksum)
-		if err == nil {
-			var saved struct {
-				ExpectedFrom   string `json:"expected_from"`
-				ActualFrom     string `json:"actual_from"`
-				RequestedTo    string `json:"requested_to"`
-				EffectiveState string `json:"effective_state"`
-				Accepted       bool   `json:"accepted"`
-			}
-			if err := json.Unmarshal(payload, &saved); err != nil {
-				return fmt.Errorf("decode prior transition: %w", err)
-			}
-			if saved.ExpectedFrom != command.ExpectedFrom || saved.RequestedTo != command.RequestedTo {
-				return fmt.Errorf("%w: transition command was replayed with different states", ErrIdempotencyConflict)
-			}
-			existing.RunID, existing.IdempotencyKey, existing.Payload, existing.Trace = command.RunID, command.IdempotencyKey, map[string]any{}, command.Trace
-			result = RunTransitionResult{ExpectedFrom: saved.ExpectedFrom, ActualFrom: saved.ActualFrom,
-				RequestedTo: saved.RequestedTo, EffectiveState: saved.EffectiveState,
-				Accepted: saved.Accepted, Replayed: true, Event: existing}
-			return nil
+	var existing RunEvent
+	var payload []byte
+	err := tx.tx.QueryRowContext(ctx, `
+		SELECT event_id, sequence, event_type, occurred_at, entity_kind,
+		       entity_id, payload, checksum
+		FROM writing_run_events WHERE run_id=$1 AND idempotency_key=$2
+		  AND event_type IN ('run.transitioned','run.transition_rejected')
+	`, command.RunID, command.IdempotencyKey).Scan(&existing.EventID, &existing.Sequence,
+		&existing.EventType, &existing.OccurredAt, &existing.EntityKind,
+		&existing.EntityID, &payload, &existing.Checksum)
+	if err == nil {
+		var saved struct {
+			ExpectedFrom   string `json:"expected_from"`
+			ActualFrom     string `json:"actual_from"`
+			RequestedTo    string `json:"requested_to"`
+			EffectiveState string `json:"effective_state"`
+			Accepted       bool   `json:"accepted"`
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("load prior transition: %w", err)
+		if err := json.Unmarshal(payload, &saved); err != nil {
+			return RunTransitionResult{}, fmt.Errorf("decode prior transition: %w", err)
 		}
+		if saved.ExpectedFrom != command.ExpectedFrom || saved.RequestedTo != command.RequestedTo {
+			return RunTransitionResult{}, fmt.Errorf("%w: transition command was replayed with different states", ErrIdempotencyConflict)
+		}
+		existing.RunID, existing.IdempotencyKey, existing.Payload, existing.Trace = command.RunID, command.IdempotencyKey, map[string]any{}, command.Trace
+		result = RunTransitionResult{ExpectedFrom: saved.ExpectedFrom, ActualFrom: saved.ActualFrom,
+			RequestedTo: saved.RequestedTo, EffectiveState: saved.EffectiveState,
+			Accepted: saved.Accepted, Replayed: true, Event: existing}
+		return result, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return RunTransitionResult{}, fmt.Errorf("load prior transition: %w", err)
+	}
 
-		accepted := command.RuleAccepted && current == command.ExpectedFrom
-		effective, eventType, reason := current, "run.transition_rejected", "stale_or_invalid_transition"
-		if accepted {
-			effective, eventType, reason = command.RequestedTo, "run.transitioned", command.ReasonCode
-			if reason == "" {
-				reason = "transition_applied"
-			}
+	accepted := command.RuleAccepted && current == command.ExpectedFrom
+	effective, eventType, reason := current, "run.transition_rejected", "stale_or_invalid_transition"
+	if accepted {
+		effective, eventType, reason = command.RequestedTo, "run.transitioned", command.ReasonCode
+		if reason == "" {
+			reason = "transition_applied"
 		}
-		payloadMap := map[string]any{
-			"expected_from": command.ExpectedFrom, "actual_from": current,
-			"requested_to": command.RequestedTo, "effective_state": effective,
-			"accepted": accepted, "cause": command.Cause, "reason_code": reason,
-			"summary": command.Summary,
+	}
+	payloadMap := map[string]any{
+		"expected_from": command.ExpectedFrom, "actual_from": current,
+		"requested_to": command.RequestedTo, "effective_state": effective,
+		"accepted": accepted, "cause": command.Cause, "reason_code": reason,
+		"summary": command.Summary,
+	}
+	event, err := tx.AppendRunEvent(ctx, RunEvent{RunID: command.RunID,
+		EventType: eventType, IdempotencyKey: command.IdempotencyKey,
+		EntityKind: "run", EntityID: command.RunID, Payload: payloadMap,
+		OccurredAt: command.OccurredAt, Trace: command.Trace})
+	if err != nil {
+		return RunTransitionResult{}, err
+	}
+	if accepted {
+		completedAt := any(nil)
+		if effective == "completed" || effective == "cancelled" || effective == "failed" {
+			completedAt = event.OccurredAt
 		}
-		event, err := tx.AppendRunEvent(ctx, RunEvent{RunID: command.RunID,
-			EventType: eventType, IdempotencyKey: command.IdempotencyKey,
-			EntityKind: "run", EntityID: command.RunID, Payload: payloadMap,
-			OccurredAt: command.OccurredAt, Trace: command.Trace})
+		update, err := tx.tx.ExecContext(ctx, `
+			UPDATE writing_runs SET status=$1::varchar,
+			 started_at=CASE WHEN $1::varchar='running' AND started_at IS NULL THEN $2 ELSE started_at END,
+			 completed_at=COALESCE($3, completed_at), updated_at=$2
+			WHERE run_id=$4 AND status=$5
+		`, effective, event.OccurredAt, completedAt, command.RunID, current)
 		if err != nil {
-			return err
+			return RunTransitionResult{}, fmt.Errorf("advance run state projection: %w", err)
 		}
-		if accepted {
-			completedAt := any(nil)
-			if effective == "completed" || effective == "cancelled" || effective == "failed" {
-				completedAt = event.OccurredAt
-			}
-			update, err := tx.tx.ExecContext(ctx, `
-				UPDATE writing_runs SET status=$1::varchar,
-				 started_at=CASE WHEN $1::varchar='running' AND started_at IS NULL THEN $2 ELSE started_at END,
-				 completed_at=COALESCE($3, completed_at), updated_at=$2
-				WHERE run_id=$4 AND status=$5
-			`, effective, event.OccurredAt, completedAt, command.RunID, current)
-			if err != nil {
-				return fmt.Errorf("advance run state projection: %w", err)
-			}
-			if rows, _ := update.RowsAffected(); rows != 1 {
-				return fmt.Errorf("%w: run state changed concurrently", ErrConflict)
-			}
+		if rows, _ := update.RowsAffected(); rows != 1 {
+			return RunTransitionResult{}, fmt.Errorf("%w: run state changed concurrently", ErrConflict)
 		}
-		result = RunTransitionResult{ExpectedFrom: command.ExpectedFrom, ActualFrom: current,
-			RequestedTo: command.RequestedTo, EffectiveState: effective, Accepted: accepted, Event: event}
-		return nil
-	})
-	return result, err
+	}
+	result = RunTransitionResult{ExpectedFrom: command.ExpectedFrom, ActualFrom: current,
+		RequestedTo: command.RequestedTo, EffectiveState: effective, Accepted: accepted, Event: event}
+	return result, nil
 }
 
 func runtimeHash(parts ...string) string {
@@ -431,67 +460,85 @@ func (s *Store) StartNodeAttempt(ctx context.Context, attempt NodeAttempt, trace
 
 func (s *Store) CompleteNodeAttempt(ctx context.Context, completion AttemptCompletion) error {
 	return s.InTransaction(ctx, func(tx *Tx) error {
-		key, err := NodeAttemptKey(completion.RunID, completion.NodeID, completion.Attempt)
-		if err != nil {
+		return tx.completeNodeAttempt(ctx, completion)
+	})
+}
+
+// completeNodeAttempt commits one attempt's terminal outcome plus its output
+// artifacts and node event inside the caller's transaction. The gate-decision
+// transaction uses it to write the gate node's succeeded record atomically
+// with the decision row.
+func (tx *Tx) completeNodeAttempt(ctx context.Context, completion AttemptCompletion) error {
+	key, err := NodeAttemptKey(completion.RunID, completion.NodeID, completion.Attempt)
+	if err != nil {
+		return err
+	}
+	if completion.CompletedAt.IsZero() {
+		completion.CompletedAt = time.Now().UTC()
+	}
+	if completion.Status != "succeeded" && completion.Status != "failed" && completion.Status != "paused" && completion.Status != "cancelled" {
+		return fmt.Errorf("%w: invalid attempt completion status", ErrInvalidRecord)
+	}
+	outputIDs := make([]string, 0, len(completion.Artifacts))
+	for _, artifact := range completion.Artifacts {
+		if artifact.RunID != completion.RunID || artifact.NodeID != completion.NodeID || artifact.Attempt != completion.Attempt {
+			return fmt.Errorf("%w: artifact and attempt bindings differ", ErrInvalidRecord)
+		}
+		if err := tx.PutArtifact(ctx, artifact); err != nil {
 			return err
 		}
-		if completion.CompletedAt.IsZero() {
-			completion.CompletedAt = time.Now().UTC()
+		outputIDs = append(outputIDs, artifact.ArtifactID)
+		if _, err := tx.AppendRunEvent(ctx, RunEvent{RunID: completion.RunID,
+			EventType: "artifact.created", NodeID: completion.NodeID, Attempt: completion.Attempt,
+			IdempotencyKey: key, EntityKind: "artifact", EntityID: artifact.ArtifactID,
+			Payload: map[string]any{"version": artifact.Version, "output_key": artifact.OutputKey,
+				"artifact_type": artifact.ArtifactType, "content_hash": artifact.ContentHash}, Trace: completion.Trace}); err != nil {
+			return err
 		}
-		if completion.Status != "succeeded" && completion.Status != "failed" && completion.Status != "paused" && completion.Status != "cancelled" {
-			return fmt.Errorf("%w: invalid attempt completion status", ErrInvalidRecord)
+	}
+	outputs, _ := json.Marshal(outputIDs)
+	errorDetail, _ := json.Marshal(map[string]any{"message": completion.ErrorMessage})
+	result, err := tx.tx.ExecContext(ctx, `
+		UPDATE writing_node_attempts SET status=$1::varchar, output_artifact_ids=$2,
+		 actual_cost_usd=$3, actual_input_tokens=$4, actual_output_tokens=$5,
+		 actual_duration_ms=$6, error_code=$7, error_detail=$8,
+		 completed_at=CASE WHEN $1::varchar IN ('succeeded','failed','cancelled') THEN $9 ELSE completed_at END,
+		 lease_owner=NULL, lease_token_hash=NULL, lease_expires_at=NULL, updated_at=$9
+		WHERE idempotency_key=$10 AND status IN ('pending','running','paused')
+	`, completion.Status, outputs, completion.CostUSD, completion.InputTokens,
+		completion.OutputTokens, completion.DurationMS, nullString(completion.ErrorCode),
+		errorDetail, completion.CompletedAt, key)
+	if err != nil {
+		return fmt.Errorf("complete node attempt: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows != 1 {
+		var existing string
+		if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_node_attempts WHERE idempotency_key=$1`, key).Scan(&existing); err != nil {
+			return ErrNotFound
 		}
-		outputIDs := make([]string, 0, len(completion.Artifacts))
-		for _, artifact := range completion.Artifacts {
-			if artifact.RunID != completion.RunID || artifact.NodeID != completion.NodeID || artifact.Attempt != completion.Attempt {
-				return fmt.Errorf("%w: artifact and attempt bindings differ", ErrInvalidRecord)
-			}
-			if err := tx.PutArtifact(ctx, artifact); err != nil {
-				return err
-			}
-			outputIDs = append(outputIDs, artifact.ArtifactID)
-			if _, err := tx.AppendRunEvent(ctx, RunEvent{RunID: completion.RunID,
-				EventType: "artifact.created", NodeID: completion.NodeID, Attempt: completion.Attempt,
-				IdempotencyKey: key, EntityKind: "artifact", EntityID: artifact.ArtifactID,
-				Payload: map[string]any{"version": artifact.Version, "output_key": artifact.OutputKey,
-					"artifact_type": artifact.ArtifactType, "content_hash": artifact.ContentHash}, Trace: completion.Trace}); err != nil {
-				return err
-			}
+		if existing == completion.Status {
+			return nil
 		}
-		outputs, _ := json.Marshal(outputIDs)
-		errorDetail, _ := json.Marshal(map[string]any{"message": completion.ErrorMessage})
-		result, err := tx.tx.ExecContext(ctx, `
-			UPDATE writing_node_attempts SET status=$1::varchar, output_artifact_ids=$2,
-			 actual_cost_usd=$3, actual_input_tokens=$4, actual_output_tokens=$5,
-			 actual_duration_ms=$6, error_code=$7, error_detail=$8,
-			 completed_at=CASE WHEN $1::varchar IN ('succeeded','failed','cancelled') THEN $9 ELSE completed_at END,
-			 lease_owner=NULL, lease_token_hash=NULL, lease_expires_at=NULL, updated_at=$9
-			WHERE idempotency_key=$10 AND status IN ('pending','running','paused')
-		`, completion.Status, outputs, completion.CostUSD, completion.InputTokens,
-			completion.OutputTokens, completion.DurationMS, nullString(completion.ErrorCode),
-			errorDetail, completion.CompletedAt, key)
-		if err != nil {
-			return fmt.Errorf("complete node attempt: %w", err)
-		}
-		rows, _ := result.RowsAffected()
-		if rows != 1 {
-			var existing string
-			if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_node_attempts WHERE idempotency_key=$1`, key).Scan(&existing); err != nil {
-				return ErrNotFound
-			}
-			if existing == completion.Status {
-				return nil
-			}
-			return fmt.Errorf("%w: attempt is already %s", ErrConflict, existing)
-		}
-		eventType := map[string]string{"succeeded": "node.completed", "failed": "node.failed", "paused": "node.paused", "cancelled": "node.cancelled"}[completion.Status]
-		_, err = tx.AppendRunEvent(ctx, RunEvent{RunID: completion.RunID, EventType: eventType,
-			NodeID: completion.NodeID, Attempt: completion.Attempt, IdempotencyKey: key,
-			EntityKind: "node", EntityID: completion.NodeID,
-			Payload: map[string]any{"status": completion.Status, "error_code": completion.ErrorCode,
-				"cost_usd": completion.CostUSD, "output_artifact_ids": outputIDs}, Trace: completion.Trace})
+		return fmt.Errorf("%w: attempt is already %s", ErrConflict, existing)
+	}
+	eventType := map[string]string{"succeeded": "node.completed", "failed": "node.failed", "paused": "node.paused", "cancelled": "node.cancelled"}[completion.Status]
+	_, err = tx.AppendRunEvent(ctx, RunEvent{RunID: completion.RunID, EventType: eventType,
+		NodeID: completion.NodeID, Attempt: completion.Attempt, IdempotencyKey: key,
+		EntityKind: "node", EntityID: completion.NodeID,
+		Payload: map[string]any{"status": completion.Status, "error_code": completion.ErrorCode,
+			"cost_usd": completion.CostUSD, "output_artifact_ids": outputIDs}, Trace: completion.Trace})
+	return err
+}
+
+// ensureAndCompleteAttempt creates the attempt ledger row (when absent) and
+// immediately records its succeeded outcome — the gate-decision path, where
+// no executor ever ran the node.
+func (tx *Tx) ensureAndCompleteAttempt(ctx context.Context, attempt NodeAttempt, completion AttemptCompletion) error {
+	if _, _, err := tx.EnsureNodeAttempt(ctx, attempt); err != nil {
 		return err
-	})
+	}
+	return tx.completeNodeAttempt(ctx, completion)
 }
 
 func (s *Store) ListRunAttempts(ctx context.Context, runID string) ([]NodeAttempt, error) {
@@ -552,10 +599,23 @@ func (s *Store) ListRunArtifacts(ctx context.Context, runID string) ([]ArtifactR
 
 func (s *Store) LoadLatestSnapshot(ctx context.Context, runID string) (SnapshotRecord, error) {
 	var snapshot SnapshotRecord
+	err := s.InTransaction(ctx, func(tx *Tx) error {
+		var err error
+		snapshot, err = tx.LoadLatestSnapshot(ctx, runID)
+		return err
+	})
+	return snapshot, err
+}
+
+// LoadLatestSnapshot reads the run's newest checkpoint snapshot inside the
+// caller's transaction; the gate-decision checkpoint update rewrites it in
+// the same transaction that records the decision.
+func (tx *Tx) LoadLatestSnapshot(ctx context.Context, runID string) (SnapshotRecord, error) {
+	var snapshot SnapshotRecord
 	var manifest []byte
 	var base, candidate, quality sql.NullString
 	var qualityVersion sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `
+	err := tx.tx.QueryRowContext(ctx, `
 		SELECT snapshot_id, snapshot_version, run_id, checkpoint_id, ledger_sequence,
 		 plan_id, plan_version, contract_id, contract_version, contract_hash,
 		 document_id, base_version_id, candidate_version_id, quality_report_id,

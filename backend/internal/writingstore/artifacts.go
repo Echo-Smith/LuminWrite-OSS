@@ -49,6 +49,8 @@ var validArtifactTypes = map[string]bool{
 	"full_draft": true, "review_report": true,
 	"revision_set": true, "quality_report": true, "evidence_report": true,
 	"fact_report": true,
+	// Research-review gate decision artifact (migration 107, contracts.md §2).
+	"evidence_approval": true,
 }
 
 var validArtifactStatuses = map[string]bool{

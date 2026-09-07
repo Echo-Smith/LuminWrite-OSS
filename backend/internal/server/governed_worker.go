@@ -21,6 +21,7 @@ type governedRunTrigger struct {
 func (t *governedRunTrigger) TriggerAfterApproval(runID string) {
 	t.launch(context.Background(), runID)
 }
+
 func (t *governedRunTrigger) launch(parent context.Context, runID string) {
 	if t == nil || t.orchestrator == nil || t.store == nil {
 		return
@@ -93,6 +94,65 @@ func (t *governedRunTrigger) finishIdleControl(ctx context.Context, run writings
 	_, err := t.orchestrator.State.Transition(ctx, writingruntime.TransitionRequest{CommandID: writingstore.StableID("command_", run.RunID, "idle-control", fmt.Sprint(run.LastEventSequence)), RunID: run.RunID, From: writingruntime.RunState(run.Status), To: target, Cause: "recovered_control", Summary: "Persisted control completed under exclusive ownership", Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "governed.worker"}})
 	return err
 }
+
+// TriggerAfterGateDecision resumes a paused run right after a gate decision
+// committed (design.md §5.3 route A: API-direct trigger). The database state
+// stays authoritative: the gate-resume scan below re-drives the same resume
+// after process restarts, so a lost in-memory trigger never strands a
+// decided run.
+func (t *governedRunTrigger) TriggerAfterGateDecision(runID string) {
+	t.launchGateResume(context.Background(), runID)
+}
+
+func (t *governedRunTrigger) launchGateResume(parent context.Context, runID string) {
+	if t == nil || t.orchestrator == nil || t.store == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.parent != nil {
+		parent = t.parent
+	}
+	if t.started == nil {
+		t.started = map[string]bool{}
+	}
+	if t.started[runID] || len(t.started) >= 2 {
+		t.mu.Unlock()
+		return
+	}
+	t.started[runID] = true
+	t.mu.Unlock()
+	go func() {
+		defer func() { t.mu.Lock(); delete(t.started, runID); t.mu.Unlock() }()
+		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
+		defer cancel()
+		_, err := t.store.WithRunExecutionLock(ctx, runID, func(owned context.Context) error {
+			run, err := t.store.LoadRuntimeRun(owned, runID)
+			if err != nil {
+				return err
+			}
+			if run.Status == "pausing" || run.Status == "cancelling" {
+				return t.finishIdleControl(owned, run)
+			}
+			// Only paused runs with every gate decided reach here; the
+			// orchestrator's own resume guard re-blocks pending gates.
+			if run.Status != "paused" {
+				return nil
+			}
+			stop := watchGovernedControl(owned, t.store, t.orchestrator, runID)
+			defer stop()
+			_, err = t.orchestrator.Resume(owned, runID,
+				writingstore.StableID("command_", runID, "gate_resume", fmt.Sprint(run.LastEventSequence)),
+				writingstore.Actor{Type: writingstore.ActorSystem, ID: "governed.worker"})
+			if err != nil {
+				slog.Warn("governed gate resume ended", "run_id", runID, "state", err)
+			}
+			return err
+		})
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("governed worker gate resume", "run_id", runID, "error", err)
+		}
+	}()
+}
 func (t *governedRunTrigger) Serve(ctx context.Context) {
 	t.mu.Lock()
 	t.parent = ctx
@@ -107,6 +167,17 @@ func (t *governedRunTrigger) Serve(ctx context.Context) {
 			}
 		} else if ctx.Err() == nil {
 			slog.Warn("governed recovery scan failed", "error", err)
+		}
+		// Gate-resume scan (design.md §5.3): paused runs whose gates are all
+		// decided — the durable backstop when the API-direct trigger lost a
+		// race with a restart.
+		resumable, err := t.store.GateResumableRunIDs(ctx, 100)
+		if err == nil {
+			for _, id := range resumable {
+				t.launchGateResume(ctx, id)
+			}
+		} else if ctx.Err() == nil {
+			slog.Warn("governed gate-resume scan failed", "error", err)
 		}
 		select {
 		case <-ctx.Done():

@@ -257,6 +257,12 @@ func (s *Server) mountGovernedRuntime(store *writingstore.Store) {
 		// registry the orchestrator dispatches through; the declared-only
 		// default catalog would fail every plan compile as T4.
 		api.capabilities = runtime.capabilities
+		// T02 research-gate wiring: the decision transaction commits the
+		// waiting-gate checkpoint through the store-backed repository.
+		api.gateOrchestrator = runtime.orchestrator
+		api.gateCheckpoints = &writingruntime.PersistentCheckpointRepository{Store: store,
+			Trace: writingstore.TraceContext{Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime"},
+				Provenance: map[string]any{}, SourceRefs: []string{}}}
 		s.governedTrigger = api.trigger
 	}
 	slog.Info("governed writing runtime mounted", "mode", string(mode), "capabilities", len(specs))

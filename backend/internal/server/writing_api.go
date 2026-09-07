@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingquality"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -28,6 +30,27 @@ var (
 	errWritingRuntimeUnavailable     = errors.New("writing api: runtime unavailable")
 	errWritingIdempotencyKeyRequired = errors.New("writing api: idempotency key required")
 )
+
+// researchErrorCode returns the contracts.md error.code for the research
+// sentinel errors (those whose code is not simply derivable from the status).
+func researchErrorCode(err error) string {
+	switch {
+	case errors.Is(err, errGateStale):
+		return "STALE_GATE"
+	case errors.Is(err, errGateAlreadyDecided):
+		return "GATE_ALREADY_DECIDED"
+	case errors.Is(err, errGateIdempotencyConflict):
+		return "IDEMPOTENCY_CONFLICT"
+	case errors.Is(err, errInsufficientEvidence):
+		return "INSUFFICIENT_EVIDENCE"
+	case errors.Is(err, errEvidenceInvalid):
+		return "EVIDENCE_INVALID"
+	case errors.Is(err, errOutlineEvidenceMismatch):
+		return "OUTLINE_EVIDENCE_MISMATCH"
+	default:
+		return "RESEARCH_UNAVAILABLE"
+	}
+}
 
 var governedWritingPermissions = []writingplan.Permission{
 	"document.revision", "external.research", "materials.read", "model.invoke", "validation.run",
@@ -137,6 +160,11 @@ type persistentWritingAPI struct {
 	templates    *writingplan.TemplateRegistry
 	controller   writingRunController
 	trigger      *governedRunTrigger
+	// Research-gate wiring (T02): the store-backed checkpoint repository and
+	// orchestrator the gate decision transaction needs. Nil when the governed
+	// runtime is unmounted — the research API then reports unavailable.
+	gateCheckpoints  *writingruntime.PersistentCheckpointRepository
+	gateOrchestrator *writingruntime.Orchestrator
 }
 
 func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {
@@ -397,6 +425,17 @@ func (service *persistentWritingAPI) triggerGovernedRun(runID string) {
 	service.trigger.TriggerAfterApproval(runID)
 }
 
+// triggerGateResume launches the post-decision resume (design.md §5.3): the
+// API-direct in-memory trigger plus the periodic gate-resume scan as the
+// durable backstop. Nil trigger (mode=off) leaves the run paused — GET will
+// show the approved decision whenever the runtime returns.
+func (service *persistentWritingAPI) triggerGateResume(runID string) {
+	if service.trigger == nil {
+		return
+	}
+	service.trigger.TriggerAfterGateDecision(runID)
+}
+
 func (service *persistentWritingAPI) ControlRun(ctx context.Context, access writingAccess, command controlWritingRunCommand) (writingstore.RuntimeRun, error) {
 	if _, err := service.GetRun(ctx, access, command.RunID); err != nil {
 		return writingstore.RuntimeRun{}, err
@@ -641,6 +680,19 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusConflict, "APPROVAL_SCOPE_MISMATCH"
 	case errors.Is(err, errWritingRuntimeUnavailable):
 		status, code = http.StatusServiceUnavailable, "RUNTIME_UNAVAILABLE"
+	// Research-review error family (contracts.md §3).
+	case errors.Is(err, errGateStale), errors.Is(err, errGateAlreadyDecided), errors.Is(err, errGateIdempotencyConflict):
+		status, code = http.StatusConflict, researchErrorCode(err)
+	case errors.Is(err, writingruntime.ErrGateApprovalRequired):
+		status, code = http.StatusConflict, "GATE_APPROVAL_REQUIRED"
+	case errors.Is(err, errResearchUnavailable):
+		status, code = http.StatusServiceUnavailable, "RESEARCH_UNAVAILABLE"
+	case errors.Is(err, errInsufficientEvidence), errors.Is(err, errEvidenceInvalid), errors.Is(err, errOutlineEvidenceMismatch):
+		status, code = http.StatusUnprocessableEntity, researchErrorCode(err)
+	case errors.Is(err, errInvalidResearchSpec):
+		status, code = http.StatusBadRequest, "INVALID_RESEARCH_SPEC"
+	case errors.Is(err, errResearchResourceNotFound):
+		status, code = http.StatusNotFound, "WRITING_RESOURCE_NOT_FOUND"
 	case errors.Is(err, writingstore.ErrNotFound):
 		status, code = http.StatusNotFound, "WRITING_RESOURCE_NOT_FOUND"
 	case errors.Is(err, writingstore.ErrImmutableConflict):
@@ -655,6 +707,11 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		if errors.As(err, &syntaxError) || errors.As(err, &typeError) || strings.Contains(err.Error(), "json: unknown field") || strings.Contains(err.Error(), "duplicate JSON key") || errors.Is(err, io.EOF) {
 			status, code = http.StatusBadRequest, "INVALID_JSON"
 		}
+	}
+	if status == http.StatusInternalServerError && err != nil {
+		// Unmapped errors would otherwise reach the client masked; log them
+		// so 500 responses stay diagnosable.
+		slog.Warn("governed writing request failed", "error", err)
 	}
 	if data == nil {
 		message := err.Error()

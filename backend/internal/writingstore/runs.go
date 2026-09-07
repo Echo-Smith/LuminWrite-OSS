@@ -297,12 +297,15 @@ var validRunEventTypes = map[string]bool{
 	"node.cancelled":        true,
 	"runtime.route_decided": true, "runtime.execution_observed": true,
 	"runtime.shadow_compared": true,
+	// Research-review family (migration 107): run-scoped ledger events — no
+	// node attempt identity, gate ids live in the payload and entity id.
+	"research.progress": true, "gate.pending": true, "gate.decided": true,
 }
 
 var validRunEventEntityKinds = map[string]bool{
 	"run": true, "node": true, "artifact": true,
 	"document_version": true, "quality_report": true, "snapshot": true,
-	"rollout_evidence": true,
+	"rollout_evidence": true, "research_gate": true,
 }
 
 // AppendRunEvent records one run-ledger event in its own transaction,
