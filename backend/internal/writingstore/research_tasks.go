@@ -187,6 +187,46 @@ func (tx *Tx) FailResearchTask(ctx context.Context, taskID int64, worker string,
 	return nil
 }
 
+// ClaimResearchTaskByIdentity leases one specific sub-task by its natural key
+// instead of draining the node queue. The research executors drive papers
+// sequentially (fetch → parse → read) and must claim exactly the phase they
+// are about to run; the queue-drain ClaimResearchTask cannot promise that.
+// The conditional UPDATE keeps the same fencing semantics as the queue claim:
+// pending/failed (retry_after elapsed) or expired-lease rows only, so an
+// expired worker's late result can never overwrite the reclaimed state.
+// T05 addition; existing methods are unchanged.
+func (tx *Tx) ClaimResearchTaskByIdentity(ctx context.Context, runID, nodeID, taskKey, inputHash, worker string, ttl time.Duration, now time.Time) (ResearchTask, bool, error) {
+	if worker == "" || ttl <= 0 {
+		return ResearchTask{}, false, fmt.Errorf("%w: research task claim requires a worker and lease ttl", ErrInvalidRecord)
+	}
+	row := tx.tx.QueryRowContext(ctx, `
+		UPDATE writing_research_tasks SET
+			status='running', attempt=attempt+1, lease_owner=$1, lease_expires_at=$2,
+			updated_at=$3
+		WHERE id = (
+			SELECT id FROM writing_research_tasks
+			WHERE run_id=$4 AND node_id=$5 AND task_key=$6 AND input_hash=$7
+			  AND (
+			    (status IN ('pending','failed') AND (retry_after IS NULL OR retry_after <= $3))
+			    OR (status = 'running' AND lease_expires_at <= $3)
+			  )
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		)
+		RETURNING id, owner_user_id, run_id, node_id, task_key, phase, input_hash,
+		          status, attempt, lease_owner, lease_expires_at, output_artifact_id,
+		          output_hash, error_code, retry_after, usage_json, created_at, updated_at
+	`, worker, now.Add(ttl), now, runID, nodeID, taskKey, inputHash)
+	task, err := scanResearchTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResearchTask{}, false, nil
+	}
+	if err != nil {
+		return ResearchTask{}, false, fmt.Errorf("claim research task by identity: %w", err)
+	}
+	return task, true, nil
+}
+
 // GetResearchTask loads one task row.
 func (s *Store) GetResearchTask(ctx context.Context, taskID int64) (ResearchTask, error) {
 	row := s.db.QueryRowContext(ctx, `
@@ -203,6 +243,71 @@ func (s *Store) GetResearchTask(ctx context.Context, taskID int64) (ResearchTask
 		return ResearchTask{}, fmt.Errorf("get research task: %w", err)
 	}
 	return task, nil
+}
+
+// GetResearchTaskByIdentity loads the ledger row for one natural key
+// (run, node, task_key, input_hash). The research executors use it to decide
+// cache reuse: a succeeded row whose output hash still verifies means the
+// upstream call is replayed from the committed artifact, never re-billed.
+// T05 addition; the existing claim/complete/fail surface is unchanged.
+func (s *Store) GetResearchTaskByIdentity(ctx context.Context, runID, nodeID, taskKey, inputHash string) (ResearchTask, error) {
+	if err := validateID(runID, "run_", "run_id"); err != nil {
+		return ResearchTask{}, err
+	}
+	if strings.TrimSpace(nodeID) == "" || strings.TrimSpace(taskKey) == "" || !sha256Pattern.MatchString(inputHash) {
+		return ResearchTask{}, fmt.Errorf("%w: incomplete research task identity", ErrInvalidRecord)
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, owner_user_id, run_id, node_id, task_key, phase, input_hash,
+		       status, attempt, lease_owner, lease_expires_at, output_artifact_id,
+		       output_hash, error_code, retry_after, usage_json, created_at, updated_at
+		FROM writing_research_tasks
+		WHERE run_id=$1 AND node_id=$2 AND task_key=$3 AND input_hash=$4
+	`, runID, nodeID, taskKey, inputHash)
+	task, err := scanResearchTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResearchTask{}, ErrNotFound
+	}
+	if err != nil {
+		return ResearchTask{}, fmt.Errorf("get research task by identity: %w", err)
+	}
+	return task, nil
+}
+
+// EnsureResearchTaskTx is the in-transaction form of EnsureResearchTask: the
+// research executors create task rows in the same transaction that claims
+// them, so a crash cannot leave a claimed task without its ledger row.
+func (tx *Tx) EnsureResearchTaskTx(ctx context.Context, task CreateResearchTask, now time.Time) (ResearchTask, error) {
+	return tx.EnsureResearchTask(ctx, task, now)
+}
+
+// ListResearchTasksByNode lists one node's sub-task ledger ordered by key —
+// the progress projector (research.progress events) reads it per paper.
+func (s *Store) ListResearchTasksByNode(ctx context.Context, runID, nodeID, ownerUserID string) ([]ResearchTask, error) {
+	if err := validateID(runID, "run_", "run_id"); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, owner_user_id, run_id, node_id, task_key, phase, input_hash,
+		       status, attempt, lease_owner, lease_expires_at, output_artifact_id,
+		       output_hash, error_code, retry_after, usage_json, created_at, updated_at
+		FROM writing_research_tasks
+		WHERE run_id=$1 AND node_id=$2 AND owner_user_id=$3
+		ORDER BY task_key, id
+	`, runID, nodeID, ownerUserID)
+	if err != nil {
+		return nil, fmt.Errorf("list research tasks by node: %w", err)
+	}
+	defer rows.Close()
+	tasks := []ResearchTask{}
+	for rows.Next() {
+		task, err := scanResearchTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
 }
 
 // ListResearchTasks lists a run's sub-task ledger ordered by node and key.
