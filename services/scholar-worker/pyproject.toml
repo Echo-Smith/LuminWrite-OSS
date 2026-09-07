@@ -11,7 +11,10 @@ authors = [{ name = "LuminBuddy" }]
 # call all need reliable per-request connect/read timeouts, streaming downloads
 # with byte caps, and an injectable transport (httpx.MockTransport) so every
 # unit test runs fully offline. urllib offers none of these cleanly.
-dependencies = ["httpx==0.28.1"]
+dependencies = [
+    "httpx==0.28.1",
+    "pypdf==6.1.1",
+]
 
 [project.optional-dependencies]
 dev = [
