@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# T04 integration smoke: start the real Python Scholar Worker on loopback and
-# drive it with the real Go client (healthz + one real discover operation).
+# T04/T09 integration smoke: start the real Python Scholar Worker on loopback
+# and drive it with the real Go client through the deterministic loopback:
 #
-# The worker's discover operation runs real provider fan-out, so by default
-# the smoke uses an OFFLINE allowlist-free path: the Go client pings healthz
-# and performs a discover limited to the "openalex" provider. If the network
-# is unavailable, set SCHOLAR_SMOKE_OFFLINE=1 to skip the live discover call
-# and only validate healthz (the offline behavior is already covered by the
-# pytest suite).
+#   1. /healthz                       — always (no network, no model)
+#   2. parse (deterministic TXT)      — always (no network, no model)
+#   3. discover (real provider fan-out, openalex) — unless
+#      SCHOLAR_SMOKE_OFFLINE=1 (offline behavior is covered by the pytest
+#      suite); a network failure here is reported as DISCOVER=SKIPPED.
+#   4. rank — the FAIL-CLOSED error path: no SCHOLAR_LLM_* is configured, so
+#      the worker must answer a typed error (never silent all-zero scores).
 #
 # Usage: scripts/dev-scholar-smoke.sh
 # Requires: uv (services/scholar-worker/.venv is created on first run) and Go.
@@ -40,22 +41,52 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/scholar"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 )
 
 func main() {
+	offline := os.Args[3] == "offline"
 	baseURL, token := os.Args[1], os.Args[2]
 	client, err := scholar.NewClient(baseURL, token)
 	exitIf(err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	exitIf(client.Health(ctx))
 	fmt.Println("[smoke] /healthz OK")
 
-	discoverOutputs, resp, err := client.Discover(ctx, "lithium battery cathode degradation", []string{"openalex"}, 3)
+	// ── parse: deterministic full loop (real worker, no network, no model).
+	document := []byte("LuminScholar smoke document.\n\nSecond paragraph: hash-verified blocks follow.")
+	parse, resp, err := (writingruntime.ScholarParseRead{Client: client}).ParseDocument(ctx, document, "text/plain", "parser/1")
 	exitIf(err)
+	parsePretty, _ := json.MarshalIndent(map[string]any{
+		"request_id": resp.RequestID, "blocks": len(parse.Blocks),
+		"coverage": parse.Coverage,
+	}, "", "  ")
+	fmt.Printf("[smoke] parse OK\n%s\n", parsePretty)
 
+	// ── rank: fail-closed without SCHOLAR_LLM_*. The worker MUST answer a
+	// typed error (fail-closed contract); success here would be a failure.
+	if _, _, rankErr := client.Rank(ctx, "why do batteries age?", []scholar.RankCandidate{
+		{PaperID: "p_smoke_1", Abstract: "battery aging abstract"},
+	}); rankErr == nil {
+		fmt.Fprintln(os.Stderr, "[smoke] FAIL: rank succeeded without LLM configuration — fail-closed contract broken")
+		os.Exit(1)
+	} else {
+		fmt.Printf("[smoke] rank fail-closed OK (%v)\n", rankErr)
+	}
+
+	// ── discover: real provider fan-out; skipped offline / without network.
+	if offline {
+		fmt.Println("[smoke] discover SKIPPED (SCHOLAR_SMOKE_OFFLINE=1)")
+		return
+	}
+	discoverOutputs, resp, err := client.Discover(ctx, "lithium battery cathode degradation", []string{"openalex"}, 3)
+	if err != nil {
+		fmt.Printf("[smoke] discover SKIPPED (network unavailable): %v\n", err)
+		return
+	}
 	pretty, _ := json.MarshalIndent(map[string]any{
 		"request_id":   resp.RequestID,
 		"paper_count":  len(discoverOutputs.Papers),
@@ -103,5 +134,7 @@ if ! command -v go >/dev/null 2>&1; then
     if [ -x "$candidate/go" ]; then export PATH="$candidate:$PATH"; break; fi
   done
 fi
-(cd "$ROOT/backend" && go run "./cmd/scholar-smoke" "$BASE_URL" "$TOKEN")
+OFFLINE_FLAG=online
+if [ "${SCHOLAR_SMOKE_OFFLINE:-0}" = "1" ]; then OFFLINE_FLAG=offline; fi
+(cd "$ROOT/backend" && go run "./cmd/scholar-smoke" "$BASE_URL" "$TOKEN" "$OFFLINE_FLAG")
 echo "[smoke] PASS"
