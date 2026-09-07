@@ -1,0 +1,25 @@
+[project]
+name = "lumin-scholar"
+version = "0.1.0"
+description = "LuminBuddy Scholar Worker — private-network bounded research operations (T03 mock skeleton)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "LuminBuddy" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.2",
+]
+
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
