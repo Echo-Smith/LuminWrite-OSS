@@ -228,11 +228,13 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 			} else {
 				slog.Warn("governed runtime: research discover executor construction failed", "error", err)
 			}
-			// Executor-level budget guard: nil in T06 (the wall-clock proactive
-			// budget policy lands with the ops rollout); the orchestrator's
-			// BudgetBoundary hook and the executor sentinel mechanics stay the
-			// seam the E2E exercises.
-			var budget writingruntime.ResearchBudgetBoundary
+			// Executor-level budget guard (T09, T06 遗留 #2): the wall-clock
+			// proactive budget — accumulated active execution time (Σ node
+			// attempt actual_duration_ms) against the run's plan budget
+			// MaxDurationMS, 30-minute design default when absent. Firing
+			// pauses the run cleanly with RESEARCH_BUDGET_BOUNDARY; the
+			// owner's resume continues the remaining papers.
+			budget := NewWallClockResearchBudgetBoundary(store)
 			if executor, err := writingruntime.NewResearchReadExecutor(writingruntime.ScholarParseRead{Client: scholarClient}, canonical, store, budget); err == nil {
 				read = executor
 			} else {
