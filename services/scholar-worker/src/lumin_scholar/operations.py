@@ -49,6 +49,13 @@ MAX_READ_BLOCKS = reader.MAX_READ_BLOCKS  # 24, contracts.md §4
 MAX_DISCOVER_LIMIT = 50
 MAX_FETCH_SIZE_BYTES = downloader.DEFAULT_SIZE_LIMIT  # 25 MiB design cap
 
+#: F4: per-document ceiling for the parse operation, on the DECODED bytes.
+#: The transport-level body cap (api.DEFAULT_MAX_BODY_BYTES = 40 MiB) exists
+#: so a base64-inlined 25 MiB original fits (25 MiB × 4/3 ≈ 33.4 MiB plus
+#: JSON envelope); the single-file limit itself does NOT move — anything
+#: above 25 MiB raw is rejected before parsing.
+MAX_DOCUMENT_BYTES = MAX_FETCH_SIZE_BYTES
+
 TEXT_MEDIA_TYPES = ("text/plain", "text/markdown")
 
 DISCOVER_PROVIDERS: tuple[str, ...] = (
@@ -438,6 +445,16 @@ def _op_parse(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
             "payload.document must be a non-empty base64 string",
             http_status=422,
         )
+    # Pre-decode bound: the 40 MiB transport cap admits base64 for more than
+    # the 25 MiB per-document design limit; reject the oversized b64 string
+    # without decoding it (memory control), then re-check the decoded size.
+    max_b64_len = ((MAX_DOCUMENT_BYTES + 2) // 3) * 4
+    if len(document_b64) > max_b64_len:
+        raise OperationError(
+            "document_too_large",
+            f"decoded document exceeds the {MAX_DOCUMENT_BYTES}-byte single-file limit",
+            http_status=422,
+        )
     try:
         data = base64.b64decode(document_b64, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -446,6 +463,12 @@ def _op_parse(payload: Mapping[str, Any], deps: WorkerDeps) -> OperationResult:
             f"payload.document is not valid base64: {exc}",
             http_status=422,
         ) from exc
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise OperationError(
+            "document_too_large",
+            f"decoded document exceeds the {MAX_DOCUMENT_BYTES}-byte single-file limit",
+            http_status=422,
+        )
 
     try:
         outputs = parser.parse_document(data, str(media_type))

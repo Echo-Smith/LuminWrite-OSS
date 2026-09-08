@@ -9,6 +9,15 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/scholar"
 )
 
+// maxParsePayloadBytes is the F4-aligned parse transport ceiling (review
+// 2026-09-08). The document travels base64-inlined, so a full 25 MiB
+// original (researchFetchSizeLimit / downloader.DEFAULT_SIZE_LIMIT) encodes
+// to ≈33.4 MiB plus the JSON envelope: the worker's request-body cap
+// (api.DEFAULT_MAX_BODY_BYTES) is 40 MiB and a client-side guard rejects
+// oversized documents BEFORE building the request, so the worker can never
+// answer 413 to a file the 25 MiB download cap allowed through.
+const maxParsePayloadBytes = 25 * 1024 * 1024
+
 // Typed parse/read access to the Scholar Worker, layered on the T04 client
 // (Client.Call + HashPayload already enforce the envelope, echo validation,
 // and the cross-language canonical input_hash). T05 keeps these two adapters
@@ -114,7 +123,14 @@ func (adapter ScholarParseRead) FetchFullText(ctx context.Context, paperID, oaUR
 }
 
 // ParseDocument calls the worker parse op with an inline base64 document.
+// Documents above the 25 MiB design cap are rejected client-side (F4): the
+// encoded request could not fit the worker's 40 MiB body cap anyway, and a
+// typed error beats a 413 the caller cannot distinguish from a dead worker.
 func (adapter ScholarParseRead) ParseDocument(ctx context.Context, document []byte, mediaType, parserVersion string, opts ...scholar.CallOption) (*ParseOutputs, *scholar.OperationResponse, error) {
+	if len(document) > maxParsePayloadBytes {
+		return nil, nil, &scholar.Error{Kind: scholar.ErrProtocol, Code: "client_document_too_large",
+			Message: fmt.Sprintf("document is %d bytes; the parse path allows at most %d bytes (25 MiB design cap)", len(document), maxParsePayloadBytes)}
+	}
 	payload := map[string]any{
 		"document":       base64.StdEncoding.EncodeToString(document),
 		"media_type":     mediaType,

@@ -41,7 +41,18 @@ from .operations import OperationError, response_versions, run_operation
 
 #: Request body cap. Real payload limits are enforced per operation later;
 #: this only bounds the HTTP body before JSON parsing.
-DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
+#:
+#: F4 sizing (review 2026-09-08): the Go host inlines the fetched full text
+#: as base64 inside the parse request, so a parse body for the design's
+#: 25 MiB original-file ceiling (downloader.DEFAULT_SIZE_LIMIT) is
+#: 25 MiB x 4/3 base64 ≈ 33.4 MiB, plus the JSON envelope (document string
+#: quoting and the small metadata fields). 40 MiB covers that with headroom
+#: while staying below maxResponseBytes (64 MiB) on the Go side. Worker
+#: memory is bounded by this cap plus one JSON parse; the parse operation
+#: additionally enforces the 25 MiB per-document cap after base64 decoding
+#: (operations.MAX_DOCUMENT_BYTES), so the ceiling for a single file does
+#: not move with the transport limit.
+DEFAULT_MAX_BODY_BYTES = 40 * 1024 * 1024
 
 _OPERATIONS_PREFIX = "/internal/v1/operations/"
 
