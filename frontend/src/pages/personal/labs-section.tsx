@@ -4,7 +4,7 @@
  * 展示正在测试中的功能，用户可自主决定是否启用。
  * 所有开关均通过 settings-store 云端同步。
  */
-import { FlaskConical, Newspaper, AlertTriangle } from "lucide-react";
+import { BookOpenText, FlaskConical, Newspaper, AlertTriangle } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -12,6 +12,8 @@ import { useAuthStore } from "@/stores/auth-store";
 export function LabsSection() {
   const enableEditorial = useSettingsStore((s) => s.enableEditorial);
   const setEnableEditorial = useSettingsStore((s) => s.setEnableEditorial);
+  const enableResearchReview = useSettingsStore((s) => s.enableResearchReview);
+  const setEnableResearchReview = useSettingsStore((s) => s.setEnableResearchReview);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
 
   return (
@@ -53,6 +55,31 @@ export function LabsSection() {
             checked={enableEditorial}
             disabled={isGuest}
             onCheckedChange={(checked) => setEnableEditorial(checked)}
+          />
+        </div>
+
+        {/* 研究综述（可追溯文献综述写作路径） */}
+        <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+            <BookOpenText className="h-5 w-5 text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">研究综述</span>
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                Beta
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              可追溯的学术文献综述写作：自动检索与阅读论文，每条结论可回看原文出处，
+              证据与提纲两次确认后再生成正文。开启后，写作方式中会出现「研究综述」选项。
+              需要联网检索论文，消耗较多时间与用量。
+            </p>
+          </div>
+          <Switch
+            checked={enableResearchReview}
+            disabled={isGuest}
+            onCheckedChange={(checked) => setEnableResearchReview(checked)}
           />
         </div>
       </div>

@@ -17,13 +17,14 @@ import type { EvidenceRequirement } from "@/lib/writing-runtime-types";
 import {
   buildResearchSpec,
   defaultResearchSpecDraft,
-  isResearchReviewEnabled,
+  isResearchReviewHardOff,
   researchLaunchProblems,
   researchReviewDisabledReason,
   startResearchRun,
   type ResearchMaterialRef,
   type ResearchSpecDraft,
 } from "@/lib/research-api";
+import { useSettingsStore } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
 
 interface ResearchSettingsProps {
@@ -66,7 +67,8 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  const featureEnabled = isResearchReviewEnabled();
+  // 实验室勾选 + 部署硬开关（与 mode-picker 同一可用性判定）。
+  const featureEnabled = useSettingsStore((s) => s.enableResearchReview) && !isResearchReviewHardOff();
   const disabledReason = researchReviewDisabledReason();
 
   const patch = (key: keyof ResearchSpecDraft, value: string | boolean) =>

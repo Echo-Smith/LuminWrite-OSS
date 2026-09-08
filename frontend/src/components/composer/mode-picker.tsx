@@ -9,7 +9,8 @@ import { Switch } from "@/components/ui/switch";
 import { BookOpenText, ChevronDown, ChevronRight, PenLine, Sparkles, Zap } from "lucide-react";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
-import { isResearchReviewEnabled, researchReviewDisabledReason } from "@/lib/research-api";
+import { isResearchReviewHardOff } from "@/lib/research-api";
+import { useSettingsStore } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
 
 interface ModePickerProps {
@@ -65,8 +66,9 @@ export function ModePicker({
     : RESEARCH_PRESETS.find((option) => option.orchestration === orchestrationValue && option.assurance === assuranceValue);
   const approvalOption = APPROVAL_OPTIONS.find((option) => option.value === approvalValue) ?? APPROVAL_OPTIONS[0];
   const canConfigureExecution = Boolean(onOrchestrationChange && onAssuranceChange) || Boolean(onApprovalChange);
-  const researchEnabled = isResearchReviewEnabled();
-  const researchDisabledReason = researchReviewDisabledReason();
+  // 研究综述为实验室功能：用户在 设置 → 实验室功能 勾选后开放；
+  // 部署级 VITE_RESEARCH_REVIEW_ENABLED=false 为硬开关（连实验室列表都隐藏）。
+  const researchEnabled = useSettingsStore((s) => s.enableResearchReview) && !isResearchReviewHardOff();
 
   const handleResearchReviewSelect = () => {
     onOrchestrationChange?.("research_review");
@@ -100,24 +102,18 @@ export function ModePicker({
           <Switch checked={value === "guided"} onCheckedChange={(checked) => onChange(checked ? "guided" : "writing")} aria-label="生成前先确认提纲" />
         </label>
 
-        {onOrchestrationChange && (
+        {onOrchestrationChange && researchEnabled && (
           <>
             <div className="mx-2 my-1 border-t" />
             <button
-              onClick={researchEnabled ? handleResearchReviewSelect : undefined}
-              disabled={!researchEnabled}
-              aria-disabled={!researchEnabled}
-              className={cn("flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors",
-                researchEnabled && "hover:bg-accent",
-                researchReviewActive && "bg-accent/50",
-                !researchEnabled && "cursor-not-allowed opacity-60")}
+              onClick={handleResearchReviewSelect}
+              className={cn("flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
+                researchReviewActive && "bg-accent/50")}
             >
               <BookOpenText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">{RESEARCH_REVIEW_PRESET.label}</span>
-                <span className="block text-xs text-muted-foreground">
-                  {researchEnabled ? RESEARCH_REVIEW_PRESET.description : `${researchDisabledReason}，入口已禁用`}
-                </span>
+                <span className="block text-xs text-muted-foreground">{RESEARCH_REVIEW_PRESET.description}</span>
               </span>
             </button>
           </>

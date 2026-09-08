@@ -27,13 +27,12 @@ import {
   fetchGate,
   fetchResearchProgress,
   findCitationMarkers,
-  isResearchReviewEnabled,
+  isResearchReviewHardOff,
   pollGateUntilResolved,
   postGateDecision,
   postOutlineRevision,
   researchMock,
   setResearchMockEnabled,
-  setResearchReviewEnabled,
   uuidV4,
 } from "../src/lib/research-api.ts";
 
@@ -366,13 +365,13 @@ test("mock progress restores the pending gate page after a simulated refresh", a
 
 // ─── 功能开关 ───
 
-test("RESEARCH_REVIEW_ENABLED=false disables the entry with a visible reason", () => {
-  setResearchReviewEnabled(false);
-  assert.equal(isResearchReviewEnabled(), false);
-  // mock 开关与功能开关相互独立
+test("feature gate: deploy kill switch is env-only; lab opt-in lives in settings-store", () => {
+  // 硬开关只读环境变量（本测试进程未配置 → 非 hard-off）；
+  // 实验室勾选状态由 settings-store.enableResearchReview 持有（云端同步），
+  // 不经 research-api 全局变量，二者彻底解耦。
+  assert.equal(isResearchReviewHardOff(), false);
   assert.doesNotThrow(() => setResearchMockEnabled(true));
-  setResearchReviewEnabled(true);
-  assert.equal(isResearchReviewEnabled(), true);
+  setResearchMockEnabled(false);
 });
 
 // ─── 引用标记 ───

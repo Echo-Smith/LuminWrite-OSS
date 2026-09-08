@@ -310,7 +310,6 @@ const envFlag = (name: string): string | undefined => {
 };
 
 let researchMockEnabled = envFlag("VITE_RESEARCH_MOCK") === "on";
-let researchReviewEnabled = envFlag("VITE_RESEARCH_REVIEW_ENABLED") === "true";
 
 /** mock 开关：联调时切 false，组件零改动。 */
 export function setResearchMockEnabled(enabled: boolean): void {
@@ -320,15 +319,21 @@ export function isResearchMockEnabled(): boolean {
   return researchMockEnabled;
 }
 
-/** RESEARCH_REVIEW_ENABLED 的 UI 表达：false 时入口禁用并显示原因。 */
-export function setResearchReviewEnabled(enabled: boolean): void {
-  researchReviewEnabled = enabled;
-}
-export function isResearchReviewEnabled(): boolean {
-  return researchReviewEnabled;
+/**
+ * 部署级硬开关（ops kill switch）：显式 false 时研究综述对所有人隐藏
+ * （连实验室功能列表都不出现）；缺省或 true 时入口交给「实验室功能」
+ * 的用户勾选（settings-store.enableResearchReview，云端跟随账号）。
+ * 服务端另有 RESEARCH_REVIEW_ENABLED 权威 flag：勾选但后端未开启时，
+ * 启动请求得到 503 RESEARCH_UNAVAILABLE 的明确错误（R14，不静默降级）。
+ */
+export function isResearchReviewHardOff(): boolean {
+  return envFlag("VITE_RESEARCH_REVIEW_ENABLED") === "false";
 }
 export function researchReviewDisabledReason(): string | null {
-  return researchReviewEnabled ? null : "研究综述功能未开启（RESEARCH_REVIEW_ENABLED=false）";
+  if (isResearchReviewHardOff()) {
+    return "研究综述功能未开启（RESEARCH_REVIEW_ENABLED=false）";
+  }
+  return "研究综述为实验功能，请在 设置 → 实验室功能 中开启";
 }
 
 export const MOCK_RESEARCH_RUN_ID = "run_research_demo";
