@@ -3,6 +3,8 @@
  *
  * 研究问题取现有 central_question 输入、目标读者/语言/长度沿用现有 delivery
  * 字段的语义；数量字段默认值与合同示例逐项一致，均可修改。
+ * 提交走 startResearchRun：mock 开启时返回演示运行；mock 关闭时走真实
+ * document → contract(v1.1) → confirm → plan → run 创建链路（F1）。
  * 客户端提示约束（如 max_papers ≤ 20），提交仍以服务端校验为准。
  */
 import { BookOpenText, FlaskConical, Globe, Loader2, X } from "lucide-react";
@@ -16,8 +18,10 @@ import {
   buildResearchSpec,
   defaultResearchSpecDraft,
   isResearchReviewEnabled,
+  researchLaunchProblems,
   researchReviewDisabledReason,
   startResearchRun,
+  type ResearchMaterialRef,
   type ResearchSpecDraft,
 } from "@/lib/research-api";
 import { cn } from "@/lib/utils";
@@ -31,6 +35,8 @@ interface ResearchSettingsProps {
   lengthMax: string;
   allowExternalResearch: boolean;
   onAllowExternalResearchChange?: (value: boolean) => void;
+  /** composer 挂载素材的服务端引用（运行创建时随文档 metadata 透传）。 */
+  materialRefs?: ResearchMaterialRef[];
   onClose: () => void;
   onStarted?: (runId: string) => void;
 }
@@ -44,14 +50,16 @@ function toText(value: string | number | undefined | null): string {
   return value === undefined || value === null ? "" : String(value);
 }
 
-export function ResearchSettings({ centralQuestion, audience, language, lengthMin, lengthMax, allowExternalResearch, onAllowExternalResearchChange, onClose, onStarted }: ResearchSettingsProps) {
+export function ResearchSettings({ centralQuestion, audience, language, lengthMin, lengthMax, allowExternalResearch, onAllowExternalResearchChange, materialRefs, onClose, onStarted }: ResearchSettingsProps) {
+  const defaults = defaultResearchSpecDraft();
   const [draft, setDraft] = useState<ResearchSpecDraft>(() => ({
-    ...defaultResearchSpecDraft(),
+    ...defaults,
     central_question: centralQuestion,
     audience,
     language,
-    length_min: toText(lengthMin),
-    length_max: toText(lengthMax),
+    // 长度沿用交付设定（composer 未提供时给默认值，真实合同要求正整数）。
+    length_min: toText(lengthMin) || defaults.length_min,
+    length_max: toText(lengthMax) || defaults.length_max,
     allow_external_research: allowExternalResearch,
   }));
   const [problems, setProblems] = useState<string[]>([]);
@@ -72,10 +80,33 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
       setProblems(built.problems);
       return;
     }
+    // 真实合同还需要 audience.role / delivery.language / length 非空（F1）。
+    const launchProblems = researchLaunchProblems({
+      spec: built.spec,
+      central_question: draft.central_question,
+      audience: draft.audience,
+      language: draft.language,
+      length_min: draft.length_min,
+      length_max: draft.length_max,
+      allow_external_research: draft.allow_external_research,
+    });
+    if (launchProblems.length > 0) {
+      setProblems(launchProblems);
+      return;
+    }
     setProblems([]);
     setSubmitting(true);
     try {
-      const { run_id } = await startResearchRun(built.spec);
+      const { run_id } = await startResearchRun({
+        spec: built.spec,
+        central_question: draft.central_question,
+        audience: draft.audience,
+        language: draft.language,
+        length_min: draft.length_min,
+        length_max: draft.length_max,
+        allow_external_research: draft.allow_external_research,
+        material_refs: materialRefs,
+      });
       onStarted?.(run_id);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "研究综述运行启动失败，请稍后重试");

@@ -2,11 +2,18 @@
  * 研究综述（research_review）API 层 — mock 开关集中在本模块。
  *
  * 默认关闭功能与 mock。演示必须显式设置 VITE_RESEARCH_MOCK=on；
- * 真实读取/确认使用 /api/v2/writing，真实运行创建仍待接线。
+ * 真实读取/确认/运行创建使用 /api/v2/writing（与后端 e2e 的挂载前缀一致）：
+ * startResearchRun 走 document → contract(v1.1) → confirm → compile → run
+ * （→ awaiting_approval 时自动 approve）的真实创建链路。
  * 类型与 specs/research-review/contracts.md §2/§3、
  * backend/internal/server/writing_research_api.go 的视图一一对应。
  */
-import type { EvidenceRequirement, ResearchSpec, RuntimeRun } from "./writing-runtime-types.ts";
+import type {
+  DocumentRecord,
+  EvidenceRequirement,
+  ResearchSpec,
+  RuntimeRun,
+} from "./writing-runtime-types.ts";
 
 // ─── 合同视图类型（contracts.md §3 / writing_research_api.go） ───
 
@@ -348,14 +355,17 @@ export interface ResearchSpecDraft {
   allow_external_research: boolean;
 }
 
-/** 默认值与 contracts.md §1 示例逐字段一致（数量字段以表单字符串承载）。 */
+/**
+ * 默认值与 contracts.md §1 示例逐字段一致（数量字段以表单字符串承载）。
+ * length 默认值是交付设定兜底：真实合同的 delivery.length 要求正整数。
+ */
 export function defaultResearchSpecDraft(): ResearchSpecDraft {
   return {
     central_question: "",
     audience: "",
     language: "中文",
-    length_min: "",
-    length_max: "",
+    length_min: "3000",
+    length_max: "6000",
     year_from: "2020",
     year_to: "2026",
     exclusion_terms: "",
@@ -755,7 +765,7 @@ export async function fetchResearchOutline(runId: string, outlineRef: ArtifactRe
   return content;
 }
 
-/** mock：种子一次研究综述运行（真实路径为合同创建接口，T09 联调）。 */
+/** mock：种子一次研究综述运行（真实路径见下方 startRealResearchRun）。 */
 let lastStartedSpec: ResearchSpec | null = null;
 
 /** 最近一次启动的研究运行使用的合同（进度面板用它标注阅读上限）。 */
@@ -763,11 +773,311 @@ export function getLastResearchSpec(): ResearchSpec | null {
   return lastStartedSpec;
 }
 
-export async function startResearchRun(spec: ResearchSpec): Promise<{ run_id: string }> {
-  if (!researchMockEnabled) {
-    throw new ResearchApiError("RESEARCH_UNAVAILABLE", 503, "研究综述运行创建接口尚未接入真实后端");
+// ─── 真实启动（F1）：document → contract(v1.1) → confirm → compile → run（→ approve） ───
+
+/** composer 挂载素材的服务端引用（material_id 来自现有素材系统；source_ref 缺省由服务端解析）。 */
+export interface ResearchMaterialRef {
+  material_id: string;
+  source_ref?: string;
+  title?: string;
+}
+
+export interface ResearchLaunchInput {
+  /** 已通过 buildResearchSpec 校验的 research-spec/1（合同的 research 字段）。 */
+  spec: ResearchSpec;
+  /** composer 表单的完整研究问题（合同 content.central_question）。 */
+  central_question: string;
+  /** 交付字段：目标读者（合同 audience.role，服务端要求非空）。 */
+  audience: string;
+  /** 交付字段：语言（合同 delivery.language）。 */
+  language: string;
+  /** 交付字段：长度上下限（合同 delivery.length）。 */
+  length_min: string | number;
+  length_max: string | number;
+  /** 素材引用透传（创建文档时写入 metadata.material_refs，由服务端在运行开始时快照）。 */
+  material_refs?: ResearchMaterialRef[];
+  /** 联网检索开关（合同 material_policy.allow_external_research）。 */
+  allow_external_research: boolean;
+  /** 可选文档标题；缺省取研究问题前缀。 */
+  document_title?: string;
+}
+
+function isBareResearchSpec(value: ResearchSpec | ResearchLaunchInput): value is ResearchSpec {
+  return typeof (value as ResearchSpec).version === "string";
+}
+
+/** 真实启动前的本地校验（合同必填字段：audience.role / delivery.language / length 均非空且 min ≤ max）。 */
+export function researchLaunchProblems(launch: ResearchLaunchInput): string[] {
+  const problems: string[] = [];
+  const question = String(launch.central_question ?? "").trim();
+  const audience = String(launch.audience ?? "").trim();
+  const language = String(launch.language ?? "").trim();
+  if (!question) problems.push("请填写研究问题（central_question）");
+  if (!audience) problems.push("请填写目标读者（合同的 audience.role 不能为空）");
+  if (!language) problems.push("请填写交付语言");
+  const min = toInt(String(launch.length_min ?? ""));
+  const max = toInt(String(launch.length_max ?? ""));
+  if (min === null || min < 1) problems.push("长度下限需要为正整数");
+  if (max === null || max < 1) problems.push("长度上限需要为正整数");
+  if (min !== null && max !== null && min > max) problems.push("长度下限不能大于上限");
+  return problems;
+}
+
+// ─── Go encoding/json 兼容的规范化序列化（客户端封存合同/意图哈希） ───
+
+/**
+ * 后端 writingkernel 契约哈希是 Go json.Marshal 的 sha256：字符串按 Go 规则
+ * 转义（HTML 字符 < > & 与 U+2028/2029 输出 \u00XX），字段顺序由调用方按
+ * Go 结构体声明顺序构造。数字仅支持安全整数（研究合同不含浮点字段）。
+ */
+export function canonicalGoJSON(value: unknown): string {
+  const escapeString = (text: string): string =>
+    JSON.stringify(text)
+      .replace(/</g, "\\u003c")
+      .replace(/>/g, "\\u003e")
+      .replace(/&/g, "\\u0026")
+      .replace(/\u2028/g, "\\u2028")
+      .replace(/\u2029/g, "\\u2029");
+  const encode = (node: unknown): string => {
+    if (node === null) return "null";
+    if (typeof node === "string") return escapeString(node);
+    if (typeof node === "boolean") return node ? "true" : "false";
+    if (typeof node === "number") {
+      if (!Number.isSafeInteger(node)) throw new ResearchApiError("INVALID_RESEARCH_SPEC", 400, `合同/意图计划中的数字必须是安全整数：${node}`);
+      return String(node);
+    }
+    if (Array.isArray(node)) return `[${node.map(encode).join(",")}]`;
+    if (typeof node === "object") {
+      return `{${Object.entries(node as Record<string, unknown>).map(([key, child]) => `${escapeString(key)}:${encode(child)}`).join(",")}}`;
+    }
+    throw new ResearchApiError("INVALID_RESEARCH_SPEC", 400, `合同/意图计划包含不可序列化的值：${typeof node}`);
+  };
+  return encode(value);
+}
+
+/** sha256 → "sha256:<hex64>"（与后端 hashPattern 一致）。 */
+export async function goContentHash(payload: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new ResearchApiError("RESEARCH_UNAVAILABLE", 503, "当前环境缺少 WebCrypto，无法封存合同哈希");
+  const digest = await subtle.digest("SHA-256", new TextEncoder().encode(payload));
+  return "sha256:" + Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** RFC3339（秒级精度）：Go time.Time 重新封送时零纳秒会省略小数部分。 */
+function rfc3339Seconds(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+interface ResearchContractRecordView {
+  document_id: string;
+  contract: {
+    contract_id: string;
+    version: number;
+    contract_hash: string;
+    status: string;
+  };
+}
+
+interface ResearchPlanPreviewView {
+  plan: {
+    schema_version: string;
+    intent_plan: Record<string, unknown>;
+    executable_plan: {
+      plan_id: string;
+      plan_hash: string;
+      intent_plan_ref?: { id: string; version: number; hash: string };
+    };
+    strategy_decision: Record<string, unknown>;
+  };
+  budget: Record<string, number>;
+  permissions: string[];
+  base_version_id: string;
+}
+
+/** e2e（createResearchRun/researchRunBudget）验证过的运行预算：读节点 bounds 需 ≥20 items / 12 nodes / 2h。 */
+const RESEARCH_RUN_BUDGET = { max_cost_usd: 100, max_duration_ms: 7200000, max_concurrency: 1, max_nodes: 12, max_items: 20 };
+
+/** 运行记录的 style_slug（与后端 e2e 约定一致；服务端不校验该值）。 */
+const RESEARCH_STYLE_SLUG = "yinyue";
+
+/**
+ * 构造 lcp/1.1 研究合同草稿与确认版本（客户端封存哈希：服务端 PutContract/
+ * ConfirmContract/ValidateTransition 会重算 canonical sha256 并拒绝不一致）。
+ * 字段插入顺序必须与 Go WritingContract/ResearchSpec 结构体声明顺序一致。
+ */
+async function buildResearchContracts(launch: ResearchLaunchInput): Promise<{ draft: Record<string, unknown>; confirmed: Record<string, unknown> }> {
+  const question = String(launch.central_question).trim();
+  const now = rfc3339Seconds(new Date());
+  const contractId = `ctr_${uuidV4()}`;
+  const collaboration = { task_mode: "guided", orchestration_mode: "research_review", assurance_level: "sourced", approval_mode: "conditional" };
+  const attributions = await Promise.all(
+    (["task_mode", "orchestration_mode", "assurance_level", "approval_mode"] as const).map(async (field) => ({
+      field_path: `/collaboration/${field}`,
+      source: "user",
+      value_hash: await goContentHash(canonicalGoJSON(collaboration[field])),
+      recorded_at: now,
+    })),
+  );
+  const base = {
+    schema_version: "lcp/1.1",
+    contract_id: contractId,
+    version: 1,
+    status: "draft",
+    intent: { operation: "create", genre: "literature_review", purpose: question },
+    audience: { role: launch.audience.trim(), knowledge_level: "professional" },
+    content: { topic: question, central_question: question, required_points: [], prohibited_points: [] },
+    voice: { tone: "professional", preserve_user_voice: true },
+    material_policy: {
+      user_material_priority: "highest",
+      allow_external_research: launch.allow_external_research,
+      conflict_handling: "ask_user",
+    },
+    evidence_policy: { level: "sourced", unsupported_claims: "prohibit" },
+    delivery: {
+      format: "markdown",
+      language: launch.language.trim(),
+      length: { min: Number(launch.length_min), max: Number(launch.length_max) },
+    },
+    collaboration,
+    source_attributions: attributions,
+    inferences: [],
+    research: launch.spec,
+  };
+  const draftHash = await goContentHash(canonicalGoJSON(base));
+  const confirmedBase = { ...base, version: 2, status: "confirmed" };
+  const confirmedHash = await goContentHash(canonicalGoJSON(confirmedBase));
+  return {
+    draft: { ...base, contract_hash: draftHash },
+    confirmed: { ...confirmedBase, contract_hash: confirmedHash },
+  };
+}
+
+/**
+ * 意图计划（客户端构造并封存 intent_plan_hash；服务端 Compile 会重算校验）。
+ * capability_hint 与后端 T06 e2e 的 research intent 一致（模板按合同 mode 选定）。
+ */
+async function buildResearchIntentPlan(contractRef: { id: string; version: number; hash: string }, question: string) {
+  const base = {
+    intent_plan_id: `iplan_${uuidV4()}`,
+    contract_ref: contractRef,
+    summary: `研究综述：${question.slice(0, 80)}`,
+    created_by: "user",
+    created_at: rfc3339Seconds(new Date()),
+    proposed_steps: [
+      { step_id: "research", objective: "produce a researched literature review", capability_hint: "core.research.draft", depends_on: [] },
+    ],
+  };
+  const hash = await goContentHash(canonicalGoJSON(base));
+  return { ...base, intent_plan_hash: hash };
+}
+
+/**
+ * 真实创建链路（与后端 research_e2e_test.go 驱动的请求序列逐一对齐）：
+ * 1. POST /documents（Idempotency-Key；metadata.material_refs 透传素材引用）
+ * 2. POST /documents/{id}/contracts（lcp/1.1 草稿 + research 字段，客户端封存哈希）
+ * 3. POST /contracts/{id}/confirm（previous_version=1，确认版本=2，取服务端返回的合同记录）
+ * 4. POST /documents/{id}/plans（intent_plan 持服务端确认合同 ref；base_version_id 取文档当前版本）
+ * 5. POST /runs（contract id/version/hash、plan envelope、permissions 全部沿用服务端返回值）
+ * 6. 返回 awaiting_approval 时 POST /runs/{id}/approve（计划级放行；证据/提纲 gate 仍由用户确认）
+ */
+async function startRealResearchRun(launch: ResearchLaunchInput): Promise<{ run_id: string }> {
+  const problems = researchLaunchProblems(launch);
+  if (problems.length > 0) {
+    throw new ResearchApiError("INVALID_RESEARCH_SPEC", 400, problems.join("；"));
   }
-  lastStartedSpec = spec;
+  try {
+    const question = String(launch.central_question).trim();
+    const title = (launch.document_title?.trim() || question).slice(0, 60);
+    const materialRefs = (launch.material_refs ?? []).filter((ref) => ref.material_id.trim() !== "");
+    // 1. 创建文档（素材引用随 metadata.material_refs 透传给运行时初始产物）
+    const document = await researchFetch<DocumentRecord>(`${WRITING_PREFIX}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": uuidV4() },
+      body: JSON.stringify({ title, metadata: { material_refs: materialRefs } }),
+    });
+    // 2+3. v1.1 合同草稿 → 确认（confirm 步骤必须显式走，PutContract 只收 draft）；
+    //      后续步骤的 contract id/version/hash 全部取服务端返回的合同记录。
+    const { draft, confirmed } = await buildResearchContracts(launch);
+    const draftRecord = await researchFetch<ResearchContractRecordView>(
+      `${WRITING_PREFIX}/documents/${encodeURIComponent(document.document_id)}/contracts`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contract: draft }) },
+    );
+    const confirmedRecord = await researchFetch<ResearchContractRecordView>(
+      `${WRITING_PREFIX}/contracts/${encodeURIComponent(draftRecord.contract.contract_id)}/confirm`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ previous_version: draftRecord.contract.version, contract: confirmed }),
+      },
+    );
+    const sealed = confirmedRecord.contract;
+    // 4. 编译计划（服务端已确认合同；ref/hash 与 plan envelope 以服务端返回值为准）
+    const intentPlan = await buildResearchIntentPlan(
+      { id: sealed.contract_id, version: sealed.version, hash: sealed.contract_hash },
+      question,
+    );
+    const baseVersionId = document.current_version_id ?? "";
+    const preview = await researchFetch<ResearchPlanPreviewView>(
+      `${WRITING_PREFIX}/documents/${encodeURIComponent(document.document_id)}/plans`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contract_id: sealed.contract_id,
+          contract_version: sealed.version,
+          base_version_id: baseVersionId,
+          intent_plan: intentPlan,
+          budget: RESEARCH_RUN_BUDGET,
+          initial_artifact_types: ["contract", "materials"],
+          required_final_artifact: "revision_set",
+        }),
+      },
+    );
+    // 5. 创建运行
+    let run = await researchFetch<RuntimeRun>(`${WRITING_PREFIX}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": uuidV4() },
+      body: JSON.stringify({
+        document_id: document.document_id,
+        contract_id: sealed.contract_id,
+        contract_version: sealed.version,
+        contract_hash: sealed.contract_hash,
+        base_version_id: baseVersionId,
+        style_slug: RESEARCH_STYLE_SLUG,
+        plan: preview.plan,
+        budget: RESEARCH_RUN_BUDGET,
+        permissions: preview.permissions,
+      }),
+    });
+    // 6. 计划级审批：awaiting_approval 的运行不会启动，需 approve 后才进入执行
+    if (run.status === "awaiting_approval") {
+      run = await researchFetch<RuntimeRun>(`${WRITING_PREFIX}/runs/${encodeURIComponent(run.run_id)}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": uuidV4() },
+        body: JSON.stringify({
+          plan_id: preview.plan.executable_plan.plan_id,
+          plan_version: 1,
+          plan_hash: preview.plan.executable_plan.plan_hash,
+          permissions: preview.permissions,
+        }),
+      });
+    }
+    lastStartedSpec = launch.spec;
+    return { run_id: run.run_id };
+  } catch (error) {
+    if (isResearchApiError(error)) throw error;
+    throw new ResearchApiError("RESEARCH_UNAVAILABLE", 503, `研究服务暂不可用：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export async function startResearchRun(input: ResearchSpec | ResearchLaunchInput): Promise<{ run_id: string }> {
+  if (!researchMockEnabled) {
+    const launch = isBareResearchSpec(input)
+      ? ({ spec: input } as ResearchLaunchInput)
+      : input;
+    return startRealResearchRun(launch);
+  }
+  lastStartedSpec = isBareResearchSpec(input) ? input : input.spec;
   researchMock.reset();
   return { run_id: MOCK_RESEARCH_RUN_ID };
 }

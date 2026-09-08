@@ -398,10 +398,15 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
               lengthMin=""
               lengthMax=""
               allowExternalResearch
+              // 素材引用透传（F1）：带服务端标识的挂载素材随文档 metadata.material_refs
+              // 交给运行时在运行开始时快照；粘贴文本无服务端标识，不冒充引用。
+              materialRefs={materials
+                .filter((material) => material.sourceId)
+                .map((material) => ({ material_id: material.sourceId as string, title: material.title }))}
               onClose={() => setResearchSettingsOpen(false)}
               onStarted={(runId) => {
                 setResearchSettingsOpen(false);
-                // mock 优先：直接把工作台切到该运行（真实环境由后端返回 run 后同样处理）。
+                // 真实与 mock 运行统一处理：把工作台切到该运行。
                 window.history.replaceState(null, "", `?run=${encodeURIComponent(runId)}`);
                 const runtime = useWritingRuntimeStore.getState();
                 void runtime.loadRun(runId);
