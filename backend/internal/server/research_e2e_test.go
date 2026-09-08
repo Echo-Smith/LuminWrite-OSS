@@ -280,6 +280,9 @@ type t06Harness struct {
 	// ResearchBudgetBoundary (the T09 wall-clock guard) before remount; nil
 	// keeps the T06 guard.
 	budgetSwap func(*writingstore.Store) writingruntime.ResearchBudgetBoundary
+	// userMaterials marks the harness document as carrying a non-empty owner
+	// material manifest (F5 user-material path scenarios).
+	userMaterials bool
 }
 
 // newT06E2EHarness rebuilds the mounted orchestrator with research executors
@@ -323,6 +326,14 @@ func (h *t06Harness) remountResearchExecutors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	materialDiscover, err := writingruntime.NewResearchDiscoverMaterialExecutor(worker, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialRead, err := writingruntime.NewResearchReadMaterialExecutor(worker, canonical, store, h.budgetSwap(store))
+	if err != nil {
+		t.Fatal(err)
+	}
 	outline, err := writingruntime.NewResearchOutlineExecutor(canonical, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -340,12 +351,14 @@ func (h *t06Harness) remountResearchExecutors(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.remount(t, map[string]writingruntime.Executor{
-		"engine.step.research_discover":  discover,
-		"engine.step.research_read":      read,
-		"engine.step.research_outline":   outline,
-		"engine.step.research_draft":     draft,
-		"engine.step.research_citations": citations,
-		"engine.step.research_fact":      fact,
+		"engine.step.research_discover":           discover,
+		"engine.step.research_read":               read,
+		"engine.step.research_discover_materials": materialDiscover,
+		"engine.step.research_read_materials":     materialRead,
+		"engine.step.research_outline":            outline,
+		"engine.step.research_draft":              draft,
+		"engine.step.research_citations":          citations,
+		"engine.step.research_fact":               fact,
 	})
 }
 
@@ -453,6 +466,61 @@ func (h *t06Harness) fixture(t *testing.T) *t00Fixture {
 	return h.fixtureMutate(t, nil)
 }
 
+// seedUserMaterials creates two owner "papers" in the knowledge base (kb
+// document + user_materials row) and records the material_refs selection on
+// the run document's metadata, so governedInitialProvider snapshots a
+// structured owner material manifest (F5).
+func (h *t06Harness) seedUserMaterials(t *testing.T, documentID string) {
+	t.Helper()
+	ctx := context.Background()
+	refs := make([]map[string]any, 0, 2)
+	for index := 0; index < 2; index++ {
+		title := fmt.Sprintf("用户上传论文 %02d：确定性研究内容", index)
+		content := fmt.Sprintf("用户论文 %02d 全文正文：\n\n这是材料路径的确定性正文段落，包含可直接引用的核心结论。", index)
+		var docID string
+		if err := h.server.db.QueryRowContext(ctx,
+			`INSERT INTO knowledge_base (source, title, content, content_hash, user_id, source_type, status)
+			 VALUES ('material', $1, $2, $3, $4, 'file', 'active') RETURNING id::text`,
+			title, content, fmt.Sprintf("t06-mat-%s-%d", documentID, index), h.userID).Scan(&docID); err != nil {
+			t.Fatal(err)
+		}
+		var materialID string
+		if err := h.server.db.QueryRowContext(ctx,
+			`INSERT INTO user_materials (user_id, title, content_preview, source_type, file_name, file_size, doc_id, chunk_count, metadata, status)
+			 VALUES ($1, $2, $3, 'file', 'paper.txt', $4, $5::uuid, 1, '{}'::jsonb, 'active') RETURNING id::text`,
+			h.userID, title, utf8SafePrefix(content, 100), len(content), docID).Scan(&materialID); err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, map[string]any{"material_id": materialID,
+			"source_ref": "kb://documents/" + docID, "title": title})
+	}
+	selection, err := json.Marshal(refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.db.ExecContext(ctx,
+		`UPDATE writing_documents SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('material_refs', $2::jsonb) WHERE document_id = $1`,
+		documentID, string(selection)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// utf8SafePrefix cuts the preview on a rune boundary (CJK content).
+func utf8SafePrefix(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
 // fixtureMutate builds the same fixture while letting a test mutate the
 // contract before it is sealed (e.g. evidence_requirement for T07).
 func (h *t06Harness) fixtureMutate(t *testing.T, mutate func(*writingkernel.WritingContract)) *t00Fixture {
@@ -525,7 +593,8 @@ func (h *t06Harness) buildResearchEnvelope(t *testing.T, fixture *t00Fixture) wr
 		InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"},
 		AllowedPermissions:   governedWritingPermissions, Budget: budget,
 		RequiredValidators:    writingplan.RequiredValidatorsForContract(contract),
-		RequiredFinalArtifact: "revision_set", SystemRecommendation: writingkernel.OrchestrationModeResearchReview})
+		RequiredFinalArtifact: "revision_set", SystemRecommendation: writingkernel.OrchestrationModeResearchReview,
+		HasUserMaterials: contract.MaterialPolicy.AllowExternalResearch || h.userMaterials})
 	if err != nil {
 		t.Fatalf("research_review compile: %v", err)
 	}

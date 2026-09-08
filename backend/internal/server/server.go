@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -2124,12 +2125,30 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 // browser sends identities only; tenant-scoped material content is read here.
 // Task12 replaces this projection with MaterialArtifactProvider.
 func (s *Server) resolveLegacyMaterialReferences(parent context.Context, userID string, refs []websocket.MaterialReference) ([]string, error) {
+	resolved, err := s.resolveMaterialContents(parent, userID, refs)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(resolved))
+	for _, material := range resolved {
+		result = append(result, fmt.Sprintf("[material_ref:%s source:%s title:%s]\n%s",
+			material.MaterialID, material.SourceRef, material.Title, material.Content))
+	}
+	return result, nil
+}
+
+// resolveMaterialContents resolves browser-supplied material identities onto
+// tenant-scoped, owner-authorized raw contents (resolvedMaterial in
+// governed_runners.go). The research executors read these bytes by
+// material_ref from the content store — no external download, no
+// client-controlled path.
+func (s *Server) resolveMaterialContents(parent context.Context, userID string, refs []websocket.MaterialReference) ([]resolvedMaterial, error) {
 	if s.kbMgr == nil || strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("material store unavailable")
 	}
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	result := make([]string, 0, len(refs))
+	result := make([]resolvedMaterial, 0, len(refs))
 	seen := map[string]struct{}{}
 	for _, ref := range refs {
 		if strings.TrimSpace(ref.MaterialID) == "" {
@@ -2151,7 +2170,10 @@ func (s *Server) resolveLegacyMaterialReferences(parent context.Context, userID 
 		if err != nil || document == nil || strings.TrimSpace(document.Content) == "" {
 			return nil, fmt.Errorf("material content unavailable")
 		}
-		result = append(result, fmt.Sprintf("[material_ref:%s source:%s title:%s]\n%s", material.ID, expectedRef, material.Title, document.Content))
+		content := []byte(document.Content)
+		sum := sha256.Sum256(content)
+		result = append(result, resolvedMaterial{MaterialID: material.ID, Title: material.Title,
+			SourceRef: expectedRef, MediaType: "text/plain", Content: content, contentSum: sum})
 	}
 	return result, nil
 }

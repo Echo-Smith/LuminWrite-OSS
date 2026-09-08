@@ -218,6 +218,12 @@ func (s *Server) governedCapabilitySpecs(store *writingstore.Store, canonical wr
 func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writingruntime.ContentGateway, defaults *writingplan.CapabilityRegistry) []governedCapabilitySpec {
 	var discover writingruntime.Executor
 	var read writingruntime.Executor
+	// F5 user-material branch: the SAME policy-branching executors under the
+	// material branch's own binding ids — the no-external manifests bind
+	// these, so a plan compiled for a no-external contract can never resolve
+	// the external bindings.
+	var materialDiscover writingruntime.Executor
+	var materialRead writingruntime.Executor
 	if workerURL := strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_URL")); workerURL != "" {
 		scholarClient, scholarErr := scholar.NewClient(workerURL, strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_TOKEN")))
 		if scholarErr != nil {
@@ -228,22 +234,40 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 			} else {
 				slog.Warn("governed runtime: research discover executor construction failed", "error", err)
 			}
-			// Executor-level budget guard (T09, T06 遗留 #2): the wall-clock
-			// proactive budget — accumulated active execution time (Σ node
-			// attempt actual_duration_ms) against the run's plan budget
-			// MaxDurationMS, 30-minute design default when absent. Firing
-			// pauses the run cleanly with RESEARCH_BUDGET_BOUNDARY; the
-			// owner's resume continues the remaining papers.
+			// Executor-level budget guard (T09, F2): the wall-clock proactive
+			// budget as a PURE ledger function — completed attempt durations +
+			// persisted sub-task usage + in-flight attempt time vs the run's
+			// plan budget MaxDurationMS (30-minute design default when
+			// absent). No fire-once: the boundary state lives in the ledger.
 			budget := NewWallClockResearchBudgetBoundary(store)
 			if executor, err := writingruntime.NewResearchReadExecutor(writingruntime.ScholarParseRead{Client: scholarClient}, canonical, store, budget); err == nil {
 				read = executor
 			} else {
 				slog.Warn("governed runtime: research read executor construction failed", "error", err)
 			}
+			if executor, err := writingruntime.NewResearchDiscoverMaterialExecutor(scholarClient, canonical); err == nil {
+				materialDiscover = executor
+			} else {
+				slog.Warn("governed runtime: material discover executor construction failed", "error", err)
+			}
+			if executor, err := writingruntime.NewResearchReadMaterialExecutor(writingruntime.ScholarParseRead{Client: scholarClient}, canonical, store, budget); err == nil {
+				materialRead = executor
+			} else {
+				slog.Warn("governed runtime: material read executor construction failed", "error", err)
+			}
 		}
 	} else {
 		discover = writingruntime.NewUnavailableResearchExecutor("engine.step.research_discover", "scholar worker is not configured")
 		read = writingruntime.NewUnavailableResearchExecutor("engine.step.research_read", "scholar worker is not configured")
+	}
+	// Without a configured worker the material branch surfaces
+	// RESEARCH_UNAVAILABLE exactly like the external one (honest
+	// unavailability, no silent degrade).
+	if materialDiscover == nil {
+		materialDiscover = writingruntime.NewUnavailableResearchExecutor("engine.step.research_discover_materials", "scholar worker is not configured")
+	}
+	if materialRead == nil {
+		materialRead = writingruntime.NewUnavailableResearchExecutor("engine.step.research_read_materials", "scholar worker is not configured")
 	}
 	// Outline: deterministic v1 assembly (no model call, no generator wired).
 	outline, err := writingruntime.NewResearchOutlineExecutor(canonical, nil)
@@ -278,11 +302,17 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 		writingplan.CapabilityResearchDraft:     draft,
 		writingplan.CapabilityResearchCitations: citations,
 		writingplan.CapabilityResearchFact:      fact,
+		// F5 user-material branch: the material executors carry their own
+		// binding ids, so a plan compiled for a no-external-research contract
+		// can never resolve the external bindings.
+		writingplan.CapabilityResearchDiscoverMaterial: materialDiscover,
+		writingplan.CapabilityResearchReadMaterial:     materialRead,
 	}
 	specs := []governedCapabilitySpec{}
 	for _, capability := range []string{writingplan.CapabilityResearchDiscover, writingplan.CapabilityResearchRead,
 		writingplan.CapabilityResearchOutline, writingplan.CapabilityResearchDraft,
-		writingplan.CapabilityResearchCitations, writingplan.CapabilityResearchFact} {
+		writingplan.CapabilityResearchCitations, writingplan.CapabilityResearchFact,
+		writingplan.CapabilityResearchDiscoverMaterial, writingplan.CapabilityResearchReadMaterial} {
 		executor := direct[capability]
 		if executor == nil {
 			continue
@@ -413,10 +443,23 @@ func (provider governedInitialProvider) InitialArtifacts(ctx context.Context, ru
 	if err := provider.store.PutArtifactContent(ctx, hash, "application/json", body); err != nil {
 		return nil, err
 	}
-	materials := []string{}
 	document, err := provider.store.GetDocument(ctx, run.DocumentID)
 	if err != nil {
 		return nil, err
+	}
+	// F5: the run's materials artifact is the structured owner material
+	// manifest (MaterialManifest shape): per-material identity, source ref,
+	// and content hash, with every material's raw bytes staged content-
+	// addressed so the research executors can read them by material_ref
+	// without any external fetch. An empty selection is represented honestly;
+	// it is not a fabricated source.
+	manifest := writingruntime.MaterialManifest{
+		SchemaVersion:    writingplan.SchemaVersion,
+		RunID:            run.RunID,
+		OwnerID:          document.OwnerUserID,
+		ConflictHandling: string(contract.Contract.MaterialPolicy.ConflictHandling),
+		CapturedAt:       time.Now().UTC(),
+		Materials:        []writingruntime.MaterialSnapshot{},
 	}
 	if raw, ok := document.Metadata["material_refs"]; ok {
 		payload, err := json.Marshal(raw)
@@ -431,14 +474,26 @@ func (provider governedInitialProvider) InitialArtifacts(ctx context.Context, ru
 			if provider.server == nil {
 				return nil, fmt.Errorf("selected material store unavailable")
 			}
-			materials, err = provider.server.resolveLegacyMaterialReferences(ctx, document.OwnerUserID, refs)
+			resolved, err := provider.server.resolveMaterialContents(ctx, document.OwnerUserID, refs)
 			if err != nil {
 				return nil, err
 			}
+			for _, material := range resolved {
+				contentHash := "sha256:" + hex.EncodeToString(material.contentSum[:])
+				if err := provider.store.PutArtifactContent(ctx, contentHash, material.MediaType, material.Content); err != nil {
+					return nil, err
+				}
+				manifest.Materials = append(manifest.Materials, writingruntime.MaterialSnapshot{
+					MaterialID: material.MaterialID, Title: material.Title,
+					SourceKind: writingruntime.MaterialSourceKnowledge, SourceRef: material.SourceRef,
+					MediaType: material.MediaType, ContentRef: "artifact://" + contentHash,
+					ContentHash: contentHash, SourceRefs: canonicalSourceRefs(material.SourceRef),
+					UpdatedAt: manifest.CapturedAt,
+				})
+			}
 		}
 	}
-	// An empty selection is represented honestly; it is not a fabricated source.
-	materialBody, err := json.Marshal(materials)
+	materialBody, err := json.Marshal(manifest)
 	if err != nil {
 		return nil, err
 	}
@@ -450,4 +505,26 @@ func (provider governedInitialProvider) InitialArtifacts(ctx context.Context, ru
 	return []writingruntime.InputArtifact{{ArtifactID: "art_" + run.RunID + "_materials", Version: 1, ArtifactType: "materials", ContentHash: materialHash, MediaType: "application/json", ContentRef: "artifact://" + materialHash}, {ArtifactID: "art_" + run.RunID + "_contract", Version: 1,
 		ArtifactType: "contract", ContentHash: hash, MediaType: "application/json",
 		ContentRef: "artifact://" + hash}}, nil
+}
+
+// resolvedMaterial is one owner material's authorized snapshot: identity plus
+// the raw bytes the run may read (tenant-scoped, resolved server-side).
+type resolvedMaterial struct {
+	MaterialID string
+	Title      string
+	SourceRef  string
+	MediaType  string
+	Content    []byte
+	contentSum [32]byte
+}
+
+// canonicalSourceRefs returns the non-blank source refs as a stable slice.
+func canonicalSourceRefs(values ...string) []string {
+	refs := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			refs = append(refs, value)
+		}
+	}
+	return refs
 }

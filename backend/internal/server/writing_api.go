@@ -325,7 +325,7 @@ func (service *persistentWritingAPI) CompilePlan(ctx context.Context, access wri
 		return writingPlanPreview{}, fmt.Errorf("%w: governed writing plans must produce revision_set", writingstore.ErrInvalidRecord)
 	}
 	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForContract(contract.Contract), command.RequiredValidators)
-	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
+	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation, HasUserMaterials: documentHasUserMaterials(document)})
 	envelope := writingplan.WritingPlanEnvelope{SchemaVersion: writingplan.SchemaVersion, IntentPlan: command.IntentPlan, ExecutablePlan: result.Plan, StrategyDecision: result.Decision}
 	permissions := permissionsForPlan(result.Plan, service.capabilities)
 	preview := writingPlanPreview{Envelope: envelope, Budget: command.Budget, Permissions: permissions, BaseVersionID: command.BaseVersionID}
@@ -533,6 +533,25 @@ func (service *persistentWritingAPI) qualityReport(ctx context.Context, access w
 		return writingkernel.QualityReport{}, err
 	}
 	return report, nil
+}
+
+// documentHasUserMaterials reports whether the run's document carries a
+// non-empty owner material selection (F5 compile gate: a no-external-research
+// research contract needs an owner material manifest to read).
+func documentHasUserMaterials(document writingstore.DocumentRecord) bool {
+	raw, ok := document.Metadata["material_refs"]
+	if !ok || raw == nil {
+		return false
+	}
+	refs, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var decoded []websocket.MaterialReference
+	if json.Unmarshal(refs, &decoded) != nil {
+		return false
+	}
+	return len(decoded) > 0
 }
 
 func permissionsForPlan(plan writingplan.ExecutablePlan, registry *writingplan.CapabilityRegistry) []writingplan.Permission {

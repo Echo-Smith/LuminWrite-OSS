@@ -145,15 +145,22 @@ type PaperAcquisition struct {
 }
 
 type PaperCandidate struct {
-	PaperID         string           `json:"paper_id"`
-	DOI             *string          `json:"doi"`
-	Title           string           `json:"title"`
-	Authors         []string         `json:"authors"`
-	Year            *int             `json:"year"`
-	Venue           *string          `json:"venue"`
-	CanonicalURL    *string          `json:"canonical_url"`
-	Aliases         []string         `json:"aliases"`
-	Abstract        *string          `json:"abstract"`
+	PaperID      string   `json:"paper_id"`
+	DOI          *string  `json:"doi"`
+	Title        string   `json:"title"`
+	Authors      []string `json:"authors"`
+	Year         *int     `json:"year"`
+	Venue        *string  `json:"venue"`
+	CanonicalURL *string  `json:"canonical_url"`
+	Aliases      []string `json:"aliases"`
+	Abstract     *string  `json:"abstract"`
+	// Origin and MaterialRef distinguish owner-authorized user materials from
+	// externally discovered papers (contracts.md §2 PaperEvidence projection).
+	// Empty Origin means external (the v1 shape before user-material paths
+	// existed); a user-material paper must carry its material_ref and no
+	// external acquisition location.
+	Origin          PaperOrigin      `json:"origin,omitempty"`
+	MaterialRef     *ArtifactRef     `json:"material_ref,omitempty"`
 	Selection       PaperSelection   `json:"selection"`
 	Acquisition     PaperAcquisition `json:"acquisition"`
 	RelevanceStatus RelevanceStatus  `json:"relevance_status"`
@@ -237,6 +244,25 @@ func (c ResearchCandidates) Validate() error {
 		if !paper.RelevanceStatus.Valid() {
 			return fmt.Errorf("papers[%d] has invalid relevance_status %q", i, paper.RelevanceStatus)
 		}
+		if !paper.Origin.Valid() {
+			return fmt.Errorf("papers[%d] has invalid origin %q", i, paper.Origin)
+		}
+		if paper.Origin == PaperOriginUserMaterial {
+			if paper.MaterialRef == nil {
+				return fmt.Errorf("papers[%d] user material must carry an owner-authorized material_ref", i)
+			}
+			if err := paper.MaterialRef.Validate(); err != nil {
+				return fmt.Errorf("papers[%d] material_ref: %w", i, err)
+			}
+			if paper.Acquisition.OAURL != "" {
+				return fmt.Errorf("papers[%d] user material must not carry an external acquisition URL", i)
+			}
+		}
+		if paper.Origin == "" || paper.Origin == PaperOriginExternal {
+			if paper.MaterialRef != nil {
+				return fmt.Errorf("papers[%d] external paper must not carry a material_ref", i)
+			}
+		}
 	}
 	return nil
 }
@@ -262,7 +288,7 @@ const (
 
 func (v PaperOrigin) Valid() bool {
 	switch v {
-	case PaperOriginUserMaterial, PaperOriginExternal:
+	case "", PaperOriginUserMaterial, PaperOriginExternal:
 		return true
 	default:
 		return false

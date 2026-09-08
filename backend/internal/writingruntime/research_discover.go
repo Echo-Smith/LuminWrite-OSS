@@ -52,10 +52,22 @@ type ResearchDiscoverExecutor struct {
 // NewResearchDiscoverExecutor wires the executor. An empty allowlist selects
 // the worker's three known providers.
 func NewResearchDiscoverExecutor(client ScholarDiscoverClient, content ContentGateway) (*ResearchDiscoverExecutor, error) {
+	return newResearchDiscoverExecutor(client, content, "engine.step.research_discover")
+}
+
+// NewResearchDiscoverMaterialExecutor wires the SAME policy-branching
+// executor under the material branch's executor id (F5): the no-external
+// manifest binds this id, so a plan compiled for a no-external contract can
+// never resolve the external binding.
+func NewResearchDiscoverMaterialExecutor(client ScholarDiscoverClient, content ContentGateway) (*ResearchDiscoverExecutor, error) {
+	return newResearchDiscoverExecutor(client, content, "engine.step.research_discover_materials")
+}
+
+func newResearchDiscoverExecutor(client ScholarDiscoverClient, content ContentGateway, executorID string) (*ResearchDiscoverExecutor, error) {
 	if client == nil || content == nil {
 		return nil, ErrRuntimeNotReady
 	}
-	descriptor := ExecutorDescriptor{ExecutorID: "engine.step.research_discover", Version: "1",
+	descriptor := ExecutorDescriptor{ExecutorID: executorID, Version: "1",
 		SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}, Cancellable: false}
 	if err := descriptor.Validate(); err != nil {
 		return nil, err
@@ -69,6 +81,15 @@ func NewResearchDiscoverExecutor(client ScholarDiscoverClient, content ContentGa
 func (executor *ResearchDiscoverExecutor) Descriptor() ExecutorDescriptor { return executor.descriptor }
 
 // Execute runs the bounded discovery unit.
+//
+// Material policy branching (F5): a contract that forbids external research
+// compiles the material-discovery branch — candidates come ONLY from the
+// owner material manifest (origin=user_material, owner-authorized
+// material_ref, no external fields) and the scholar worker receives zero
+// calls. An external-research contract additionally merges the owner's
+// user-material papers into the discovered candidates; ranking still scores
+// external papers only, user materials enter the workset explicitly selected
+// (reason=user_material, relevance_status=unscored).
 func (executor *ResearchDiscoverExecutor) Execute(ctx context.Context, request ExecutionRequest) (ExecutionResult, error) {
 	if err := request.Validate(); err != nil {
 		return ExecutionResult{}, err
@@ -77,20 +98,31 @@ func (executor *ResearchDiscoverExecutor) Execute(ctx context.Context, request E
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	// A02 fail-closed (defense in depth behind the plan compile's
-	// CONTRACT_FORBIDS_EXTERNAL_RESEARCH check): a contract that forbids
-	// external research must never reach the scholar worker — zero calls,
-	// typed refusal (T09 acceptance matrix A02).
-	if !contract.MaterialPolicy.AllowExternalResearch {
-		return ExecutionResult{}, runtimeError(CodeExecutorContractMismatch, RetryNever,
-			"contract material policy forbids external research; discover must not call the scholar worker", nil)
-	}
 	spec := contract.Research
 	question := contract.Content.CentralQuestion
-
-	// ── Query plan: the original question first (origin=original); the v1
-	// rewrites are deterministic variants (topic, then a review suffix) so
-	// the same contract always yields the same plan — never model-generated.
+	manifest, err := executor.loadMaterialManifest(ctx, request)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	userPapers := userMaterialPapers(spec, manifest)
+	if !contract.MaterialPolicy.AllowExternalResearch {
+		// A02 (F5): the no-external contract must compile to a runnable
+		// material branch. With an empty owner manifest there is nothing
+		// authorized to read — fail closed with an explicit error, never a
+		// silent empty candidate set.
+		if len(userPapers) == 0 {
+			return ExecutionResult{}, runtimeError(CodeExecutorContractMismatch, RetryNever,
+				"contract forbids external research and the owner material manifest carries no papers; nothing is authorized to read", nil)
+		}
+		candidates := assembleUserMaterialCandidates(contract, spec, userPapers, executor.policyVersion)
+		if err := candidates.Validate(); err != nil {
+			return ExecutionResult{}, runtimeError(CodeExecutorOutputInvalid, RetryNever,
+				"assembled material-only candidates failed kernel validation", err)
+		}
+		return executor.stageCandidates(ctx, request, contract, candidates, len(userPapers))
+	}
+	// External path: plan queries, fan out to discover, rank, and merge the
+	// owner's user-material papers on top.
 	plan := buildResearchQueryPlan(question, contract.Content.Topic, spec.MaxQueries)
 	perQueryLimit := scholarDiscoverLimit(spec.MaxCandidates, len(plan))
 
@@ -144,12 +176,145 @@ func (executor *ResearchDiscoverExecutor) Execute(ctx context.Context, request E
 
 	// ── Selection (policy selection/1): relevance-descending, capped at
 	// max_papers. Unscored papers are deferred with an explicit reason —
-	// they never silently enter the workset.
+	// they never silently enter the workset. The owner's user-material
+	// papers merge on top (F5): explicitly selected with reason=user_material,
+	// never ranked, always ahead of external candidates in the workset.
 	candidates := assembleResearchCandidates(contract, spec, plan, providerResults, papers, scores, executor.policyVersion)
+	mergeUserMaterialPapers(&candidates, userPapers, spec.MaxPapers)
 	if err := candidates.Validate(); err != nil {
 		return ExecutionResult{}, runtimeError(CodeExecutorOutputInvalid, RetryNever,
 			"assembled research candidates failed kernel validation", err)
 	}
+	return executor.stageCandidates(ctx, request, contract, candidates, len(papers)+len(userPapers))
+}
+
+// loadMaterialManifest loads and verifies the run's materials artifact (the
+// orchestrator's immutable initial-material snapshot). A missing materials
+// input yields an empty manifest — the input stays optional for the external
+// path; a present-but-invalid artifact fails closed.
+func (executor *ResearchDiscoverExecutor) loadMaterialManifest(ctx context.Context, request ExecutionRequest) (*MaterialManifest, error) {
+	var materialsInput InputArtifact
+	for _, input := range request.Inputs {
+		if input.ArtifactType == "materials" {
+			materialsInput = input
+			break
+		}
+	}
+	if materialsInput.ArtifactID == "" {
+		return nil, nil
+	}
+	body, err := executor.content.Load(ctx, materialsInput)
+	if err != nil {
+		return nil, runtimeError(CodeMaterialIntegrityFailed, RetrySafe, "load materials manifest", err)
+	}
+	if contentHash(body) != materialsInput.ContentHash {
+		return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever, "materials manifest content hash mismatch", nil)
+	}
+	var manifest MaterialManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return nil, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+			"materials artifact is not a material manifest (structured owner manifest required)", err)
+	}
+	return &manifest, nil
+}
+
+// userMaterialPapers projects the owner material manifest onto kernel paper
+// candidates: origin=user_material with the owner-authorized material_ref,
+// explicitly selected with reason=user_material, relevance unscored (rank
+// never judges user material), full text available from the staged bytes, and
+// no external acquisition fields. Ordered deterministically by material id
+// (the adapter pre-sorts the manifest) and capped at the contract's
+// max_papers so they can never crowd the whole workset.
+func userMaterialPapers(spec *writingkernel.ResearchSpec, manifest *MaterialManifest) []writingkernel.PaperCandidate {
+	if manifest == nil || len(manifest.Materials) == 0 {
+		return []writingkernel.PaperCandidate{}
+	}
+	maxPapers := 1
+	if spec != nil && spec.MaxPapers > 0 {
+		maxPapers = spec.MaxPapers
+	}
+	papers := make([]writingkernel.PaperCandidate, 0, len(manifest.Materials))
+	for _, material := range manifest.Materials {
+		if strings.TrimSpace(material.MaterialID) == "" || strings.TrimSpace(material.Title) == "" ||
+			strings.TrimSpace(material.ContentHash) == "" {
+			continue
+		}
+		paperID := "mat_" + writingstore.StableID("research", "material", material.MaterialID)
+		aliases := []string{}
+		if strings.TrimSpace(material.SourceRef) != "" {
+			aliases = append(aliases, material.SourceRef)
+		}
+		papers = append(papers, writingkernel.PaperCandidate{
+			PaperID: paperID, Title: strings.TrimSpace(material.Title),
+			Authors: []string{}, Aliases: aliases,
+			Origin:          writingkernel.PaperOriginUserMaterial,
+			MaterialRef:     &writingkernel.ArtifactRef{ArtifactID: materialArtifactsID(manifest.RunID, material), Version: 1, ContentHash: material.ContentHash},
+			Selection:       writingkernel.PaperSelection{Status: writingkernel.SelectionStatusSelected, Reason: "user_material"},
+			Acquisition:     writingkernel.PaperAcquisition{Status: writingkernel.AcquisitionFullTextAvailable},
+			RelevanceStatus: writingkernel.RelevanceUnscored,
+		})
+		if len(papers) >= maxPapers {
+			break
+		}
+	}
+	return papers
+}
+
+// materialArtifactsID is the artifact id the material snapshot staged the
+// content under (MaterialAdapter's content-addressed convention).
+func materialArtifactsID(runID string, material MaterialSnapshot) string {
+	return writingstore.StableID("art_", runID, material.MaterialID, material.ContentHash)
+}
+
+// assembleUserMaterialCandidates freezes the material-only candidate set for
+// a contract that forbids external research: no query plan, no provider
+// results, no rank — the provenance records the zero-external-call path.
+func assembleUserMaterialCandidates(contract writingkernel.WritingContract, spec *writingkernel.ResearchSpec,
+	userPapers []writingkernel.PaperCandidate, policyVersion string) writingkernel.ResearchCandidates {
+	return writingkernel.ResearchCandidates{
+		SchemaVersion:   writingkernel.ResearchCandidatesSchemaVersion,
+		ContractHash:    contract.ContractHash,
+		QueryPlan:       []writingkernel.QueryPlanEntry{},
+		ProviderResults: []writingkernel.ProviderResult{},
+		Papers:          userPapers,
+		PolicyVersion:   policyVersion,
+		Provenance: []string{"executor:writingruntime.research_discover@1", "policy:" + policyVersion,
+			"user_material_only:external research forbidden by contract material policy; zero scholar worker calls"},
+	}
+}
+
+// mergeUserMaterialPapers prepends the owner's user-material papers to the
+// assembled candidates and trims external selections beyond the workset cap
+// (user materials take precedence; external papers defer with an explicit
+// reason rather than silently dropping past the cap).
+func mergeUserMaterialPapers(candidates *writingkernel.ResearchCandidates, userPapers []writingkernel.PaperCandidate, maxPapers int) {
+	if len(userPapers) == 0 {
+		return
+	}
+	externalBudget := maxPapers - len(userPapers)
+	merged := make([]writingkernel.PaperCandidate, 0, len(candidates.Papers)+len(userPapers))
+	merged = append(merged, userPapers...)
+	selected := 0
+	for _, paper := range candidates.Papers {
+		if paper.Selection.Status == writingkernel.SelectionStatusSelected {
+			if selected >= externalBudget {
+				paper.Selection.Status = writingkernel.SelectionStatusDeferred
+				paper.Selection.Reason = "workset cap reached; owner user materials take precedence (selection/1)"
+			} else {
+				selected++
+			}
+		}
+		merged = append(merged, paper)
+	}
+	candidates.Papers = merged
+	candidates.Provenance = append(candidates.Provenance,
+		fmt.Sprintf("user_materials:%d merged without ranking (relevance_status=unscored, reason=user_material)", len(userPapers)))
+}
+
+// stageCandidates freezes the research-candidates/1 content through the
+// ContentGateway and returns the node's ExecutionResult.
+func (executor *ResearchDiscoverExecutor) stageCandidates(ctx context.Context, request ExecutionRequest,
+	contract writingkernel.WritingContract, candidates writingkernel.ResearchCandidates, candidateCount int) (ExecutionResult, error) {
 	body, err := json.Marshal(candidates)
 	if err != nil {
 		return ExecutionResult{}, runtimeError(CodeExecutorOutputInvalid, RetryNever, "marshal candidates", err)
@@ -169,7 +334,7 @@ func (executor *ResearchDiscoverExecutor) Execute(ctx context.Context, request E
 			Parents: parents, Producer: request.Node.Capability,
 			CapabilityVersion: request.Node.CapabilityVersion, InputHashes: inputHashes,
 			Provenance: map[string]any{"contract_hash": contract.ContractHash,
-				"queries": len(plan), "candidates": len(papers), "policy_version": executor.policyVersion},
+				"queries": len(candidates.QueryPlan), "candidates": candidateCount, "policy_version": executor.policyVersion},
 			SourceRefs: []string{}}},
 		Usage:     ExecutionUsage{DurationMS: 0},
 		StartedAt: executor.now(), CompletedAt: executor.now(),

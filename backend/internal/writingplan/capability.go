@@ -478,6 +478,8 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 const (
 	ClassResearchDiscover         = "research.discover"
 	ClassResearchRead             = "research.read"
+	ClassResearchDiscoverMaterial = "research.discover.materials"
+	ClassResearchReadMaterial     = "research.read.materials"
 	ClassResearchGateEvidence     = "research.gate.evidence"
 	ClassResearchOutline          = "research.outline"
 	ClassResearchGateOutline      = "research.gate.outline"
@@ -493,6 +495,15 @@ const (
 	CapabilityResearchDraft       = "core.research.draft"
 	CapabilityResearchCitations   = "core.research.validate.citations"
 	CapabilityResearchFact        = "core.research.validate.fact"
+
+	// F5 user-material research path: the no-external-research manifests of
+	// the discover/read capabilities. Same executors as their external
+	// siblings (the material policy branches inside the executors), but the
+	// permission set is tightened — no external.research — so a plan compiled
+	// for a contract that forbids external research can never carry the
+	// external-call permission.
+	CapabilityResearchDiscoverMaterial = "core.research.discover.materials"
+	CapabilityResearchReadMaterial     = "core.research.read.materials"
 )
 
 // KernelHumanGateCapabilities are the only capability ids allowed to compile
@@ -601,6 +612,29 @@ func (registry *CapabilityRegistry) registerResearchReview() {
 		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
 		EnforceRequiredContext: true}
 	register(read)
+	// F5 user-material branch manifests: the same I/O as the external
+	// discover/read capabilities, but the permissions carry NO
+	// external.research and the executor ids are the material branch's own
+	// bindings — the compiler selects these for a contract whose material
+	// policy forbids external research, and ValidatePlan's
+	// CONTRACT_FORBIDS_EXTERNAL_RESEARCH check stays as the fail-closed
+	// backstop for any manifest that still claims the external permission.
+	materialDiscover := research(CapabilityResearchDiscoverMaterial, ClassResearchDiscoverMaterial, "engine.step.research_discover_materials",
+		[]ArtifactType{"contract"}, []ArtifactType{"research_candidates"},
+		[]Permission{"materials.read", "model.invoke"}, false, 1)
+	materialDiscover.OptionalInputTypes = []ArtifactType{"materials"}
+	materialDiscover.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(materialDiscover)
+	materialRead := research(CapabilityResearchReadMaterial, ClassResearchReadMaterial, "engine.step.research_read_materials",
+		[]ArtifactType{"contract", "research_candidates"}, []ArtifactType{"research_evidence_pack"},
+		[]Permission{"materials.read", "model.invoke"}, false, 20)
+	materialRead.OptionalInputTypes = []ArtifactType{"materials"}
+	materialRead.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		EnforceRequiredContext: true}
+	register(materialRead)
 	// Kernel-owned gate capabilities: declared available with the pinned
 	// kernel.human_gate executor so ValidatePlan's executor-existence check
 	// holds, but no dispatch ever happens — the orchestrator pauses at the

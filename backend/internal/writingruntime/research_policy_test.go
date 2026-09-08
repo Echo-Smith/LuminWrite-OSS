@@ -1,12 +1,13 @@
 package writingruntime
 
 // T09 acceptance-matrix gap tests (docs/plans/2026-09-07-research-review-
-// integration.md, A02): a contract with
-// material_policy.allow_external_research=false must never reach the scholar
-// worker. The plan compile's CONTRACT_FORBIDS_EXTERNAL_RESEARCH check is the
-// primary gate; the discover/read executors add fail-closed defense in depth —
-// zero worker calls and a typed refusal even if a stale runtime dispatched
-// them.
+// integration.md, A02; updated for F5): a contract with
+// material_policy.allow_external_research=false must never make an EXTERNAL
+// call. The plan compile's CONTRACT_FORBIDS_EXTERNAL_RESEARCH check and the
+// material-only capability manifests are the primary gates; the discover/read
+// executors add fail-closed defense in depth — the material branch makes zero
+// external calls, an empty owner manifest refuses with a typed error, and a
+// no-external read never drives fetch_full_text.
 
 import (
 	"context"
@@ -20,15 +21,18 @@ import (
 
 // TestResearchExecutorsNeverCallWorkerWhenExternalResearchForbidden drives the
 // discover and read executors over a no-external-research contract with
-// counting fakes: every call counter must stay at zero and both executors must
-// refuse with the typed contract-mismatch code.
+// counting fakes: every external call counter must stay at zero and the
+// discover executor must refuse (empty manifest) with the typed
+// contract-mismatch code.
 func TestResearchExecutorsNeverCallWorkerWhenExternalResearchForbidden(t *testing.T) {
 	fixture := newT05FixtureMutate(t, func(contract *writingkernel.WritingContract) {
 		contract.MaterialPolicy.AllowExternalResearch = false
 	})
 	ctx := context.Background()
 
-	// Discover: zero Discover/Rank calls.
+	// Discover: zero Discover/Rank calls; an empty owner manifest fails
+	// closed with a typed refusal (RESEARCH_MATERIALS_REQUIRED's runtime
+	// counterpart).
 	discovery := &fakeDiscoverClient{}
 	discover, err := NewResearchDiscoverExecutor(discovery, fixture.gateway)
 	if err != nil {
@@ -53,7 +57,7 @@ func TestResearchExecutorsNeverCallWorkerWhenExternalResearchForbidden(t *testin
 		t.Fatal(err)
 	}
 	if _, err := discover.Execute(ctx, request); err == nil {
-		t.Fatal("discover executed against a no-external-research contract")
+		t.Fatal("discover executed against a no-external-research contract with an empty manifest")
 	} else {
 		assertNoExternalResearchRefusal(t, err)
 	}
@@ -61,7 +65,9 @@ func TestResearchExecutorsNeverCallWorkerWhenExternalResearchForbidden(t *testin
 		t.Fatalf("discover executor called the worker: discover=%d rank=%d", discovery.discoverCalls, discovery.rankCalls)
 	}
 
-	// Read: zero fetch/parse/read calls.
+	// Read: zero fetch/parse/read calls on an empty (external-free) workset —
+	// the read fails closed with the INSUFFICIENT_EVIDENCE pause (nothing was
+	// read, the contract floor cannot be met).
 	worker := newFakeWorkerClient()
 	read, err := NewResearchReadExecutor(worker, fixture.gateway, fixture.store, nil)
 	if err != nil {
@@ -70,9 +76,9 @@ func TestResearchExecutorsNeverCallWorkerWhenExternalResearchForbidden(t *testin
 	candidatesInput := fixture.candidatesFromBody(t, fixture.t05Candidates(t))
 	readRequest := fixture.readRequest(t, candidatesInput, 4)
 	if _, err := read.Execute(ctx, readRequest); err == nil {
-		t.Fatal("read executed against a no-external-research contract")
-	} else {
-		assertNoExternalResearchRefusal(t, err)
+		t.Fatal("read executed against a no-external-research contract with nothing authorized")
+	} else if !errors.Is(err, ErrInsufficientEvidence) {
+		t.Fatalf("read error = %v, want ErrInsufficientEvidence", err)
 	}
 	if len(worker.fetches) != 0 || worker.parses != 0 || len(worker.reads) != 0 {
 		t.Fatalf("read executor called the worker: fetches=%d parses=%d reads=%d",

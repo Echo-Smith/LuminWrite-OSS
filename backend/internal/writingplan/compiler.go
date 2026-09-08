@@ -119,6 +119,13 @@ type CompileRequest struct {
 	RequiredFinalArtifact    ArtifactType
 	SystemRecommendation     writingkernel.OrchestrationMode
 	ApprovalCostThresholdUSD float64
+	// HasUserMaterials reports whether the run's owner material manifest is
+	// non-empty (document metadata material_refs). It only matters for a
+	// contract that forbids external research: the research_review material
+	// branch is the only runnable path, so compiling without an owner
+	// manifest fails closed with RESEARCH_MATERIALS_REQUIRED instead of
+	// silently producing a plan that must fail at runtime.
+	HasUserMaterials bool
 }
 
 type CompileResult struct {
@@ -182,13 +189,37 @@ func (c *Compiler) Compile(req CompileRequest) (CompileResult, error) {
 	plan := ExecutablePlan{PlanID: deterministicID("plan_", req.IntentPlan.IntentPlanHash+"\x00"+string(effective)), IntentPlanRef: ObjectRef{ID: req.IntentPlan.IntentPlanID, Version: 1, Hash: req.IntentPlan.IntentPlanHash}, Status: PlanDraft}
 	template, hasTemplate := req.Templates.Get(effective)
 	missing := make([]string, 0)
+	// F5 user-material research path: a research_review contract that forbids
+	// external research compiles the MATERIAL branch — the discover/read
+	// nodes resolve to the tightened (no external.research) material
+	// manifests, and the executors stay on the user-material-only paths. An
+	// empty or missing owner manifest has nothing authorized to read: the
+	// compile fails closed with an explicit error instead of emitting a plan
+	// that must fail at runtime.
+	researchMaterialBranch := false
+	if effective == writingkernel.OrchestrationModeResearchReview && req.Contract.Research != nil &&
+		req.Contract.SchemaVersion == writingkernel.SchemaVersionV11 && !req.Contract.MaterialPolicy.AllowExternalResearch {
+		if !req.HasUserMaterials {
+			return CompileResult{}, fmt.Errorf("RESEARCH_MATERIALS_REQUIRED: the contract forbids external research; a non-empty owner material manifest (document material_refs) is required")
+		}
+		researchMaterialBranch = true
+	}
 	if hasTemplate {
 		plan.TrustLevel = template.TrustLevel
 		plan.RootNodeID = template.RootNodeID
 		for _, spec := range template.Nodes {
-			node, ok := resolveTemplateNode(spec, req.Registry)
+			nodeSpec := spec
+			if researchMaterialBranch {
+				switch nodeSpec.CapabilityClass {
+				case ClassResearchDiscover:
+					nodeSpec.CapabilityClass = ClassResearchDiscoverMaterial
+				case ClassResearchRead:
+					nodeSpec.CapabilityClass = ClassResearchReadMaterial
+				}
+			}
+			node, ok := resolveTemplateNode(nodeSpec, req.Registry)
 			if !ok {
-				missing = append(missing, spec.CapabilityClass)
+				missing = append(missing, nodeSpec.CapabilityClass)
 				continue
 			}
 			plan.Nodes = append(plan.Nodes, node)

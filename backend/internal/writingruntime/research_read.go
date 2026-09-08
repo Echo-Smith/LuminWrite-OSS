@@ -159,16 +159,15 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	// A02 fail-closed (defense in depth behind the plan compile's
-	// CONTRACT_FORBIDS_EXTERNAL_RESEARCH check): a contract that forbids
-	// external research must never reach the scholar worker — zero fetch /
-	// parse / read calls (T09 acceptance matrix A02).
-	if !contract.MaterialPolicy.AllowExternalResearch {
-		return ExecutionResult{}, runtimeError(CodeExecutorContractMismatch, RetryNever,
-			"contract material policy forbids external research; read must not call the scholar worker", nil)
-	}
 	spec := contract.Research
 	executor.question = contract.Content.CentralQuestion
+	// A02 fail-closed (defense in depth behind the plan compile's
+	// CONTRACT_FORBIDS_EXTERNAL_RESEARCH check and the discover executor's
+	// material-only candidates): a contract that forbids external research
+	// never fetches an external document. User-material papers (origin
+	// user_material, owner-authorized material_ref) stay readable through the
+	// local ContentGateway bytes — zero external calls (T09 A02 + F5).
+	allowExternal := contract.MaterialPolicy.AllowExternalResearch
 	candidatesInput, err := researchInputByType(request, researchCandidatesType)
 	if err != nil {
 		return ExecutionResult{}, err
@@ -232,7 +231,7 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 					quota, provenance, usage, started, index, len(workset), reason)
 			}
 		}
-		result, paperErr := executor.readPaper(ctx, request, spec, paper)
+		result, paperErr := executor.readPaper(ctx, request, spec, allowExternal, paper)
 		if paperErr != nil {
 			return ExecutionResult{}, paperErr
 		}
@@ -320,7 +319,8 @@ func (executor *ResearchReadExecutor) boundaryOutcome(ctx context.Context, reque
 		partial = append(partial, PaperReadResult{
 			PaperID:         paper.PaperID,
 			Bibliography:    writingkernel.PaperBibliography{Title: paper.Title, Authors: paper.Authors, Year: paper.Year, Venue: paper.Venue, DOI: paper.DOI, CanonicalURL: paper.CanonicalURL},
-			Origin:          writingkernel.PaperOriginExternal,
+			Origin:          candidateOrigin(paper),
+			MaterialRef:     candidateMaterialRef(paper),
 			SelectionReason: paper.Selection.Reason,
 			RelevanceStatus: paper.RelevanceStatus,
 			ReadingScope:    writingkernel.ReadingScopeUnread,
@@ -365,12 +365,18 @@ func (executor *ResearchReadExecutor) truncatedRemainder(ctx context.Context, re
 // ledger persistence. A degraded paper (no OA URL, likely scanned, unreadable
 // parse) returns a terminal unread/abstract result instead of failing the
 // node; only ledger integrity problems fail the whole node.
-func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request ExecutionRequest, spec *writingkernel.ResearchSpec, paper writingkernel.PaperCandidate) (PaperReadResult, error) {
+//
+// User-material papers (origin user_material) skip the external fetch
+// entirely: their owner-authorized bytes load from the ContentGateway by
+// material_ref and go straight to parse → read (F5: 不经 fetch_full_text,
+// zero external downloads).
+func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request ExecutionRequest, spec *writingkernel.ResearchSpec, allowExternal bool, paper writingkernel.PaperCandidate) (PaperReadResult, error) {
 	result := PaperReadResult{
 		PaperID: paper.PaperID,
 		Bibliography: writingkernel.PaperBibliography{Title: paper.Title, Authors: paper.Authors,
 			Year: paper.Year, Venue: paper.Venue, DOI: paper.DOI, CanonicalURL: paper.CanonicalURL},
-		Origin:          writingkernel.PaperOriginExternal,
+		Origin:          candidateOrigin(paper),
+		MaterialRef:     candidateMaterialRef(paper),
 		SelectionReason: paper.Selection.Reason,
 		RelevanceStatus: paper.RelevanceStatus,
 		BlocksByID:      map[string]ParsedBlock{},
@@ -384,44 +390,67 @@ func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request Exe
 		return abstractAllowed && abstractText != ""
 	}
 
-	// ── Fetch phase (only when an OA location is known).
+	// ── Acquisition phase: user material bytes, or the constrained external
+	// fetch (only when an OA location is known).
 	haveFullText := false
 	scanned := false
 	var documentHash, documentMediaType string
-	if oaURL := strings.TrimSpace(paper.Acquisition.OAURL); oaURL != "" {
-		fetchHash, hashErr := scholar.HashPayload(map[string]any{
-			"phase": "fetch", "paper_id": paper.PaperID, "doi": deref(paper.DOI),
-			"oa_url": oaURL, "size_limit": researchFetchSizeLimit,
-			"selection_policy_version": ResearchDiscoverSelectionPolicy,
-		})
-		if hashErr != nil {
-			return result, runtimeError(CodeExecutorOutputInvalid, RetryNever, "hash fetch input", hashErr)
+	switch {
+	case paper.Origin == writingkernel.PaperOriginUserMaterial:
+		if paper.MaterialRef == nil || paper.MaterialRef.ContentHash == "" {
+			result.UnreadReason = "user material lacks its owner-authorized material_ref"
+			break
 		}
-		output, err := executor.runSubTask(ctx, request, subTaskSpec{taskKey: paper.PaperID, phase: "fetch", inputHash: fetchHash},
-			func(callCtx context.Context) (subTaskOutput, error) {
-				return executor.fetchDocument(callCtx, request, paper.PaperID, oaURL)
+		_, body, err := executor.ledger.GetArtifactContent(ctx, paper.MaterialRef.ContentHash)
+		if err != nil || contentHash(body) != paper.MaterialRef.ContentHash {
+			return result, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+				"user material content failed hash verification", err)
+		}
+		documentHash = paper.MaterialRef.ContentHash
+		documentMediaType = "text/plain"
+		haveFullText = true
+	default:
+		if !allowExternal {
+			// Defense in depth (A02): a no-external contract must never fetch;
+			// only its abstract may back the paper (degraded, local bytes).
+			result.UnreadReason = "external fetch forbidden by contract material policy"
+			break
+		}
+		if oaURL := strings.TrimSpace(paper.Acquisition.OAURL); oaURL != "" {
+			fetchHash, hashErr := scholar.HashPayload(map[string]any{
+				"phase": "fetch", "paper_id": paper.PaperID, "doi": deref(paper.DOI),
+				"oa_url": oaURL, "size_limit": researchFetchSizeLimit,
+				"selection_policy_version": ResearchDiscoverSelectionPolicy,
 			})
-		if err != nil {
-			if fatal := nodeFatalSubTaskError(err); fatal != nil {
-				return result, fatal
+			if hashErr != nil {
+				return result, runtimeError(CodeExecutorOutputInvalid, RetryNever, "hash fetch input", hashErr)
 			}
-			result.UnreadReason = "acquisition failed: " + err.Error()
+			output, err := executor.runSubTask(ctx, request, subTaskSpec{taskKey: paper.PaperID, phase: "fetch", inputHash: fetchHash},
+				func(callCtx context.Context) (subTaskOutput, error) {
+					return executor.fetchDocument(callCtx, request, paper.PaperID, oaURL)
+				})
+			if err != nil {
+				if fatal := nodeFatalSubTaskError(err); fatal != nil {
+					return result, fatal
+				}
+				result.UnreadReason = "acquisition failed: " + err.Error()
+			} else {
+				meta, metaErr := executor.decodeFetchMeta(ctx, output)
+				if metaErr != nil {
+					return result, metaErr
+				}
+				documentHash = meta.DocumentHash
+				documentMediaType = meta.MediaType
+				if meta.LikelyScanned != nil {
+					scanned = *meta.LikelyScanned
+				}
+				haveFullText = true
+				result.InputTokens += output.inputTokens
+				result.OutputTokens += output.outputTokens
+			}
 		} else {
-			meta, metaErr := executor.decodeFetchMeta(ctx, output)
-			if metaErr != nil {
-				return result, metaErr
-			}
-			documentHash = meta.DocumentHash
-			documentMediaType = meta.MediaType
-			if meta.LikelyScanned != nil {
-				scanned = *meta.LikelyScanned
-			}
-			haveFullText = true
-			result.InputTokens += output.inputTokens
-			result.OutputTokens += output.outputTokens
+			result.UnreadReason = "no open-access URL"
 		}
-	} else {
-		result.UnreadReason = "no open-access URL"
 	}
 
 	// ── Document source decision: full text, or the abstract as its own
@@ -1006,4 +1035,19 @@ func deref(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// candidateOrigin reports the pack origin of a candidate (user material vs
+// external discovery).
+func candidateOrigin(paper writingkernel.PaperCandidate) writingkernel.PaperOrigin {
+	if paper.Origin == writingkernel.PaperOriginUserMaterial {
+		return writingkernel.PaperOriginUserMaterial
+	}
+	return writingkernel.PaperOriginExternal
+}
+
+// candidateMaterialRef projects a user-material candidate's material reference
+// onto the pack paper entry (nil for external papers).
+func candidateMaterialRef(paper writingkernel.PaperCandidate) *writingkernel.ArtifactRef {
+	return paper.MaterialRef
 }

@@ -887,3 +887,356 @@ func (failingDiscoverClient) Discover(context.Context, string, []string, int, ..
 func (failingDiscoverClient) Rank(context.Context, string, []scholar.RankCandidate, ...scholar.CallOption) (*scholar.RankOutputs, *scholar.OperationResponse, error) {
 	return nil, nil, &scholar.Error{Kind: scholar.ErrRemote, Code: "all_providers_failed", Message: "upstream down"}
 }
+
+// ── F5: user-material research path ─────────────────────────────────────────
+
+// t05MaterialPaper stages one owner material's content and returns the
+// manifest entry + the kernel candidate the discover executor must produce.
+func t05MaterialPaper(t *testing.T, fixture *t05Fixture, materialID, title, content string) (MaterialSnapshot, error) {
+	t.Helper()
+	hash := contentHash([]byte(content))
+	if err := fixture.store.PutArtifactContent(context.Background(), hash, "text/plain", []byte(content)); err != nil {
+		return MaterialSnapshot{}, err
+	}
+	return MaterialSnapshot{MaterialID: materialID, Title: title, SourceKind: MaterialSourceKnowledge,
+		SourceRef: "kb://documents/" + materialID, MediaType: "text/plain",
+		ContentRef: "artifact://" + strings.TrimPrefix(hash, "sha256:"), ContentHash: hash,
+		SourceRefs: []string{"kb://documents/" + materialID}, UpdatedAt: time.Now().UTC()}, nil
+}
+
+// t05MaterialManifestInput stages the structured manifest as the materials
+// input artifact.
+func (fixture *t05Fixture) t05MaterialManifestInput(t *testing.T, materials []MaterialSnapshot) InputArtifact {
+	t.Helper()
+	manifest := MaterialManifest{SchemaVersion: writingplan.SchemaVersion, RunID: fixture.runID,
+		OwnerID: fixture.userID, ConflictHandling: "ask_user", CapturedAt: time.Now().UTC(),
+		Materials: materials}
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.PutArtifactContent(context.Background(), contentHash(body), "application/json", body); err != nil {
+		t.Fatal(err)
+	}
+	return InputArtifact{ArtifactID: writingstore.StableID("art_", fixture.runID, "materials"),
+		Version: 1, ArtifactType: "materials", ContentHash: contentHash(body),
+		MediaType: "application/json", ContentRef: "artifact://" + strings.TrimPrefix(contentHash(body), "sha256:")}
+}
+
+// TestResearchDiscoverMaterialOnlyPath: a contract that forbids external
+// research builds candidates ONLY from the owner material manifest — zero
+// Discover/Rank calls, user_material origin, explicit selected reason, and an
+// empty manifest fails closed instead of staging a silently empty workset.
+func TestResearchDiscoverMaterialOnlyPath(t *testing.T) {
+	fixture := newT05FixtureMutate(t, func(contract *writingkernel.WritingContract) {
+		contract.MaterialPolicy.AllowExternalResearch = false
+	})
+	discovery := &fakeDiscoverClient{}
+	executor, err := NewResearchDiscoverExecutor(discovery, fixture.gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := writingplan.PlanNode{NodeID: t05DiscoverNode, Kind: writingplan.NodeAction,
+		Capability: "core.research.discover.materials", CapabilityVersion: "1.0.0",
+		InputArtifactTypes:  []writingplan.ArtifactType{"contract"},
+		OutputArtifactTypes: []writingplan.ArtifactType{"research_candidates"},
+		Bounds:              writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 10, TimeoutMS: 600000},
+		FailurePath:         writingplan.FailurePause}
+	key, err := writingstore.NodeAttemptKey(fixture.runID, node.NodeID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialsInput := fixture.t05MaterialManifestInput(t, nil)
+	request := ExecutionRequest{RunID: fixture.runID, PlanID: fixture.planID, PlanVersion: 1,
+		NodeID: node.NodeID, Attempt: 1, IdempotencyKey: key,
+		ContractRef: writingplan.ObjectRef{ID: fixture.contract.ContractID, Version: fixture.contract.Version, Hash: fixture.contract.ContractHash},
+		Node:        node, Inputs: []InputArtifact{fixture.contractInput(t), materialsInput},
+		Permissions: []writingplan.Permission{"model.invoke", "materials.read"}, UserID: fixture.userID}
+
+	// Empty manifest → fail closed (non-silent).
+	if _, err := executor.Execute(context.Background(), request); err == nil {
+		t.Fatal("no-external contract with an empty material manifest must fail closed")
+	}
+
+	// Stage two real owner materials and rerun: zero external calls, honest
+	// user-material candidates.
+	materialOne, err := t05MaterialPaper(t, fixture, "mat_aaa", "用户论文 Alpha",
+		"用户论文 Alpha 全文正文：\n\n确定性结论段落，供引用验证。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialTwo, err := t05MaterialPaper(t, fixture, "mat_bbb", "用户论文 Beta",
+		"用户论文 Beta 全文正文：\n\n另一段确定性结论。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Inputs = []InputArtifact{fixture.contractInput(t), fixture.t05MaterialManifestInput(t, []MaterialSnapshot{materialOne, materialTwo})}
+	result, err := executor.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("material-only discover: %v", err)
+	}
+	if discovery.discoverCalls != 0 || discovery.rankCalls != 0 {
+		t.Fatalf("external calls discover=%d rank=%d, want 0/0", discovery.discoverCalls, discovery.rankCalls)
+	}
+	body, err := fixture.gateway.Load(context.Background(), InputArtifact{ContentHash: result.Artifacts[0].ContentHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidates writingkernel.ResearchCandidates
+	if err := json.Unmarshal(body, &candidates); err != nil {
+		t.Fatal(err)
+	}
+	if err := candidates.Validate(); err != nil {
+		t.Fatalf("material candidates invalid: %v", err)
+	}
+	if len(candidates.Papers) != 2 || len(candidates.QueryPlan) != 0 || len(candidates.ProviderResults) != 0 {
+		t.Fatalf("candidates shape: papers=%d queries=%d providers=%d",
+			len(candidates.Papers), len(candidates.QueryPlan), len(candidates.ProviderResults))
+	}
+	for _, paper := range candidates.Papers {
+		if paper.Origin != writingkernel.PaperOriginUserMaterial || paper.MaterialRef == nil {
+			t.Fatalf("paper %s origin=%q material_ref=%v", paper.PaperID, paper.Origin, paper.MaterialRef)
+		}
+		if paper.Selection.Status != writingkernel.SelectionStatusSelected || paper.Selection.Reason != "user_material" {
+			t.Fatalf("paper %s selection = %#v", paper.PaperID, paper.Selection)
+		}
+		if paper.RelevanceStatus != writingkernel.RelevanceUnscored {
+			t.Fatalf("paper %s relevance = %q (rank must not judge user material)", paper.PaperID, paper.RelevanceStatus)
+		}
+		if paper.Acquisition.OAURL != "" {
+			t.Fatalf("user material %s carries an external OA URL", paper.PaperID)
+		}
+	}
+}
+
+// TestResearchReadUserMaterialLocalBytes: a user-material paper reads from the
+// staged local bytes (material_ref) — zero fetch calls — then parse/read as
+// usual, and the pack paper carries origin=user_material + material_ref.
+func TestResearchReadUserMaterialLocalBytes(t *testing.T) {
+	fixture := newT05Fixture(t)
+	discovery := &fakeDiscoverClient{}
+	discoverExecutor, err := NewResearchDiscoverExecutor(discovery, fixture.gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialOne, err := t05MaterialPaper(t, fixture, "mat_one", "用户论文 Alpha",
+		"用户论文 Alpha 全文正文：\n\n确定性结论段落，供引用验证。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialTwo, err := t05MaterialPaper(t, fixture, "mat_two", "用户论文 Beta",
+		"用户论文 Beta 全文正文：\n\n另一段确定性结论。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The no-external contract + a manifest with both materials.
+	node := writingplan.PlanNode{NodeID: t05DiscoverNode, Kind: writingplan.NodeAction,
+		Capability: "core.research.discover.materials", CapabilityVersion: "1.0.0",
+		InputArtifactTypes:  []writingplan.ArtifactType{"contract"},
+		OutputArtifactTypes: []writingplan.ArtifactType{"research_candidates"},
+		Bounds:              writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 10, TimeoutMS: 600000},
+		FailurePath:         writingplan.FailurePause}
+	key, err := writingstore.NodeAttemptKey(fixture.runID, node.NodeID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ExecutionRequest{RunID: fixture.runID, PlanID: fixture.planID, PlanVersion: 1,
+		NodeID: node.NodeID, Attempt: 1, IdempotencyKey: key,
+		ContractRef: writingplan.ObjectRef{ID: fixture.contract.ContractID, Version: fixture.contract.Version, Hash: fixture.contract.ContractHash},
+		Node:        node, Inputs: []InputArtifact{fixture.contractInput(t), fixture.t05MaterialManifestInput(t, []MaterialSnapshot{materialOne, materialTwo})},
+		Permissions: []writingplan.Permission{"model.invoke", "materials.read"}, UserID: fixture.userID}
+	result, err := discoverExecutor.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("material-only discover: %v", err)
+	}
+	candidatesInput := InputArtifact{ArtifactID: writingstore.StableID("art_", fixture.runID, t05DiscoverNode, "research_candidates"),
+		Version: 1, ArtifactType: researchCandidatesType, ContentHash: result.Artifacts[0].ContentHash,
+		MediaType: "application/json", ContentRef: result.Artifacts[0].ContentRef}
+
+	worker := newFakeWorkerClient()
+	readRequest := fixture.readRequest(t, candidatesInput, 4)
+	readResult, err := runRead(t, fixture, readRequest, worker, &fakeBudget{scripts: []bool{false}})
+	if err != nil {
+		t.Fatalf("user-material read: %v", err)
+	}
+	if fetches := len(worker.fetches); fetches != 0 {
+		t.Fatalf("user-material read made %d fetch calls, want 0", fetches)
+	}
+	if worker.parses != 2 || len(worker.reads) != 2 {
+		t.Fatalf("parse=%d read-papers=%d, want 2/2 (local bytes → parse → read)", worker.parses, len(worker.reads))
+	}
+	body, err := fixture.gateway.Load(context.Background(), InputArtifact{ContentHash: readResult.Artifacts[0].ContentHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pack writingkernel.ResearchEvidencePack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("user-material pack invalid: %v", err)
+	}
+	if len(pack.Papers) != 2 {
+		t.Fatalf("pack papers = %d, want 2", len(pack.Papers))
+	}
+	for _, paper := range pack.Papers {
+		if paper.Origin != writingkernel.PaperOriginUserMaterial || paper.MaterialRef == nil {
+			t.Fatalf("pack paper %s origin=%q material_ref=%v", paper.PaperID, paper.Origin, paper.MaterialRef)
+		}
+		if paper.ReadingScope != writingkernel.ReadingScopeFullText {
+			t.Fatalf("pack paper %s scope = %q, want full_text", paper.PaperID, paper.ReadingScope)
+		}
+	}
+	if len(pack.Evidence) != 2 {
+		t.Fatalf("pack evidence = %d, want 2", len(pack.Evidence))
+	}
+}
+
+// TestResearchReadNeverFetchesUnderNoExternalContract: defense in depth — a
+// contract that forbids external research must never drive fetch_full_text,
+// even when a stale external candidate sneaks into the workset. The paper
+// degrades to its local abstract (or unread) instead; the parse/read calls
+// that consume local bytes stay allowed.
+func TestResearchReadNeverFetchesUnderNoExternalContract(t *testing.T) {
+	fixture := newT05FixtureMutate(t, func(contract *writingkernel.WritingContract) {
+		contract.MaterialPolicy.AllowExternalResearch = false
+	})
+	worker := newFakeWorkerClient()
+	worker.fetchFunc = func(paperID, _ string) (*scholar.FetchFullTextOutputs, error) {
+		return nil, errors.New("external fetch must never happen under a no-external contract")
+	}
+	candidatesInput := fixture.candidatesFromBody(t, fixture.t05Candidates(t, t05SelectedPaper("p_ext", true)))
+	request := fixture.readRequest(t, candidatesInput, 4)
+	// The abstract fallback keeps the paper readable locally; the invariant
+	// under test is the ZERO fetch count, whatever the per-paper degradation.
+	result, err := runRead(t, fixture, request, worker, &fakeBudget{scripts: []bool{false}})
+	if err != nil {
+		t.Fatalf("no-external read: %v", err)
+	}
+	if worker.fetchCount("p_ext") != 0 {
+		t.Fatal("the external fetch went through despite the contract material policy")
+	}
+	body, err := fixture.gateway.Load(context.Background(), InputArtifact{ContentHash: result.Artifacts[0].ContentHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pack writingkernel.ResearchEvidencePack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.Papers) != 1 || pack.Papers[0].ReadingScope != writingkernel.ReadingScopeAbstract {
+		t.Fatalf("paper scope = %#v (abstract fallback, never a fetch)", pack.Papers)
+	}
+}
+
+// TestResearchReadBudgetBoundaryFreezesPartialPack: the boundary fires with
+// enough citable sources → the executor freezes the PARTIAL pack in one
+// dispatch (no pause), the remaining workset lands in coverage.gaps as
+// budget-truncated unread entries, and the worker's call counts never grow.
+func TestResearchReadBudgetBoundaryFreezesPartialPack(t *testing.T) {
+	fixture := newT05Fixture(t)
+	candidatesInput := fixture.candidatesFromBody(t, fixture.t05Candidates(t,
+		t05SelectedPaper("p_one", true), t05SelectedPaper("p_two", true), t05SelectedPaper("p_three", true)))
+	request := fixture.readRequest(t, candidatesInput, 4)
+
+	worker := newFakeWorkerClient()
+	guard := &fakeBudget{scripts: []bool{false, true}, reason: "budget boundary reached"}
+	result, err := runRead(t, fixture, request, worker, guard)
+	if err != nil {
+		t.Fatalf("boundary with sufficient sources must freeze a partial pack: %v", err)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].OutputKey != "research_evidence_pack" {
+		t.Fatalf("artifacts = %#v", result.Artifacts)
+	}
+	if worker.fetchCount("p_one") != 1 || worker.fetchCount("p_two") != 0 || worker.fetchCount("p_three") != 0 {
+		t.Fatalf("fetch counts p_one=%d p_two=%d p_three=%d — calls must stop at the boundary",
+			worker.fetchCount("p_one"), worker.fetchCount("p_two"), worker.fetchCount("p_three"))
+	}
+	body, err := fixture.gateway.Load(context.Background(), InputArtifact{ContentHash: result.Artifacts[0].ContentHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pack writingkernel.ResearchEvidencePack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("partial pack invalid: %v", err)
+	}
+	if len(pack.Papers) != 3 {
+		t.Fatalf("partial pack papers = %d, want 3 (1 read + 2 truncated)", len(pack.Papers))
+	}
+	truncated := 0
+	for _, gap := range pack.Coverage.Gaps {
+		if strings.Contains(gap, "budget boundary") {
+			truncated++
+		}
+	}
+	if truncated != 2 {
+		t.Fatalf("coverage.gaps budget entries = %d (%v), want 2", truncated, pack.Coverage.Gaps)
+	}
+	// The truncated entries carry the full provenance of why they are unread.
+	for _, paper := range pack.Papers {
+		if paper.ReadingScope == writingkernel.ReadingScopeUnread && paper.MaterialRef != nil {
+			t.Fatalf("external paper %s wrongly carries a material_ref", paper.PaperID)
+		}
+	}
+}
+
+// TestResearchReadBudgetBoundaryInsufficientPauses: the boundary fires with
+// fewer citable sources than min_citable_sources → the typed
+// INSUFFICIENT_EVIDENCE clean pause (ledger intact, candidates preserved).
+func TestResearchReadBudgetBoundaryInsufficientPauses(t *testing.T) {
+	fixture := newT05FixtureMutate(t, func(contract *writingkernel.WritingContract) {
+		contract.Research.MinCitableSources = 2
+	})
+	candidatesInput := fixture.candidatesFromBody(t, fixture.t05Candidates(t,
+		t05SelectedPaper("p_one", true), t05SelectedPaper("p_two", true)))
+	request := fixture.readRequest(t, candidatesInput, 4)
+	worker := newFakeWorkerClient()
+	guard := &fakeBudget{scripts: []bool{false, true}, reason: "budget boundary reached"}
+	_, err := runRead(t, fixture, request, worker, guard)
+	if !errors.Is(err, ErrInsufficientEvidence) {
+		t.Fatalf("error = %v, want ErrInsufficientEvidence", err)
+	}
+	var typed *RuntimeError
+	if !errors.As(err, &typed) || typed.Code != CodeInsufficientEvidence {
+		t.Fatalf("error code = %v", typed)
+	}
+	if worker.fetchCount("p_one") != 1 || worker.fetchCount("p_two") != 0 {
+		t.Fatalf("fetch counts p_one=%d p_two=%d — reading must stop at the boundary",
+			worker.fetchCount("p_one"), worker.fetchCount("p_two"))
+	}
+}
+
+// TestResearchReadBudgetBoundaryHoldsAcrossResume: with an unchanged budget
+// the pure guard re-fires on the re-dispatch — no paper is read again, no
+// worker call happens, and the insufficient pause repeats (扩预算走新合同).
+func TestResearchReadBudgetBoundaryHoldsAcrossResume(t *testing.T) {
+	fixture := newT05FixtureMutate(t, func(contract *writingkernel.WritingContract) {
+		contract.Research.MinCitableSources = 2
+	})
+	candidatesInput := fixture.candidatesFromBody(t, fixture.t05Candidates(t,
+		t05SelectedPaper("p_one", true), t05SelectedPaper("p_two", true), t05SelectedPaper("p_three", true)))
+	request := fixture.readRequest(t, candidatesInput, 4)
+	worker := newFakeWorkerClient()
+	guard := &fakeBudget{scripts: []bool{false, true}, reason: "budget boundary reached"}
+	if _, err := runRead(t, fixture, request, worker, guard); !errors.Is(err, ErrInsufficientEvidence) {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	// Simulated resume: a fresh executor over the same ledger, guard still
+	// reached (the ledger spend did not shrink). The resumed dispatch must
+	// make ZERO worker calls and pause again.
+	beforeFetches := worker.fetchCount("p_one") + worker.fetchCount("p_two") + worker.fetchCount("p_three")
+	beforeReads := worker.readCount("p_one") + worker.readCount("p_two") + worker.readCount("p_three")
+	resumed := &fakeBudget{scripts: []bool{true}, reason: "budget boundary reached"}
+	if _, err := runRead(t, fixture, request, worker, resumed); !errors.Is(err, ErrInsufficientEvidence) {
+		t.Fatalf("resumed dispatch must pause again: %v", err)
+	}
+	afterFetches := worker.fetchCount("p_one") + worker.fetchCount("p_two") + worker.fetchCount("p_three")
+	afterReads := worker.readCount("p_one") + worker.readCount("p_two") + worker.readCount("p_three")
+	if afterFetches != beforeFetches || afterReads != beforeReads {
+		t.Fatalf("resume made worker calls: fetch %d→%d read %d→%d",
+			beforeFetches, afterFetches, beforeReads, afterReads)
+	}
+}
