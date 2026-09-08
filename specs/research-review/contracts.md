@@ -1,6 +1,6 @@
 # 研究综述：接口与数据合同 v1（拟新增）
 
-以下全部是开发合同，不代表当前已有接口。公共 API 沿用 `/api/v2/writing`、JWT、owner 校验、现有成功 envelope；新增的 error.code 需接入统一错误映射。Artifact ID/version/hash 使用现有命名与内容存储规则。
+以下全部是开发合同，不代表当前已有接口。公共 API 生产挂载于 `/api/v2`（writing 路由直挂其下，见 backend/internal/server/server.go；后端 E2E harness 自挂 `/api/v2/writing` 属测试内前缀，与生产不一致时以生产为准）、JWT、owner 校验、现有成功 envelope；新增的 error.code 需接入统一错误映射。Artifact ID/version/hash 使用现有命名与内容存储规则。
 
 ## 1. ResearchSpec
 

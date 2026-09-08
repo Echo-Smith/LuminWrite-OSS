@@ -336,7 +336,7 @@ type t00Fixture struct {
 
 func (h *t00Harness) fixture(t *testing.T) *t00Fixture {
 	t.Helper()
-	document := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/documents", map[string]any{"title": "T00 终态一致性"})
+	document := e2eRequest(t, h.router, h.token, "POST", "/api/v2/documents", map[string]any{"title": "T00 终态一致性"})
 	documentID := e2eJSONField(t, document, "document_id")
 	var contract writingkernel.WritingContract
 	if err := json.Unmarshal(e2eContractFixture(t), &contract); err != nil {
@@ -358,9 +358,9 @@ func (h *t00Harness) fixture(t *testing.T) *t00Fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	putted := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/documents/"+documentID+"/contracts", map[string]any{"contract": draftContract})
+	putted := e2eRequest(t, h.router, h.token, "POST", "/api/v2/documents/"+documentID+"/contracts", map[string]any{"contract": draftContract})
 	contractID := e2eNestedField(t, putted, "contract", "contract_id")
-	confirmed := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/contracts/"+contractID+"/confirm",
+	confirmed := e2eRequest(t, h.router, h.token, "POST", "/api/v2/contracts/"+contractID+"/confirm",
 		map[string]any{"previous_version": 1, "contract": confirmedContract(t, draftContract)})
 	if e2eNestedField(t, confirmed, "contract", "status") != string(writingkernel.ContractStatusConfirmed) {
 		t.Fatalf("contract not confirmed: %#v", confirmed)
@@ -471,7 +471,7 @@ func (h *t00Harness) runBudget() writingplan.PlanBudget {
 func (h *t00Harness) createRun(t *testing.T, fixture *t00Fixture, envelope writingplan.WritingPlanEnvelope) string {
 	t.Helper()
 	permissions := permissionsForPlan(envelope.ExecutablePlan, h.api.capabilities)
-	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/runs", map[string]any{
+	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": fixture.documentID, "contract_id": fixture.contractID, "contract_version": 2,
 		"contract_hash": fixture.contract.ContractHash, "base_version_id": fixture.baseVersion.VersionID,
 		"style_slug": "yinyue", "plan": envelope, "budget": h.runBudget(), "permissions": permissions,
@@ -516,7 +516,7 @@ func (h *t00Harness) transitionRun(t *testing.T, runID string, from, to writingr
 
 func (h *t00Harness) httpGetRun(t *testing.T, runID string) map[string]any {
 	t.Helper()
-	return e2eRequest(t, h.router, h.token, "GET", "/api/v2/writing/runs/"+runID, nil)
+	return e2eRequest(t, h.router, h.token, "GET", "/api/v2/runs/"+runID, nil)
 }
 
 func (h *t00Harness) httpStatus(t *testing.T, runID string) string {
@@ -709,7 +709,7 @@ func TestGovernedRunTerminalConsistency(t *testing.T) {
 					}
 					time.Sleep(50 * time.Millisecond)
 				}
-				e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/runs/"+runID+"/cancel", map[string]any{})
+				e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs/"+runID+"/cancel", map[string]any{})
 				h.runners["core.draft.generate"].release("core.draft.generate")
 			},
 			wantStatus: "cancelled",
@@ -874,7 +874,7 @@ func TestGovernedRunResumeAfterPauseAdvances(t *testing.T) {
 
 	// The HTTP resume runs synchronously under the execution lock:
 	// ControlRun → governedRunController.Resume → Orchestrator.Resume.
-	e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/runs/"+runID+"/resume", map[string]any{})
+	e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs/"+runID+"/resume", map[string]any{})
 	if final := h.waitForTerminal(t, runID, 60*time.Second); final != "completed" {
 		t.Fatalf("post-resume run ended as %q, want completed", final)
 	}

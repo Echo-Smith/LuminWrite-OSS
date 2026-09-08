@@ -215,7 +215,7 @@ func TestT09ResearchCancelMidReadStopsScheduling(t *testing.T) {
 	}
 
 	// Owner cancel over the HTTP surface.
-	cancel := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/runs/"+runID+"/cancel", map[string]any{})
+	cancel := e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs/"+runID+"/cancel", map[string]any{})
 	if e2eJSONField(t, cancel, "status") != "cancelling" && e2eJSONField(t, cancel, "status") != "cancelled" {
 		t.Fatalf("cancel status = %q", e2eJSONField(t, cancel, "status"))
 	}
@@ -259,7 +259,7 @@ func TestT09SSEReconnectMergesBySequence(t *testing.T) {
 
 	// First page: everything currently persisted.
 	code, first := t02APIRequest(t, h.router, h.token, http.MethodGet,
-		"/api/v2/writing/runs/"+runID+"/events?after=0&follow=false", "", nil)
+		"/api/v2/runs/"+runID+"/events?after=0&follow=false", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("first events GET -> %d", code)
 	}
@@ -272,7 +272,7 @@ func TestT09SSEReconnectMergesBySequence(t *testing.T) {
 	// Reconnect at the dropped connection's position (both transports) and
 	// verify the replay covers exactly the gap with no rewinds.
 	code, replay := t02APIRequest(t, h.router, h.token, http.MethodGet,
-		fmt.Sprintf("/api/v2/writing/runs/%s/events?after=%d&follow=false", runID, firstMax), "", nil)
+		fmt.Sprintf("/api/v2/runs/%s/events?after=%d&follow=false", runID, firstMax), "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("replay GET -> %d", code)
 	}
@@ -301,7 +301,7 @@ func TestT09SSEReconnectMergesBySequence(t *testing.T) {
 		seen[event.Sequence] = true
 	}
 	code, full := t02APIRequest(t, h.router, h.token, http.MethodGet,
-		"/api/v2/writing/runs/"+runID+"/events?after=0&follow=false", "", nil)
+		"/api/v2/runs/"+runID+"/events?after=0&follow=false", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("full GET -> %d", code)
 	}
@@ -310,7 +310,7 @@ func TestT09SSEReconnectMergesBySequence(t *testing.T) {
 		t.Fatalf("merged pages have %d events, ledger has %d", len(seen), len(fullEvents))
 	}
 	// SSE transport: Last-Event-ID header replays the same gap as SSE frames.
-	request := httptest.NewRequest(http.MethodGet, "/api/v2/writing/runs/"+runID+"/events?follow=false", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v2/runs/"+runID+"/events?follow=false", nil)
 	request.Header.Set("Authorization", "Bearer "+h.token)
 	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("Last-Event-ID", fmt.Sprint(firstMax))
@@ -363,7 +363,7 @@ func TestT09ResearchViewExposesSpecAndReadingScopeCounts(t *testing.T) {
 	// evidence gate pause — enough for the projection assertions.
 	h.decideGate(t, runID, h.advanceToGate(t, runID, "evidence"), envelope)
 	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet,
-		"/api/v2/writing/runs/"+runID+"/research", "", nil)
+		"/api/v2/runs/"+runID+"/research", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET research -> %d: %s", code, payload)
 	}
@@ -411,7 +411,7 @@ func TestT09LegacyRunResearchViewKeepsShape(t *testing.T) {
 	runID := h.createRun(t, fixture, envelope)
 	h.waitForTerminal(t, runID, 60*time.Second)
 	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet,
-		"/api/v2/writing/runs/"+runID+"/research", "", nil)
+		"/api/v2/runs/"+runID+"/research", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET research -> %d: %s", code, payload)
 	}
@@ -458,7 +458,7 @@ func TestT09ResearchReviewDisabledRefusesExplicitly(t *testing.T) {
 		contract.Collaboration.OrchestrationMode = writingkernel.OrchestrationModeResearchReview
 	})
 	code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost,
-		"/api/v2/writing/documents/"+researchFixture.documentID+"/plans", "", map[string]any{
+		"/api/v2/documents/"+researchFixture.documentID+"/plans", "", map[string]any{
 			"contract_id": researchFixture.contractID, "contract_version": 2,
 			"base_version_id":         researchFixture.baseVersion.VersionID,
 			"intent_plan":             t06ResearchIntentPlan(t, researchFixture.contract),
@@ -474,7 +474,7 @@ func TestT09ResearchReviewDisabledRefusesExplicitly(t *testing.T) {
 	// Run creation over the same contract: also refused.
 	envelope := h.buildResearchEnvelope(t, researchFixture)
 	permissions := permissionsForPlan(envelope.ExecutablePlan, h.api.capabilities)
-	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs",
+	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs",
 		t02APIIdempotencyKey("t09-disabled-run"),
 		map[string]any{"document_id": researchFixture.documentID, "contract_id": researchFixture.contractID,
 			"contract_version": 2, "contract_hash": researchFixture.contract.ContractHash,
@@ -496,7 +496,7 @@ func TestT09ResearchReviewDisabledRefusesExplicitly(t *testing.T) {
 	// the seam): compile succeeds again.
 	h.api.researchReviewEnabled = true
 	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost,
-		"/api/v2/writing/documents/"+researchFixture.documentID+"/plans", "", map[string]any{
+		"/api/v2/documents/"+researchFixture.documentID+"/plans", "", map[string]any{
 			"contract_id": researchFixture.contractID, "contract_version": 2,
 			"base_version_id":         researchFixture.baseVersion.VersionID,
 			"intent_plan":             t06ResearchIntentPlan(t, researchFixture.contract),

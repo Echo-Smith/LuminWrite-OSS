@@ -208,7 +208,7 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	token := governedE2EToken(t, server, userID)
 
 	// 1. Document.
-	document := e2eRequest(t, router, token, "POST", "/api/v2/writing/documents", map[string]any{"title": "端到端验收"})
+	document := e2eRequest(t, router, token, "POST", "/api/v2/documents", map[string]any{"title": "端到端验收"})
 	documentID := e2eJSONField(t, document, "document_id")
 
 	// 2. Contract fixture: loaded confirmed; the API accepts drafts, so the
@@ -245,9 +245,9 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 
 	// 3. Contract put + confirm through the HTTP API. The contract record
 	// nests the contract body: ids come from contract.contract_id.
-	putted := e2eRequest(t, router, token, "POST", "/api/v2/writing/documents/"+documentID+"/contracts", map[string]any{"contract": draftContract})
+	putted := e2eRequest(t, router, token, "POST", "/api/v2/documents/"+documentID+"/contracts", map[string]any{"contract": draftContract})
 	contractID := e2eNestedField(t, putted, "contract", "contract_id")
-	confirmed := e2eRequest(t, router, token, "POST", "/api/v2/writing/contracts/"+contractID+"/confirm", map[string]any{"previous_version": 1, "contract": confirmedContract(t, draftContract)})
+	confirmed := e2eRequest(t, router, token, "POST", "/api/v2/contracts/"+contractID+"/confirm", map[string]any{"previous_version": 1, "contract": confirmedContract(t, draftContract)})
 	if e2eNestedField(t, confirmed, "contract", "status") != string(writingkernel.ContractStatusConfirmed) {
 		t.Fatalf("contract not confirmed: %#v", confirmed)
 	}
@@ -262,7 +262,7 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	}
 
 	// 5. Compile the plan over HTTP (fast template via intent plan).
-	plan := e2eRequest(t, router, token, "POST", "/api/v2/writing/documents/"+documentID+"/plans", map[string]any{
+	plan := e2eRequest(t, router, token, "POST", "/api/v2/documents/"+documentID+"/plans", map[string]any{
 		"contract_id": contractID, "contract_version": 2, "base_version_id": baseVersion.VersionID,
 		"intent_plan":             e2eIntentPlan(t, sealedContract),
 		"budget":                  map[string]any{"max_cost_usd": 100, "max_duration_ms": 3000000, "max_concurrency": 2, "max_nodes": 10, "max_items": 10},
@@ -274,7 +274,7 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	}
 
 	// 6. Create the run: planned (no approval required) and triggered.
-	run := e2eRequest(t, router, token, "POST", "/api/v2/writing/runs", map[string]any{
+	run := e2eRequest(t, router, token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": documentID, "contract_id": contractID, "contract_version": 2,
 		"contract_hash": sealedContract.ContractHash, "base_version_id": baseVersion.VersionID,
 		"style_slug": "yinyue", "plan": envelopeData,
@@ -286,7 +286,7 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	// An expensive plan may require explicit approval even in the fixture.
 	initialStatus := e2eJSONField(t, run, "status")
 	if initialStatus == "awaiting_approval" {
-		e2eRequest(t, router, token, "POST", "/api/v2/writing/runs/"+runID+"/approve", map[string]any{"plan_id": envelopeData["executable_plan"].(map[string]any)["plan_id"], "plan_version": 1, "plan_hash": envelopeData["executable_plan"].(map[string]any)["plan_hash"], "permissions": plan["data"].(map[string]any)["permissions"]})
+		e2eRequest(t, router, token, "POST", "/api/v2/runs/"+runID+"/approve", map[string]any{"plan_id": envelopeData["executable_plan"].(map[string]any)["plan_id"], "plan_version": 1, "plan_hash": envelopeData["executable_plan"].(map[string]any)["plan_hash"], "permissions": plan["data"].(map[string]any)["permissions"]})
 	}
 	// 7. Poll until the background execution reaches a terminal state. The
 	// expected terminal depends on the deployment: with a live model the run
@@ -296,7 +296,7 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	deadline := time.Now().Add(240 * time.Second)
 	final := ""
 	for time.Now().Before(deadline) {
-		status := e2eRequest(t, router, token, "GET", "/api/v2/writing/runs/"+runID, nil)
+		status := e2eRequest(t, router, token, "GET", "/api/v2/runs/"+runID, nil)
 		state := e2eJSONField(t, status, "status")
 		switch state {
 		case "completed", "failed", "cancelled", "paused":
@@ -364,7 +364,7 @@ func e2eContractFixture(t *testing.T) []byte {
 // needs, and the acceptance is scoped to the governed writing surface).
 func newE2ERouter(server *Server) http.Handler {
 	router := chi.NewRouter()
-	router.Route("/api/v2/writing", func(group chi.Router) {
+	router.Route("/api/v2", func(group chi.Router) {
 		group.Use(server.jwtAuthMiddleware, server.rejectGuestMiddleware, server.requireWritingAPI)
 		server.registerWritingRoutes(group)
 	})

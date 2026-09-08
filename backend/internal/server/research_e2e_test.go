@@ -428,7 +428,7 @@ func (h *t06Harness) fixture(t *testing.T) *t00Fixture {
 // contract before it is sealed (e.g. evidence_requirement for T07).
 func (h *t06Harness) fixtureMutate(t *testing.T, mutate func(*writingkernel.WritingContract)) *t00Fixture {
 	t.Helper()
-	document := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/documents", map[string]any{"title": "T06 研究综述"})
+	document := e2eRequest(t, h.router, h.token, "POST", "/api/v2/documents", map[string]any{"title": "T06 研究综述"})
 	documentID := e2eJSONField(t, document, "document_id")
 	payload, err := os.ReadFile(filepath.Join("..", "..", "..", "specs", "lcp", "v1.1", "fixtures", "writing-contract.research-review.valid.json"))
 	if err != nil {
@@ -458,9 +458,9 @@ func (h *t06Harness) fixtureMutate(t *testing.T, mutate func(*writingkernel.Writ
 	if err != nil {
 		t.Fatal(err)
 	}
-	putted := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/documents/"+documentID+"/contracts", map[string]any{"contract": draftContract})
+	putted := e2eRequest(t, h.router, h.token, "POST", "/api/v2/documents/"+documentID+"/contracts", map[string]any{"contract": draftContract})
 	contractID := e2eNestedField(t, putted, "contract", "contract_id")
-	confirmed := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/contracts/"+contractID+"/confirm",
+	confirmed := e2eRequest(t, h.router, h.token, "POST", "/api/v2/contracts/"+contractID+"/confirm",
 		map[string]any{"previous_version": 1, "contract": confirmedContract(t, draftContract)})
 	if e2eNestedField(t, confirmed, "contract", "status") != string(writingkernel.ContractStatusConfirmed) {
 		t.Fatalf("contract not confirmed: %#v", confirmed)
@@ -531,14 +531,14 @@ func (h *t06Harness) researchRunBudget() writingplan.PlanBudget {
 func (h *t06Harness) createResearchRun(t *testing.T, fixture *t00Fixture, envelope writingplan.WritingPlanEnvelope) string {
 	t.Helper()
 	permissions := permissionsForPlan(envelope.ExecutablePlan, h.api.capabilities)
-	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/runs", map[string]any{
+	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": fixture.documentID, "contract_id": fixture.contractID, "contract_version": 2,
 		"contract_hash": fixture.contract.ContractHash, "base_version_id": fixture.baseVersion.VersionID,
 		"style_slug": "yinyue", "plan": envelope, "budget": h.researchRunBudget(), "permissions": permissions,
 	})
 	runID := e2eJSONField(t, run, "run_id")
 	if e2eJSONField(t, run, "status") == "awaiting_approval" {
-		e2eRequest(t, h.router, h.token, "POST", "/api/v2/writing/runs/"+runID+"/approve", map[string]any{
+		e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs/"+runID+"/approve", map[string]any{
 			"plan_id": envelope.ExecutablePlan.PlanID, "plan_version": 1,
 			"plan_hash": envelope.ExecutablePlan.PlanHash, "permissions": permissions})
 	}
@@ -551,7 +551,7 @@ func (h *t06Harness) t02() *t02APIHarness { return &t02APIHarness{t00Harness: h.
 
 func (h *t06Harness) researchPhase(t *testing.T, runID string) string {
 	t.Helper()
-	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET research -> %d: %s", code, payload)
 	}
@@ -561,7 +561,7 @@ func (h *t06Harness) researchPhase(t *testing.T, runID string) string {
 
 func (h *t06Harness) gateState(t *testing.T, runID, gateID string) (map[string]any, map[string]any, float64) {
 	t.Helper()
-	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/gates/"+gateID, "", nil)
+	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/gates/"+gateID, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET gate -> %d: %s", code, payload)
 	}
@@ -575,7 +575,7 @@ func (h *t06Harness) decideGate(t *testing.T, runID, gateID string, envelope wri
 	t.Helper()
 	_, inputRef, revision := h.gateState(t, runID, gateID)
 	code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost,
-		"/api/v2/writing/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("decide-"+gateID),
+		"/api/v2/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("decide-"+gateID),
 		map[string]any{"plan_id": envelope.ExecutablePlan.PlanID, "plan_version": 1,
 			"plan_hash": envelope.ExecutablePlan.PlanHash, "gate_revision": int(revision),
 			"input_ref": inputRef, "decision": "approve"})
@@ -594,7 +594,7 @@ func (h *t06Harness) advanceToGate(t *testing.T, runID, kind string) string {
 	deadline := time.Now().Add(120 * time.Second)
 	var lastResume time.Time
 	for time.Now().Before(deadline) {
-		code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+		code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 		if code == http.StatusOK {
 			if active, _ := dataOf(t, payload)["active_gate"].(map[string]any); active != nil {
 				if gateKind, _ := active["gate_kind"].(string); gateKind == kind {
@@ -607,7 +607,7 @@ func (h *t06Harness) advanceToGate(t *testing.T, runID, kind string) string {
 		}
 		if status := h.httpStatus(t, runID); status == "paused" && time.Since(lastResume) > time.Second {
 			lastResume = time.Now()
-			_, _ = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/resume",
+			_, _ = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/resume",
 				t02APIIdempotencyKey("advance-"+fmt.Sprint(time.Now().UnixNano())), map[string]any{})
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -622,7 +622,7 @@ func (h *t06Harness) waitForGateKind(t *testing.T, runID, kind string, require b
 	t.Helper()
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+		code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 		if code == http.StatusOK {
 			if active, _ := dataOf(t, payload)["active_gate"].(map[string]any); active != nil {
 				if gateKind, _ := active["gate_kind"].(string); gateKind == kind {
@@ -653,7 +653,7 @@ func (h *t06Harness) driveToTerminal(t *testing.T, runID string, maxKicks int) s
 		case "paused":
 			if kicks < maxKicks {
 				kicks++
-				_, _ = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/resume",
+				_, _ = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/resume",
 					t02APIIdempotencyKey("drive-"+fmt.Sprint(time.Now().UnixNano())), map[string]any{})
 			}
 		}
@@ -681,7 +681,7 @@ func (h *t06Harness) waitForNodeAttempt(t *testing.T, runID, nodeID, status stri
 		}
 		if h.httpStatus(t, runID) == "paused" && kicks < maxKicks {
 			kicks++
-			_, _ = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/resume",
+			_, _ = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/resume",
 				t02APIIdempotencyKey("wait-"+fmt.Sprint(time.Now().UnixNano())), map[string]any{})
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -826,7 +826,7 @@ func (h *t06Harness) waitForGatePausedAtBoundary(t *testing.T, runID string) {
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		if status := h.httpStatus(t, runID); status == "paused" {
-			code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+			code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 			if code == http.StatusOK {
 				if active, _ := dataOf(t, payload)["active_gate"].(map[string]any); active == nil {
 					// Confirm the sentinel: node.paused with the boundary code.

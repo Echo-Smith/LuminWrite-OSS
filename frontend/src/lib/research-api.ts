@@ -2,7 +2,8 @@
  * 研究综述（research_review）API 层 — mock 开关集中在本模块。
  *
  * 默认关闭功能与 mock。演示必须显式设置 VITE_RESEARCH_MOCK=on；
- * 真实读取/确认/运行创建使用 /api/v2/writing（与后端 e2e 的挂载前缀一致）：
+ * 真实读取/确认/运行创建使用 /api/v2（与生产 server.go:761 的 writing 路由挂载一致；
+ * 后端 e2e harness 自挂 /api/v2/writing，与其不同，以生产为准）：
  * startResearchRun 走 document → contract(v1.1) → confirm → compile → run
  * （→ awaiting_approval 时自动 approve）的真实创建链路。
  * 类型与 specs/research-review/contracts.md §2/§3、
@@ -657,7 +658,7 @@ export async function pollGateUntilResolved(
 
 // ─── 真实请求层 ───
 
-const WRITING_PREFIX = "/api/v2/writing";
+const WRITING_PREFIX = "/api/v2";
 
 interface APIEnvelope<T> { success?: boolean; data?: T }
 

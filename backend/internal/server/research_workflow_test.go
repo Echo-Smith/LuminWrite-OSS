@@ -223,7 +223,7 @@ func errorCodeOf(t *testing.T, payload map[string]any) string {
 // t02GateID fetches the gate id from the research progress view.
 func t02GateID(t *testing.T, h *t02APIHarness, runID string) string {
 	t.Helper()
-	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET research -> %d: %s", code, payload)
 	}
@@ -263,7 +263,7 @@ func TestT02ResearchGateFlowEndToEnd(t *testing.T) {
 	h.waitForGatePaused(t, runID)
 
 	// GET research progress exposes the active gate.
-	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+	code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET research -> %d: %s", code, payload)
 	}
@@ -274,7 +274,7 @@ func TestT02ResearchGateFlowEndToEnd(t *testing.T) {
 
 	// GET gate exposes the pending gate and its allowed operations.
 	gateID := t02GateID(t, h, runID)
-	code, payload = t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/gates/"+gateID, "", nil)
+	code, payload = t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/gates/"+gateID, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET gate -> %d: %s", code, payload)
 	}
@@ -302,7 +302,7 @@ func TestT02ResearchGateFlowEndToEnd(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost,
-				"/api/v2/writing/runs/"+runID+"/gates/"+gateID+"/decisions", key, decision)
+				"/api/v2/runs/"+runID+"/gates/"+gateID+"/decisions", key, decision)
 			results <- confirmResult{code, payload}
 		}()
 	}
@@ -314,7 +314,7 @@ func TestT02ResearchGateFlowEndToEnd(t *testing.T) {
 	}
 	// A third replay with the same key returns 200 and the same decision.
 	replayCode, replayPayload := t02APIRequest(t, h.router, h.token, http.MethodPost,
-		"/api/v2/writing/runs/"+runID+"/gates/"+gateID+"/decisions", key, decision)
+		"/api/v2/runs/"+runID+"/gates/"+gateID+"/decisions", key, decision)
 	if replayCode != http.StatusOK {
 		t.Fatalf("replay -> %d, want 200: %s", replayCode, replayPayload)
 	}
@@ -366,17 +366,17 @@ func TestT02ResearchGateNegativeCases(t *testing.T) {
 	gateID := t02GateID(t, h, runID)
 
 	// Plain resume against the pending gate: 409 GATE_APPROVAL_REQUIRED.
-	code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/resume", t02APIIdempotencyKey("resume-blocked"), map[string]any{})
+	code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/resume", t02APIIdempotencyKey("resume-blocked"), map[string]any{})
 	if code != http.StatusConflict || errorCodeOf(t, payload) != "GATE_APPROVAL_REQUIRED" {
 		t.Fatalf("plain resume -> %d %v, want 409 GATE_APPROVAL_REQUIRED", code, payload)
 	}
 
 	// Cross-owner reads: 404, not 403 (existence not leaked).
-	code, _ = t02APIRequest(t, h.router, h.otherToken, http.MethodGet, "/api/v2/writing/runs/"+runID+"/gates/"+gateID, "", nil)
+	code, _ = t02APIRequest(t, h.router, h.otherToken, http.MethodGet, "/api/v2/runs/"+runID+"/gates/"+gateID, "", nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("cross-owner GET gate -> %d, want 404", code)
 	}
-	code, _ = t02APIRequest(t, h.router, h.otherToken, http.MethodGet, "/api/v2/writing/runs/"+runID+"/research", "", nil)
+	code, _ = t02APIRequest(t, h.router, h.otherToken, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("cross-owner GET research -> %d, want 404", code)
 	}
@@ -386,13 +386,13 @@ func TestT02ResearchGateNegativeCases(t *testing.T) {
 		"input_ref": map[string]any{"artifact_id": "art_x", "version": 1, "content_hash": "sha256:" + strings.Repeat("0", 64)},
 		"decision":  "approve",
 	}
-	code, _ = t02APIRequest(t, h.router, h.otherToken, http.MethodPost, "/api/v2/writing/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("intruder"), decision)
+	code, _ = t02APIRequest(t, h.router, h.otherToken, http.MethodPost, "/api/v2/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("intruder"), decision)
 	if code != http.StatusNotFound {
 		t.Fatalf("cross-owner decide -> %d, want 404", code)
 	}
 
 	// Stale revision: submit gate_revision 2 against revision 1 → 409.
-	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("stale"), map[string]any{
+	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("stale"), map[string]any{
 		"plan_id": envelope.ExecutablePlan.PlanID, "plan_version": 1,
 		"plan_hash": envelope.ExecutablePlan.PlanHash, "gate_revision": 2,
 		"input_ref": map[string]any{"artifact_id": "art_x", "version": 1, "content_hash": "sha256:" + strings.Repeat("0", 64)},
@@ -410,7 +410,7 @@ func TestT02ResearchGateNegativeCases(t *testing.T) {
 	if len(artifacts) == 0 {
 		t.Fatal("no artifacts to read")
 	}
-	contentPath := "/api/v2/writing/runs/" + runID + "/artifacts/" + artifacts[0].ArtifactID + "/content"
+	contentPath := "/api/v2/runs/" + runID + "/artifacts/" + artifacts[0].ArtifactID + "/content"
 	code, payload = t02APIRequest(t, h.router, h.token, http.MethodGet, contentPath, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("artifact read -> %d: %s", code, payload)
@@ -422,9 +422,9 @@ func TestT02ResearchGateNegativeCases(t *testing.T) {
 	}
 
 	// Decide and finish the run so the fixture does not leak a worker.
-	code, payload = t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/writing/runs/"+runID+"/gates/"+gateID, "", nil)
+	code, payload = t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/gates/"+gateID, "", nil)
 	inputRef := dataOf(t, payload)["input_ref"].(map[string]any)
-	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("cleanup"), map[string]any{
+	code, payload = t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/gates/"+gateID+"/decisions", t02APIIdempotencyKey("cleanup"), map[string]any{
 		"plan_id": envelope.ExecutablePlan.PlanID, "plan_version": 1,
 		"plan_hash": envelope.ExecutablePlan.PlanHash, "gate_revision": 1,
 		"input_ref": inputRef, "decision": "approve",
@@ -453,7 +453,7 @@ func TestT02PlainResumeNeverBypassesGate(t *testing.T) {
 	h.waitForGatePaused(t, runID)
 	// Three blocked resume attempts in a row.
 	for i := 0; i < 3; i++ {
-		code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/writing/runs/"+runID+"/resume", t02APIIdempotencyKey("blocked"), map[string]any{})
+		code, payload := t02APIRequest(t, h.router, h.token, http.MethodPost, "/api/v2/runs/"+runID+"/resume", t02APIIdempotencyKey("blocked"), map[string]any{})
 		if code != http.StatusConflict {
 			t.Fatalf("resume attempt %d -> %d %v, want 409", i+1, code, payload)
 		}

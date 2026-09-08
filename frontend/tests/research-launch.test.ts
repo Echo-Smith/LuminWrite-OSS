@@ -115,21 +115,21 @@ interface ChainCapture {
 /** 驱动标准五步链路的 fetch mock；返回各步捕获的请求体。 */
 function installHappyChain(options: { runStatus: "planned" | "awaiting_approval" }, capture: ChainCapture): void {
   installFetch((path, method, body) => {
-    if (method === "POST" && path === "/api/v2/writing/documents") {
+    if (method === "POST" && path === "/api/v2/documents") {
       assert.deepEqual(body?.metadata, { material_refs: [{ material_id: "mat_kb_1", title: "用户论文一" }] });
       assert.equal(body?.title, "固态电解质界面稳定性目前的共识与分歧是什么？");
       return ok({ document_id: "doc_real_1", current_version_id: "" }, 201);
     }
-    if (method === "POST" && path === "/api/v2/writing/documents/doc_real_1/contracts") {
+    if (method === "POST" && path === "/api/v2/documents/doc_real_1/contracts") {
       capture.draftContract = body?.contract as Record<string, unknown>;
       return ok({ document_id: "doc_real_1", contract: { contract_id: "ctr_server_1", version: 1, contract_hash: SERVER_CONTRACT_HASH, status: "draft" } }, 201);
     }
-    if (method === "POST" && /^\/api\/v2\/writing\/contracts\/ctr_server_1\/confirm$/.test(path)) {
+    if (method === "POST" && /^\/api\/v2\/contracts\/ctr_server_1\/confirm$/.test(path)) {
       assert.equal(body?.previous_version, 1);
       capture.confirmedContract = body?.contract as Record<string, unknown>;
       return ok({ document_id: "doc_real_1", contract: { contract_id: "ctr_server_1", version: 2, contract_hash: SERVER_CONTRACT_HASH, status: "confirmed" } });
     }
-    if (method === "POST" && path === "/api/v2/writing/documents/doc_real_1/plans") {
+    if (method === "POST" && path === "/api/v2/documents/doc_real_1/plans") {
       return ok({
         plan: {
           schema_version: "lcp/1.0",
@@ -142,11 +142,11 @@ function installHappyChain(options: { runStatus: "planned" | "awaiting_approval"
         base_version_id: "",
       });
     }
-    if (method === "POST" && path === "/api/v2/writing/runs") {
+    if (method === "POST" && path === "/api/v2/runs") {
       capture.runBody = body;
       return ok({ run_id: "run_real_1", document_id: "doc_real_1", status: options.runStatus }, 201);
     }
-    if (method === "POST" && path === "/api/v2/writing/runs/run_real_1/approve") {
+    if (method === "POST" && path === "/api/v2/runs/run_real_1/approve") {
       return ok({ run_id: "run_real_1", document_id: "doc_real_1", status: "running" });
     }
     return undefined;
@@ -173,16 +173,16 @@ test("research launch drives document → contract → confirm → plan → run 
 
   // 请求顺序（无 approve：planned 状态直接返回）
   assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
-    "POST /api/v2/writing/documents",
-    "POST /api/v2/writing/documents/doc_real_1/contracts",
-    "POST /api/v2/writing/contracts/ctr_server_1/confirm",
-    "POST /api/v2/writing/documents/doc_real_1/plans",
-    "POST /api/v2/writing/runs",
+    "POST /api/v2/documents",
+    "POST /api/v2/documents/doc_real_1/contracts",
+    "POST /api/v2/contracts/ctr_server_1/confirm",
+    "POST /api/v2/documents/doc_real_1/plans",
+    "POST /api/v2/runs",
   ]);
   // Idempotency-Key 惯例：documents/runs（及 approve）必须带 UUID；
   // contract/confirm/plans 端点不读取该 header（与后端 handler 一致）。
   for (const call of calls) {
-    if (call.path.endsWith("/writing/documents") || call.path === "/api/v2/writing/runs" || call.path.endsWith("/approve")) {
+    if (call.path.endsWith("/writing/documents") || call.path === "/api/v2/runs" || call.path.endsWith("/approve")) {
       assert.match(call.idempotencyKey ?? "", UUID_PATTERN, `missing UUID Idempotency-Key on ${call.path}`);
     }
   }
@@ -230,12 +230,12 @@ test("awaiting_approval run triggers the plan approval step before hand-off", as
   const { run_id } = await startResearchRun(launchInput(fakeSpec()));
   assert.equal(run_id, "run_real_1");
   assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
-    "POST /api/v2/writing/documents",
-    "POST /api/v2/writing/documents/doc_real_1/contracts",
-    "POST /api/v2/writing/contracts/ctr_server_1/confirm",
-    "POST /api/v2/writing/documents/doc_real_1/plans",
-    "POST /api/v2/writing/runs",
-    "POST /api/v2/writing/runs/run_real_1/approve",
+    "POST /api/v2/documents",
+    "POST /api/v2/documents/doc_real_1/contracts",
+    "POST /api/v2/contracts/ctr_server_1/confirm",
+    "POST /api/v2/documents/doc_real_1/plans",
+    "POST /api/v2/runs",
+    "POST /api/v2/runs/run_real_1/approve",
   ]);
   const approve = calls.at(-1)!;
   assert.deepEqual(approve.body, {
@@ -276,7 +276,7 @@ test("the returned run id opens in the governed workbench (loadRun over /api/v2/
 
 test("503 RESEARCH_UNAVAILABLE from the writing API is surfaced with status and message", async () => {
   installFetch((path, method) => {
-    if (method === "POST" && path === "/api/v2/writing/documents") {
+    if (method === "POST" && path === "/api/v2/documents") {
       return fail(503, "RESEARCH_UNAVAILABLE", "writing api: research review is disabled by configuration");
     }
     return undefined;
@@ -294,10 +294,10 @@ test("503 RESEARCH_UNAVAILABLE from the writing API is surfaced with status and 
 
 test("400 INVALID_RESEARCH_SPEC names the offending contract field", async () => {
   installFetch((path, method) => {
-    if (method === "POST" && path === "/api/v2/writing/documents") {
+    if (method === "POST" && path === "/api/v2/documents") {
       return ok({ document_id: "doc_real_1", current_version_id: "" }, 201);
     }
-    if (method === "POST" && path === "/api/v2/writing/documents/doc_real_1/contracts") {
+    if (method === "POST" && path === "/api/v2/documents/doc_real_1/contracts") {
       return fail(400, "INVALID_RESEARCH_SPEC", "invalid research spec: research.max_papers must not exceed 20");
     }
     return undefined;
