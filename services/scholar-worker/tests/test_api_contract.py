@@ -51,7 +51,7 @@ def _offline_deps() -> WorkerDeps:
         return httpx.Response(503, text="offline fixture")
 
     factory = lambda: httpx.Client(  # noqa: E731
-        transport=httpx.MockTransport(handler), timeout=5.0
+        transport=httpx.MockTransport(handler), timeout=5.0, trust_env=False
     )
     return WorkerDeps(
         discover_client_factory=factory,

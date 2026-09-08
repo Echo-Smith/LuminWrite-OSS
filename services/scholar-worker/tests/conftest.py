@@ -111,5 +111,22 @@ def test_ip_policy() -> TestOnlyIpPolicy:
 
 @pytest.fixture()
 def download_client() -> httpx.Client:
-    """Downloader client for tests: manual redirects, loopback friendly."""
-    return httpx.Client(follow_redirects=False, timeout=5.0)
+    """Downloader client for tests: manual redirects, loopback friendly.
+
+    ``trust_env=False`` mirrors the production downloader contract —
+    :func:`lumin_scholar.downloader.constrained_download` rejects clients
+    that would read environment proxies. The client is explicitly closed
+    (keep-alive connections are never reused by the manual-redirect loop,
+    so leaving closure to GC leaks sockets into the next test's
+    ``-W error`` run).
+    """
+    client = httpx.Client(
+        follow_redirects=False,
+        timeout=5.0,
+        trust_env=False,
+        # No pooled keep-alive: every pinned request dials its own
+        # connection, which also keeps test socket accounting clean.
+        limits=httpx.Limits(max_keepalive_connections=0),
+    )
+    yield client
+    client.close()

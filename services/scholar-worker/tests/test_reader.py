@@ -113,7 +113,7 @@ def _run_read(content: str, blocks=None, *, deps=None) -> object:
     if deps is None:
         deps = WorkerDeps(
             discover_client_factory=lambda: httpx.Client(),
-            download_client_factory=lambda: httpx.Client(),
+            download_client_factory=lambda: httpx.Client(trust_env=False),
             llm_config_provider=lambda: CFG,
             llm_client_factory=lambda: _client(_ok_handler(content)),
         )
@@ -131,7 +131,7 @@ class TestFailClosed:
 
         deps = WorkerDeps(
             discover_client_factory=lambda: httpx.Client(),
-            download_client_factory=lambda: httpx.Client(),
+            download_client_factory=lambda: httpx.Client(trust_env=False),
             llm_config_provider=lambda: None,
         )
         with pytest.raises(OperationError) as excinfo:
@@ -262,7 +262,7 @@ def _deps_with_client(client):
 
     return WorkerDeps(
         discover_client_factory=lambda: httpx.Client(),
-        download_client_factory=lambda: httpx.Client(),
+        download_client_factory=lambda: httpx.Client(trust_env=False),
         llm_config_provider=lambda: CFG,
         llm_client_factory=lambda: client,
     )
@@ -288,7 +288,7 @@ class TestPayloadValidation:
 
         deps = WorkerDeps(
             discover_client_factory=lambda: httpx.Client(),
-            download_client_factory=lambda: httpx.Client(),
+            download_client_factory=lambda: httpx.Client(trust_env=False),
             llm_config_provider=lambda: CFG,
             llm_client_factory=lambda: _client(_ok_handler(_good_response())),
         )

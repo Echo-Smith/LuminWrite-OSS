@@ -11,10 +11,22 @@ Security model:
   against a blocklist: loopback, private (RFC1918/ULA), link-local, the
   cloud-metadata address 169.254.169.254 explicitly, unspecified (0.0.0.0,
   ::), multicast, reserved, and broadcast ranges. IP-literal hosts are
-  checked the same way *without* DNS.
+  checked the same way *without* DNS. Fail-closed: if ANY resolved address
+  is blocked, the whole hop is rejected (no "try the public ones first"
+  ordering — the attacker controls the DNS answer, so every record must be
+  clean).
+- Connection pinning (F3, review 2026-09-08): validation and connection use
+  the SAME resolution. Each hop resolves once, screens every address, and
+  then connects to one of the validated IPs directly — the URL's host is
+  replaced by the verified IP for the wire, while ``Host:`` keeps the
+  original hostname and HTTPS keeps the original hostname as TLS SNI
+  (``extensions={"sni_hostname": ...}``, httpcore ≥1.0) so certificate
+  verification still runs against the real hostname. The transport never
+  performs a second DNS lookup, so a DNS-rebinding flip between "resolve"
+  and "connect" cannot reroute the request.
 - The request loop never uses the HTTP library's automatic redirect
   following: redirects are followed manually, hop-by-hop, with full
-  re-validation per hop (max 5 hops).
+  re-validation and re-pinning per hop (max 5 hops).
 - Size is bounded twice: ``Content-Length`` pre-check plus a streamed byte
   counter with an abort at ``size_limit``.
 - ``Content-Type`` must be in the whitelist; ``application/octet-stream`` is
@@ -166,7 +178,13 @@ class _DefaultIpPolicy(IpPolicy):
 
 
 def resolve_host_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """Resolve all A/AAAA records for a hostname."""
+    """Resolve all A/AAAA records for a hostname.
+
+    This module-level function is the DNS seam: production code always calls
+    the real resolver; tests may monkeypatch it to simulate DNS answers (the
+    DNS-rebinding fixtures in tests/ do exactly that). It is NOT a policy
+    bypass — every answer it returns still goes through the IP policy.
+    """
     infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
     ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for info in infos:
@@ -175,8 +193,36 @@ def resolve_host_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IP
     return ips
 
 
-def _validate_url_target(url: str, ip_policy: IpPolicy) -> None:
-    """Full URL + DNS validation for one hop (also covers IP literals)."""
+@dataclass(frozen=True)
+class _PinnedRequest:
+    """One validated connection candidate for a single hop (F3).
+
+    ``url`` carries the validated IP as its host so the transport dials that
+    address directly (no second DNS lookup). ``headers``/``extensions``
+    restore what the transport would otherwise have derived from the URL:
+    the original hostname's ``Host`` header and, for HTTPS, the original
+    hostname as TLS SNI / certificate-verification name.
+    """
+
+    url: str
+    headers: dict[str, str]
+    extensions: dict[str, str]
+
+
+def _ip_url_token(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """Wire representation of an address in a URL/Host (brackets for IPv6)."""
+    return f"[{ip.compressed}]" if ip.version == 6 else str(ip)
+
+
+def _resolve_and_validate(
+    url: str, ip_policy: IpPolicy
+) -> tuple[urllib.parse.SplitResult, list[ipaddress.IPv4Address | ipaddress.IPv6Address]]:
+    """URL validation + DNS resolution + IP screening for one hop.
+
+    Fail-closed over ALL records: a single blocked address rejects the hop.
+    Returns the parsed URL and the validated, de-duplicated address list (in
+    resolver order); the caller must connect to one of these addresses.
+    """
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ("http", "https"):
         raise DownloadError(
@@ -192,11 +238,88 @@ def _validate_url_target(url: str, ip_policy: IpPolicy) -> None:
             ipaddress.ip_address(parsed.hostname)
         ]
     except ValueError:
-        ips = resolve_host_ips(parsed.hostname)
+        try:
+            ips = resolve_host_ips(parsed.hostname)
+        except OSError as exc:
+            # getaddrinfo failure (NXDOMAIN, no resolver, IDN without
+            # transcoding, ...). Previously this escaped as a raw gaierror;
+            # it is a normal, typed download failure.
+            raise DownloadError("unresolvable_host", f"cannot resolve {parsed.hostname!r}: {exc}") from exc
     if not ips:
         raise DownloadError("unresolvable_host", f"no addresses for host {parsed.hostname!r}")
+
+    # De-duplicate while preserving resolver order (getaddrinfo may repeat a
+    # record; the order is the OS's own preference order).
+    unique: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[str] = set()
     for ip in ips:
+        key = ip.compressed
+        if key not in seen:
+            seen.add(key)
+            unique.append(ip)
+
+    for ip in unique:
         ip_policy.check_ip(ip)
+    return parsed, unique
+
+
+def _pin_request_targets(url: str, ip_policy: IpPolicy) -> list[_PinnedRequest]:
+    """Resolve + validate ``url`` and build the pinned request candidates.
+
+    For hostname targets every validated address becomes one candidate; the
+    request URL is rewritten to the address while the original hostname is
+    kept in the ``Host`` header and (HTTPS) as TLS SNI/certificate name. For
+    IP-literal targets the stock httpx behaviour is already correct (Host and
+    TLS server_hostname derive from the URL), so the URL is kept as-is — but
+    the address still goes through the IP policy.
+    """
+    parsed, ips = _resolve_and_validate(url, ip_policy)
+    scheme = parsed.scheme
+    hostname = parsed.hostname
+    port = parsed.port
+    path = parsed.path or "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    host_suffix = f":{port}" if port is not None else ""
+
+    try:
+        ipaddress.ip_address(hostname)
+        literal = True
+    except ValueError:
+        literal = False
+
+    if literal:
+        # Single candidate; keep the URL untouched (already carries the
+        # validated IP as its host).
+        return [_PinnedRequest(url=url, headers={}, extensions={})]
+
+    targets: list[_PinnedRequest] = []
+    for ip in ips:
+        pinned_url = f"{scheme}://{_ip_url_token(ip)}{host_suffix}{path}{query}"
+        targets.append(
+            _PinnedRequest(
+                url=pinned_url,
+                # What httpx would have sent for the original URL.
+                headers={"Host": f"{hostname}{host_suffix}"},
+                # httpcore uses this for the TLS handshake: SNI value AND the
+                # name certificates are verified against (verified against a
+                # local TLS fixture in tests/test_downloader_pinning.py).
+                extensions={"sni_hostname": hostname} if scheme == "https" else {},
+            )
+        )
+    return targets
+
+
+def _assert_download_client(client: httpx.Client) -> None:
+    """Reject clients that would bypass the pinning constraints."""
+    if client.follow_redirects:  # pragma: no cover - defensive; factory pins it
+        raise RuntimeError("download client must have follow_redirects=False")
+    if getattr(client, "_trust_env", False):
+        raise RuntimeError(
+            "download client must set trust_env=False: environment proxies "
+            "(HTTP_PROXY/HTTPS_PROXY/...) would relay the connection through "
+            "an uncontrolled hop that re-resolves DNS outside the "
+            "validated-IP pinning"
+        )
 
 
 def sniff_media_type(
@@ -271,98 +394,130 @@ def constrained_download(
     _hop: int = 0,
 ) -> DownloadResult:
     """Download ``url`` under the full constraint set, following redirects
-    manually with per-hop re-validation.
+    manually with per-hop re-validation and connection-layer IP pinning.
 
-    Every hop: validate scheme/credentials, resolve DNS, screen every IP, then
-    open a streaming response. Redirects close the stream and recurse (bounded
-    by MAX_REDIRECT_HOPS); a final response streams through the byte cap with
-    SHA-256 computed on the fly, so an oversized body is aborted mid-stream
-    instead of being swallowed whole.
+    Every hop: validate scheme/credentials, resolve DNS once, screen every
+    resolved IP, then connect to one of the validated addresses directly (the
+    URL's host is replaced by the verified IP; ``Host`` header and TLS SNI
+    keep the original hostname). Redirects close the stream and recurse
+    (bounded by MAX_REDIRECT_HOPS); a final response streams through the byte
+    cap with SHA-256 computed on the fly, so an oversized body is aborted
+    mid-stream instead of being swallowed whole.
 
-    ``client`` must have ``follow_redirects=False`` (enforced).
+    ``client`` must have ``follow_redirects=False`` and ``trust_env=False``
+    (enforced).
     """
     policy = ip_policy if ip_policy is not None else build_default_ip_policy()
-    if client._transport is not None and client.follow_redirects:  # pragma: no cover
-        raise RuntimeError("download client must have follow_redirects=False")
+    _assert_download_client(client)
     if _hop > MAX_REDIRECT_HOPS:
         raise DownloadError(
             "too_many_redirects", f"exceeded {MAX_REDIRECT_HOPS} redirect hops"
         )
 
-    _validate_url_target(url, policy)
+    targets = _pin_request_targets(url, policy)
 
     timeout = httpx.Timeout(connect_timeout_s, read=read_timeout_s, write=read_timeout_s)
+    connect_failure: Exception | None = None
     try:
-        with client.stream("GET", url, timeout=timeout) as response:
-            if response.is_redirect:
-                location = response.headers.get("location")
-                if not location:
-                    raise DownloadError(
-                        "redirect_without_location", f"{url}: redirect lacks Location"
+        for target in targets:
+            # Cookies must not ride the pinned URL: the jar would otherwise
+            # key on the validated IP and leak hop state across hostnames
+            # that share it. The downloader never needs cookies.
+            client.cookies.clear()
+            try:
+                with client.stream(
+                    "GET",
+                    target.url,
+                    headers=target.headers,
+                    extensions=target.extensions,
+                    timeout=timeout,
+                ) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise DownloadError(
+                                "redirect_without_location", f"{url}: redirect lacks Location"
+                            )
+                        next_url = urllib.parse.urljoin(url, location)
+                        # The stream closes here (context manager) before the
+                        # next hop; the next hop re-resolves and re-pins.
+                        return constrained_download(
+                            client,
+                            next_url,
+                            size_limit=size_limit,
+                            ip_policy=policy,
+                            connect_timeout_s=connect_timeout_s,
+                            read_timeout_s=read_timeout_s,
+                            _hop=_hop + 1,
+                        )
+                    if response.status_code >= 400:
+                        raise DownloadError(
+                            "download_http_error", f"{url}: HTTP {response.status_code}"
+                        )
+
+                    content_length = response.headers.get("Content-Length")
+                    if content_length is not None and content_length.isdigit():
+                        if int(content_length) > size_limit:
+                            raise DownloadError(
+                                "content_too_large",
+                                f"Content-Length {content_length} exceeds limit {size_limit}",
+                            )
+
+                    # Media sniffing needs the first bytes; read them through the same
+                    # stream so nothing beyond the cap is ever pulled.
+                    head = bytearray()
+                    chunks: list[bytes] = []
+                    hasher = hashlib.sha256()
+                    total = 0
+                    for chunk in response.iter_bytes(chunk_size=CHUNK_SIZE):
+                        total += len(chunk)
+                        if len(head) < 4096:
+                            head.extend(chunk[: 4096 - len(head)])
+                        if total > size_limit:
+                            raise DownloadError(
+                                "content_too_large",
+                                f"streamed body exceeded limit {size_limit}; "
+                                f"aborted after {total} bytes",
+                            )
+                        hasher.update(chunk)
+                        chunks.append(chunk)
+                    content = b"".join(chunks)
+
+                    media_type = sniff_media_type(response.headers.get("Content-Type"), bytes(head))
+                    if media_type is None:
+                        raise DownloadError(
+                            "content_type_rejected",
+                            f"Content-Type {response.headers.get('Content-Type')!r} is not allowed",
+                        )
+
+                    looks_pdf, likely_scanned = probe_pdf(content)
+                    # final_url reports the caller-facing URL of this hop —
+                    # the hostname form, never the internal pinned-IP URL.
+                    return DownloadResult(
+                        content=content,
+                        content_hash="sha256:" + hasher.hexdigest(),
+                        size_bytes=len(content),
+                        media_type=media_type,
+                        content_type_reported=response.headers.get("Content-Type") or "",
+                        final_url=url,
+                        redirect_hops=_hop,
+                        looks_like_pdf=looks_pdf,
+                        likely_scanned=likely_scanned,
                     )
-                next_url = urllib.parse.urljoin(url, location)
-                # The stream closes here (context manager) before the next hop.
-                return constrained_download(
-                    client,
-                    next_url,
-                    size_limit=size_limit,
-                    ip_policy=policy,
-                    connect_timeout_s=connect_timeout_s,
-                    read_timeout_s=read_timeout_s,
-                    _hop=_hop + 1,
-                )
-            if response.status_code >= 400:
-                raise DownloadError(
-                    "download_http_error", f"{url}: HTTP {response.status_code}"
-                )
-
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None and content_length.isdigit():
-                if int(content_length) > size_limit:
-                    raise DownloadError(
-                        "content_too_large",
-                        f"Content-Length {content_length} exceeds limit {size_limit}",
-                    )
-
-            # Media sniffing needs the first bytes; read them through the same
-            # stream so nothing beyond the cap is ever pulled.
-            head = bytearray()
-            chunks: list[bytes] = []
-            hasher = hashlib.sha256()
-            total = 0
-            for chunk in response.iter_bytes(chunk_size=CHUNK_SIZE):
-                total += len(chunk)
-                if len(head) < 4096:
-                    head.extend(chunk[: 4096 - len(head)])
-                if total > size_limit:
-                    raise DownloadError(
-                        "content_too_large",
-                        f"streamed body exceeded limit {size_limit}; "
-                        f"aborted after {total} bytes",
-                    )
-                hasher.update(chunk)
-                chunks.append(chunk)
-            content = b"".join(chunks)
-
-            media_type = sniff_media_type(response.headers.get("Content-Type"), bytes(head))
-            if media_type is None:
-                raise DownloadError(
-                    "content_type_rejected",
-                    f"Content-Type {response.headers.get('Content-Type')!r} is not allowed",
-                )
-
-            looks_pdf, likely_scanned = probe_pdf(content)
-            return DownloadResult(
-                content=content,
-                content_hash="sha256:" + hasher.hexdigest(),
-                size_bytes=len(content),
-                media_type=media_type,
-                content_type_reported=response.headers.get("Content-Type") or "",
-                final_url=str(response.url),
-                redirect_hops=_hop,
-                looks_like_pdf=looks_pdf,
-                likely_scanned=likely_scanned,
-            )
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                # Connection-phase failure (no request bytes were sent):
+                # fall through to the next validated address, mirroring
+                # socket.create_connection's multi-record fallback.
+                connect_failure = exc
+                continue
+        # Every validated address failed at the connect phase.
+        if isinstance(connect_failure, httpx.ConnectTimeout):
+            raise DownloadError(
+                "download_timeout", f"{url}: connect timed out: {connect_failure}"
+            ) from connect_failure
+        raise DownloadError(
+            "download_unreachable", f"{url}: {connect_failure}"
+        ) from connect_failure
     except httpx.TimeoutException as exc:
         raise DownloadError("download_timeout", f"{url}: timed out: {exc}") from exc
     except httpx.TransportError as exc:
@@ -370,10 +525,25 @@ def constrained_download(
 
 
 def make_download_client() -> httpx.Client:
-    """Production downloader client: redirects NEVER followed automatically —
-    the manual loop in :func:`constrained_download` re-validates every hop."""
+    """Production downloader client (F3 hardening).
+
+    - ``follow_redirects=False``: redirects are NEVER followed automatically —
+      the manual loop in :func:`constrained_download` re-validates and
+      re-pins every hop.
+    - ``trust_env=False``: environment proxies (HTTP_PROXY/HTTPS_PROXY/...)
+      must never route egress through an uncontrolled relay that re-resolves
+      DNS outside the validated-IP pinning. Also enforced at request time by
+      :func:`constrained_download` (RuntimeError on violation).
+    - keep-alive disabled: pinned request URLs are keyed by the validated IP,
+      so a pooled connection opened for hostname A could otherwise be reused
+      for hostname B sharing that IP — silently skipping B's TLS
+      SNI/certificate verification. A fresh connection per request keeps each
+      hop's TLS check bound to the original hostname.
+    """
     return httpx.Client(
         follow_redirects=False,
         headers={"User-Agent": USER_AGENT},
         timeout=httpx.Timeout(DEFAULT_CONNECT_TIMEOUT_S, read=DEFAULT_READ_TIMEOUT_S),
+        trust_env=False,
+        limits=httpx.Limits(max_keepalive_connections=0),
     )

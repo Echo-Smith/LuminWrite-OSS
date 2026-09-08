@@ -43,7 +43,7 @@ def _mock_deps(handler) -> WorkerDeps:
     """Deps whose discovery/fetch clients use the given MockTransport handler;
     rank is fail-closed (no LLM configured)."""
     factory = lambda: httpx.Client(  # noqa: E731
-        transport=httpx.MockTransport(handler), timeout=5.0
+        transport=httpx.MockTransport(handler), timeout=5.0, trust_env=False
     )
     return WorkerDeps(
         discover_client_factory=factory,
@@ -201,7 +201,7 @@ class TestFetchFullText:
                 handlers=build_handlers(
                     WorkerDeps(
                         discover_client_factory=lambda: httpx.Client(),
-                        download_client_factory=lambda: httpx.Client(follow_redirects=False),
+                        download_client_factory=lambda: httpx.Client(follow_redirects=False, trust_env=False),
                         llm_config_provider=lambda: None,
                     )
                 ),
@@ -270,7 +270,7 @@ class TestParse:
 def _read_deps(llm_config) -> WorkerDeps:
     return WorkerDeps(
         discover_client_factory=lambda: httpx.Client(),
-        download_client_factory=lambda: httpx.Client(),
+        download_client_factory=lambda: httpx.Client(trust_env=False),
         llm_config_provider=lambda: llm_config,
     )
 
