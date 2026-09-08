@@ -1,8 +1,8 @@
 /**
  * 研究综述（research_review）API 层 — mock 开关集中在本模块。
  *
- * 联调切换：调用 setResearchMockEnabled(false)（或设置 VITE_RESEARCH_MOCK=off）
- * 即走真实后端 /api/v2/writing 前缀，组件代码零改动。
+ * 默认关闭功能与 mock。演示必须显式设置 VITE_RESEARCH_MOCK=on；
+ * 真实读取/确认使用 /api/v2/writing，真实运行创建仍待接线。
  * 类型与 specs/research-review/contracts.md §2/§3、
  * backend/internal/server/writing_research_api.go 的视图一一对应。
  */
@@ -301,8 +301,8 @@ const envFlag = (name: string): string | undefined => {
   }
 };
 
-let researchMockEnabled = envFlag("VITE_RESEARCH_MOCK") !== "off";
-let researchReviewEnabled = envFlag("VITE_RESEARCH_REVIEW_ENABLED") !== "false";
+let researchMockEnabled = envFlag("VITE_RESEARCH_MOCK") === "on";
+let researchReviewEnabled = envFlag("VITE_RESEARCH_REVIEW_ENABLED") === "true";
 
 /** mock 开关：联调时切 false，组件零改动。 */
 export function setResearchMockEnabled(enabled: boolean): void {
