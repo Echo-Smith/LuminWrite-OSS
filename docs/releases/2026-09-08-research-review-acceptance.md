@@ -9,10 +9,10 @@
 | 用例 | 场景 | 覆盖测试 | commit | 结果 |
 |---|---|---|---|---|
 | A01 | 原 fast/sourced/strict 合同：hash/模板不变、正常执行 | `TestContractFixtureRoundTrip` + `TestContractGoldenv1Hashes`（kernel golden）；`TestGovernedP0HTTPTemplates`；`TestLegacyTemplatesUnaffectedByResearchCatalog`；`TestT09LegacyRunResearchViewKeepsShape`（flag 关闭下 legacy run 正常完成） | 1fe514d / 24d5a7b / 9a4aaa8 / da544cd | PASS |
-| A02 | 禁外部研究 + 用户文件：只读授权素材，外部调用 0 | `TestResearchReviewCompileRejectsContractForbiddingExternalResearch`（compile 拒绝）；`TestResearchExecutorsNeverCallWorkerWhenExternalResearchForbidden`（executor 计数断言：discover/rank/fetch/parse/read 全 0） | b38be0a | PASS |
+| A02 | 禁外部研究 + 用户文件：只读授权素材，外部调用 0 | **F5 后语义**：`TestF5UserMaterialOnlyResearchChainWithoutExternalResearch`（禁联网+用户材料走完两 gate 与写作，discover/rank/fetch_full_text 计数为 0、parse/read 允许）；「禁联网且无材料 → `RESEARCH_MATERIALS_REQUIRED`」（writingplan 拒绝测试）；联网路径用户材料合并零 fetch（`research_read_test.go` 材料用例）。原 compile-rejection 测试已按新语义重写（d973c94） | b38be0a / d973c94 | PASS |
 | A03 | 同 DOI 多写法/同标题不同 DOI：确定合并、歧义保留 | `TestMergePapers`（R03 规则：DOI 相等合并；conflicting-DOI same-title 保留 + possible_duplicate）及 discovery 包测试 | 43e9972 | PASS |
 | A04 | 一源失败/全源失败/真无结果：三态可解释 | `TestResearchDiscoverFailsClosedWhenAllQueriesFail`（全源失败=RESEARCH_UNAVAILABLE）；provider 隔离测试（单源失败不吞没）；空结果与 failed 状态区分 | 43e9972 / 66ef42c | PASS |
-| A05 | HTML 重定向/内网 IP/超大 PDF：下载失败且未读入内网内容 | downloader SSRF 负例（per-hop DNS/IP screening、重定向环、size cap、内网目标拒绝） | 43e9972 | PASS |
+| A05 | HTML 重定向/内网 IP/超大 PDF：下载失败且未读入内网内容 | downloader SSRF 负例（per-hop DNS/IP screening、重定向环、size cap、内网目标拒绝）+ **F3 连接层 IP 钉死**（rebinding 模拟：解析先公网后私网时实际连接不落私网、SNI/Host/证书校验保留原 hostname、环境代理禁用；`test_downloader_pinning.py` 13 用例） | 43e9972 / a602050 | PASS |
 | A06 | 摘要/扫描件/部分块全文：scope 正确，无伪造页码/覆盖 | `TestResearchReadAbstractDegradation`（likely-scanned → abstract scope、独立 content hash、PDF hash 不入证据）；`TestT07ScopeOverclaimNeedsReviewButFinalizes`；worker parser CJK/页码测试 | 66ef42c / 24d5a7b | PASS |
 | A07 | quote/offset/hash 被改：拒绝证据入包 | `TestBuildEvidencePackNegatives`（tampered offsets/wrong block hash/ghost block/unread-paper 均拒 EVIDENCE_INVALID）；`TestT07ClassC_BlockHashTamper`、`TestT07ClassC_QuoteTamper` | 66ef42c / 24d5a7b | PASS |
 | A08 | reader 中途重启/旧 worker 晚到：缓存安全复用，晚到不覆盖 | `TestResearchReadSubTaskCacheReuse`（新 executor 零 worker 调用、pack 字节相同）；`TestResearchReadFencingNegative`（过期租约回收后晚到完成被 fence） | 66ef42c | PASS |
@@ -40,13 +40,14 @@
 
 材料科学 / 计算机科学 / 社会科学各两次真实运行、覆盖一个仅摘要场景与一个混合用户材料场景、人工核对关键主张与原文 —— **待人工**（T09 计划 §T09 明确为人工检查；本任务只交付自动化部分与可自动化回环）。
 
-## 4. 预算守卫（T06 遗留 #2）实现说明
+## 4. 预算守卫实现说明（**F2 重写后语义**，f3e88a5；下文替换 2026-09-08 首版的 fire-once 描述）
 
-- 位置：`backend/internal/server/research_budget.go`（WallClockResearchBudgetBoundary），接入点 `governed_runners.go governedResearchSpecs`（生产组合注入 research read executor）。
-- **时长来源的选择**：主动执行时长 = 该 run 各节点 attempt 的 `actual_duration_ms` 之和（`writing_node_attempts` 终态行），每次 paper 间检查实时读账。人工 gate 等待不记 attempt 时长，天然免费。这一来源是持久的：跨进程重启后 resume 天然计入已花时间。
-- **上限的选择**：run 的持久化 plan budget `MaxDurationMS`（CreateRun 时校验入库；上调预算 = 新合同版本 + 新运行，不做运行中改预算）。计划合同无显式预算时默认 30 分钟（`ResearchBudgetDefaultMS = 30*60*1000`，design.md §7 “整个主动执行预算 30 分钟”）。这与 T06 E2E harness 的 `researchRunBudget()`（2 小时）一致：模板节点上限总和已超 50 分钟默认天花板，plan budget 是实际生效的墙钟上限。
-- 语义：触界 → `RESEARCH_BUDGET_BOUNDARY` 干净暂停（checkpoint 无 UnsafeInFlight、可 resume/decide/cancel）；fire-once 持久化 —— 暂停本身落 `node.paused(RESEARCH_BUDGET_BOUNDARY)` 事件作为标记，owner 的 resume 即“继续剩余篇”的决定，不会中途重新施加同一上限。账读取失败 fail-open（不因账错误失败节点）。
-- 测试：触界暂停→恢复续跑不重读（E2E，注入强制时长）；预算内不误触发；Σ actual_duration_ms 口径 + 人工 gate 免费属性 + 新进程凭持久标记不重触发（`TestT09WallClockBudgetBoundaryRespectsHumanGateWaits`）。
+- 位置：`backend/internal/server/research_budget.go`（WallClockResearchBudgetBoundary），生产组合注入 research read executor；orchestrator 级 `RESEARCH_BUDGET_BOUNDARY` 干净暂停分支保留。
+- **时长口径**：spend = max(attempt 账， 子任务账) —— attempt 账 = Σ 各节点 attempt `actual_duration_ms` + **在途 attempt 活跃时间**（`writing_node_attempts.started_at`→now，仅 running 行计入）；子任务账 = `writing_research_tasks.usage_json.duration_ms` 累计（attempt 行丢失时保持诚实）。两账取 max 避免重叠部分双重计数。人工 gate 等待不记 attempt 时长，天然免费（design.md §7）。
+- **上限**：run 持久化 plan budget `MaxDurationMS`；无显式预算默认 30 分钟（`ResearchBudgetDefaultMS`）。上调预算 = 新合同版本 + 新运行。
+- **纯函数语义（F2 修正）**：守卫每次检查从账本重算 verdict，无 fire-once/缓存——resume 后预算未变即再次触界，不得继续阅读；账读取失败 **fail-closed**（按触界处理，只能"停"不能"放行"）。
+- **触界行为（F2 修正，对齐 design.md §3）**：停止调度新子任务后——可用可引用来源 ≥ min_citable_sources → 冻结**部分包**（未完成篇 unread 入包、coverage.gaps 标注预算截断、provenance 记 `budget_boundary:partial_pack:k/n`）→ 正常进入 evidence gate；不足 → INSUFFICIENT_EVIDENCE 干净暂停。
+- 测试：真实账本行驱动（非仅 SetForcedSpentMS，该 API 已删除）——超限后 worker 调用计数不再增长；触界+达标 → 部分包直达 evidence gate 且链条 completed；触界+不足 → INSUFFICIENT_EVIDENCE；恢复后 0 次新调用仍暂停；in-flight 计时、子任务 usage 计时、fail-closed 单测（`research_t09_test.go`、`research_read_test.go`）。
 
 ## 5. Feature flag 与 compose 变更说明
 
@@ -54,14 +55,21 @@
 - **错误码选择说明**：选 503 RESEARCH_UNAVAILABLE 而非 400 INVALID_RESEARCH_SPEC——合同/spec 本身有效，拒绝原因是“功能未启用”，属服务可用性语义；且与 worker 离线共用同一错误码，前端“研究不可用”状态一次覆盖两种部署形态。
 - compose：`docker-compose.yml` 新增 `scholar-worker` 服务（profile "research"，默认 `up` 不启动；非 root（Dockerfile USER scholar）、仅 internal 网络、无宿主端口、SCHOLAR_WORKER_TOKEN 必填（缺失即拒绝启动，fail-closed）、SCHOLAR_LLM_* 注释留空不写值、healthz 探针不触网）。backend 服务增加 RESEARCH_REVIEW_ENABLED / SCHOLAR_WORKER_URL / SCHOLAR_WORKER_TOKEN 注释示例。两份 compose 文件均通过 YAML 解析校验。
 
-## 6. 验证记录（2026-09-08）
+## 6. 验证记录
 
-- `go build ./...` 退出 0。
-- `TEST_DATABASE_URL go test ./internal/... -count=1`：22 个包全部 ok（含 server 36.7s、writingruntime 18.8s、scholar 7.3s），0 FAIL。
-- `-race` 关键包：writingruntime / writingstore / scholar / writingplan 全 ok；server 包 -race 定向 T06/T07/T09 全 ok。
-- 改动文件 gofmt 干净（server 包内既有的 import 排序问题为基线遗留，git stash 验证，非本任务引入）；`go vet` 对改动包无告警（仓库既有 capability.go tag 告警为基线遗留）。
-- worker：`pytest -W error -q` 163 passed / 2 skipped；live smoke 2 passed（真实网络）。
-- 提交列表（本任务）：b38be0a（A02 缺口）、c380225（预算守卫）、da544cd（T09 场景 + flag）、c9c909e（视图增强）。前端 T09b 提交 946acb6 属并行任务，未在本任务内改动。
+### 首版（2026-09-08，实现任务 T09a）
+
+- `go build ./...` 退出 0；`TEST_DATABASE_URL go test ./internal/... -count=1`：22 个包全部 ok；`-race` writingruntime/writingstore/scholar/writingplan 全 ok。
+- worker pytest 163 passed / 2 skipped；live smoke 2 passed（真实网络）。
+- 提交：b38be0a、c380225、da544cd、c9c909e、7b6d841；前端 T09b 946acb6。
+
+### 审查修复后复验（2026-09-08，F1–F5 落地后）
+
+- 审查记录见 docs/reviews/2026-09-08-research-review.md；修复提交：683acdc（F1）、d69b210（前缀分叉，F1 连带发现）、a602050（F3）、2558285（F4）、f3e88a5（F2）、d973c94（F5）。
+- `go build ./...` 退出 0；`TEST_DATABASE_URL go test ./internal/... -count=1`：22 个包全部 ok，0 FAIL（含 T02/T06/T07/T09 既有 E2E 回归、F5 用户材料全链 E2E、F2 真实账本预算测试）。
+- 前端 `npm test` 83 passed / 0 fail（含 F1 launch 链路与 `/api/v2` 前缀断言）；`tsc -b` 通过。
+- worker `pytest -W error -q` 177 passed / 2 skipped（新增 F3 pinning 13 用例、F4 payload ceiling e2e）。
+- API 前缀对齐说明：writing 路由生产挂载于 `/api/v2`（server.go），E2E harness 与前端此前自挂 `/api/v2/writing` 属分叉，d69b210 统一为生产前缀；contracts.md §3 已注明。
 
 ## 7. 与完成定义（requirements.md §5）的差距清单
 
@@ -73,5 +81,6 @@
 | 真实模型全流程（A17 live） | SKIPPED | 本环境无凭据且禁止注入 key；未执行不计通过 |
 | 商业版同步与回归 | 未开始 | 任务范围限定 OSS 仓库；迁移编号核对（107/108）、flag 语义、测试需在商业版独立执行 |
 | docker build 实测 | 未执行 | compose 配置已加并做 YAML 校验，但本环境未跑 `docker compose build`（scholar-worker 镜像未实测构建） |
-| 真实 HTTP 全流程的“真实”语义 | 部分满足 | offline 全链（fake worker + 确定性 generator）已 PASS；真实模型 + 真实 worker 的端到端待上两项补齐 |
+| 真实 HTTP 全流程的“真实”语义 | 部分满足 | offline 全链（fake worker + 确定性 generator）已 PASS；真实模型 + 真实 worker 的端到端待上两项补齐。F1 后前端可创建真实运行；d69b210 修正前缀分叉后浏览器链路不再 404 |
+| 材料分支媒体类型 | 已知限制 | F5 用户材料当前按 text/plain 处理（kb 文本）；材料 PDF/扫描件探测（R05）待真实语料校准 |
 | 测试账号 allowlist 灰度演练 / 回滚演练 | 待人工 | flag 关闭入口与暂停在途任务的演练机制已就位（flag 只挡新入口，不关只读端点），演练本身待人工执行 |
