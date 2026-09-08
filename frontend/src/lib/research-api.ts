@@ -961,6 +961,11 @@ async function buildResearchIntentPlan(contractRef: { id: string; version: numbe
   const base = {
     intent_plan_id: `iplan_${uuidV4()}`,
     contract_ref: contractRef,
+    // Go IntentPlan.ComputeHash marshals the struct in field order with no
+    // omitempty — the empty intent_plan_hash occupies its declared position
+    // (ir.go: IntentPlanID, ContractRef, IntentPlanHash, Summary, …) and MUST
+    // be present in the hashed base or the server-side recompute mismatches.
+    intent_plan_hash: "",
     summary: `研究综述：${question.slice(0, 80)}`,
     created_by: "user",
     created_at: rfc3339Seconds(new Date()),
@@ -971,6 +976,8 @@ async function buildResearchIntentPlan(contractRef: { id: string; version: numbe
   const hash = await goContentHash(canonicalGoJSON(base));
   return { ...base, intent_plan_hash: hash };
 }
+
+export { buildResearchIntentPlan };
 
 /**
  * 真实创建链路（与后端 research_e2e_test.go 驱动的请求序列逐一对齐）：

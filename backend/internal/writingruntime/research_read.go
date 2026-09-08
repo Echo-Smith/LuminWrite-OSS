@@ -25,6 +25,10 @@ const (
 	// ResearchReadParserVersion / ResearchReadPromptVersion pin the versions
 	// the sub-task input_hash covers (design.md §6).
 	ResearchReadParserVersion = "parser/1"
+	// ResearchReaderPolicyVersion matches the contract's reader_policy_version
+	// the read executor pins into sub-task input hashes (T05); the real
+	// worker rejects an empty version.
+	ResearchReaderPolicyVersion = "reader/1"
 	ResearchReadPromptVersion = "reader-prompt/1"
 	// ResearchReadBlockSelection is the v1 block-selection policy: the first
 	// N blocks in parse order (N ≤ 24, contracts.md §4).
@@ -749,7 +753,10 @@ func (executor *ResearchReadExecutor) parseDocument(ctx context.Context, request
 
 func (executor *ResearchReadExecutor) readBlocks(ctx context.Context, request ExecutionRequest, paperID string, blocks []ReaderBlock) (subTaskOutput, error) {
 	callCtx, cancel := context.WithTimeout(ctx, researchCallTimeout)
-	outputs, response, err := executor.client.ReadPaper(callCtx, executor.question, paperID, blocks, ReaderPolicy{ReaderPolicyVersion: ""})
+	// The worker enforces a non-empty reader_policy_version (operations.py
+	// _require_str); an empty value fails the real worker even though fake
+	// test doubles accept it.
+	outputs, response, err := executor.client.ReadPaper(callCtx, executor.question, paperID, blocks, ReaderPolicy{ReaderPolicyVersion: ResearchReaderPolicyVersion})
 	cancel()
 	if err != nil {
 		return subTaskOutput{}, err

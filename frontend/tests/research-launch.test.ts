@@ -110,6 +110,7 @@ interface ChainCapture {
   draftContract: Record<string, unknown>;
   confirmedContract: Record<string, unknown>;
   runBody: Record<string, unknown> | null;
+  intentPlanBaseKeys: string[] | null;
 }
 
 /** 驱动标准五步链路的 fetch mock；返回各步捕获的请求体。 */
@@ -130,6 +131,12 @@ function installHappyChain(options: { runStatus: "planned" | "awaiting_approval"
       return ok({ document_id: "doc_real_1", contract: { contract_id: "ctr_server_1", version: 2, contract_hash: SERVER_CONTRACT_HASH, status: "confirmed" } });
     }
     if (method === "POST" && path === "/api/v2/documents/doc_real_1/plans") {
+      // Go IntentPlan.ComputeHash marshals the struct in field order with no
+      // omitempty: the empty intent_plan_hash must occupy its declared slot
+      // (after contract_ref) in the hashed base, or the server-side recompute
+      // mismatches (found in real FE↔BE integration, 2026-09-08). The body
+      // sent over the wire carries the sealed non-empty hash at that slot.
+      capture.intentPlanBaseKeys = Object.keys(body?.intent_plan as Record<string, unknown>);
       return ok({
         plan: {
           schema_version: "lcp/1.0",
@@ -165,7 +172,7 @@ test("client-side canonical sealing reproduces the Go-pinned v1.1 contract hash"
 // ─── 真实链路：请求顺序与请求体 ───────────────────────────────────────────────
 
 test("research launch drives document → contract → confirm → plan → run with server-returned refs", async () => {
-  const capture: ChainCapture = { draftContract: {}, confirmedContract: {}, runBody: null };
+  const capture: ChainCapture = { draftContract: {}, confirmedContract: {}, runBody: null, intentPlanBaseKeys: null };
   installHappyChain({ runStatus: "planned" }, capture);
 
   const { run_id } = await startResearchRun(launchInput(fakeSpec()));
@@ -221,10 +228,21 @@ test("research launch drives document → contract → confirm → plan → run 
   assert.equal(runBody.contract_version, 2);
   assert.equal(runBody.contract_hash, SERVER_CONTRACT_HASH);
   assert.deepEqual(runBody.permissions, SERVER_PERMISSIONS);
+  // intent plan 封存基必须复刻 Go IntentPlan 字段序（ir.go）：空 hash 占位在
+  // contract_ref 之后；这是真实 FE↔BE 联调发现的服务端重算不匹配缺陷的回归。
+  assert.deepEqual(capture.intentPlanBaseKeys, [
+    "intent_plan_id",
+    "contract_ref",
+    "intent_plan_hash",
+    "summary",
+    "created_by",
+    "created_at",
+    "proposed_steps",
+  ]);
 });
 
 test("awaiting_approval run triggers the plan approval step before hand-off", async () => {
-  const capture: ChainCapture = { draftContract: {}, confirmedContract: {}, runBody: null };
+  const capture: ChainCapture = { draftContract: {}, confirmedContract: {}, runBody: null, intentPlanBaseKeys: null };
   installHappyChain({ runStatus: "awaiting_approval" }, capture);
 
   const { run_id } = await startResearchRun(launchInput(fakeSpec()));
@@ -247,7 +265,7 @@ test("awaiting_approval run triggers the plan approval step before hand-off", as
 });
 
 test("the returned run id opens in the governed workbench (loadRun over /api/v2/runs)", async () => {
-  const capture: ChainCapture = { draftContract: {}, confirmedContract: {}, runBody: null };
+  const capture: ChainCapture = { draftContract: {}, confirmedContract: {}, runBody: null, intentPlanBaseKeys: null };
   installHappyChain({ runStatus: "planned" }, capture);
   useWritingRuntimeStore.getState().resetRuntime();
   const { run_id } = await startResearchRun(launchInput(fakeSpec()));
