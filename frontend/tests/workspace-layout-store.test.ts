@@ -23,12 +23,21 @@ const scope = (documentId: string): WorkspaceLayoutScope => ({
 test("layout preferences persist independently per document scope", () => {
   const storage = new MemoryStorage();
   saveLayoutPreference(storage, scope("doc-a"), { ...defaultWorkspaceLayout, composerWidth: "compact" });
-  saveLayoutPreference(storage, scope("doc-b"), { ...defaultWorkspaceLayout, detailTab: "quality", detailPanel: "drawer" });
+  saveLayoutPreference(storage, scope("doc-b"), { ...defaultWorkspaceLayout, detailTab: "run", detailPanel: "drawer" });
 
   assert.equal(loadLayoutPreference(storage, scope("doc-a")).detailTab, "outline");
   assert.equal(loadLayoutPreference(storage, scope("doc-a")).composerWidth, "compact");
-  assert.equal(loadLayoutPreference(storage, scope("doc-b")).detailTab, "quality");
+  assert.equal(loadLayoutPreference(storage, scope("doc-b")).detailTab, "run");
   assert.notEqual(layoutStorageKey(scope("doc-a")), layoutStorageKey(scope("doc-b")));
+});
+
+test("legacy quality/versions tab values migrate into the merged tabs", () => {
+  const storage = new MemoryStorage();
+  // v5 布局键里残留的旧五 tab 偏好：quality→run，versions→outline
+  storage.setItem(layoutStorageKey(scope("doc-a")), JSON.stringify({ detailTab: "quality", detailPanel: "expanded", composerWidth: "wide" }));
+  storage.setItem(layoutStorageKey(scope("doc-b")), JSON.stringify({ detailTab: "versions", detailPanel: "expanded", composerWidth: "wide" }));
+  assert.equal(loadLayoutPreference(storage, scope("doc-a")).detailTab, "run");
+  assert.equal(loadLayoutPreference(storage, scope("doc-b")).detailTab, "outline");
 });
 
 test("invalid or partial persisted data fails back to safe defaults", () => {

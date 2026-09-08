@@ -206,20 +206,26 @@ test("the desktop detail panel has a bounded keyboard-accessible resize handle",
   assert.match(styles, /cursor: col-resize/);
 });
 
-test("the detail surface exposes the five governed document tabs", () => {
+test("the detail surface merges into three tabs covering run+quality and outline+versions", () => {
   const detail = source("../src/components/runtime/run-detail-tabs.tsx");
-  for (const tab of ["outline", "materials", "run", "quality", "versions"]) {
+  for (const tab of ["outline", "materials", "run"]) {
     assert.match(detail, new RegExp(`value: "${tab}"`));
   }
+  // 合并语义：质量验收渲染在运行 tab 内，版本历史渲染在文档 tab 内
+  assert.match(detail, /activeTab === "run"[\s\S]*QualityStatus/);
+  assert.match(detail, /activeTab === "outline"[\s\S]*版本历史/);
+  assert.doesNotMatch(detail, /value: "quality"|value: "versions"/);
+  // WS 快写路径回退：governed 数据为空时用会话步骤/版本填充
+  assert.match(detail, /legacy\?\.traceId/);
+  assert.match(detail, /legacy\?\.steps\.length/);
 });
 
 test("detail chrome is compact, icon-only, and spaced", () => {
   const page = source("../src/pages/writing-workspace.tsx");
   const panel = source("../src/components/sidebar/detail-panel.tsx");
   const styles = source("../src/index.css");
-  const governedPanel = panel.slice(panel.indexOf("function GovernedDetailPanel"));
-  assert.doesNotMatch(governedPanel, /DOCUMENT DESK|>收起<|ChevronRight/);
-  assert.match(governedPanel, /PanelRightClose/);
+  assert.doesNotMatch(panel, /DOCUMENT DESK|>收起<|ChevronRight|LegacyDetailPanel/);
+  assert.match(panel, /PanelRightClose/);
   assert.match(page, /size="icon" aria-label="打开详情面板"/);
   assert.match(styles, /\.governed-detail-header \{[^}]*height: 52px/);
   assert.match(styles, /\.run-detail-tablist \{[^}]*gap: 4px/);
