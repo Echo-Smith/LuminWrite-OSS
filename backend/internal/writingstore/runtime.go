@@ -546,7 +546,8 @@ func (s *Store) ListRunAttempts(ctx context.Context, runID string) ([]NodeAttemp
 		SELECT attempt_id, run_id, plan_id, plan_version, node_id, attempt,
 		 idempotency_key, node_kind, capability_id, capability_version,
 		 executor_id, status, failure_path, input_hash, actual_cost_usd,
-		 actual_input_tokens, actual_output_tokens, actual_duration_ms, created_at
+		 actual_input_tokens, actual_output_tokens, actual_duration_ms, created_at,
+		 started_at
 		FROM writing_node_attempts WHERE run_id=$1 ORDER BY node_id, attempt
 	`, runID)
 	if err != nil {
@@ -557,13 +558,15 @@ func (s *Store) ListRunAttempts(ctx context.Context, runID string) ([]NodeAttemp
 	for rows.Next() {
 		var item NodeAttempt
 		var kind, failure string
+		var started sql.NullTime
 		if err := rows.Scan(&item.AttemptID, &item.RunID, &item.PlanID, &item.PlanVersion,
 			&item.NodeID, &item.Attempt, &item.IdempotencyKey, &kind, &item.CapabilityID,
 			&item.CapabilityVersion, &item.ExecutorID, &item.Status, &failure,
 			&item.InputHash, &item.ActualCostUSD, &item.ActualInputTokens,
-			&item.ActualOutputTokens, &item.ActualDurationMS, &item.CreatedAt); err != nil {
+			&item.ActualOutputTokens, &item.ActualDurationMS, &item.CreatedAt, &started); err != nil {
 			return nil, err
 		}
+		item.StartedAt = started.Time
 		item.NodeKind, item.FailurePath = writingplan.NodeKind(kind), writingplan.FailurePath(failure)
 		result = append(result, item)
 	}

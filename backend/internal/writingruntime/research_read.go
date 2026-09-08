@@ -50,12 +50,15 @@ const (
 
 // Sentinels the orchestrator/API layer map to run pauses and 422 responses:
 //
-//   - ErrResearchBudgetBoundary: the per-paper budget guard fired between
-//     papers. The node fails through its pause failure path, completed
-//     sub-tasks stay in the ledger, and the resume re-dispatch continues the
-//     remaining papers (deliverable: 触界 → 干净暂停 → 恢复续跑).
 //   - ErrInsufficientEvidence (research_pack.go): the workset cannot support
-//     min_citable_sources → 422 INSUFFICIENT_EVIDENCE pause.
+//     min_citable_sources → 422 INSUFFICIENT_EVIDENCE pause. Since F2 the
+//     budget boundary routes through this sentinel too: a boundary with too
+//     few citable sources pauses INSUFFICIENT_EVIDENCE (a larger budget
+//     requires a new contract version + new run); a boundary with enough
+//     citable sources freezes the PARTIAL pack and proceeds to the evidence
+//     gate — ErrResearchBudgetBoundary itself is no longer returned by the
+//     executor (the orchestrator's clean-pause branch stays for the
+//     orchestrator-level BudgetBoundaryGuard).
 var ErrResearchBudgetBoundary = errors.New("writingruntime: research budget boundary reached")
 
 // ResearchTaskLedger is the store surface the read executor needs.
@@ -90,10 +93,22 @@ type ResearchReadExecutor struct {
 
 // NewResearchReadExecutor wires the executor.
 func NewResearchReadExecutor(client ResearchWorkerClient, content ContentGateway, ledger ResearchTaskLedger, budget ResearchBudgetBoundary) (*ResearchReadExecutor, error) {
+	return newResearchReadExecutor(client, content, ledger, budget, "engine.step.research_read")
+}
+
+// NewResearchReadMaterialExecutor wires the SAME executor under the material
+// branch's executor id (F5): the no-external manifest binds this id, so a
+// plan compiled for a no-external contract can never resolve the external
+// binding.
+func NewResearchReadMaterialExecutor(client ResearchWorkerClient, content ContentGateway, ledger ResearchTaskLedger, budget ResearchBudgetBoundary) (*ResearchReadExecutor, error) {
+	return newResearchReadExecutor(client, content, ledger, budget, "engine.step.research_read_materials")
+}
+
+func newResearchReadExecutor(client ResearchWorkerClient, content ContentGateway, ledger ResearchTaskLedger, budget ResearchBudgetBoundary, executorID string) (*ResearchReadExecutor, error) {
 	if client == nil || content == nil || ledger == nil {
 		return nil, ErrRuntimeNotReady
 	}
-	descriptor := ExecutorDescriptor{ExecutorID: "engine.step.research_read", Version: "1",
+	descriptor := ExecutorDescriptor{ExecutorID: executorID, Version: "1",
 		SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}, Cancellable: false}
 	if err := descriptor.Validate(); err != nil {
 		return nil, err
@@ -204,9 +219,17 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 				if reason == "" {
 					reason = "budget boundary reached"
 				}
+				// F2 boundary semantics (design.md §3): the boundary stops new
+				// paid sub-calls, then decides honestly on what has been read.
+				// Enough citable sources → freeze the PARTIAL pack (the
+				// remaining papers land in coverage.gaps as budget-truncated)
+				// and let the evidence gate decide; not enough → the typed
+				// INSUFFICIENT_EVIDENCE clean pause. The guard is a pure ledger
+				// function, so a resume with an unchanged budget re-fires here
+				// and never re-opens paid reading.
 				executor.emitProgress(request, index, len(workset), index, 0, len(workset)-index, paper.PaperID)
-				return ExecutionResult{}, runtimeError(CodeResearchBudgetBoundary, RetrySafe, reason,
-					fmt.Errorf("%w: %d/%d papers read", ErrResearchBudgetBoundary, index, len(workset)))
+				return executor.boundaryOutcome(ctx, request, contract, spec, candidatesInput, results,
+					quota, provenance, usage, started, index, len(workset), reason)
 			}
 		}
 		result, paperErr := executor.readPaper(ctx, request, spec, paper)
@@ -219,6 +242,15 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 		executor.emitProgress(request, index+1, len(workset), index+1, 0, len(workset)-index-1, paper.PaperID)
 	}
 
+	return executor.freezePack(ctx, request, contract, spec, candidatesInput, results, quota, provenance, usage, started)
+}
+
+// freezePack assembles, verifies, and stages the evidence pack for the given
+// read results, returning the node's success ExecutionResult.
+func (executor *ResearchReadExecutor) freezePack(ctx context.Context, request ExecutionRequest,
+	contract writingkernel.WritingContract, spec *writingkernel.ResearchSpec,
+	candidatesInput InputArtifact, results []PaperReadResult, quota EvidenceQuota,
+	provenance []string, usage ExecutionUsage, started time.Time) (ExecutionResult, error) {
 	pack, err := BuildEvidencePack(contract.ContractHash, candidatesRef(candidatesInput), results, quota, provenance)
 	if err != nil {
 		return ExecutionResult{}, runtimeError(researchCodeOf(err), RetrySafe, "assemble evidence pack", err)
@@ -250,6 +282,83 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 		Usage:     usage,
 		StartedAt: started, CompletedAt: completedAt,
 	}, nil
+}
+
+// boundaryOutcome resolves the budget boundary the guard fired between papers
+// (design.md §3): the boundary stops new paid sub-calls, then
+//
+//   - enough citable sources among the completed results → freeze the PARTIAL
+//     evidence pack (the boundary-truncated remainder is appended as honest
+//     unread entries so coverage.gaps records the budget truncation) and let
+//     the evidence gate decide what the partial corpus supports;
+//   - otherwise → the typed INSUFFICIENT_EVIDENCE clean pause. Completed
+//     sub-tasks stay in the ledger; a plain resume cannot continue reading
+//     under an unchanged budget because the guard is a pure ledger judgement —
+//     a larger budget requires a new contract version + new run.
+func (executor *ResearchReadExecutor) boundaryOutcome(ctx context.Context, request ExecutionRequest,
+	contract writingkernel.WritingContract, spec *writingkernel.ResearchSpec, candidatesInput InputArtifact,
+	results []PaperReadResult, quota EvidenceQuota, provenance []string,
+	usage ExecutionUsage, started time.Time, completedCount, totalCount int, reason string) (ExecutionResult, error) {
+	citable := 0
+	for _, result := range results {
+		if result.Citable(quota.EvidenceRequirement) {
+			citable++
+		}
+	}
+	if len(results) == 0 || citable < quota.MinCitableSources {
+		return ExecutionResult{}, runtimeError(CodeInsufficientEvidence, RetryAfterHuman,
+			fmt.Sprintf("%s; %d citable sources below the contract floor of %d — the run pauses instead of continuing paid reading (a larger budget requires a new contract + run)",
+				reason, citable, quota.MinCitableSources),
+			fmt.Errorf("%w: budget boundary at %d/%d papers", ErrInsufficientEvidence, completedCount, totalCount))
+	}
+	// Partial pack: append the boundary-truncated remainder as unread entries
+	// with an explicit budget reason — they surface in coverage.gaps and the
+	// pack's honest per-paper coverage. The truncated set is the selected
+	// workset the pack's candidates input declared, beyond what was read.
+	partial := append([]PaperReadResult(nil), results...)
+	for _, paper := range executor.truncatedRemainder(ctx, request, candidatesInput, completedCount) {
+		partial = append(partial, PaperReadResult{
+			PaperID:         paper.PaperID,
+			Bibliography:    writingkernel.PaperBibliography{Title: paper.Title, Authors: paper.Authors, Year: paper.Year, Venue: paper.Venue, DOI: paper.DOI, CanonicalURL: paper.CanonicalURL},
+			Origin:          writingkernel.PaperOriginExternal,
+			SelectionReason: paper.Selection.Reason,
+			RelevanceStatus: paper.RelevanceStatus,
+			ReadingScope:    writingkernel.ReadingScopeUnread,
+			BlocksByID:      map[string]ParsedBlock{},
+			UnreadReason:    "research budget boundary reached before reading (partial pack)",
+		})
+	}
+	budgetProvenance := append(append([]string(nil), provenance...),
+		fmt.Sprintf("budget_boundary:partial_pack:%d/%d papers read", completedCount, totalCount))
+	return executor.freezePack(ctx, request, contract, spec, candidatesInput, partial, quota, budgetProvenance, usage, started)
+}
+
+// truncatedRemainder re-derives the selected workset from the frozen
+// candidates artifact and returns the papers beyond completedCount that the
+// boundary stopped before reading. A candidates load/decode failure yields
+// nothing: the pack then simply omits the unread remainder rather than
+// fabricating identities it cannot verify.
+func (executor *ResearchReadExecutor) truncatedRemainder(ctx context.Context, request ExecutionRequest, candidatesInput InputArtifact, completedCount int) []writingkernel.PaperCandidate {
+	body, err := executor.content.Load(ctx, candidatesInput)
+	if err != nil || contentHash(body) != candidatesInput.ContentHash {
+		return nil
+	}
+	var candidates writingkernel.ResearchCandidates
+	if err := json.Unmarshal(body, &candidates); err != nil {
+		return nil
+	}
+	remainder := []writingkernel.PaperCandidate{}
+	position := 0
+	for _, paper := range candidates.Papers {
+		if paper.Selection.Status != writingkernel.SelectionStatusSelected {
+			continue
+		}
+		if position >= completedCount {
+			remainder = append(remainder, paper)
+		}
+		position++
+	}
+	return remainder
 }
 
 // readPaper drives one paper through fetch → parse → read with per-phase
@@ -694,7 +803,15 @@ func (executor *ResearchReadExecutor) runSubTask(ctx context.Context, request Ex
 		return subTaskOutput{}, runtimeError(CodeResearchSubTaskFenced, RetrySafe, "claim research sub-task", claimErr)
 	}
 
+	// F2 budget accounting: the claim marks the sub-task's active window; the
+	// completion persists the phase's wall time into usage_json so the budget
+	// guard counts every paid call even when the owning attempt row is
+	// replayed across resumes.
+	claimTime := executor.now()
 	output, workErr := work(ctx)
+	finishTime := executor.now()
+	usage := usageMapOf(output)
+	usage["duration_ms"] = finishTime.Sub(claimTime).Milliseconds()
 	if workErr != nil {
 		failure := classifyWorkerFailure(workErr)
 		if failErr := executor.ledger.InTransaction(ctx, func(tx *writingstore.Tx) error {
@@ -712,7 +829,7 @@ func (executor *ResearchReadExecutor) runSubTask(ctx context.Context, request Ex
 	}
 	if completionErr := executor.ledger.InTransaction(ctx, func(tx *writingstore.Tx) error {
 		return tx.CompleteResearchTask(ctx, claimed.ID, worker, writingstore.ResearchTaskCompletion{
-			OutputArtifactID: output.artifactID, OutputHash: output.contentHash, Usage: usageMapOf(output)}, executor.now())
+			OutputArtifactID: output.artifactID, OutputHash: output.contentHash, Usage: usage}, executor.now())
 	}); completionErr != nil {
 		return subTaskOutput{}, runtimeError(CodeResearchSubTaskFenced, RetrySafe, "complete research sub-task", completionErr)
 	}

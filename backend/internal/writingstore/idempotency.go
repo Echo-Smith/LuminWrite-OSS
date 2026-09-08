@@ -58,6 +58,10 @@ type NodeAttempt struct {
 	ActualOutputTokens int64
 	ActualDurationMS   int64
 	CreatedAt          time.Time
+	// StartedAt is the dispatch timestamp (NULL in the table until the
+	// attempt leaves pending/expired). The research budget guard uses it to
+	// count an in-flight attempt's active time.
+	StartedAt time.Time
 }
 
 func (tx *Tx) EnsureNodeAttempt(ctx context.Context, attempt NodeAttempt) (NodeAttempt, bool, error) {

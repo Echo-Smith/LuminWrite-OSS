@@ -30,9 +30,10 @@ import (
 //  1. full chain — run → discover → read → evidence gate → outline → outline
 //     gate → draft → citations → fact → quality → finalize; both gates each
 //     decide exactly once; draft + citation index coexist and bind.
-//  2. budget boundary — the executor-level sentinel pauses the run mid-read;
-//     the API resume continues the remaining papers without re-reading
-//     finished ones (触界 → 干净暂停 → 恢复续跑).
+//  2. budget boundary (F2) — the executor-level boundary stops new paid
+//     reading mid-workset; with enough citable sources the run freezes a
+//     PARTIAL pack (coverage.gaps records the truncation) and proceeds to the
+//     evidence gate; call counts never grow past the boundary.
 //  3. no draft generator — the draft node pauses RESEARCH_UNAVAILABLE and no
 //     full_draft is ever produced (no fallback to the fast writer).
 //  4. legacy regression — TestGovernedP0HTTPTemplates (governed_runners_test.go)
@@ -46,6 +47,7 @@ type t06FakeWorker struct {
 	mu       sync.Mutex
 	discover int
 	ranks    int
+	fetches  map[string]int
 	reads    map[string]int
 	papers   int
 	// withFullText makes Discover advertise OA URLs so the read executor can
@@ -59,7 +61,7 @@ type t06FakeWorker struct {
 }
 
 func newT06FakeWorker(papers int) *t06FakeWorker {
-	return &t06FakeWorker{reads: map[string]int{}, papers: papers}
+	return &t06FakeWorker{reads: map[string]int{}, fetches: map[string]int{}, papers: papers}
 }
 
 func (fake *t06FakeWorker) Discover(_ context.Context, _ string, _ []string, _ int, _ ...scholar.CallOption) (*scholar.DiscoverOutputs, *scholar.OperationResponse, error) {
@@ -96,6 +98,9 @@ func (fake *t06FakeWorker) Rank(_ context.Context, _ string, candidates []schola
 }
 
 func (fake *t06FakeWorker) FetchFullText(_ context.Context, paperID, _ string, _ int64, _ ...scholar.CallOption) (*scholar.FetchFullTextOutputs, *scholar.OperationResponse, error) {
+	fake.mu.Lock()
+	fake.fetches[paperID]++
+	fake.mu.Unlock()
 	content := []byte("全文正文（" + paperID + "）：\n\n这是用于验证引用的确定性正文段落，包含核心结论与数据。")
 	return &scholar.FetchFullTextOutputs{PaperID: paperID, AcquisitionStatus: "full_text_available",
 			ContentHash: t06sha256(content), SizeBytes: int64(len(content)), MediaType: "text/plain",
@@ -159,6 +164,30 @@ func (fake *t06FakeWorker) totalReads() int {
 		total += count
 	}
 	return total
+}
+
+// totalFetches counts every fetch_full_text call (the F5 no-external
+// assertion: the user-material path must never fetch).
+func (fake *t06FakeWorker) totalFetches() int {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	total := 0
+	for _, count := range fake.fetches {
+		total += count
+	}
+	return total
+}
+
+func (fake *t06FakeWorker) callCounts() (discover, ranks, fetches, reads int) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, count := range fake.fetches {
+		fetches += count
+	}
+	for _, count := range fake.reads {
+		reads += count
+	}
+	return fake.discover, fake.ranks, fetches, reads
 }
 
 func t06sha256(content []byte) string {
@@ -795,64 +824,42 @@ func TestT06ResearchReviewFullChainThroughHTTP(t *testing.T) {
 
 func TestT06ResearchBudgetBoundaryPausesAndResumes(t *testing.T) {
 	// 3 papers; the executor-level budget guard fires after the first paper.
+	// F2 semantics: the boundary with one citable source (>= the resealed
+	// min_citable_sources=1) freezes the PARTIAL pack — the remaining two
+	// papers land in coverage.gaps as budget-truncated — and the run walks
+	// straight into the evidence gate. No further paper is ever read.
 	h := newT06E2EHarness(t, 3, 1)
 	fixture := h.fixture(t)
 	envelope := h.buildResearchEnvelope(t, fixture)
 	runID := h.createResearchRun(t, fixture, envelope)
 
-	// First pause: the read node's budget-boundary sentinel (a plain pause,
-	// not a gate — the run's FailurePath=pause did its job).
-	h.waitForGatePausedAtBoundary(t, runID)
+	// The partial-pack path proceeds to the evidence gate (no plain pause).
+	evidenceGate := h.advanceToGate(t, runID, "evidence")
 	if reads := h.worker.totalReads(); reads != 1 {
 		t.Fatalf("worker reads after boundary = %d, want 1", reads)
 	}
-	// Plain API resume (via advanceToGate): the sentinel pause is resumable;
-	// the read node re-dispatches and continues the remaining papers from the
-	// ledger, then the run reaches the evidence gate.
-	h.decideGate(t, runID, h.advanceToGate(t, runID, "evidence"), envelope)
-	if reads := h.worker.totalReads(); reads != 3 {
-		t.Fatalf("worker reads after resume = %d, want 3 (no re-reads of finished papers)", reads)
+	pack := h.loadEvidencePack(t, runID)
+	if len(pack.Papers) != 3 {
+		t.Fatalf("partial pack papers = %d, want 3 (1 read + 2 truncated)", len(pack.Papers))
 	}
+	truncated := 0
+	for _, gap := range pack.Coverage.Gaps {
+		if strings.Contains(gap, "budget boundary") {
+			truncated++
+		}
+	}
+	if truncated != 2 {
+		t.Fatalf("budget-truncation gaps = %d (%v), want 2", truncated, pack.Coverage.Gaps)
+	}
+	// Gates + tail nodes complete; the call counts stay frozen.
+	h.decideGate(t, runID, evidenceGate, envelope)
 	h.decideGate(t, runID, h.advanceToGate(t, runID, "outline"), envelope)
 	if status := h.driveToTerminal(t, runID, 3); status != "completed" {
-		t.Fatalf("run ended as %q, want completed after boundary resume", status)
+		t.Fatalf("run ended as %q, want completed from the partial pack", status)
 	}
-}
-
-// waitForGatePausedAtBoundary waits for the first pause and asserts it is the
-// budget boundary (no pending gate, node_research_read failed).
-func (h *t06Harness) waitForGatePausedAtBoundary(t *testing.T, runID string) {
-	t.Helper()
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
-		if status := h.httpStatus(t, runID); status == "paused" {
-			code, payload := t02APIRequest(t, h.router, h.token, http.MethodGet, "/api/v2/runs/"+runID+"/research", "", nil)
-			if code == http.StatusOK {
-				if active, _ := dataOf(t, payload)["active_gate"].(map[string]any); active == nil {
-					// Confirm the sentinel: node.paused with the boundary code.
-					events, err := h.store.ListRunEvents(context.Background(), runID, 0, 500)
-					if err != nil {
-						t.Fatal(err)
-					}
-					for _, event := range events {
-						if event.EventType != "node.paused" {
-							continue
-						}
-						payloadBytes, _ := json.Marshal(event.Payload)
-						var decoded struct {
-							ErrorCode string `json:"error_code"`
-						}
-						_ = json.Unmarshal(payloadBytes, &decoded)
-						if decoded.ErrorCode == "RESEARCH_BUDGET_BOUNDARY" {
-							return
-						}
-					}
-				}
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
+	if reads := h.worker.totalReads(); reads != 1 {
+		t.Fatalf("worker reads after completion = %d, want 1 (boundary held)", reads)
 	}
-	t.Fatalf("run %s never paused at the budget boundary (last status %q)", runID, h.httpStatus(t, runID))
 }
 
 func TestT06ResearchDraftWithoutGeneratorPausesUnavailable(t *testing.T) {

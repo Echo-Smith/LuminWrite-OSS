@@ -107,7 +107,7 @@ func (fake *fakeWorkerClient) ReadPaper(_ context.Context, _, paperID string, bl
 			&scholar.OperationResponse{Usage: scholar.Usage{Measured: false}}, nil
 	}
 	block := blocks[0]
-	quote := block.Text
+	quote := []rune(block.Text)
 	if len(quote) > 20 {
 		quote = quote[:20]
 	}
@@ -119,7 +119,7 @@ func (fake *fakeWorkerClient) ReadPaper(_ context.Context, _, paperID string, bl
 			Claims: []ReaderClaimOutput{{ClaimID: "c1", Text: "claim from " + paperID,
 				Kind: "source_assertion", EvidenceIDs: []string{"e1"}, Limitations: []string{}}},
 			Evidence: []ReaderEvidence{{EvidenceID: "e1", BlockID: block.BlockID,
-				BlockHash: block.BlockHash, Quote: quote, StartChar: 0, EndChar: len(quote),
+				BlockHash: block.BlockHash, Quote: string(quote), StartChar: 0, EndChar: len(quote),
 				Page: block.Page, EvidenceScope: scope}},
 			BlocksRead:          []string{block.BlockID},
 			Limitations:         []string{"read covers the supplied blocks only"},
@@ -645,11 +645,13 @@ func TestResearchReadProgressSequenceMonotonic(t *testing.T) {
 	}
 }
 
-// TestResearchReadBudgetBoundaryPauseAndResume: the guard fires between
-// papers → typed pause error (clean pause; completed papers already in the
-// ledger) → resume with the guard off continues the remaining papers without
-// re-reading finished ones.
-func TestResearchReadBudgetBoundaryPauseAndResume(t *testing.T) {
+// TestResearchReadBudgetBoundaryCacheReuse (updated for F2): the boundary
+// fires between papers with one citable source (>= the fixture's 1-source
+// floor) → the partial pack freezes IN the same dispatch. A later fresh
+// dispatch over the same ledger (e.g. the owner retried after raising the
+// budget in a new run) reuses the hash-verified sub-task outputs: paper 1 is
+// never re-read.
+func TestResearchReadBudgetBoundaryCacheReuse(t *testing.T) {
 	fixture := newT05Fixture(t)
 	candidatesInput := fixture.candidatesFromBody(t, fixture.t05Candidates(t,
 		t05SelectedPaper("p_one", true), t05SelectedPaper("p_two", true)))
@@ -657,31 +659,31 @@ func TestResearchReadBudgetBoundaryPauseAndResume(t *testing.T) {
 
 	worker := newFakeWorkerClient()
 	guard := &fakeBudget{scripts: []bool{false, true}, reason: "budget boundary"}
-	_, err := runRead(t, fixture, request, worker, guard)
-	if err == nil {
-		t.Fatal("budget boundary must fail the node for a clean pause")
-	}
-	if !errors.Is(err, ErrResearchBudgetBoundary) {
-		t.Fatalf("pause error = %v", err)
-	}
-	if worker.fetchCount("p_one") != 1 {
-		t.Fatalf("first paper fetch count = %d", worker.fetchCount("p_one"))
-	}
-
-	// Resume: guard off; the second paper runs, the first is reused.
-	resumed := &fakeBudget{scripts: []bool{false}}
-	result, err := runRead(t, fixture, request, worker, resumed)
+	result, err := runRead(t, fixture, request, worker, guard)
 	if err != nil {
-		t.Fatalf("resumed read: %v", err)
+		t.Fatalf("boundary with sufficient sources must freeze a partial pack: %v", err)
 	}
-	if worker.fetchCount("p_one") != 1 {
-		t.Fatalf("p_one re-fetched on resume (count=%d)", worker.fetchCount("p_one"))
-	}
-	if worker.fetchCount("p_two") != 1 {
-		t.Fatalf("p_two fetch count = %d", worker.fetchCount("p_two"))
+	if worker.fetchCount("p_one") != 1 || worker.fetchCount("p_two") != 0 {
+		t.Fatalf("fetch counts p_one=%d p_two=%d", worker.fetchCount("p_one"), worker.fetchCount("p_two"))
 	}
 	if len(result.Artifacts) != 1 || result.Artifacts[0].OutputKey != "research_evidence_pack" {
-		t.Fatalf("resumed artifacts = %#v", result.Artifacts)
+		t.Fatalf("partial-pack artifacts = %#v", result.Artifacts)
+	}
+
+	// Fresh-process reuse: the finished paper's sub-tasks stay hash-verified
+	// in the ledger and are never re-driven. Paper 2 is still unread (its
+	// dispatch was budget-stopped, not completed), so IT re-runs — that is
+	// the new run's fresh budget at work.
+	beforeFetchesTwo := worker.fetchCount("p_two")
+	reuse := &fakeBudget{scripts: []bool{false}}
+	if _, err := runRead(t, fixture, request, worker, reuse); err != nil {
+		t.Fatalf("reuse dispatch: %v", err)
+	}
+	if worker.fetchCount("p_one") != 1 || worker.readCount("p_one") != 1 {
+		t.Fatalf("finished paper re-drove calls: fetch=%d read=%d", worker.fetchCount("p_one"), worker.readCount("p_one"))
+	}
+	if worker.fetchCount("p_two") != beforeFetchesTwo+1 {
+		t.Fatalf("unfinished paper fetch count = %d, want +1 (fresh budget reads it once)", worker.fetchCount("p_two"))
 	}
 }
 

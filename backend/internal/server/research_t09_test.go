@@ -4,9 +4,13 @@ package server
 // 2026-09-07-research-review-integration.md A13/A15, budget guard, and the
 // T09b frontend contract for GET research):
 //
-//  1. WallClockResearchBudgetBoundary — preset attempt durations reach the
-//     plan budget between papers → RESEARCH_BUDGET_BOUNDARY clean pause →
-//     owner resume continues the remaining papers (fire-once, no re-fire).
+//  1. WallClockResearchBudgetBoundary — the F2 rewrite: the guard is a pure
+//     ledger function (completed attempt durations + persisted sub-task usage
+//     + in-flight attempt time vs the run budget). A boundary reached mid-read
+//     with enough citable sources freezes a PARTIAL pack and proceeds to the
+//     evidence gate; worker call counts never grow past the boundary. Guard
+//     tests drive real attempt-ledger rows (started/duration seeded), not a
+//     forced-spent override.
 //  2. A13 cancel — a mid-read cancel stops the run: no further worker reads,
 //     the run terminates cancelled, and no formal draft/revision_set is ever
 //     produced (已获结果仅中间产物).
@@ -34,57 +38,97 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
 
-// ── 1. Wall-clock budget guard (T06 遗留 #2) ────────────────────────────────
+// ── 1. Wall-clock budget guard (T06 遗留 #2, F2) ────────────────────────────
 
-// TestT09WallClockBudgetBoundaryPausesAndResumes mounts the production guard
-// (not the scripted t06BudgetGuard): the run's completed attempts carry
-// durations that already reach the plan budget, so the very first between-
-// papers check fires. After the owner resumes, the remaining papers continue
-// (the durable fire-once marker keeps the guard from re-firing) and the run
-// completes. A guard with an under-budget ledger must never fire.
-func TestT09WallClockBudgetBoundaryPausesAndResumes(t *testing.T) {
+// TestT09WallClockBudgetBoundaryPartialPackProceedsToGate drives the
+// production guard over a REAL attempt ledger: while the first read parks
+// inside the worker, a completed synthetic attempt row (7.2e6 ms, the run's
+// whole budget) is seeded. At the next between-papers check the pure guard
+// fires; the workset already holds one citable paper, so the executor freezes
+// the PARTIAL pack (remaining papers budget-truncated in coverage.gaps) and
+// the run walks into the evidence gate — with the worker's call counts frozen
+// at one read for the rest of the chain (恢复后守卫仍然生效，调用计数不再增长).
+func TestT09WallClockBudgetBoundaryPartialPackProceedsToGate(t *testing.T) {
 	h := newT06E2EHarness(t, 3, 0)
-	// Swap in the production guard with a forced spent time above the plan
-	// budget (7200000ms): fires on the first between-papers check.
-	boundary := NewWallClockResearchBudgetBoundary(h.store)
-	boundary.SetForcedSpentMS(7200000)
-	h.budgetSwap = func(*writingstore.Store) writingruntime.ResearchBudgetBoundary { return boundary }
-	h.remountResearchExecutors(t)
-
+	// Full-text fetches make paper 1 a genuinely citable full-text source and
+	// the fetch-count assertion meaningful.
+	h.worker.withFullText = true
+	// Park the very first read inside the worker so the seeding below lands
+	// between the budget check of paper 0 and paper 1.
+	h.worker.mu.Lock()
+	h.worker.holdReads = make(chan struct{})
+	h.worker.mu.Unlock()
 	fixture := h.fixture(t)
 	envelope := h.buildResearchEnvelope(t, fixture)
 	runID := h.createResearchRun(t, fixture, envelope)
 
-	// First pause: the wall-clock boundary sentinel (a clean pause, no gate).
-	// The forced spent time reaches the plan budget before the first paper,
-	// so the boundary fires with zero papers read.
-	h.waitForGatePausedAtBoundary(t, runID)
-	if reads := h.worker.totalReads(); reads != 0 {
-		t.Fatalf("worker reads after boundary = %d, want 0 (budget already exhausted)", reads)
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.worker.totalReads() >= 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	if h.worker.totalReads() < 1 {
+		t.Fatal("first read never started")
+	}
+	// Seed the boundary with a REAL ledger row: a failed attempt whose
+	// duration reaches the run's plan budget (7200000ms). The guard counts
+	// every completed attempt row's duration (failed work was still paid);
+	// the orchestrator's recovery-based dispatch ceiling only sums succeeded
+	// attempts, so the downstream chain stays dispatchable.
+	h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 7200000, "failed")
+	close(h.worker.holdReads)
 
-	// Owner resume: the boundary has fired durably, so the guard stands down
-	// and the remaining papers continue (no re-fire, no re-reads).
-	boundary.SetForcedSpentMS(0)
-	h.decideGate(t, runID, h.advanceToGate(t, runID, "evidence"), envelope)
-	if reads := h.worker.totalReads(); reads != 3 {
-		t.Fatalf("worker reads after resume = %d, want 3 (boundary fired once; no re-reads)", reads)
+	// The run proceeds straight to the evidence gate: boundary + sufficient
+	// citable sources → partial pack, no RESEARCH_BUDGET_BOUNDARY pause.
+	evidenceGate := h.advanceToGate(t, runID, "evidence")
+	if reads := h.worker.totalReads(); reads != 1 {
+		t.Fatalf("worker reads after boundary = %d, want 1 (call counts frozen at the boundary)", reads)
 	}
+	// The pack at the gate is explicitly partial: 3 workset papers, 1 read
+	// full text, 2 unread with the budget truncation recorded in gaps.
+	pack := h.loadEvidencePack(t, runID)
+	if len(pack.Papers) != 3 {
+		t.Fatalf("partial pack papers = %d, want 3 (1 read + 2 budget-truncated)", len(pack.Papers))
+	}
+	read := 0
+	for _, paper := range pack.Papers {
+		if paper.ReadingScope == writingkernel.ReadingScopeFullText {
+			read++
+		}
+	}
+	if read != 1 {
+		t.Fatalf("partial pack full-text papers = %d, want 1", read)
+	}
+	boundaryGaps := 0
+	for _, gap := range pack.Coverage.Gaps {
+		if strings.Contains(gap, "budget boundary") {
+			boundaryGaps++
+		}
+	}
+	if boundaryGaps != 2 {
+		t.Fatalf("coverage.gaps budget-truncation entries = %d (%v), want 2", boundaryGaps, pack.Coverage.Gaps)
+	}
+	// The chain completes through both gates; the frozen call counts hold.
+	h.decideGate(t, runID, evidenceGate, envelope)
 	h.decideGate(t, runID, h.advanceToGate(t, runID, "outline"), envelope)
 	if status := h.driveToTerminal(t, runID, 3); status != "completed" {
-		t.Fatalf("run ended as %q, want completed after wall-clock boundary resume", status)
+		t.Fatalf("run ended as %q, want completed with the partial pack", status)
+	}
+	if reads := h.worker.totalReads(); reads != 1 {
+		t.Fatalf("worker reads after completion = %d, want 1 (boundary held through resume)", reads)
+	}
+	if _, _, fetches, _ := h.worker.callCounts(); fetches != 1 {
+		t.Fatalf("worker fetches = %d, want 1", fetches)
 	}
 }
 
 // TestT09WallClockBudgetBoundaryStaysQuietUnderBudget is the no-false-trigger
-// half: with the ledger durations far below the plan budget, the guard never
-// fires and a full chain completes without any boundary pause.
+// half: with the real ledger durations far below the plan budget, the guard
+// never fires and a full chain completes without any boundary pause.
 func TestT09WallClockBudgetBoundaryStaysQuietUnderBudget(t *testing.T) {
 	h := newT06E2EHarness(t, 2, 0) // production guard mounted by default now
-	boundary := NewWallClockResearchBudgetBoundary(h.store)
-	boundary.SetForcedSpentMS(1000) // 1s of 120min budget
-	h.budgetSwap = func(*writingstore.Store) writingruntime.ResearchBudgetBoundary { return boundary }
-	h.remountResearchExecutors(t)
 	fixture := h.fixture(t)
 	envelope := h.buildResearchEnvelope(t, fixture)
 	runID := h.createResearchRun(t, fixture, envelope)
@@ -110,47 +154,28 @@ func TestT09WallClockBudgetBoundaryStaysQuietUnderBudget(t *testing.T) {
 	}
 }
 
-// TestT09WallClockBudgetBoundaryRespectsHumanGateWaits seeds completed
-// attempts with real durations on a genuine run and verifies the guard's
-// spend is exactly Σ actual_duration_ms — the property that makes human-gate
-// waiting free (gate pauses record no attempt duration).
-func TestT09WallClockBudgetBoundaryRespectsHumanGateWaits(t *testing.T) {
+// TestT09WallClockBudgetGuardIsPureLedgerFunction locks the F2 guard
+// semantics against real attempt rows: seeded durations drive the verdict;
+// the verdict has NO fire-once stand-down (it re-fires on every check while
+// the ledger stays over the ceiling); a fresh guard instance (new process)
+// sees the same persisted state; an unreadable ledger fails CLOSED.
+func TestT09WallClockBudgetGuardIsPureLedgerFunction(t *testing.T) {
 	h := newT06E2EHarness(t, 2, 0)
-	fixture := h.t00Harness.fixture(t)
+	fixture := h.fixtureLegacy(t)
 	envelope := h.buildLegacyEnvelope(t, fixture)
 	runID := h.createRun(t, fixture, envelope)
 	h.waitForTerminal(t, runID, 60*time.Second)
 
-	// Seed two completed attempts with fixed durations (distinct synthetic
-	// nodes, so they cannot collide with the run's real attempt rows).
-	ctx := context.Background()
-	trace := writingstore.TraceContext{Provenance: map[string]any{}, SourceRefs: []string{},
-		Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "t09.fixture"}}
-	for index, duration := range []int64{1500, 2500} {
-		nodeID := fmt.Sprintf("node_budget_seed_%d", index)
-		_, _, err := h.store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID,
-			PlanID: envelope.ExecutablePlan.PlanID, PlanVersion: 1, NodeID: nodeID, Attempt: 1,
-			IdempotencyKey: runID + ":" + nodeID + ":1", NodeKind: writingplan.NodeAction,
-			CapabilityID: "core.research.read", CapabilityVersion: "1.0.0",
-			ExecutorID: "engine.step.research_read", FailurePath: writingplan.FailurePause,
-			Bounds: writingplan.Bounds{MaxAttempts: 1,
-				MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 1, TimeoutMS: 60000},
-			InputHash: "sha256:" + strings.Repeat("0", 64), InputArtifactIDs: []string{}}, trace)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := h.store.CompleteNodeAttempt(ctx, writingstore.AttemptCompletion{RunID: runID,
-			NodeID: nodeID, Attempt: 1, Status: "succeeded", DurationMS: duration, Trace: trace}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// Seed two completed attempts with fixed durations on the real run
+	// (distinct synthetic nodes, so they cannot collide with the run's real
+	// attempt rows).
+	h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 1500, "failed")
+	h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 2500, "failed")
 	guard := NewWallClockResearchBudgetBoundary(h.store)
 	// The seeded spend is 4000ms — far under the run's 50-minute budget, so
-	// reading the ledger cannot over-count into a fire. Checks run against the
-	// first seeded node so the durable-marker event below satisfies the
-	// run-event attempt foreign key.
-	request := writingruntime.ExecutionRequest{RunID: runID, NodeID: "node_budget_seed_0"}
-	if reached, _ := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); reached {
+	// reading the ledger cannot over-count into a fire.
+	request := writingruntime.ExecutionRequest{RunID: runID, NodeID: "node_budget_seed_0", UserID: h.userID}
+	if reached, _ := guard.ResearchBudgetBoundaryReached(context.Background(), request, 0, 2); reached {
 		t.Fatalf("guard fired although Σ attempt durations (4000ms) is under the run budget")
 	}
 	// Now squeeze the run's budget below the recorded spend: the fire decision
@@ -159,32 +184,204 @@ func TestT09WallClockBudgetBoundaryRespectsHumanGateWaits(t *testing.T) {
 		runID, `{"max_cost_usd":100,"max_duration_ms":1,"max_concurrency":1,"max_nodes":10,"max_items":10}`); err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
 	if reached, _ := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); !reached {
 		t.Fatal("guard did not fire at Σ=4000ms vs 1ms budget")
 	}
-	// Fire-once: a second check must stand down even though the spend still
-	// exceeds the limit (the durable boundary marker).
-	if reached, _ := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); reached {
-		t.Fatal("guard re-fired although the boundary already paused this node")
+	// F2: the guard is a pure ledger function — the boundary state lives in
+	// the ledger, so a second check (the owner's resume) fires again instead
+	// of standing down; a resume with an unchanged budget never re-opens
+	// reading.
+	if reached, _ := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); !reached {
+		t.Fatal("fire-once stand-down is gone: the pure guard must re-fire on resume")
 	}
-	// Restart semantics: a FRESH guard (new process, empty in-process map)
-	// stands down because the boundary pause left a durable node.paused event
-	// carrying RESEARCH_BUDGET_BOUNDARY.
-	markerKey, keyErr := writingstore.NodeAttemptKey(runID, request.NodeID, 1)
-	if keyErr != nil {
-		t.Fatal(keyErr)
+	// Restart semantics: a FRESH guard (new process, no in-process state)
+	// reaches the same verdict from the ledger alone.
+	fresh := NewWallClockResearchBudgetBoundary(h.store)
+	if reached, _ := fresh.ResearchBudgetBoundaryReached(ctx, request, 0, 2); !reached {
+		t.Fatal("fresh guard did not reproduce the ledger verdict")
 	}
-	if _, err := h.store.AppendRunEvent(ctx, writingstore.RunEvent{RunID: runID,
-		EventType: "node.paused", NodeID: request.NodeID, Attempt: 1,
-		IdempotencyKey: markerKey, EntityKind: "node", EntityID: request.NodeID,
-		Payload: map[string]any{"status": "paused", "error_code": string(writingruntime.CodeResearchBudgetBoundary)},
-		Trace:   trace}); err != nil {
+}
+
+// TestT09WallClockBudgetGuardCountsInFlightAttempt seeds a running attempt
+// whose started_at lies ten minutes in the past and verifies the guard counts
+// the in-flight active time — the long read attempt between papers can no
+// longer blind the guard.
+func TestT09WallClockBudgetGuardCountsInFlightAttempt(t *testing.T) {
+	h := newT06E2EHarness(t, 2, 0)
+	fixture := h.fixtureLegacy(t)
+	envelope := h.buildLegacyEnvelope(t, fixture)
+	runID := h.createRun(t, fixture, envelope)
+	h.waitForTerminal(t, runID, 60*time.Second)
+	ctx := context.Background()
+	request := writingruntime.ExecutionRequest{RunID: runID, NodeID: "node_budget_inflight", UserID: h.userID}
+	guard := NewWallClockResearchBudgetBoundary(h.store)
+	if _, err := h.server.db.Exec(`UPDATE writing_runs SET budget = $2::jsonb WHERE run_id = $1`,
+		runID, `{"max_cost_usd":100,"max_duration_ms":300000,"max_concurrency":1,"max_nodes":10,"max_items":10}`); err != nil {
 		t.Fatal(err)
 	}
-	fresh := NewWallClockResearchBudgetBoundary(h.store)
-	if reached, _ := fresh.ResearchBudgetBoundaryReached(ctx, request, 0, 2); reached {
-		t.Fatal("fresh guard re-fired although the durable boundary marker exists")
+	// No in-flight attempt yet: 0ms spent vs 5min budget → quiet.
+	if reached, _ := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); reached {
+		t.Fatal("guard fired without any attempt rows")
 	}
+	trace := writingstore.TraceContext{Provenance: map[string]any{}, SourceRefs: []string{},
+		Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "t09.fixture"}}
+	if _, _, err := h.store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID,
+		PlanID: envelope.ExecutablePlan.PlanID, PlanVersion: 1, NodeID: request.NodeID, Attempt: 1,
+		IdempotencyKey: runID + ":" + request.NodeID + ":1", NodeKind: writingplan.NodeAction,
+		CapabilityID: "core.research.read", CapabilityVersion: "1.0.0",
+		ExecutorID: "engine.step.research_read", FailurePath: writingplan.FailurePause,
+		Bounds:    writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 1, TimeoutMS: 600000},
+		InputHash: "sha256:" + strings.Repeat("0", 64), InputArtifactIDs: []string{}}, trace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.db.Exec(
+		`UPDATE writing_node_attempts SET started_at = NOW() - INTERVAL '10 minutes' WHERE run_id=$1 AND node_id=$2`,
+		runID, request.NodeID); err != nil {
+		t.Fatal(err)
+	}
+	// The running attempt's active time (10 min) now exceeds the 5 min budget.
+	if reached, reason := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); !reached {
+		t.Fatal("guard ignored the in-flight attempt's active time")
+	} else if !strings.Contains(reason, "budget") {
+		t.Fatalf("boundary reason = %q", reason)
+	}
+}
+
+// TestT09WallClockBudgetGuardCountsSubTaskUsage verifies the persisted
+// research sub-task usage (usage_json duration_ms) contributes to the spend:
+// the durable per-call cost survives attempt-row loss (F2 requirement:
+// 把持久子任务 usage 纳入累计).
+func TestT09WallClockBudgetGuardCountsSubTaskUsage(t *testing.T) {
+	h := newT06E2EHarness(t, 2, 0)
+	fixture := h.fixtureLegacy(t)
+	envelope := h.buildLegacyEnvelope(t, fixture)
+	runID := h.createRun(t, fixture, envelope)
+	h.waitForTerminal(t, runID, 60*time.Second)
+	if _, err := h.server.db.Exec(`UPDATE writing_runs SET budget = $2::jsonb WHERE run_id = $1`,
+		runID, `{"max_cost_usd":100,"max_duration_ms":300000,"max_concurrency":1,"max_nodes":10,"max_items":10}`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	err := h.store.InTransaction(ctx, func(tx *writingstore.Tx) error {
+		if _, err := tx.EnsureResearchTask(ctx, writingstore.CreateResearchTask{OwnerUserID: h.userID,
+			RunID: runID, NodeID: "node_research_read", TaskKey: "p_seed", Phase: "read",
+			InputHash: "sha256:" + strings.Repeat("1", 64)}, now); err != nil {
+			return err
+		}
+		if _, ok, err := tx.ClaimResearchTaskByIdentity(ctx, runID, "node_research_read", "p_seed",
+			"sha256:"+strings.Repeat("1", 64), "t09-fixture-worker", time.Minute, now); err != nil || !ok {
+			return fmt.Errorf("seed claim ok=%v err=%v", ok, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := h.store.GetResearchTaskByIdentity(ctx, runID, "node_research_read", "p_seed",
+		"sha256:"+strings.Repeat("1", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A healthy attempt ledger would cover this time — the guard takes the
+	// LARGER projection. With no attempt duration recorded, the sub-task
+	// usage alone drives the spend (10 min of usage vs a 5 min budget).
+	if err := h.store.InTransaction(ctx, func(tx *writingstore.Tx) error {
+		return tx.CompleteResearchTask(ctx, task.ID, "t09-fixture-worker", writingstore.ResearchTaskCompletion{
+			OutputArtifactID: "art_seed", OutputHash: "sha256:" + strings.Repeat("2", 64),
+			Usage: map[string]any{"input_tokens": 1, "output_tokens": 2, "duration_ms": 600000}}, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	guard := NewWallClockResearchBudgetBoundary(h.store)
+	request := writingruntime.ExecutionRequest{RunID: runID, NodeID: "node_research_read", UserID: h.userID}
+	if reached, _ := guard.ResearchBudgetBoundaryReached(ctx, request, 0, 2); !reached {
+		t.Fatal("guard ignored the persisted research sub-task usage")
+	}
+}
+
+// TestT09WallClockBudgetGuardFailsClosed: an unreadable budget ledger must
+// stop new paid sub-calls (F2 fail-closed), never fail open.
+func TestT09WallClockBudgetGuardFailsClosed(t *testing.T) {
+	guard := NewWallClockResearchBudgetBoundary(brokenBudgetLedger{})
+	reached, reason := guard.ResearchBudgetBoundaryReached(context.Background(),
+		writingruntime.ExecutionRequest{RunID: "run_failing", NodeID: "node_read"}, 0, 2)
+	if !reached {
+		t.Fatal("ledger read failure must fail closed (boundary reported)")
+	}
+	if !strings.Contains(reason, "fail-closed") {
+		t.Fatalf("fail-closed reason = %q", reason)
+	}
+}
+
+// brokenBudgetLedger always errors — the fail-closed fixture.
+type brokenBudgetLedger struct{}
+
+func (brokenBudgetLedger) ListRunAttempts(context.Context, string) ([]writingstore.NodeAttempt, error) {
+	return nil, fmt.Errorf("attempt ledger unavailable")
+}
+
+func (brokenBudgetLedger) ListResearchTasks(context.Context, string, string) ([]writingstore.ResearchTask, error) {
+	return nil, fmt.Errorf("research task ledger unavailable")
+}
+
+func (brokenBudgetLedger) LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error) {
+	return writingstore.RuntimeRun{}, fmt.Errorf("run unavailable")
+}
+
+// seedCompletedAttempt records a terminal synthetic attempt row with a fixed
+// duration on the run (real writing_node_attempts data, no forced-spent
+// override). status selects the terminal outcome the row records.
+func (h *t06Harness) seedCompletedAttempt(t *testing.T, runID, planID string, durationMS int64, status string) {
+	t.Helper()
+	ctx := context.Background()
+	trace := writingstore.TraceContext{Provenance: map[string]any{}, SourceRefs: []string{},
+		Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "t09.fixture"}}
+	nodeID := fmt.Sprintf("node_budget_seed_%d", time.Now().UnixNano()%1000000)
+	if _, _, err := h.store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID,
+		PlanID: planID, PlanVersion: 1, NodeID: nodeID, Attempt: 1,
+		IdempotencyKey: runID + ":" + nodeID + ":1", NodeKind: writingplan.NodeAction,
+		CapabilityID: "core.research.read", CapabilityVersion: "1.0.0",
+		ExecutorID: "engine.step.research_read", FailurePath: writingplan.FailurePause,
+		Bounds:    writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 1, TimeoutMS: 60000},
+		InputHash: "sha256:" + strings.Repeat("0", 64), InputArtifactIDs: []string{}}, trace); err != nil {
+		t.Fatal(err)
+	}
+	completion := writingstore.AttemptCompletion{RunID: runID,
+		NodeID: nodeID, Attempt: 1, Status: status, DurationMS: durationMS, Trace: trace}
+	if status == "failed" {
+		completion.ErrorCode = string(writingruntime.CodeExecutionFailed)
+		completion.ErrorMessage = "t09 fixture: budget seed attempt"
+	}
+	if err := h.store.CompleteNodeAttempt(ctx, completion); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// loadEvidencePack loads the run's frozen research_evidence_pack artifact.
+func (h *t06Harness) loadEvidencePack(t *testing.T, runID string) writingkernel.ResearchEvidencePack {
+	t.Helper()
+	artifacts, err := h.store.ListRunArtifacts(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.ArtifactType != "research_evidence_pack" {
+			continue
+		}
+		_, body, err := h.store.GetArtifactContent(context.Background(), artifact.ContentHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pack writingkernel.ResearchEvidencePack
+		if err := json.Unmarshal(body, &pack); err != nil {
+			t.Fatal(err)
+		}
+		return pack
+	}
+	t.Fatal("run has no research_evidence_pack artifact")
+	return writingkernel.ResearchEvidencePack{}
 }
 
 // ── 2. A13: cancel mid-read ────────────────────────────────────────────────
