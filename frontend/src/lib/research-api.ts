@@ -804,6 +804,10 @@ export interface ResearchLaunchInput {
   material_refs?: ResearchMaterialRef[];
   /** 联网检索开关（合同 material_policy.allow_external_research）。 */
   allow_external_research: boolean;
+  /** 「参考文章风格」开关：开启后正文措辞参考 style_slug（run 级 advisory 配置，不进合同哈希）。 */
+  apply_style?: boolean;
+  /** composer 当前选中的全局风格 slug（apply_style 开启时随 run 传入）。 */
+  style_slug?: string;
   /** 可选文档标题；缺省取研究问题前缀。 */
   document_title?: string;
 }
@@ -1056,7 +1060,9 @@ async function startRealResearchRun(launch: ResearchLaunchInput): Promise<{ run_
         contract_version: sealed.version,
         contract_hash: sealed.contract_hash,
         base_version_id: baseVersionId,
-        style_slug: RESEARCH_STYLE_SLUG,
+        // 「参考文章风格」开启时透传 composer 选中的全局风格（run 级 advisory
+        // 配置，执行器按需解析注入）；关闭/未选时回退默认 slug，运行仍为中性文风。
+        style_slug: launch.apply_style && launch.style_slug ? launch.style_slug : RESEARCH_STYLE_SLUG,
         plan: preview.plan,
         budget: RESEARCH_RUN_BUDGET,
         permissions: preview.permissions,

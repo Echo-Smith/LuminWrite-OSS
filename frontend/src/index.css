@@ -227,6 +227,9 @@
 .run-detail-tab-active { background: color-mix(in srgb, var(--desk-brass) 9%, transparent); color: var(--desk-brass); }
 .run-detail-content { min-height: 0; flex: 1; overflow-y: auto; padding: 16px 16px 168px; }
 .detail-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid hsl(var(--border) / .72); padding-bottom: 10px; }
+/* 合并 tab 内的次级分组（版本历史 / 质量验收）：与上一块拉开上下文间距 */
+.run-detail-content section > .detail-heading:not(:first-child) { margin-top: 18px; padding-top: 14px; border-top: 1px dashed hsl(var(--border) / .8); border-bottom-color: hsl(var(--border) / .55); }
+.run-detail-content section > .detail-empty + .detail-heading:not(:first-child) { margin-top: 12px; }
 .detail-heading > span { display: flex; align-items: center; gap: 7px; font-size: .78rem; font-weight: 600; }
 .detail-heading small { color: hsl(var(--muted-foreground)); font-size: .62rem; }
 .detail-empty { margin-top: 20px; border-left: 2px solid hsl(var(--border)); padding: 5px 0 5px 12px; color: hsl(var(--muted-foreground)); font-size: .72rem; line-height: 1.7; }
@@ -236,16 +239,25 @@
 .detail-list li p { font-size: .76rem; line-height: 1.45; }
 .detail-record { display: flex; align-items: flex-start; gap: 9px; border: 1px solid hsl(var(--border)); padding: 10px; }
 .detail-record p { font-size: .74rem; font-weight: 600; } .detail-record span { color: hsl(var(--muted-foreground)); font-family: "SF Mono", "JetBrains Mono", monospace; font-size: .58rem; }
-.detail-metadata { margin-top: 10px; border: 1px solid hsl(var(--border)); }
+.detail-metadata { margin-top: 12px; border: 1px solid hsl(var(--border)); }
 .detail-metadata > div { display: grid; grid-template-columns: 70px 1fr; border-bottom: 1px solid hsl(var(--border) / .6); padding: 7px 9px; font-size: .67rem; }
 .detail-metadata > div:last-child { border-bottom: 0; } .detail-metadata span { color: hsl(var(--muted-foreground)); } .detail-metadata code { overflow: hidden; text-overflow: ellipsis; }
-.event-ledger, .version-ledger { margin-top: 12px; }
+.event-ledger, .version-ledger { margin-top: 14px; }
+/* 合并 tab 中账本与后续内容（如质量验收标题）之间也需要呼吸空间 */
+.event-ledger, .version-ledger { padding-bottom: 6px; }
 .event-ledger > div { display: grid; grid-template-columns: 24px 1fr auto; gap: 7px; border-bottom: 1px solid hsl(var(--border) / .55); padding: 8px 0; font-size: .66rem; }
 .event-ledger span { color: var(--desk-brass); font-family: "SF Mono", "JetBrains Mono", monospace; } .event-ledger time { color: hsl(var(--muted-foreground)); font-size: .58rem; }
 .version-ledger > div { display: flex; gap: 10px; border-bottom: 1px solid hsl(var(--border) / .55); padding: 10px 0; }
 .version-ledger > div > span { color: var(--desk-proof); font-family: "SF Mono", "JetBrains Mono", monospace; font-size: .65rem; }
 .version-ledger p { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; }
 .version-ledger small { color: hsl(var(--muted-foreground)); font-size: .58rem; }
+/* WS 会话版本历史（可点击恢复），复用 version-ledger 视觉 */
+.run-detail-session-version { display: flex; gap: 10px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid hsl(var(--border) / .55); background: transparent; padding: 10px 0; cursor: pointer; }
+.run-detail-session-version > span { color: var(--desk-proof); font-family: "SF Mono", "JetBrains Mono", monospace; font-size: .65rem; }
+.run-detail-session-version p { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; }
+.run-detail-session-version small { color: hsl(var(--muted-foreground)); font-size: .58rem; }
+.run-detail-session-version:hover p { color: hsl(var(--primary)); }
+.run-detail-session-version-loading { opacity: .5; }
 
 .quality-status { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; border: 1px solid hsl(var(--border)); padding: 10px; font-size: .72rem; }
 .quality-status p { margin-top: 2px; color: hsl(var(--muted-foreground)); font-size: .65rem; line-height: 1.5; }
@@ -815,6 +827,7 @@
 .research-field { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .research-field > span { color: hsl(var(--muted-foreground)); font-size: .62rem; }
 .research-field-wide { grid-column: span 2; }
+.research-field-hint { margin: 0; color: hsl(var(--muted-foreground) / .8); font-size: .58rem; line-height: 1.6; }
 .research-settings-problems { margin-top: 9px; border: 1px solid hsl(var(--destructive) / .4); padding: 8px 9px; }
 .research-settings-problems li { color: hsl(var(--destructive)); font-size: .66rem; line-height: 1.6; list-style: disc; margin-left: 14px; }
 .research-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 11px; }

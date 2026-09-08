@@ -1,7 +1,12 @@
 import { create } from "zustand";
 
 export type DetailPanelState = "expanded" | "collapsed" | "drawer";
-export type DetailTab = "outline" | "materials" | "run" | "quality" | "versions";
+/**
+ * 详情面板三个合并 tab：文档（大纲+版本）/ 材料 / 运行（运行记录+质量验收）。
+ * 旧值 "quality"→"run"、"versions"→"outline" 在读取时迁移（v5 布局键内的
+ * 历史偏好不丢）。
+ */
+export type DetailTab = "outline" | "materials" | "run";
 export type ComposerWidthState = "wide" | "compact";
 
 export interface WorkspaceLayoutPreference {
@@ -29,8 +34,17 @@ export const defaultWorkspaceLayout: WorkspaceLayoutPreference = {
 };
 
 const DETAIL_STATES = new Set(["expanded", "collapsed", "drawer"]);
-const DETAIL_TABS = new Set(["outline", "materials", "run", "quality", "versions"]);
+const DETAIL_TABS = new Set(["outline", "materials", "run"]);
 const COMPOSER_WIDTHS = new Set(["wide", "compact"]);
+
+/** 历史五 tab → 合并三 tab 的迁移（quality 并入 run，versions 并入 outline）。 */
+const DETAIL_TAB_MIGRATION: Record<string, DetailTab> = { quality: "run", versions: "outline" };
+
+function normalizeDetailTab(value: string | undefined): DetailTab {
+  if (value && DETAIL_TABS.has(value)) return value as DetailTab;
+  if (value && DETAIL_TAB_MIGRATION[value]) return DETAIL_TAB_MIGRATION[value];
+  return defaultWorkspaceLayout.detailTab;
+}
 
 export function layoutStorageKey(scope: WorkspaceLayoutScope): string {
   return ["lumin-writing-layout-v5", scope.userId, scope.deviceId, scope.workspaceId, scope.documentId]
@@ -41,7 +55,7 @@ export function layoutStorageKey(scope: WorkspaceLayoutScope): string {
 function normalizeLayout(value: Partial<WorkspaceLayoutPreference> | null | undefined): WorkspaceLayoutPreference {
   return {
     detailPanel: DETAIL_STATES.has(value?.detailPanel ?? "") ? value!.detailPanel! : defaultWorkspaceLayout.detailPanel,
-    detailTab: DETAIL_TABS.has(value?.detailTab ?? "") ? value!.detailTab! : defaultWorkspaceLayout.detailTab,
+    detailTab: normalizeDetailTab(value?.detailTab),
     composerWidth: COMPOSER_WIDTHS.has(value?.composerWidth ?? "") ? value!.composerWidth! : defaultWorkspaceLayout.composerWidth,
   };
 }

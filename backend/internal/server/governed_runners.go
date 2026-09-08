@@ -275,8 +275,10 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 		slog.Warn("governed runtime: research outline executor construction failed", "error", err)
 	}
 	// Draft: the LLM generator over the server's existing model config; nil
-	// LLM defers to an honest RESEARCH_UNAVAILABLE pause at dispatch.
-	draft, err := writingruntime.NewResearchDraftExecutor(canonical, writingruntime.LLMResearchDraftGenerator{LLM: factoryLLM(s)})
+	// LLM defers to an honest RESEARCH_UNAVAILABLE pause at dispatch. The
+	// style resolver is optional: a non-empty run style_slug (user opt-in at
+	// the research form) injects the global style as advisory prose guidance.
+	draft, err := writingruntime.NewResearchDraftExecutor(canonical, writingruntime.LLMResearchDraftGenerator{LLM: factoryLLM(s)}, governedStyleResolver{server: s})
 	if err != nil {
 		slog.Warn("governed runtime: research draft executor construction failed", "error", err)
 	}

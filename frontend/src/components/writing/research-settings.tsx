@@ -7,7 +7,7 @@
  * document → contract(v1.1) → confirm → plan → run 创建链路（F1）。
  * 客户端提示约束（如 max_papers ≤ 20），提交仍以服务端校验为准。
  */
-import { BookOpenText, FlaskConical, Globe, Loader2, X } from "lucide-react";
+import { BookOpenText, FlaskConical, Globe, Loader2, Palette, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,9 @@ interface ResearchSettingsProps {
   lengthMax: string;
   allowExternalResearch: boolean;
   onAllowExternalResearchChange?: (value: boolean) => void;
+  /** composer 当前选中的全局风格 slug（「参考文章风格」开启时随运行传入）。 */
+  styleSlug: string;
+  styleName?: string;
   /** composer 挂载素材的服务端引用（运行创建时随文档 metadata 透传）。 */
   materialRefs?: ResearchMaterialRef[];
   onClose: () => void;
@@ -51,7 +54,7 @@ function toText(value: string | number | undefined | null): string {
   return value === undefined || value === null ? "" : String(value);
 }
 
-export function ResearchSettings({ centralQuestion, audience, language, lengthMin, lengthMax, allowExternalResearch, onAllowExternalResearchChange, materialRefs, onClose, onStarted }: ResearchSettingsProps) {
+export function ResearchSettings({ centralQuestion, audience, language, lengthMin, lengthMax, allowExternalResearch, onAllowExternalResearchChange, styleSlug, styleName, materialRefs, onClose, onStarted }: ResearchSettingsProps) {
   const defaults = defaultResearchSpecDraft();
   const [draft, setDraft] = useState<ResearchSpecDraft>(() => ({
     ...defaults,
@@ -66,6 +69,9 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
   const [problems, setProblems] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  // 「参考文章风格」默认关：综述保持中性学术文风；开启后生成措辞参考
+  // composer 当前选中的全局风格（run 级 advisory 配置，不进合同哈希）。
+  const [applyStyle, setApplyStyle] = useState(false);
 
   // 实验室勾选 + 部署硬开关（与 mode-picker 同一可用性判定）。
   const featureEnabled = useSettingsStore((s) => s.enableResearchReview) && !isResearchReviewHardOff();
@@ -96,6 +102,12 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
       setProblems(launchProblems);
       return;
     }
+    // 关闭联网检索（F5 用户材料路径）：必须挂载至少一份带服务端标识的素材，
+    // 否则服务端会以 RESEARCH_MATERIALS_REQUIRED 拒绝——提前在表单拦截并说明。
+    if (!draft.allow_external_research && !(materialRefs && materialRefs.length > 0)) {
+      setProblems(["关闭联网检索时，请先在 composer 挂载至少一份素材（用户论文）；或将开关打开以联网检索文献。"]);
+      return;
+    }
     setProblems([]);
     setSubmitting(true);
     try {
@@ -107,6 +119,8 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
         length_min: draft.length_min,
         length_max: draft.length_max,
         allow_external_research: draft.allow_external_research,
+        apply_style: applyStyle,
+        style_slug: styleSlug,
         material_refs: materialRefs,
       });
       onStarted?.(run_id);
@@ -197,6 +211,16 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
             onAllowExternalResearchChange?.(checked);
           }} aria-label="允许联网检索外部来源" />
         </label>
+        <label className="research-field research-field-wide">
+          <span className="flex items-center gap-1.5 min-w-0">
+            <Palette className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 truncate">参考文章风格{applyStyle && styleName ? `：${styleName}` : ""}</span>
+          </span>
+          <Switch checked={applyStyle} onCheckedChange={setApplyStyle} aria-label="参考文章风格" />
+        </label>
+        <p className="research-field-hint research-field-wide">
+          开启后正文措辞会参考你在 composer 选择的全局风格；默认关闭，保持中性的学术综述文风。引用与证据归属不受风格影响。
+        </p>
       </div>
 
       {(problems.length > 0 || apiError) && (

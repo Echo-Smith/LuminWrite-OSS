@@ -125,6 +125,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   });
   const [mode, setMode] = useState<WriteMode>(sessionMode);
   const [style, setStyle] = useState(sessionStyle);
+  // 研究综述的联网开关是真实状态：关闭时走用户材料路径（F5），无挂载材料
+  // 会被服务端以 RESEARCH_MATERIALS_REQUIRED 明确拒绝（启动前前端也拦截）。
+  const [researchExternalResearch, setResearchExternalResearch] = useState(true);
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("auto");
   const [assuranceLevel, setAssuranceLevel] = useState<AssuranceLevel>("standard");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("conditional");
@@ -397,7 +400,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
               language="中文"
               lengthMin=""
               lengthMax=""
-              allowExternalResearch
+              allowExternalResearch={researchExternalResearch}
+              onAllowExternalResearchChange={setResearchExternalResearch}
+              styleSlug={style}
               // 素材引用透传（F1）：带服务端标识的挂载素材随文档 metadata.material_refs
               // 交给运行时在运行开始时快照；粘贴文本无服务端标识，不冒充引用。
               materialRefs={materials
