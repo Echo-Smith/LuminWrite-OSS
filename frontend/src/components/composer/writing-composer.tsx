@@ -17,7 +17,6 @@ import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
 import { StyleAssistantDialog } from "./style-assistant-dialog";
 import { Lumi } from "@/components/lumi/lumi";
-import { useStyleChatStore } from "@/stores/style-chat-store";
 import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
 import { KnowledgeMaterialDialog } from "./knowledge-material-dialog";
 import { ResearchSettings } from "@/components/writing/research-settings";
@@ -183,14 +182,6 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
 
   const isRunning = (sessionStatus === "running" && !isAwaitingInput) || isWorkflowBusy;
   const isPaused = sessionStatus === "paused";
-
-  // 风格助手（Lumi）：图标跟随对话状态动效（思考圆点/书写笔）；有可保存风格未应用时亮黄铜角标
-  const styleChatOpen = useStyleChatStore((s) => s.open);
-  const styleChatPhase = useStyleChatStore((s) => s.phase);
-  const styleChatUnapplied = useStyleChatStore((s) => s.unappliedReady);
-  const setStyleChatOpen = useStyleChatStore((s) => s.setOpen);
-  // done 不常驻入口：只在助手工作期间呈现动效
-  const lumiEntryState = styleChatPhase === "thinking" || styleChatPhase === "writing" ? styleChatPhase : "idle";
 
   // 暴露编辑器方法给父组件（用于 Cmd+K 快捷键 + 外部调用）
   useImperativeHandle(ref, () => ({
@@ -553,24 +544,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
             </button>
           )}
 
-          {/* 左侧：风格选择（紧挨模式右侧） */}
+          {/* 左侧：风格选择（紧挨模式右侧，含「使用 Lumi 创建写作风格」入口） */}
           <StylePicker value={style} onChange={handleStyleChange} compact={compact} />
-
-          {/* 左侧：风格助手 Lumi（对话共创风格，ready 未保存时亮黄铜角标） */}
-          <button
-            onClick={() => setStyleChatOpen(true)}
-            className={cn(
-              "relative flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground transition-ui",
-              styleChatOpen ? "bg-accent text-foreground" : "hover:bg-accent hover:text-foreground",
-            )}
-            aria-label="风格助手 Lumi"
-            title="风格助手 Lumi"
-          >
-            <Lumi state={lumiEntryState} size={18} />
-            {styleChatUnapplied && !styleChatOpen && (
-              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-background bg-[color:var(--desk-brass)]" />
-            )}
-          </button>
 
           {/* 右侧弹性间距 */}
           <div className="flex-1" />

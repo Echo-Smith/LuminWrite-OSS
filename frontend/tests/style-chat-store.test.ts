@@ -82,3 +82,72 @@ test("send 进行中重复发送被守卫拦截", async () => {
   assert.equal(sentBodies.length, countBefore, "busy 期间第二次 send 未发出网络请求");
   await first;
 });
+
+// —— 展示层净化：气泡不得出现 JSON / markdown 痕迹 ——
+
+/** 可编程回复的 mock：注入一次后自动还原 */
+async function withReplyOnce(message: string, run: () => Promise<void>) {
+  const original = mockFetch;
+  globalThis.fetch = async (input: Request | string, init?: { body?: string }) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/style-builder/sessions/s-1/messages")) {
+      return { ok: true, json: async () => ({ success: true, data: { message, ready: true, profile: { name: "n", description: "d" } } }) };
+    }
+    return original(input as Parameters<typeof fetch>[0], init as never);
+  };
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+test("裸 JSON 配置直出时气泡只保留对话前缀，无 JSON 痕迹", async () => {
+  const s = useStyleChatStore.getState();
+  s.reset();
+  useStyleChatStore.setState({ sessionId: "s-1" });
+  await withReplyOnce(
+    '好的，风格已提炼完成：冷静克制、短句为主。\n\n{"slug":"calm","name":"冷静克制","system_prompt":"x","word_range":{"min":800,"max":1500}}',
+    async () => {
+      await s.send("帮我提炼");
+    },
+  );
+  const reply = useStyleChatStore.getState().messages.filter((m) => m.role === "assistant").at(-1);
+  assert.ok(reply);
+  assert.ok(reply.content.includes("冷静克制、短句为主"), "对话前缀保留");
+  assert.ok(!reply.content.includes("{"), "无 JSON 花括号");
+  assert.ok(!reply.content.includes('"slug"'), "无 JSON 字段");
+});
+
+test("markdown 围栏 JSON、标题井号、加粗与行内代码不露出修饰符号", async () => {
+  const s = useStyleChatStore.getState();
+  s.reset();
+  useStyleChatStore.setState({ sessionId: "s-1" });
+  await withReplyOnce(
+    '## 风格要点\n\n**短句**为主，用词`克制`。\n\n```json\n{"slug":"a","name":"A","system_prompt":"x"}\n```\n',
+    async () => {
+      await s.send("继续");
+    },
+  );
+  const reply = useStyleChatStore.getState().messages.filter((m) => m.role === "assistant").at(-1);
+  assert.ok(reply);
+  assert.ok(!reply.content.includes("#"), "无标题井号");
+  assert.ok(!reply.content.includes("**"), "无加粗星号");
+  assert.ok(!reply.content.includes("`"), "无反引号");
+  assert.ok(!reply.content.includes("```"), "无代码围栏");
+  assert.ok(reply.content.includes("短句为主"), "正文保留（加粗已剥）");
+  assert.ok(!reply.content.includes('"slug"'), "围栏内 JSON 已剥");
+});
+
+test("对话中的普通 JSON 举例（非风格配置）不被误删", async () => {
+  const s = useStyleChatStore.getState();
+  s.reset();
+  useStyleChatStore.setState({ sessionId: "s-1" });
+  const plain = '比如字数范围可以写成 {"min": 800, "max": 1500} 这样的结构，你觉得如何？';
+  await withReplyOnce(plain, async () => {
+    await s.send("字数怎么定");
+  });
+  const reply = useStyleChatStore.getState().messages.filter((m) => m.role === "assistant").at(-1);
+  assert.ok(reply);
+  assert.ok(reply.content.includes('{"min": 800, "max": 1500}'), "普通 JSON 举例保留");
+});

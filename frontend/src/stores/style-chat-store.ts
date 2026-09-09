@@ -66,6 +66,60 @@ function chunkText(text: string): Array<{ text: string; delayMs: number }> {
   return chunks;
 }
 
+/** 从尾部找最后一个平衡 JSON 对象的起点（后端 stripTrailingJSON 同款算法） */
+function trailingJSONObjectStart(text: string): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === '"' && (i === 0 || text[i - 1] !== "\\")) inString = !inString;
+    if (inString) continue;
+    if (ch === "}") depth++;
+    else if (ch === "{") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 对话流展示净化：Lumi 气泡只呈现对话散文。后端为兼容 my-styles 页的
+ * 可折叠 JSON 卡片仍返回含配置 JSON 的完整回复（style_builder.go 注释所
+ * 述），这里在展示层剥掉它——markdown 围栏包裹的 JSON、裸 JSON 对象、
+ * 残缺的孤立围栏，以及常见 markdown 修饰标记，都不得出现在打字机 reveal 中。
+ */
+function sanitizeReplyForChat(text: string): string {
+  let out = text;
+  // 1) 成对代码围栏整体剥除（任何语言标签；对话气泡不展示代码块）
+  out = out.replace(/```[a-zA-Z]*\s*\n?[\s\S]*?\n?```/g, "");
+  // 2) 尾部裸 JSON：仅当 } 是全文最后一个非空白字符时剥（配置直出形态）；
+  //    解析出的对象须像风格配置，防止误删对话里的普通 JSON 举例。
+  const trimmedEnd = out.replace(/\s+$/, "");
+  if (trimmedEnd.endsWith("}")) {
+    const start = trailingJSONObjectStart(trimmedEnd);
+    if (start >= 0) {
+      const body = trimmedEnd.slice(start);
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        if (parsed.slug !== undefined || parsed.name !== undefined || parsed.system_prompt !== undefined) {
+          out = trimmedEnd.slice(0, start);
+        }
+      } catch {
+        // 不是合法 JSON，保留原文
+      }
+    }
+  }
+  // 3) 残缺尾部：孤立的 ``` 或 ```json 开栏（LLM 截断时常见）
+  out = out.replace(/```(?:json)?\s*$/g, "");
+  // 4) markdown 修饰转纯文本：气泡是纯文本渲染，宁可丢样式也不露符号
+  out = out
+    .replace(/^#{1,6}\s+/gm, "") // 标题井号
+    .replace(/(\*\*|__)(.*?)\1/g, "$2") // 加粗
+    .replace(/`([^`\n]+)`/g, "$1"); // 行内代码
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export const useStyleChatStore = create<StyleChatState>((set, get) => ({
   open: false,
   sessionId: null,
@@ -133,9 +187,12 @@ export const useStyleChatStore = create<StyleChatState>((set, get) => ({
       const json = await res.json();
       if (!json.success) throw new Error(json.error?.message ?? "请求失败");
 
-      const reply = (json.data.message as string) ?? "";
-      const profile = (json.data.profile ?? null) as Record<string, unknown> | null;
       const ready = Boolean(json.data.ready);
+      const profile = (json.data.profile ?? null) as Record<string, unknown> | null;
+      // 展示层剥 JSON/markdown；模型只直出配置 JSON 时退化为一句对话文本
+      const reply =
+        sanitizeReplyForChat((json.data.message as string) ?? "") ||
+        (ready ? "风格已经提炼好了，可以直接保存。" : "");
       const profileInfo: StyleChatProfileInfo | null = profile
         ? {
             name: (profile.name as string) ?? null,

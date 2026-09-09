@@ -11,7 +11,6 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import { MarkdownContent } from "@/components/assistant-ui/markdown-content";
 import { Lumi } from "@/components/lumi/lumi";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -83,8 +82,9 @@ function AssistantBubble({ message }: { message: StyleChatMessage }) {
     <div className="group/msg flex items-start gap-2.5">
       <Lumi state={message.revealing ? "writing" : "idle"} size={26} className="mt-0.5 text-foreground" />
       <div className="min-w-0 max-w-[92%]">
-        <div className="rounded-2xl rounded-tl-md border bg-background px-3.5 py-2.5 text-sm leading-relaxed prose-sm">
-          <MarkdownContent content={message.content} />
+        {/* 对话气泡是纯文本：markdown/JSON 已在 store 层净化，不用文章排版渲染 */}
+        <div className="whitespace-pre-wrap rounded-2xl rounded-tl-md border bg-background px-3.5 py-2.5 text-sm leading-relaxed">
+          {message.content}
         </div>
         {!message.revealing && message.content && (
           <div className="mt-1 flex gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">

@@ -23,6 +23,7 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
   const [open, setOpen] = useState(false);
   const listVersion = useStyleListStore((s) => s.version);
   const openAssistant = useStyleChatStore((s) => s.setOpen);
+  const unappliedReady = useStyleChatStore((s) => s.unappliedReady);
   const token = useAuthStore((s) => s.token);
 
   const loadStyles = useCallback(() => {
@@ -57,21 +58,41 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
-            aria-label={`写作风格：${selected?.name ?? "未选择"}`}
+            aria-label={`写作风格：${selected?.name ?? (value === "" ? "默认" : "未选择")}`}
             className="composer-style-trigger flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
           >
             <span key={`style-icon-${value}`} className="flex items-center anim-fade-scale">
               <Palette className="h-[18px] w-[18px] text-[color:var(--desk-brass)]" />
             </span>
             <span key={`style-label-${selected?.slug ?? 'none'}`} className={cn("composer-control-label anim-fade-scale", compact && "sr-only")}>
-              {selected?.name ?? "选择风格"}
+              {selected?.name ?? (value === "" ? "默认" : "选择风格")}
             </span>
             <ChevronDown className={cn("composer-control-chevron h-4 w-4 opacity-50", compact && "hidden")} />
           </button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-80 max-h-[400px] overflow-y-auto">
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground px-1 pb-2">全局风格</p>
+            {/* 默认：不注入任何风格，模型按中性语风写作（空 style_slug 两条后端路径均安全降级） */}
+            <button
+              onClick={() => {
+                onChange("");
+                setOpen(false);
+              }}
+              className={cn(
+                "flex w-full flex-col items-start gap-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent",
+                value === "" && "bg-accent/50"
+              )}
+            >
+              <div className="flex w-full items-center justify-between">
+                <span className="text-sm font-medium">默认</span>
+                <span className="text-xs text-muted-foreground">不使用风格</span>
+              </div>
+              <span className="text-xs text-muted-foreground">按平台中性的写作语风输出，不套用任何风格模板</span>
+            </button>
+
+            <div className="border-t pt-2 mt-2">
+              <p className="text-xs font-medium text-muted-foreground px-1 pb-2">全局风格</p>
+            </div>
             {styles.length === 0 && (
               <p className="text-center text-xs text-muted-foreground py-4">加载中...</p>
             )}
@@ -146,10 +167,13 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
                   setOpen(false);
                   openAssistant(true);
                 }}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                className="relative flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
               >
                 <Sparkles className="h-4 w-4" />
-                AI 创建自定义风格
+                使用 Lumi 创建写作风格
+                {unappliedReady && (
+                  <span className="absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-[color:var(--desk-brass)]" />
+                )}
               </button>
             </div>
           </div>
