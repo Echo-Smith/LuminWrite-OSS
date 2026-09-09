@@ -17,13 +17,15 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { PulseIndicator } from "@/components/animation";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { pendingGate, researchSliceActive, type ResearchSlice } from "@/stores/research-slice";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { Lumi, type LumiState } from "@/components/lumi/lumi";
 import { useAgentWebSocket } from "@/hooks/use-agent-websocket";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import { ResearchProgress } from "@/components/writing/research-progress";
+import { ResearchProgress, researchPhaseLabel } from "@/components/writing/research-progress";
 import { ResearchGatePanel } from "@/components/writing/research-gate-panel";
 import { ResearchEvidencePanel } from "@/components/writing/research-evidence-panel";
 import { ResearchQualityGateCard } from "@/components/writing/research-quality-gate-card";
@@ -160,6 +162,22 @@ function ResearchWorkbench({ runId }: { runId: string }) {
 
   return (
     <section className="research-workbench" aria-label="研究综述工作台">
+      {/* Lumi 研究指示：检索阅读=思考圆点，撰写=摆笔，失败=断墨 */}
+      {(() => {
+        const phase = research.progress?.phase ?? null;
+        const state: LumiState =
+          phase === "failed" ? "error"
+          : phase === "writing" ? "writing"
+          : phase && phase !== "pending" ? "thinking"
+          : "idle";
+        const show = state !== "idle";
+        return show ? (
+          <div className="flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground">
+            <Lumi state={state} size={16} />
+            <span>{phase === "failed" ? "研究运行失败" : `Lumi 正在${researchPhaseLabel(phase ?? "")}`}</span>
+          </div>
+        ) : null;
+      })()}
       <div className="research-workbench-grid">
         <div className="research-workbench-main">
           <ResearchProgress runId={runId} slice={research} maxPapers={maxPapers} />
@@ -295,6 +313,32 @@ export function WritingWorkspace() {
 
   const citationSurfaceContext = useCitationSurfaceContext();
 
+  // 工具栏 Lumi 指示：合并 agent 会话状态与编辑部工作流状态
+  const agentMode = useSettingsStore((state) => state.agentMode);
+  const wfRunStatus = useWorkflowStore((state) => state.runStatus);
+  const sessionStatus = session?.status ?? "idle";
+  const awaitingInput = session?.awaitInputAt != null;
+  const lumiToolbarState: LumiState = useMemo(() => {
+    if (agentMode === "editorial") {
+      if (wfRunStatus === "failed") return "error";
+      if (wfRunStatus === "paused") return "paused";
+      if (wfRunStatus === "planning" || wfRunStatus === "created") return "thinking";
+      if (wfRunStatus === "running") return "writing";
+      return "idle";
+    }
+    if (sessionStatus === "error") return "error";
+    if (sessionStatus === "paused") return "paused";
+    if (awaitingInput) return "thinking";
+    if (sessionStatus === "running") return "writing";
+    return "idle";
+  }, [agentMode, wfRunStatus, sessionStatus, awaitingInput]);
+  const lumiToolbarTitle =
+    lumiToolbarState === "writing" ? "写作进行中"
+    : lumiToolbarState === "thinking" ? "等待确认"
+    : lumiToolbarState === "paused" ? "已暂停"
+    : lumiToolbarState === "error" ? "运行失败"
+    : "";
+
   const governedVersion = useMemo(() => {
     return versions.find((item) => item.document.version_id === runtimeDocument?.current_version_id)?.document
       ?? versions[versions.length - 1]?.document
@@ -419,6 +463,12 @@ export function WritingWorkspace() {
           <div className="flex min-w-0 items-center gap-2">
             {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="workspace-icon-button" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>}
             <div className="min-w-0"><h2>{title}</h2></div>
+            {/* Lumi 运行指示：思考（含等提纲确认）/书写/出错；完成后闪一次星星 */}
+            {lumiToolbarState !== "idle" && (
+              <span key={`lumi-${lumiToolbarState}`} className="anim-fade-scale flex items-center" title={lumiToolbarTitle}>
+                <Lumi state={lumiToolbarState} size={18} />
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {!connected && <button className="workspace-connection" onClick={handleReconnect}><PulseIndicator status="paused" size="sm" ring={false} /><span>重新连接</span><RefreshCw className="h-3 w-3" /></button>}
@@ -438,6 +488,7 @@ export function WritingWorkspace() {
             provisionalDeltas={provisionalDeltas}
             qualityState={quality?.quality_state ?? versions[versions.length - 1]?.quality_state}
             onRevisionSet={setPendingRevision}
+            onPolishSelection={(text) => composerRef.current?.beginPolish(text)}
             citationContext={citationSurfaceContext}
             beforePaper={session?.messages.length ? <Thread variant="flow" /> : undefined}
             afterPaper={feedbackContext ? (

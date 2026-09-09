@@ -32,16 +32,23 @@ test("web and iOS PNGs expose RGBA assets at their target sizes", () => {
   }
 });
 
-test("favicon, touch icon, inline React icon, and standalone pages share the theme mapping", () => {
+test("tab favicon uses the Lumi silhouette; in-app brand icons keep the theme mapping", () => {
   const index = read("index.html") as string;
   const component = read("src/components/brand-icon.tsx") as string;
   const themeHook = read("src/hooks/use-theme.ts") as string;
   const notFound = read("public/404.html") as string;
   const maintenance = read("public/maintenance.html") as string;
 
-  assert.match(index, /id="app-favicon-svg"[^>]+href="\/favicon\.svg"/);
+  // 标签页 favicon 已换成 Lumi 静置钢笔剪影（明暗两版）
+  assert.match(index, /id="app-favicon-svg"[^>]+href="\/favicon-lumi\.svg"/);
+  assert.match(themeHook, /light:[\s\S]+svg: "\/favicon-lumi\.svg"[\s\S]+dark:[\s\S]+svg: "\/favicon-lumi-dark\.svg"/);
+  const lumi = read("public/favicon-lumi.svg") as string;
+  assert.match(lumi, /fill="#191816"/);
+  const lumiDark = read("public/favicon-lumi-dark.svg") as string;
+  assert.match(lumiDark, /fill="#fcfbf7"/);
+
+  // 应用内 logo 与独立页（404/维护页）仍用原书法笔图标
   assert.match(index, /id="apple-touch-icon"[^>]+href="\/apple-touch-icon\.png"/);
-  assert.match(themeHook, /dark:[\s\S]+svg: "\/favicon-dark\.svg"/);
   assert.match(component, /src="\/favicon\.svg"[\s\S]+dark:hidden/);
   assert.match(component, /src="\/favicon-dark\.svg"[\s\S]+dark:block/);
   assert.match(notFound, /src="\/favicon-dark\.svg"/);

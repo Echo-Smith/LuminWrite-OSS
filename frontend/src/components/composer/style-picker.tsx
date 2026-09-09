@@ -1,13 +1,14 @@
 /**
  * 风格选择器 — Popover 下拉选择
- * 支持全局风格 + 用户自定义风格 + AI 创建入口
+ * 支持全局风格 + 用户自定义风格 + Lumi 对话创建入口
  */
 import { useState, useEffect, useCallback } from "react";
 import { Palette, ChevronDown, Sparkles } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
-import { StyleBuilderDialog } from "@/components/composer/style-builder-dialog";
 import { useAuthStore } from "@/stores/auth-store";
+import { useStyleListStore } from "@/stores/style-list-store";
+import { useStyleChatStore } from "@/stores/style-chat-store";
 import type { StyleOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +21,8 @@ interface StylePickerProps {
 export function StylePicker({ value, onChange, compact = false }: StylePickerProps) {
   const [styles, setStyles] = useState<StyleOption[]>([]);
   const [open, setOpen] = useState(false);
-  const [builderOpen, setBuilderOpen] = useState(false);
+  const listVersion = useStyleListStore((s) => s.version);
+  const openAssistant = useStyleChatStore((s) => s.setOpen);
   const token = useAuthStore((s) => s.token);
 
   const loadStyles = useCallback(() => {
@@ -43,7 +45,7 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
 
   useEffect(() => {
     loadStyles();
-  }, [loadStyles]);
+  }, [loadStyles, listVersion]);
 
   const selected = styles.find((s) => s.slug === value);
 
@@ -142,7 +144,7 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
               <button
                 onClick={() => {
                   setOpen(false);
-                  setBuilderOpen(true);
+                  openAssistant(true);
                 }}
                 className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
               >
@@ -153,14 +155,6 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
           </div>
         </PopoverContent>
       </Popover>
-
-      <StyleBuilderDialog
-        open={builderOpen}
-        onOpenChange={setBuilderOpen}
-        onCreated={() => {
-          loadStyles();
-        }}
-      />
     </>
   );
 }

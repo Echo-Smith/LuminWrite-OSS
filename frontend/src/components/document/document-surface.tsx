@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
+import { useRef } from "react";
 import { FilePenLine, FileText, Radio } from "lucide-react";
 import { DocumentBlock } from "./document-block";
 import type { DocumentVersion, QualityState, Revision, RevisionSet } from "@/lib/writing-runtime-types";
 import { QUALITY_STATE_COPY } from "@/lib/writing-runtime-types";
 import { CitationAwareText, CitationRenderContext, InlineCitationText, type CitationRenderContextValue } from "@/components/writing/research-citation-popover";
+import { SelectionLumi } from "@/components/lumi/selection-lumi";
 
 interface DocumentSurfaceProps {
   title: string;
@@ -14,6 +16,8 @@ interface DocumentSurfaceProps {
   onRevisionSet?: (set: RevisionSet) => void;
   beforePaper?: ReactNode;
   afterPaper?: ReactNode;
+  /** 选中正文后点「让 Lumi 润色」回调选中文本 */
+  onPolishSelection?: (text: string) => void;
   /**
    * 纸面内联引用上下文（T09）：提供后，正文中的 [@ev_xxx] 标记在渲染时转换为
    * 上标编号链接并打开引用气泡；数据不改写。缺省时正文原样渲染。
@@ -30,10 +34,12 @@ export function DocumentSurface({
   onRevisionSet,
   beforePaper,
   afterPaper,
+  onPolishSelection,
   citationContext = null,
 }: DocumentSurfaceProps) {
   const deltas = Object.entries(provisionalDeltas).filter(([, value]) => value.trim());
   const hasDraft = Boolean(version || legacyDraft?.trim());
+  const documentBodyRef = useRef<HTMLDivElement | null>(null);
   const handleRevision = (revision: Revision) => {
     if (!version) return;
     onRevisionSet?.({ base_version: version.version_id, revisions: [revision] });
@@ -54,7 +60,8 @@ export function DocumentSurface({
             <h1>{title || "未命名文档"}</h1>
           </header>
 
-          <div className="document-body">
+          <div className="document-body" ref={documentBodyRef}>
+            {onPolishSelection && <SelectionLumi containerRef={documentBodyRef} onPolish={onPolishSelection} />}
             <CitationRenderContext.Provider value={citationContext}>
               {version ? (
                 <DocumentBlock node={version.root} onRevision={onRevisionSet ? handleRevision : undefined} />

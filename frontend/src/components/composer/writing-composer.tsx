@@ -11,10 +11,13 @@
  *   - 基于 Tiptap/ProseMirror 的富文本编辑器
  */
 import { useState, useRef, useCallback, useEffect, useMemo, forwardRef, useImperativeHandle, type ChangeEvent, type DragEvent } from "react";
-import { Square, Plus, X, PenLine, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus, FileUp, Upload, ChevronRight, BookOpenText } from "lucide-react";
+import { Square, Plus, X, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus, FileUp, Upload, ChevronRight, BookOpenText } from "lucide-react";
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
+import { StyleAssistantDialog } from "./style-assistant-dialog";
+import { Lumi } from "@/components/lumi/lumi";
+import { useStyleChatStore } from "@/stores/style-chat-store";
 import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
 import { KnowledgeMaterialDialog } from "./knowledge-material-dialog";
 import { ResearchSettings } from "@/components/writing/research-settings";
@@ -38,6 +41,8 @@ export interface WritingComposerHandle {
   clear: () => void;
   /** 在光标处插入文本 */
   insertText: (text: string) => void;
+  /** 正文选区唤起润色：切 polish 模式并预填选段 */
+  beginPolish: (text: string) => void;
 }
 
 interface WritingComposerProps {
@@ -179,13 +184,29 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   const isRunning = (sessionStatus === "running" && !isAwaitingInput) || isWorkflowBusy;
   const isPaused = sessionStatus === "paused";
 
+  // 风格助手（Lumi）：图标跟随对话状态动效（思考圆点/书写笔）；有可保存风格未应用时亮黄铜角标
+  const styleChatOpen = useStyleChatStore((s) => s.open);
+  const styleChatPhase = useStyleChatStore((s) => s.phase);
+  const styleChatUnapplied = useStyleChatStore((s) => s.unappliedReady);
+  const setStyleChatOpen = useStyleChatStore((s) => s.setOpen);
+  // done 不常驻入口：只在助手工作期间呈现动效
+  const lumiEntryState = styleChatPhase === "thinking" || styleChatPhase === "writing" ? styleChatPhase : "idle";
+
   // 暴露编辑器方法给父组件（用于 Cmd+K 快捷键 + 外部调用）
   useImperativeHandle(ref, () => ({
     focusTextarea: () => editorRef.current?.focus(),
     getText: () => editorRef.current?.getText() ?? "",
     clear: () => editorRef.current?.clear(),
     insertText: (text: string) => editorRef.current?.insertText(text),
-  }), []);
+    /** 正文选区唤起：切到润色模式并预填选中文本，聚焦输入行等用户确认 */
+    beginPolish: (text: string) => {
+      handleModeChange("polish");
+      editorRef.current?.clear();
+      editorRef.current?.insertText(`请润色文中这段文字，保持事实与结构，只优化表达：\n\n「${text}」`);
+      editorRef.current?.focus();
+      toast.info("已切到润色模式，确认后发送");
+    },
+  }), [handleModeChange]);
 
   // handleSend 读取编辑器实时文本（避免 message 状态闭包延迟）
   const handleSend = useCallback(() => {
@@ -535,6 +556,22 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
           {/* 左侧：风格选择（紧挨模式右侧） */}
           <StylePicker value={style} onChange={handleStyleChange} compact={compact} />
 
+          {/* 左侧：风格助手 Lumi（对话共创风格，ready 未保存时亮黄铜角标） */}
+          <button
+            onClick={() => setStyleChatOpen(true)}
+            className={cn(
+              "relative flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground transition-ui",
+              styleChatOpen ? "bg-accent text-foreground" : "hover:bg-accent hover:text-foreground",
+            )}
+            aria-label="风格助手 Lumi"
+            title="风格助手 Lumi"
+          >
+            <Lumi state={lumiEntryState} size={18} />
+            {styleChatUnapplied && !styleChatOpen && (
+              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-background bg-[color:var(--desk-brass)]" />
+            )}
+          </button>
+
           {/* 右侧弹性间距 */}
           <div className="flex-1" />
 
@@ -574,7 +611,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
                 title="发送 (Enter)"
               >
                 <span key="send-icon" className="anim-fade-scale flex items-center justify-center">
-                  <PenLine className="h-[18px] w-[18px]" />
+                  <Lumi state="idle" size={18} />
                 </span>
               </button>
             )}
@@ -598,6 +635,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
         attachedMaterialIds={attachedMaterialIds}
         onAddMaterials={handlePickMaterials}
       />
+      <StyleAssistantDialog />
     </div>
   );
 });

@@ -15,6 +15,7 @@ import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, Comp
 import type { WriteMode } from "@/lib/types";
 import { exportMarkdown, exportWord, exportPDF } from "@/lib/export-utils";
 import { useAgentStore } from "@/stores/agent-store";
+import { Lumi, type LumiState } from "@/components/lumi/lumi";
 import { MarkdownContent } from "./markdown-content";
 import { OutlineTool } from "@/components/tools/outline-tool";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
@@ -63,10 +64,17 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
 
   const isRunning = message.status === "running";
   const hasContent = message.parts.length > 0;
+  // Lumi 头像：出错断墨 → 等待思考圆点 → 生成中摆笔 → 完成静置
+  const lumiState: LumiState =
+    message.status === "error" ? "error"
+    : isRunning ? (hasContent ? "writing" : "thinking")
+    : "idle";
 
   return (
     <div className={cn("px-4 py-3 anim-fade-up", suppressArticle && "assistant-process-message")}>
-      <div className="space-y-2">
+      <div className="flex items-start gap-2.5">
+        <Lumi state={lumiState} size={24} className="mt-0.5 shrink-0 text-foreground" />
+        <div className="min-w-0 flex-1 space-y-2">
         {/* 对话历史压缩状态条 */}
         {compactionParts.length > 0 && (
           <CompactionBanner part={compactionParts[compactionParts.length - 1]} />
@@ -149,6 +157,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             <TypingDots label="正在思考中" shimmer />
           </div>
         )}
+        </div>
       </div>
     </div>
   );

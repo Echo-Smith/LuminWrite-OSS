@@ -12,12 +12,12 @@ const STORAGE_KEY = "luminbuddy-theme";
 
 const THEME_ICON_ASSETS = {
   light: {
-    svg: "/favicon.svg",
+    svg: "/favicon-lumi.svg",
     png: "/app-icon.png",
     apple: "/apple-touch-icon.png",
   },
   dark: {
-    svg: "/favicon-dark.svg",
+    svg: "/favicon-lumi-dark.svg",
     png: "/app-icon-dark.png",
     apple: "/apple-touch-icon-dark.png",
   },

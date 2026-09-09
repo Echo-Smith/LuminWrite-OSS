@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "node --test tests/*.test.ts",
+    "test": "node --import ./tests/register-alias.mjs --test tests/*.test.ts",
     "test:wabench": "node --test tests/wabench-eval.test.ts",
     "test:brand": "node --test tests/brand-icon-assets.test.ts"
   },
@@ -31,6 +31,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@shadcn/react": "^0.3.1",
     "@tiptap/extension-character-count": "^3.30.3",
     "@tiptap/extension-placeholder": "^3.30.3",
     "@tiptap/pm": "^3.30.3",

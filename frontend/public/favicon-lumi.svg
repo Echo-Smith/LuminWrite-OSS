@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Lumi idle 态静置钢笔剪影（与 components/lumi 引擎 idle 关键帧一致） -->
+  <g transform="translate(24 24)">
+    <path fill="#191816" d="M -3.20 -15.20 Q -1.60 -16.00 0 -16.00 Q 1.60 -16.00 3.20 -15.20 L 3.20 10.00 Q 3.20 13.00 2.20 15.00 Q 1.10 17.00 0 19.00 Q -1.10 17.00 -2.20 15.00 Q -3.20 13.00 -3.20 10.00 Z"/>
+    <circle cx="0" cy="19" r="0.01" fill="#9a6b2f"/>
+  </g>
+</svg>

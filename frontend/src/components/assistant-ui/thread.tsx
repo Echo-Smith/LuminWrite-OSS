@@ -11,10 +11,11 @@
  *   - 请求失败或为空时 fallback 到硬编码建议
  */
 import { useRef, useEffect, useCallback, useMemo, useState } from "react";
-import { PenLine, Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-react";
+import { Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-react";
 import { UserMessage } from "./user-message";
 import { AssistantMessage } from "./assistant-message";
 import { useAgentStore } from "@/stores/agent-store";
+import { Lumi } from "@/components/lumi/lumi";
 import { FadeIn, StaggerItem } from "@/components/animation";
 import type { Topic, AgentStartPayload } from "@/lib/types";
 
@@ -245,10 +246,10 @@ function EmptyState({ compact = false }: { compact?: boolean }) {
         </div>
       ) : (
       <div className="max-w-md text-center space-y-8">
-        {/* 品牌图标 */}
+        {/* Lumi 品牌形象（替代静态渐变图标，idle 态轻微摇曳） */}
         <FadeIn direction="scale" className="flex justify-center">
-          <div className="relative flex h-20 w-20 items-center justify-center rounded-3xl bg-brand-gradient shadow-lg">
-            <PenLine className="h-9 w-9 text-white" />
+          <div className="relative flex h-24 w-24 items-center justify-center rounded-3xl bg-brand-gradient shadow-lg">
+            <Lumi state="idle" size={56} label="Lumi" className="text-white" />
             <div className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 shadow-sm">
               <Sparkles className="h-3.5 w-3.5 text-white" />
             </div>
