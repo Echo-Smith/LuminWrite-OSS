@@ -29,7 +29,7 @@ const (
 	// the read executor pins into sub-task input hashes (T05); the real
 	// worker rejects an empty version.
 	ResearchReaderPolicyVersion = "reader/1"
-	ResearchReadPromptVersion = "reader-prompt/1"
+	ResearchReadPromptVersion   = "reader-prompt/1"
 	// ResearchReadBlockSelection is the v1 block-selection policy: the first
 	// N blocks in parse order (N ≤ 24, contracts.md §4).
 	ResearchReadBlockSelection = "first_n"
@@ -89,10 +89,6 @@ type ResearchReadExecutor struct {
 	budget     ResearchBudgetBoundary
 	now        func() time.Time
 	leaseTTL   time.Duration
-	// question is the research question for this execution (set at the top of
-	// Execute from the contract; node dispatches are serialized, so the
-	// executor never sees concurrent questions).
-	question string
 }
 
 // NewResearchReadExecutor wires the executor.
@@ -164,7 +160,7 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 		return ExecutionResult{}, err
 	}
 	spec := contract.Research
-	executor.question = contract.Content.CentralQuestion
+	question := contract.Content.CentralQuestion
 	// A02 fail-closed (defense in depth behind the plan compile's
 	// CONTRACT_FORBIDS_EXTERNAL_RESEARCH check and the discover executor's
 	// material-only candidates): a contract that forbids external research
@@ -235,7 +231,7 @@ func (executor *ResearchReadExecutor) Execute(ctx context.Context, request Execu
 					quota, provenance, usage, started, index, len(workset), reason)
 			}
 		}
-		result, paperErr := executor.readPaper(ctx, request, spec, allowExternal, paper)
+		result, paperErr := executor.readPaper(ctx, request, spec, allowExternal, paper, question)
 		if paperErr != nil {
 			return ExecutionResult{}, paperErr
 		}
@@ -374,7 +370,7 @@ func (executor *ResearchReadExecutor) truncatedRemainder(ctx context.Context, re
 // entirely: their owner-authorized bytes load from the ContentGateway by
 // material_ref and go straight to parse → read (F5: 不经 fetch_full_text,
 // zero external downloads).
-func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request ExecutionRequest, spec *writingkernel.ResearchSpec, allowExternal bool, paper writingkernel.PaperCandidate) (PaperReadResult, error) {
+func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request ExecutionRequest, spec *writingkernel.ResearchSpec, allowExternal bool, paper writingkernel.PaperCandidate, question string) (PaperReadResult, error) {
 	result := PaperReadResult{
 		PaperID: paper.PaperID,
 		Bibliography: writingkernel.PaperBibliography{Title: paper.Title, Authors: paper.Authors,
@@ -569,7 +565,7 @@ func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request Exe
 			BlockHash: block.BlockHash, Page: block.Page})
 	}
 	readHash, hashErr := scholar.HashPayload(map[string]any{
-		"phase": "read", "research_question": executor.question, "paper_id": paper.PaperID,
+		"phase": "read", "research_question": question, "paper_id": paper.PaperID,
 		"reader_policy_version": spec.ReaderPolicyVersion, "prompt_version": ResearchReadPromptVersion,
 		"parser_version": ResearchReadParserVersion, "content_hash": documentHash,
 		"parsed_hash": parsedOutput.contentHash, "block_selection": ResearchReadBlockSelection,
@@ -580,7 +576,7 @@ func (executor *ResearchReadExecutor) readPaper(ctx context.Context, request Exe
 	}
 	readOutput, err := executor.runSubTask(ctx, request, subTaskSpec{taskKey: paper.PaperID, phase: "read", inputHash: readHash},
 		func(callCtx context.Context) (subTaskOutput, error) {
-			return executor.readBlocks(callCtx, request, paper.PaperID, readerBlocks)
+			return executor.readBlocks(callCtx, request, paper.PaperID, readerBlocks, question)
 		})
 	if err != nil {
 		if fatal := nodeFatalSubTaskError(err); fatal != nil {
@@ -751,12 +747,12 @@ func (executor *ResearchReadExecutor) parseDocument(ctx context.Context, request
 		contentHash: hash, inputTokens: response.Usage.InputTokens, outputTokens: response.Usage.OutputTokens}, nil
 }
 
-func (executor *ResearchReadExecutor) readBlocks(ctx context.Context, request ExecutionRequest, paperID string, blocks []ReaderBlock) (subTaskOutput, error) {
+func (executor *ResearchReadExecutor) readBlocks(ctx context.Context, request ExecutionRequest, paperID string, blocks []ReaderBlock, question string) (subTaskOutput, error) {
 	callCtx, cancel := context.WithTimeout(ctx, researchCallTimeout)
 	// The worker enforces a non-empty reader_policy_version (operations.py
 	// _require_str); an empty value fails the real worker even though fake
 	// test doubles accept it.
-	outputs, response, err := executor.client.ReadPaper(callCtx, executor.question, paperID, blocks, ReaderPolicy{ReaderPolicyVersion: ResearchReaderPolicyVersion})
+	outputs, response, err := executor.client.ReadPaper(callCtx, question, paperID, blocks, ReaderPolicy{ReaderPolicyVersion: ResearchReaderPolicyVersion})
 	cancel()
 	if err != nil {
 		return subTaskOutput{}, err

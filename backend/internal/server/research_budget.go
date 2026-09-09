@@ -4,9 +4,8 @@ package server
 // fix): the production executor-level budget guard for the research read
 // workset loop. The proactive execution budget (design.md §7) is wall-clock
 // time spent actively executing the run's nodes. The guard is a PURE ledger
-// function: spent = Σ(completed attempt actual_duration_ms)
-//        + Σ(research sub-task usage duration_ms)
-//        + in-flight attempt time (started_at .. now)
+// function: spent = Σ per-node max(attempt duration including in-flight time,
+// research sub-task duration). The two ledgers overlap within each node.
 // Human-gate waits never record an attempt duration, so waiting for a user
 // decision is naturally free; the ceiling is the run's plan budget
 // MaxDurationMS (the budget CreateRun validated and persisted — a changed
@@ -100,16 +99,16 @@ func (guard *WallClockResearchBudgetBoundary) spentMS(ctx context.Context, reque
 	if err != nil {
 		return 0, err
 	}
-	var spent int64
+	attemptMS := map[string]int64{}
 	for _, attempt := range attempts {
-		spent += attempt.ActualDurationMS
+		attemptMS[attempt.NodeID] += attempt.ActualDurationMS
 		// Only a genuinely in-flight attempt contributes live time. Paused /
 		// expired rows keep their recorded duration (if any) but must not
 		// accrue wall time while the run waits for a human decision —
 		// human-gate waiting is free (design.md §7).
 		if attempt.Status == "running" && !attempt.StartedAt.IsZero() {
 			if active := now.Sub(attempt.StartedAt).Milliseconds(); active > 0 {
-				spent += active
+				attemptMS[attempt.NodeID] += active
 			}
 		}
 	}
@@ -120,8 +119,18 @@ func (guard *WallClockResearchBudgetBoundary) spentMS(ctx context.Context, reque
 	if err != nil {
 		return 0, err
 	}
+	taskMS := map[string]int64{}
 	for _, task := range tasks {
-		spent += researchTaskUsageMS(task)
+		taskMS[task.NodeID] += researchTaskUsageMS(task)
+	}
+	for nodeID, duration := range taskMS {
+		if duration > attemptMS[nodeID] {
+			attemptMS[nodeID] = duration
+		}
+	}
+	var spent int64
+	for _, duration := range attemptMS {
+		spent += duration
 	}
 	return spent, nil
 }
