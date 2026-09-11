@@ -8,8 +8,8 @@ import { CitationAwareText, CitationRenderContext, InlineCitationText, type Cita
 import { SelectionLumi } from "@/components/lumi/selection-lumi";
 import { RotatingText } from "@/components/animation";
 
-/** 欢迎页轮换词：笔润智谈能完成的文档类型（长度相近，轮换更整齐） */
-const WELCOME_SUBJECTS = ["一篇深度文章", "一封正式邮件", "一份读书笔记", "一篇产品文案", "一个短篇故事"];
+/** 欢迎页轮换词：产品最有深度的产出类型（长度相近，轮换更整齐） */
+const WELCOME_SUBJECTS = ["一篇万字长文", "一份溯源综述", "一套品牌文案", "一封正式邮件", "一个走心故事"];
 
 interface DocumentSurfaceProps {
   title: string;
@@ -98,7 +98,7 @@ export function DocumentSurface({
           <h2>
             从<RotatingText words={WELCOME_SUBJECTS} />开始
           </h2>
-          <p>对话会整理目标、材料和写作步骤，第一版完成后再进入稿件预览。</p>
+          <p>从你的风格到你的创作，灵感由你，剩下的交给Lumi。</p>
         </section>
       ) : null}
       {hasDraft && afterPaper && <footer className="document-feedback">{afterPaper}</footer>}
