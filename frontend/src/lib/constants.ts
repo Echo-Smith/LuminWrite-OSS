@@ -6,7 +6,7 @@ import type { AgentStepName } from "./types";
 export const STEP_LABELS: Record<AgentStepName, string> = {
   // ── Harness 模式（架构 C）──
   search_web: "联网搜索",
-  search_knowledge: "素材库检索",
+  search_knowledge: "知识库检索",
   read_source: "读取全文",
   write_article: "文章生成",
   review_article: "质量评审",
@@ -34,7 +34,7 @@ export const STEP_LABELS: Record<AgentStepName, string> = {
 export const STEP_DESCRIPTIONS: Record<AgentStepName, string> = {
   // ── Harness 模式（架构 C）──
   search_web: "搜索网络获取写作素材或回答问题",
-  search_knowledge: "检索个人素材库获取参考内容、历史范文",
+  search_knowledge: "检索个人知识库获取参考内容、历史范文",
   read_source: "读取搜索结果的完整内容",
   write_article: "LLM 自主写作，流式输出文章",
   review_article: "多维度质量评审：事实/结构/风格/修辞/安全",

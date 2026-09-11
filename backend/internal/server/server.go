@@ -114,6 +114,10 @@ billingRepo *database.BillingRepo
 pointCalc    *services.PointCalculator
 alipaySvc    *AlipayService
 
+	// Ops patrol (rule-based health checks → admin alerts)
+	adminAlertRepo *database.AdminAlertRepo
+	opsPatrol      *OpsPatrol
+
 	// Email verification (commercial feature)
 	emailSvc     *EmailService
 	redisClient  *RedisClient
@@ -563,6 +567,15 @@ func New(cfg *config.Config) (*Server, error) {
 	// ── Canary Health Monitor (auto-rollback) ──
 	s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
 	s.canaryMonitor.Start()
+	}
+
+	// ── Ops Patrol (rule-based health checks → admin alerts) ──
+	// OPS_PATROL_ENABLED=false 可在部署层面整体禁用（运行时开关见 admin_patrol_config）。
+	if dbAvail && s.adminRepo != nil && opsPatrolEnabledFromEnv() {
+		s.adminAlertRepo = database.NewAdminAlertRepo(db)
+		s.opsPatrol = NewOpsPatrol(s, 0)
+		s.opsPatrol.Start()
+		slog.Info("ops patrol initialized")
 	}
 
 	// ── MCP Security Sandbox ──
@@ -1201,6 +1214,13 @@ r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions
 
 			// SSE Notifications (admin test — any admin)
 			r.Post("/sse/notify", s.handleSSESendNotification)
+
+			// Ops Patrol Alerts (any admin; ack/resolve audit-logged)
+			r.Get("/alerts", s.handleAdminListAlerts)
+			r.Post("/alerts/{id}/ack", s.handleAdminAckAlert)
+			r.Post("/alerts/{id}/resolve", s.handleAdminResolveAlert)
+			r.Get("/patrol/config", s.handleAdminGetPatrolConfig)
+			r.Put("/patrol/config", s.handleAdminUpdatePatrolConfig)
 		})
     })
 
@@ -1259,6 +1279,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	if s.canaryMonitor != nil {
 		s.canaryMonitor.Stop()
+	}
+	if s.opsPatrol != nil {
+		s.opsPatrol.Stop()
 	}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.WriteTimeout)
 		defer cancel()

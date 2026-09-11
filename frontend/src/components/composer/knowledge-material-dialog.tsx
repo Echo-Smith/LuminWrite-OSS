@@ -98,21 +98,21 @@ export function KnowledgeMaterialDialog({
         <DialogHeader className="border-b px-6 py-5 pr-14">
           <DialogTitle className="flex items-center gap-2 text-base">
             <FolderSearch className="h-4 w-4 text-muted-foreground" />
-            从素材库添加资料
+            从知识库添加资料
           </DialogTitle>
           <DialogDescription>搜索并多选本次写作需要引用的资料。</DialogDescription>
         </DialogHeader>
 
         <div className="grid min-h-0 flex-1 md:grid-cols-[190px_minmax(0,1fr)]">
           <aside className="border-b bg-muted/20 p-5 md:border-b-0 md:border-r">
-            <p className="text-xs font-medium text-foreground">素材库设置</p>
+            <p className="text-xs font-medium text-foreground">知识库设置</p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">自动检索会在写作时补充相关资料；手动勾选的素材始终优先。</p>
             <label className="mt-5 flex cursor-pointer items-center justify-between gap-3 rounded-lg border bg-background px-3 py-3">
               <span>
                 <strong className="block text-xs font-medium">自动检索</strong>
                 <small className="mt-0.5 block text-[11px] text-muted-foreground">{kbEnabled ? "已开启" : "已关闭"}</small>
               </span>
-              <Switch checked={kbEnabled} onCheckedChange={onToggleKB} aria-label="素材库自动检索" />
+              <Switch checked={kbEnabled} onCheckedChange={onToggleKB} aria-label="知识库自动检索" />
             </label>
           </aside>
 
@@ -125,7 +125,7 @@ export function KnowledgeMaterialDialog({
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="搜索标题、文件名或内容摘要"
                   className="pl-9"
-                  aria-label="搜索素材库资料"
+                  aria-label="搜索知识库资料"
                 />
               </div>
             </div>
@@ -133,7 +133,7 @@ export function KnowledgeMaterialDialog({
             <ScrollArea className="h-[360px]">
               {loading ? (
                 <div className="flex h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> 正在读取素材库…
+                  <Loader2 className="h-4 w-4 animate-spin" /> 正在读取知识库…
                 </div>
               ) : filteredMaterials.length === 0 ? (
                 <div className="flex h-48 flex-col items-center justify-center px-6 text-center">

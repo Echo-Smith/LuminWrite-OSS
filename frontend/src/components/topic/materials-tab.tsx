@@ -1,5 +1,5 @@
 /**
- * MaterialsTab — 素材库 Tab 内容（嵌入选题中心页面）
+ * MaterialsTab — 知识库 Tab 内容（嵌入选题中心页面）
  *
  * 功能：
  *   - 左侧文件夹侧边栏（创建/重命名/删除文件夹）
@@ -388,7 +388,7 @@ export function MaterialsTab() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              placeholder="在素材库中搜索（混合检索）..."
+              placeholder="在知识库中搜索（混合检索）..."
               className="flex-1"
             />
             <Button onClick={handleSearch} disabled={searching}>

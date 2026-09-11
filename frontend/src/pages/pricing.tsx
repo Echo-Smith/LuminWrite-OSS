@@ -71,7 +71,7 @@ export default function PricingPage() {
     "全部写作功能",
     "多角色编辑模式",
     "写作记忆 & 风格学习",
-    "素材库 & 事实核查",
+    "知识库 & 事实核查",
   ];
 
   return (

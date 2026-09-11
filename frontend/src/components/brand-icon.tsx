@@ -83,7 +83,7 @@ export function BrandIcon({
       {iconContainer}
       <div className="flex flex-col min-w-0">
         <span className={cn("font-bold tracking-tight", config.label)}>
-          笔润智谈
+          笔润智谈 | LuminWrite
         </span>
         {subtitle && (
           <span className={cn("text-muted-foreground font-mono-sm", config.sub)}>

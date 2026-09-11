@@ -1,9 +1,11 @@
 /**
  * 敏感词库 — Admin Dashboard
- * 占位页面，接口已预留，后续实现具体功能
+ *
+ * 敏感词 CRUD + 全局严格程度配置，读写 sensitive_words 表；
+ * 词库由后端 SensitiveCheckService 消费（写作后审、记忆服务，缓存约 5 分钟）。
  */
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Shield, Info, Loader2 } from "lucide-react";
+import { Plus, Trash2, Shield, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -148,17 +150,10 @@ export function SensitiveWordsPage() {
         }
       />
 
-      {/* Placeholder Notice */}
-      <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4">
-        <Info className="h-5 w-5 text-blue-500 flex-shrink-0 mt-0.5" />
-        <div className="text-sm text-blue-700">
-          <p className="font-medium mb-1">功能预留说明</p>
-          <p>
-            敏感词库的 API 接口已预留（CRUD + 全局严格程度配置），数据库表 `sensitive_words` 已在迁移中创建。
-            后续将接入 V1 的 `sensitiveCheckService.js` 词库，实现完整的敏感词检测和过滤功能。
-          </p>
-        </div>
-      </div>
+      {/* 生效说明 */}
+      <p className="text-xs text-muted-foreground">
+        此词库由写作后审与记忆服务的敏感词检测消费，修改后约 5 分钟内生效（服务端词库缓存）。
+      </p>
 
       {/* Strictness Config */}
       <Card>
@@ -285,7 +280,7 @@ export function SensitiveWordsPage() {
             ) : words.length === 0 ? (
               <tr>
                 <td colSpan={6} className="p-8 text-center text-muted-foreground text-sm">
-                  暂无敏感词记录。数据库表可能尚未初始化，后续接入 V1 词库后将有数据。
+                  暂无敏感词记录，点击右上角「添加敏感词」开始配置。
                 </td>
               </tr>
             ) : (

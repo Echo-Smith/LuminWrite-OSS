@@ -49,14 +49,28 @@ test("global navigation is a full drawer that can close at every width", () => {
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.workspace-detail/);
 });
 
-test("the floating composer stays below both sidebars and yields to an open detail panel", () => {
+test("the floating detail card overlays the right edge and the composer slots beneath it", () => {
   const styles = source("../src/index.css");
   assert.match(styles, /\.workspace-global-sidebar \{[^}]*z-index: 40/);
   assert.match(styles, /\.workspace-sidecar \{[^}]*z-index: 20/);
   assert.match(styles, /\.workspace-composer-layer \{[^}]*z-index: 15/);
-  assert.match(styles, /data-detail-state="expanded"[^}]*--workspace-detail-space: var\(--workspace-detail-width\)/);
-  assert.match(styles, /\.workspace-composer-layer \{[^}]*right: calc\(var\(--workspace-detail-space\) \+ 16px\)/);
-  assert.match(styles, /\.governed-detail-panel \{[^}]*border-left: 1px solid hsl\(var\(--border\)\)/);
+  // 详情展开不再占列宽：文档区保持完整宽度，面板悬浮在右缘
+  assert.doesNotMatch(styles, /data-detail-state="expanded"\s*\{[^}]*--workspace-detail-space/);
+  // 宽屏详情展开时写作区避让面板（右移），不被遮挡
+  assert.match(styles, /data-detail-state="expanded"\] \.workspace-document-region \{[^}]*padding-right: calc\(var\(--workspace-detail-width\)/);
+  // 面板从顶栏按钮下方落下（触发器常驻可见、原地切换开合），齐平 16px 网格
+  assert.match(styles, /\.workspace-detail \{[^}]*position: absolute; top: 60px; right: 16px; bottom: var\(--workspace-composer-clearance/);
+  assert.match(styles, /\.workspace-detail \{[^}]*border-radius: 16px/);
+  // 材质与侧边/顶栏同款磨砂；开合动画以锚点按钮方向为原点
+  assert.match(styles, /\.workspace-detail \{[^}]*background: hsl\(var\(--surface\) \/ \.78\)/);
+  assert.match(styles, /\.workspace-detail \{[^}]*backdrop-filter: blur\(20px\) saturate\(160%\)/);
+  assert.match(styles, /\.workspace-detail \{[^}]*box-shadow: var\(--shadow-composer-focus\)/);
+  assert.match(styles, /\.workspace-detail \{[^}]*transform-origin: top right/);
+  assert.match(styles, /\.workspace-composer-layer \{[^}]*right: 16px/);
+  // 紧凑输入区时底部遮罩自动隐藏
+  assert.match(styles, /data-composer-width="compact"\] \.workspace-bottom-fade \{[^}]*opacity: 0/);
+  // composer 让位变量存在（JS 实测输入区高度写入，compact/wide 自动抬降卡片）
+  assert.match(styles, /--workspace-composer-clearance: 96px/);
 });
 
 test("the document uses one continuous A4-backed sheet without guide rules", () => {
@@ -69,12 +83,20 @@ test("the document uses one continuous A4-backed sheet without guide rules", () 
 });
 
 test("the empty workspace is a welcome surface and paper starts with the first draft", () => {
+  const page = source("../src/pages/writing-workspace.tsx");
   const document = source("../src/components/document/document-surface.tsx");
   const styles = source("../src/index.css");
   assert.match(document, /const hasDraft = Boolean\(version \|\| legacyDraft\?\.trim\(\)\)/);
   assert.match(document, /hasDraft \? <article className="document-paper">/);
   assert.match(document, /<section className="document-welcome"/);
   assert.ok(document.indexOf("document-welcome") > document.indexOf("</article>"));
+  // 欢迎区仅中文，且用户发出第一条消息后立即让位
+  assert.doesNotMatch(document, /THE WRITING DESK/);
+  assert.match(document, /: !conversationStarted \? \(/);
+  // 欢迎语带轮换词（弹簧曲线动画）
+  assert.match(document, /从<RotatingText words=\{WELCOME_SUBJECTS\} \/>开始/);
+  assert.match(styles, /\.rt-window \{[^}]*transition: width 520ms var\(--anim-ease-spring\)/);
+  assert.match(page, /conversationStarted=\{Boolean\(session\?\.messages\.some/);
   assert.doesNotMatch(styles, /\.document-welcome \{[^}]*border:/);
   assert.doesNotMatch(styles, /\.document-welcome \{[^}]*box-shadow:/);
 });
@@ -113,7 +135,9 @@ test("user requests and agent process are independent flow items", () => {
 
 test("the document workspace shares the toolbar surface without a seam", () => {
   const styles = source("../src/index.css");
-  assert.match(styles, /\.document-stage \{[^}]*background: hsl\(var\(--surface\)\)/);
+  assert.match(styles, /\.workspace-document-region \{[^}]*background: var\(--desk-writing-bg\)/);
+  // 侧边栏与顶栏相连为一体，圆角只出现在靠近 document-stage 的交界处
+  assert.match(styles, /\.workspace-document-region \{[^}]*border-top-left-radius: var\(--composer-radius\)/);
   assert.doesNotMatch(styles, /\.workspace-toolbar \{[^}]*border-bottom/);
 });
 
@@ -151,7 +175,7 @@ test("workspace drawers share one restrained motion system", () => {
   assert.match(styles, /--workspace-motion-ease: cubic-bezier\(\.25, 1, \.5, 1\)/);
   assert.match(styles, /\.workspace-global-sidebar \{[\s\S]*transition: transform var\(--workspace-motion-duration\)/);
   assert.match(styles, /\.workspace-center \{[\s\S]*transition: margin-left var\(--workspace-motion-duration\)/);
-  assert.match(styles, /\.workspace-sidecar \{[\s\S]*transition: width var\(--workspace-motion-duration\)/);
+  assert.match(styles, /\.workspace-sidecar \{[^}]*position: absolute; inset: 0/);
   assert.match(styles, /\.workspace-detail \{[\s\S]*transition: transform var\(--workspace-motion-duration\)/);
   assert.match(styles, /\.workspace-composer-layer \{[\s\S]*transition: left var\(--composer-motion-duration\)/);
   assert.match(styles, /prefers-reduced-motion: reduce/);
@@ -175,12 +199,12 @@ test("composer materials use drag upload, a floating menu, and a separate knowle
   assert.match(composer, /uploadMaterial\(file, file\.name\)/);
   assert.doesNotMatch(composer, /composer-material-tray|composer-knowledge-picker/);
   assert.match(knowledgeDialog, /<DialogContent/);
-  assert.match(knowledgeDialog, /搜索素材库资料/);
+  assert.match(knowledgeDialog, /搜索知识库资料/);
   assert.match(knowledgeDialog, /<Checkbox/);
   assert.match(knowledgeDialog, /添加所选素材/);
   assert.match(knowledgeDialog, /<Switch checked=\{kbEnabled\}/);
   assert.match(composer, /composer-material-library-row/);
-  assert.match(composer, /<strong>素材库<\/strong>/);
+  assert.match(composer, /<strong>知识库<\/strong>/);
   assert.doesNotMatch(composer, /composer-material-auto-search/);
   assert.match(composer, /const \[pendingKbEnabled, setPendingKbEnabled\] = useState\(true\)/);
   assert.match(styles, /\.composer-drop-overlay/);
@@ -226,7 +250,9 @@ test("detail chrome is compact, icon-only, and spaced", () => {
   const styles = source("../src/index.css");
   assert.doesNotMatch(panel, /DOCUMENT DESK|>收起<|ChevronRight|LegacyDetailPanel/);
   assert.match(panel, /PanelRightClose/);
-  assert.match(page, /size="icon" aria-label="打开详情面板"/);
+  // 工具栏按钮双态：点击固定悬浮 / 收起（点击后固定悬浮的交互入口）
+  assert.match(page, /aria-label=\{detailPanel === "expanded" \? "收起详情面板" : "固定悬浮详情面板"\}/);
+  assert.match(page, /PanelRightClose className="h-4 w-4" \/>/);
   assert.match(styles, /\.governed-detail-header \{[^}]*height: 52px/);
   assert.match(styles, /\.run-detail-tablist \{[^}]*gap: 4px/);
 });

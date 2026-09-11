@@ -1,7 +1,7 @@
 /**
- * 选题中心 — 热搜选题 + 自定义选题 + 素材库（Tab 切换）
+ * 选题中心 — 热搜选题 + 自定义选题 + 知识库（Tab 切换）
  *
- * 合并了原「选题中心」和「我的素材库」两个页面，
+ * 合并了原「选题中心」和「我的知识库」两个页面，
  * 通过顶部 Tab 切换「选题」和「素材」视图。
  *
  * 职责分层：
@@ -9,12 +9,12 @@
  * - TopicSidebar        → 左侧导航（全部 / 热搜汇总[可展开] / 自定义 / 收藏）
  * - RecommendationStrip → AI 推荐横幅（仅"全部"视图）
  * - TopicCard           → 单个选题卡片
- * - MaterialsTab        → 素材库 Tab 内容
+ * - MaterialsTab        → 知识库 Tab 内容
  * - AddTopicDialog      → 自定义选题弹窗
  * - TopicDetailDialog   → 详情弹窗（AI 写作角度 / 趋势图 / 相关文章 / 关联素材）
  */
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, Flame, Wifi, WifiOff, Loader2, RefreshCw, Compass, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -41,7 +41,15 @@ export function TopicCenter() {
   const [hotExpanded, setHotExpanded] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editTopic, setEditTopic] = useState<Topic | null>(null);
-  const [activeTab, setActiveTab] = useState<"topics" | "materials">("topics");
+  // Tab 状态与 URL 同步（?tab=materials）：侧边栏「知识库」入口可直达素材页签
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<"topics" | "materials">(
+    searchParams.get("tab") === "materials" ? "materials" : "topics",
+  );
+  const switchTab = (tab: "topics" | "materials") => {
+    setActiveTab(tab);
+    setSearchParams(tab === "materials" ? { tab: "materials" } : {}, { replace: true });
+  };
   const [favoritedAngles, setFavoritedAngles] = useState<Set<string>>(new Set());
 
   const t = useTopics();
@@ -105,7 +113,7 @@ export function TopicCenter() {
             userMaterials.push(`📎 ${assoc.material.title}: ${assoc.material.content_preview}`);
           }
         }
-        // 如果关联素材不足，自动搜索素材库补充
+        // 如果关联素材不足，自动搜索知识库补充
         if (associations.length === 0) {
           const results = await searchMaterials(topic.title, 3);
           for (const r of results) {
@@ -147,7 +155,7 @@ export function TopicCenter() {
           {/* Tab 切换 */}
           <div className="flex items-center gap-1">
             <button
-              onClick={() => setActiveTab("topics")}
+              onClick={() => switchTab("topics")}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-ui",
                 activeTab === "topics"
@@ -159,7 +167,7 @@ export function TopicCenter() {
               选题
             </button>
             <button
-              onClick={() => setActiveTab("materials")}
+              onClick={() => switchTab("materials")}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-ui",
                 activeTab === "materials"
@@ -168,7 +176,7 @@ export function TopicCenter() {
               )}
             >
               <Database className="h-4 w-4" />
-              素材库
+              知识库
             </button>
           </div>
 

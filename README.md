@@ -263,12 +263,26 @@ LLM 在持续会话中自主调用的工具：
 ### Docker Compose（推荐）
 
 ```bash
-cp .env.docker.example .env.docker
-# 编辑 .env.docker，填入模型 API Key 和数据库密码
-docker compose up -d
+# ① 一次性配置真实密钥（工作区根的 env.secrets.local，oss 与 commercial 共用）
+cp ../env.secrets.example ../env.secrets.local   # 单项目部署可用 cp env.secrets.example env.secrets.local
+vi ../env.secrets.local                          # 填入模型 API Key、各服务接口 Key
+
+# ② make up 会自动执行 scripts/sync-env.sh：
+#    用「最新 .env.docker.example 模板 + env.secrets.local」生成 .env.docker
+make up
 ```
 
+模板随版本新增/删除键时**无需手工合并**——重新 `make up` 即可，你在
+`env.secrets.local` 里的值始终覆盖模板默认值。部署前可用 `make env-check`
+检查必填密钥是否齐全（只检查，不写文件）。
+
 默认入口：前端 `http://localhost:3002`，后端健康检查 `http://localhost:8080/api/v2/health`。
+
+> **日常换 Key 不必改任何文件**：在 Admin 后台「模型配置」（LLM）和
+> 「MCP 管理 → 服务密钥」（Tavily / 知乎 / 腾讯新闻 / 较真 / 微博等）修改，
+> Key 加密存入 PostgreSQL，优先级高于环境变量，多数改动即时热生效，
+> 无需重建容器。`env.secrets.local` 里的值仅作为全新部署时的兜底。
+> 注意 `API_KEY_ENCRYPTION_KEY` 一经使用必须保持稳定（它加密数据库中的所有 Key）。
 
 ### 本地开发
 

@@ -6,14 +6,14 @@
 import { type ReactNode } from "react";
 import {
   Brain, User, KeyRound, Palette, Settings, Wallet,
-  Bell, Monitor, Info, FlaskConical, type LucideIcon,
+  Bell, Monitor, Info, FlaskConical, SlidersHorizontal, type LucideIcon,
   X, Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "profile" | "styles" | "memory" | "settings" | "notifications" | "account" | "devices" | "wallet" | "labs" | "about";
+export type MenuKey = "profile" | "styles" | "memory" | "settings" | "customization" | "notifications" | "account" | "devices" | "wallet" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -26,6 +26,7 @@ export const MENU_ITEMS: MenuItem[] = [
   { key: "styles", label: "写作风格", icon: Palette },
   { key: "memory", label: "记忆管理", icon: Brain },
   { key: "settings", label: "偏好设置", icon: Settings },
+  { key: "customization", label: "自定义", icon: SlidersHorizontal },
   { key: "wallet", label: "积分管理", icon: Wallet },
   { key: "notifications", label: "通知设置", icon: Bell },
   { key: "account", label: "账号管理", icon: KeyRound },
@@ -39,6 +40,7 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   styles: { title: "写作风格", subtitle: "管理你的自定义写作风格" },
   memory: { title: "记忆管理", subtitle: "管理 AI 学习到的写作偏好" },
   settings: { title: "偏好设置", subtitle: "配置默认写作风格和编排模式" },
+  customization: { title: "自定义", subtitle: "个性化写作区的外观" },
   wallet: { title: "积分管理", subtitle: "查看余额、消费记录和套餐" },
   notifications: { title: "通知设置", subtitle: "管理在线通知偏好" },
   account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },

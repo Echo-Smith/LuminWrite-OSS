@@ -584,18 +584,18 @@ function StyleEditDialog({
 
 {/* Knowledge Base Binding */}
 <div className="border-t pt-4">
-<h4 className="text-sm font-medium mb-3">素材库绑定</h4>
+<h4 className="text-sm font-medium mb-3">知识库绑定</h4>
 <div>
-<Label>绑定素材库</Label>
+<Label>绑定知识库</Label>
 <Select
 value={detail.kb_id ?? "__none__"}
 onValueChange={(v) => update({ kb_id: v === "__none__" ? "" : v })}
 >
 <SelectTrigger>
-<SelectValue placeholder="不绑定（搜索全部素材库）" />
+<SelectValue placeholder="不绑定（搜索全部知识库）" />
 </SelectTrigger>
 <SelectContent>
-<SelectItem value="__none__">不绑定（搜索全部素材库）</SelectItem>
+<SelectItem value="__none__">不绑定（搜索全部知识库）</SelectItem>
 {kbOptions.map((kb) => (
 <SelectItem key={kb.id} value={kb.id}>
 {kb.name}{kb.description ? ` — ${kb.description}` : ""}
@@ -604,7 +604,7 @@ onValueChange={(v) => update({ kb_id: v === "__none__" ? "" : v })}
 </SelectContent>
 </Select>
 <p className="text-xs text-muted-foreground mt-1">
-绑定后，该风格在使用自动检索时将仅在指定素材库中查找
+绑定后，该风格在使用自动检索时将仅在指定知识库中查找
 </p>
 </div>
 </div>

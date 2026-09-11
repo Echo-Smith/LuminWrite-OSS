@@ -10,6 +10,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
+import { MaterialsCenter } from "@/pages/materials-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
 import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 工作台页面组件（内部保留 EditorialBoard 命名）
@@ -95,8 +96,17 @@ export function App() {
             }
           />
 
-          {/* /materials 已合并到 /topics 的素材 Tab，重定向 */}
-          <Route path="/materials" element={<Navigate to="/topics" replace />} />
+          {/* 知识库 — 独立访问域（原素材库，不再重定向到 /topics） */}
+          <Route
+            path="/materials"
+            element={
+              <ProtectedRoute>
+                <PageTransition>
+                  <MaterialsCenter />
+                </PageTransition>
+              </ProtectedRoute>
+            }
+          />
 
           {/* Admin — 需管理员 */}
           <Route

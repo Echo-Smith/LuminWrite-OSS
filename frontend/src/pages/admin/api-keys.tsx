@@ -35,7 +35,8 @@ interface APIKey {
   created_at: string;
 }
 
-// Only MCP/service providers — LLM keys are managed in model configs
+// 已知服务列表仅作输入建议（datalist）——provider 可自由填写；
+// 仅以下已知服务会接入运行时并做真实连通性测试，其他自定义条目仅保存。
 const MCP_PROVIDERS = [
   { value: "tavily", label: "Tavily Search" },
   { value: "zhihu", label: "知乎" },
@@ -84,7 +85,7 @@ export function APIKeysPage() {
   const [mcpLoading, setMcpLoading] = useState(false);
   const [form, setForm] = useState({
     name: "",
-    provider: "tavily",
+    provider: "",
     key_value: "",
     base_url: "",
     is_active: true,
@@ -151,7 +152,7 @@ export function APIKeysPage() {
       toast.success(editing ? "密钥已更新" : "密钥已添加", form.name);
       setShowAdd(false);
       setEditing(null);
-      setForm({ name: "", provider: "tavily", key_value: "", base_url: "", is_active: true });
+      setForm({ name: "", provider: "", key_value: "", base_url: "", is_active: true });
       await load();
     } catch {
       toast.error("网络错误", "请检查网络连接后重试");
@@ -211,9 +212,9 @@ export function APIKeysPage() {
       <AdminBulkActions selectedIds={selectedIds} onClear={() => setSelectedIds([])} onBatchAction={handleBatchAction} />
       <AdminPageHeader
         title="MCP 服务密钥"
-        description="管理搜索、知识库等 MCP 服务的 API 密钥。LLM 密钥请在「模型配置」中管理。"
+        description="通用服务密钥管理：服务标识可自由填写。已知服务（tavily、zhihu、dashscope 等）会接入运行时，其他条目仅保存。LLM 密钥请在「模型配置」中管理。"
         action={
-          <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", provider: "tavily", key_value: "", base_url: "", is_active: true }); }}>
+          <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", provider: "", key_value: "", base_url: "", is_active: true }); }}>
             <Plus className="h-4 w-4 mr-2" /> 添加密钥
           </Button>
         }
@@ -225,7 +226,7 @@ export function APIKeysPage() {
           <DialogHeader>
             <DialogTitle>{editing ? "编辑密钥" : "添加密钥"}</DialogTitle>
             <DialogDescription>
-              管理搜索、知识库等 MCP 服务的 API 密钥。
+              通用服务密钥：服务标识可自由填写。已知服务会接入运行时并做真实连通性测试；其他自定义条目仅保存，测试只校验密钥非空。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -235,13 +236,16 @@ export function APIKeysPage() {
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Tavily 搜索密钥" />
               </div>
               <div>
-                <Label>服务</Label>
-                <Select value={form.provider} onValueChange={(v) => setForm({ ...form, provider: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {MCP_PROVIDERS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Label>服务标识（可自定义）</Label>
+                <Input
+                  list="mcp-provider-suggestions"
+                  value={form.provider}
+                  onChange={(e) => setForm({ ...form, provider: e.target.value })}
+                  placeholder="如 tavily / zhihu / my-service"
+                />
+                <datalist id="mcp-provider-suggestions">
+                  {MCP_PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                </datalist>
               </div>
               <div>
                 <Label>密钥值{editing && " (留空保持不变)"}</Label>
@@ -249,7 +253,7 @@ export function APIKeysPage() {
               </div>
               <div>
                 <Label>Base URL (可选)</Label>
-                <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.tavily.com" />
+                <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.example.com" />
               </div>
             </div>
             <div className="flex items-center gap-2">

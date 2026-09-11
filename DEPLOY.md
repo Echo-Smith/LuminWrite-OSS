@@ -153,6 +153,7 @@ docker load -i /opt/luminbuddy-v2-images-*.tar.gz
 
 # 3. 配置环境（.env.docker 已在包中，按需修改）
 vi .env.docker
+# 推荐改为维护工作区根的 env.secrets.local，再执行 ./scripts/sync-env.sh 重新生成
 
 # 4. 启动
 docker compose up -d   # 无需 --build！
@@ -175,6 +176,7 @@ cd luminbuddy-v2
 # 配置
 cp .env.docker.example .env.docker
 vi .env.docker
+# 推荐改为维护工作区根的 env.secrets.local，再执行 ./scripts/sync-env.sh 重新生成
 
 # 构建并启动
 docker compose up -d --build
@@ -184,11 +186,24 @@ docker compose up -d --build
 
 ## 环境配置
 
-所有配置在 `.env.docker` 文件中，已预填好 API Key。如需修改：
+`.env.docker` 是**生成产物**，由 `scripts/sync-env.sh` 将最新模板
+`.env.docker.example` 与真实密钥文件 `env.secrets.local`（工作区根）合并生成：
 
 ```bash
-vi .env.docker
+# 首次：把模板复制为 env.secrets.local 并填入真实密钥（只需一次）
+cp env.secrets.example env.secrets.local && vi env.secrets.local
+
+# 之后任何时候（包括模板随版本更新后）重新生成：
+./scripts/sync-env.sh          # 或 make up（自动执行）
+./scripts/sync-env.sh --check  # 只检查必填密钥是否齐全
 ```
+
+你在 `env.secrets.local` 里的值始终覆盖模板默认值；模板新增键自动带入、
+删除的键会提示清理。**日常换 API Key 建议直接在 Admin 后台操作**（「模型配置」/
+「MCP 管理 → 服务密钥」），Key 加密存 PostgreSQL、优先级高于环境变量，
+多数即时热生效；`env.secrets.local` 仅作为全新部署的兜底。
+`API_KEY_ENCRYPTION_KEY` 一经使用必须保持稳定，更换会导致数据库中已存的
+Key 无法解密。
 
 ### 关键配置项
 
@@ -267,7 +282,9 @@ docker compose restart backend  # 自动执行迁移
 ```
 
 ### 端口冲突
-修改 `.env.docker` 中的 `BACKEND_PORT` 和 `FRONTEND_PORT`
+在 `env.secrets.local` 中设置 `BACKEND_PORT` / `FRONTEND_PORT` / `POSTGRES_PORT`
+后执行 `./scripts/sync-env.sh`（会同步写入项目根 `.env` 供 compose 插值读取；
+直接改 `.env.docker` 中的端口对端口映射无效）
 
 ### 内存不足
 ```bash

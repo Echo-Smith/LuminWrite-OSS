@@ -70,7 +70,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   const [kbMaterials, setKbMaterials] = useState<UserMaterial[]>([]);
   const [kbMaterialsLoading, setKbMaterialsLoading] = useState(false);
   // 自动检索开关状态（从 session 读取，默认 true）
-  // 开启后 LLM 写作时自动从素材库检索相关内容；关闭则仅使用手动选择的素材
+  // 开启后 LLM 写作时自动从知识库检索相关内容；关闭则仅使用手动选择的素材
   const sessionKbEnabled = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.kbEnabled;
@@ -311,14 +311,14 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
     void uploadFiles(Array.from(event.dataTransfer.files));
   };
 
-  // ─── 从素材库选择素材 ───
+  // ─── 从知识库选择素材 ───
   const loadKbMaterials = useCallback(async () => {
     setKbMaterialsLoading(true);
     try {
       const { materials } = await listMaterials(1, 50, "all");
       setKbMaterials(materials);
     } catch (error) {
-      toast.error("素材库加载失败", error instanceof Error ? error.message : "请稍后重试");
+      toast.error("知识库加载失败", error instanceof Error ? error.message : "请稍后重试");
     } finally {
       setKbMaterialsLoading(false);
     }
@@ -346,11 +346,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
       appendMaterial({
         sourceId: material.id,
         title: material.title,
-        excerpt: content || material.file_name || "素材库资料",
+        excerpt: content || material.file_name || "知识库资料",
         payload: `素材：${material.title}: ${content}`,
       });
     }
-    toast.success("素材库资料已添加", `${selectedMaterials.length} 条素材已注入本次写作`);
+    toast.success("知识库资料已添加", `${selectedMaterials.length} 条素材已注入本次写作`);
   }, [appendMaterial]);
 
   return (
@@ -508,10 +508,10 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
                 <div className="composer-material-menu-item composer-material-library-row">
                   <button className="composer-material-library-main" onClick={handleOpenKnowledgeDialog}>
                     <FolderSearch className="h-4 w-4" />
-                    <span><strong>素材库</strong><small>搜索资料并自动补充相关内容</small></span>
+                    <span><strong>知识库</strong><small>搜索资料并自动补充相关内容</small></span>
                     <ChevronRight className="ml-auto h-4 w-4" />
                   </button>
-                  <Switch checked={kbEnabled} onCheckedChange={handleToggleKB} aria-label="素材库自动检索" />
+                  <Switch checked={kbEnabled} onCheckedChange={handleToggleKB} aria-label="知识库自动检索" />
                 </div>
               </div>
             </PopoverContent>

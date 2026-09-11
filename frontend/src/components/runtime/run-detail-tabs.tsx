@@ -135,7 +135,7 @@ function LegacyMaterialsHint({ steps }: { steps: ToolCallPart[] }) {
   return (
     <div className="detail-metadata">
       {searched > 0 && <Metadata label="联网检索" value={`${searched} 条`} />}
-      {kb > 0 && <Metadata label="素材库检索" value={`${kb} 条`} />}
+      {kb > 0 && <Metadata label="知识库检索" value={`${kb} 条`} />}
     </div>
   );
 }

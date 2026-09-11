@@ -1,8 +1,8 @@
 /**
  * 模型配置 — Admin Dashboard
- * 支持：输入 base_url + api_key → 自动发现模型列表 → 选择启用
+ * 通用接口：任意 OpenAI 兼容端点（base_url + api_key）→ 自动发现模型列表 → 选择启用
+ * 无内置供应商模板：供应商名称与 Base URL 均自由填写，支持自定义 HTTP 请求头
  * API Key 内聚在模型配置中，不再关联独立密钥
- * 供应商名称可自定义，支持自定义 HTTP 请求头
  */
 import { useState, useEffect, useCallback, type ReactElement } from "react";
 import { Plus, Trash2, Pencil, Cpu, Star, Loader2, Key, Zap, Brain, Eye, Search, CheckCircle, XCircle, ChevronDown, ChevronRight } from "lucide-react";
@@ -44,16 +44,6 @@ interface DiscoveredModel {
   owned_by: string;
 }
 
-// 预设供应商 — 用于快速填充 base_url，但 provider 字段可自定义
-const PROVIDER_PRESETS = [
-  { value: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com" },
-  { value: "kimi", label: "Kimi (Moonshot)", baseUrl: "https://api.moonshot.cn/v1" },
-  { value: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1" },
-  { value: "qwen", label: "通义千问", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
-  { value: "claude", label: "Claude", baseUrl: "https://api.anthropic.com/v1" },
-  { value: "custom", label: "自定义", baseUrl: "" },
-];
-
 const STATUS_ICONS: Record<string, ReactElement> = {
   ok: <CheckCircle className="h-3.5 w-3.5 text-green-500" />,
   fail: <XCircle className="h-3.5 w-3.5 text-red-500" />,
@@ -86,7 +76,7 @@ export function ModelConfigsPage() {
   const [saving, setSaving] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [form, setForm] = useState({
-    provider: "deepseek",
+    provider: "",
     providerLabel: "", // 自定义供应商显示名（可选）
     model_name: "",
     display_name: "",
@@ -136,7 +126,7 @@ export function ModelConfigsPage() {
       setDiscoverError("请先输入 API Key");
       return;
     }
-    const baseURL = form.base_url || PROVIDER_PRESETS.find(p => p.value === form.provider)?.baseUrl || "";
+    const baseURL = form.base_url.trim();
     if (!baseURL) {
       setDiscoverError("请先输入 Base URL");
       return;
@@ -167,7 +157,7 @@ export function ModelConfigsPage() {
   // ─── Model Config handlers ──────────────────────────────
 
   const handleSave = async () => {
-    if (!form.model_name) return;
+    if (!form.model_name || !form.base_url.trim()) return;
     setSaving(true);
     const url = editing ? `/api/v2/admin/models/${editing.id}` : "/api/v2/admin/models";
     const method = editing ? "PUT" : "POST";
@@ -176,7 +166,7 @@ export function ModelConfigsPage() {
       provider: form.provider,
       model_name: form.model_name,
       display_name: form.display_name || form.model_name,
-      base_url: form.base_url || PROVIDER_PRESETS.find(p => p.value === form.provider)?.baseUrl || "",
+      base_url: form.base_url.trim(),
       api_key: form.api_key || undefined,
       max_tokens: form.max_tokens,
       temperature: form.temperature,
@@ -215,7 +205,7 @@ export function ModelConfigsPage() {
     setShowAdvanced(false);
     setHeaderEntries([]);
     setForm({
-      provider: "deepseek", providerLabel: "", model_name: "", display_name: "", base_url: "",
+      provider: "", providerLabel: "", model_name: "", display_name: "", base_url: "",
       api_key: "", max_tokens: 65536, temperature: 0.7,
       reasoning_effort: "high", context_window: 0, max_output: 0,
       is_default: false, is_active: true,
@@ -299,39 +289,19 @@ export function ModelConfigsPage() {
 
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <Label>供应商</Label>
-                  <div className="flex gap-2">
-                    <select
-                      className="flex-1 h-9 rounded-md border border-input bg-transparent px-3 text-sm ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2 outline-none"
-                      value={PROVIDER_PRESETS.some(p => p.value === form.provider) ? form.provider : "custom"}
-                      onChange={(e) => {
-                        const preset = PROVIDER_PRESETS.find(p => p.value === e.target.value);
-                        if (preset && e.target.value !== "custom") {
-                          setForm({ ...form, provider: e.target.value, base_url: form.base_url || preset.baseUrl, model_name: "", display_name: "" });
-                        } else {
-                          setForm({ ...form, provider: form.provider === "deepseek" ? "" : form.provider, base_url: form.base_url });
-                        }
-                      }}
-                    >
-                      {PROVIDER_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                    </select>
-                    {/* 当选择"自定义"或非预设值时，显示文本输入框 */}
-                    {!PROVIDER_PRESETS.some(p => p.value === form.provider) || form.provider === "custom" ? (
-                      <Input
-                        className="flex-1"
-                        value={form.provider === "custom" ? "" : form.provider}
-                        onChange={(e) => setForm({ ...form, provider: e.target.value })}
-                        placeholder="自定义供应商名"
-                      />
-                    ) : null}
-                  </div>
+                  <Label>供应商（自定义）</Label>
+                  <Input
+                    value={form.provider}
+                    onChange={(e) => setForm({ ...form, provider: e.target.value })}
+                    placeholder="如 deepseek / kimi / my-relay"
+                  />
                 </div>
                 <div className="col-span-2">
                   <Label>Base URL</Label>
                   <Input
                     value={form.base_url}
                     onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-                    placeholder={PROVIDER_PRESETS.find(p => p.value === form.provider)?.baseUrl || "https://api.example.com/v1"}
+                    placeholder="https://api.example.com/v1"
                   />
                 </div>
                 <div className="col-span-2">
@@ -563,7 +533,7 @@ export function ModelConfigsPage() {
 
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={resetForm} disabled={saving}>取消</Button>
-            <Button size="sm" onClick={handleSave} disabled={!form.model_name || saving}>
+            <Button size="sm" onClick={handleSave} disabled={!form.model_name || !form.base_url.trim() || saving}>
               {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
               {editing ? "保存" : "添加"}
             </Button>

@@ -6,7 +6,7 @@
  */
 import { useEffect, useState } from "react";
 import {
-  Plus, Trash2, Compass,
+  Plus, Trash2, Compass, Database,
   Settings, Sun, Moon, LogOut, UserPlus,
   PanelLeftClose,
   ChevronRight, User, AlertTriangle, Newspaper,
@@ -89,7 +89,7 @@ export function Sidebar({ onClose, onNavigate }: SidebarProps) {
   };
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r bg-surface anim-slide-right" data-panel-state="expanded" aria-label="全局导航">
+    <aside className="flex h-full w-64 flex-col bg-surface/70 backdrop-blur-2xl backdrop-saturate-150 anim-slide-right" data-panel-state="expanded" aria-label="全局导航">
       {/* 顶部品牌区；完整侧栏在任意屏宽都可收起 */}
       <div className="flex items-center gap-2.5 px-3 py-3.5">
         <BrandIcon size="md" showLabel />
@@ -125,7 +125,16 @@ export function Sidebar({ onClose, onNavigate }: SidebarProps) {
           onClick={() => { navigate("/topics"); onNavigate?.(); }}
         >
           <Compass className="h-4 w-4" />
-          选题与素材
+          选题
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-start gap-2 text-muted-foreground"
+          onClick={() => { navigate("/materials"); onNavigate?.(); }}
+        >
+          <Database className="h-4 w-4" />
+          知识库
         </Button>
         {enableEditorial && (
           <Button
@@ -219,7 +228,7 @@ export function Sidebar({ onClose, onNavigate }: SidebarProps) {
                 {isGuest ? (
                   <>
                     <p className="text-sm font-medium truncate">你好，游客</p>
-                    <p className="text-[11px] text-amber-600 font-mono-sm">trial · 1 attempt</p>
+                    <p className="text-[11px] text-amber-600 font-mono-sm">试用 · 剩余 1 次</p>
                   </>
                 ) : (
                   <>

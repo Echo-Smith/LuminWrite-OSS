@@ -1,5 +1,5 @@
 /**
- * User Material API Service — 个人素材库 API 调用
+ * User Material API Service — 个人知识库 API 调用
  * 路径前缀: /api/v2/materials, /api/v2/material-folders
  *
  * 注意：不再手动从 localStorage 读取 token。
@@ -160,7 +160,7 @@ export async function getMaterialContent(id: string): Promise<UserMaterial> {
   return (data.data ?? data) as UserMaterial;
 }
 
-/** 混合检索用户素材库 */
+/** 混合检索用户知识库 */
 export async function searchMaterials(
   query: string,
   limit = 10,
@@ -250,7 +250,7 @@ export async function removeMaterialAssociation(
   await fetch(`${BASE}/topics/${topicId}/materials/${materialId}`, { method: "DELETE" });
 }
 
-/** 自动关联（用选题标题在用户素材库中搜索并关联） */
+/** 自动关联（用选题标题在用户知识库中搜索并关联） */
 export async function autoAssociateMaterials(
   topicId: string,
   query?: string,

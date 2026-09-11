@@ -19,6 +19,18 @@ interface ChangelogEntry {
 
 const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.1.3",
+    date: "2026-09-11",
+    highlights: [
+      "写作台右侧详情面板升级为悬浮卡片，不再挤压写作区，文档阅读视野更完整",
+      "详情面板支持从顶栏按钮一键固定悬浮或收起，开合动画以按钮为锚点更轻盈",
+      "「选题与素材」拆分为「选题」与「知识库」两个入口，可直达对应页签",
+      "写作欢迎页全新中文界面，发出第一条消息后自动让位给对话",
+      "输入框支持收窄模式，与详情悬浮面板智能避让",
+      "管理后台新增自动巡检与告警中心，系统异常及时知晓",
+    ],
+  },
+  {
     version: "0.1.2",
     date: "2026-08-23",
     highlights: [
@@ -38,7 +50,7 @@ const CHANGELOG: ChangelogEntry[] = [
       "新增设备管理页面，可查看多端登录状态",
       "新增「关于笔润智谈」页面，含产品介绍与版本日志",
       "写作风格支持版本管理，可查看历史版本并回退",
-      "素材库支持批量导入，提升创作效率",
+      "知识库支持批量导入，提升创作效率",
       "工作台模式重构，选题/研究/写作/审校角色分工更清晰",
       "事实核查结果独立展示，存疑信息一目了然",
       "安全审计页面增强，支持安全事件可视化与趋势分析",
@@ -52,7 +64,7 @@ const CHANGELOG: ChangelogEntry[] = [
     date: "2026-08-22",
     highlights: [
       "笔润智谈正式上线，支持智能会话、流水线和工作台三种写作模式",
-      "内置素材库自动检索，写作时可引用精选文章",
+      "内置知识库自动检索，写作时可引用精选文章",
       "支持自定义写作风格，可保存并复用个人风格偏好",
       "工作台模式提供选题、研究、写作、审校多角色协作",
       "事实核查守护内容准确性，自动标注存疑信息",
@@ -92,7 +104,7 @@ export function AboutSection() {
           {[
             { icon: Sparkles, title: "智能写作", desc: "从选题到成稿，AI 全程辅助" },
             { icon: Palette, title: "风格定制", desc: "学习并复用你的写作风格" },
-            { icon: BookOpen, title: "素材库引用", desc: "精选文章随时引用" },
+            { icon: BookOpen, title: "知识库引用", desc: "精选文章随时引用" },
             { icon: Shield, title: "事实核查", desc: "自动校验关键信息，确保准确" },
             { icon: Brain, title: "创作记忆", desc: "记住你的偏好，越用越懂你" },
             { icon: Zap, title: "多种模式", desc: "会话、流水线、工作台灵活切换" },
@@ -158,10 +170,13 @@ export function AboutSection() {
       {/* 联系方式 */}
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">联系方式</h3>
-        <div className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2.5">
+        <a
+          href="mailto:[contact removed]"
+          className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2.5 hover:bg-accent/50 transition-ui"
+        >
           <Mail className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm text-muted-foreground">luminbuddy@ericdocmic.top</span>
-        </div>
+          <span className="text-sm text-muted-foreground">[contact removed]</span>
+        </a>
       </div>
 
       {/* 链接 */}

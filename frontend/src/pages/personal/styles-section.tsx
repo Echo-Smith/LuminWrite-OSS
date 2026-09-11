@@ -731,16 +731,16 @@ function StyleEditDialog({
                 />
               </div>
               <div>
-                <Label>绑定素材库</Label>
+                <Label>绑定知识库</Label>
                 <Select
                   value={config.kb_id ?? "__none__"}
                   onValueChange={(v) => update({ kb_id: v === "__none__" ? "" : v })}
                 >
                   <SelectTrigger className="mt-1.5">
-                    <SelectValue placeholder="不绑定（搜索全部素材库）" />
+                    <SelectValue placeholder="不绑定（搜索全部知识库）" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__none__">不绑定（搜索全部素材库）</SelectItem>
+                    <SelectItem value="__none__">不绑定（搜索全部知识库）</SelectItem>
                     {kbOptions.map((kb) => (
                       <SelectItem key={kb.id} value={kb.id}>
                         {kb.name}{kb.description ? ` — ${kb.description}` : ""}
@@ -749,7 +749,7 @@ function StyleEditDialog({
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground mt-1">
-                  绑定后，写作时自动检索将仅在此素材库中查找
+                  绑定后，写作时自动检索将仅在此知识库中查找
                 </p>
               </div>
             </>

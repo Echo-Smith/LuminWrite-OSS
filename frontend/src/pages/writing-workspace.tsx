@@ -4,7 +4,7 @@
  * 研究综述（research_review）的面板在运行激活时出现在文档区域上方。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpenText, ChevronDown, Menu, PanelRightOpen, RefreshCw } from "lucide-react";
+import { BookOpenText, ChevronDown, Menu, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -18,6 +18,7 @@ import { PulseIndicator } from "@/components/animation";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useWritingBg } from "@/hooks/use-writing-bg";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { pendingGate, researchSliceActive, type ResearchSlice } from "@/stores/research-slice";
@@ -281,6 +282,7 @@ export function WritingWorkspace() {
   const [detailWidth, setDetailWidth] = useState(360);
   const [pendingRevision, setPendingRevision] = useState<RevisionSet | null>(null);
   const composerRef = useRef<WritingComposerHandle | null>(null);
+  const composerLayerRef = useRef<HTMLDivElement | null>(null);
   const { connected } = useAgentWebSocket();
 
   const sessions = useAgentStore((state) => state.sessions);
@@ -312,6 +314,9 @@ export function WritingWorkspace() {
   const setLayoutScope = useWorkspaceLayoutStore((state) => state.setScope);
 
   const citationSurfaceContext = useCitationSurfaceContext();
+
+  // 写作区底色（个人中心-自定义，localStorage 持久化）
+  const [writingBg] = useWritingBg();
 
   // 工具栏 Lumi 指示：合并 agent 会话状态与编辑部工作流状态
   const agentMode = useSettingsStore((state) => state.agentMode);
@@ -385,6 +390,21 @@ export function WritingWorkspace() {
     return () => window.removeEventListener("resize", keepDetailWidthSafe);
   }, [sidebarOpen]);
 
+  // 悬浮详情卡片底部让位：实测 composer 高度写入 CSS 变量，
+  // 卡片 bottom 随输入区宽度模式（compact/wide）自动抬降。
+  useEffect(() => {
+    const layer = composerLayerRef.current;
+    const root = layer?.closest<HTMLElement>(".governed-workspace") ?? null;
+    if (!layer || !root) return;
+    const apply = () => {
+      root.style.setProperty("--workspace-composer-clearance", `${Math.round(layer.offsetHeight + 16)}px`);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(layer);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requestedDocument = params.get("document");
@@ -449,7 +469,7 @@ export function WritingWorkspace() {
   };
   const workspaceStyle: WorkspaceStyle = { "--workspace-detail-width": `${detailWidth}px` };
   return (
-    <div className="governed-workspace" style={workspaceStyle} data-sidebar-open={sidebarOpen} data-detail-state={detailPanel} data-composer-width={composerWidth}>
+    <div className="governed-workspace" style={workspaceStyle} data-sidebar-open={sidebarOpen} data-detail-state={detailPanel} data-composer-width={composerWidth} data-writing-bg={writingBg}>
       {sidebarOpen && <button className="workspace-scrim lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
       <div className={cn("workspace-global-sidebar", sidebarOpen && "workspace-global-sidebar-open")}>
         <Sidebar
@@ -472,7 +492,18 @@ export function WritingWorkspace() {
           </div>
           <div className="flex items-center gap-2">
             {!connected && <button className="workspace-connection" onClick={handleReconnect}><PulseIndicator status="paused" size="sm" ring={false} /><span>重新连接</span><RefreshCw className="h-3 w-3" /></button>}
-            {detailPanel === "collapsed" && <Button variant="ghost" size="icon" aria-label="打开详情面板" title="打开详情" onClick={() => setDetailPanel(window.innerWidth < 768 ? "drawer" : "expanded")} className="workspace-icon-button"><PanelRightOpen className="h-4 w-4" /></Button>}
+            {detailPanel !== "drawer" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={detailPanel === "expanded" ? "收起详情面板" : "固定悬浮详情面板"}
+                title={detailPanel === "expanded" ? "收起详情" : "固定悬浮详情"}
+                onClick={() => setDetailPanel(detailPanel === "expanded" ? "collapsed" : (window.innerWidth < 768 ? "drawer" : "expanded"))}
+                className="workspace-icon-button"
+              >
+                {detailPanel === "expanded" ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+              </Button>
+            )}
           </div>
         </header>
 
@@ -491,11 +522,14 @@ export function WritingWorkspace() {
             onPolishSelection={(text) => composerRef.current?.beginPolish(text)}
             citationContext={citationSurfaceContext}
             beforePaper={session?.messages.length ? <Thread variant="flow" /> : undefined}
+            conversationStarted={Boolean(session?.messages.some((message) => message.role === "user"))}
             afterPaper={feedbackContext ? (
               <FeedbackBar traceId={feedbackContext.traceId} article={feedbackContext.article} hasFeedback={feedbackContext.hasFeedback} />
             ) : undefined}
           />
           <RevisionDiff revisionSet={pendingRevision} />
+          {/* 底部过渡遮罩：配合悬浮输入区遮住缝隙文字，随写作区底色联动 */}
+          <div className="workspace-bottom-fade" aria-hidden="true" />
         </div>
 
       </section>
@@ -529,7 +563,7 @@ export function WritingWorkspace() {
         </div>
       </aside>
 
-      <div className={cn("workspace-composer-layer", composerWidth === "compact" && "workspace-composer-layer-compact")} aria-label="写作输入">
+      <div ref={composerLayerRef} className={cn("workspace-composer-layer", composerWidth === "compact" && "workspace-composer-layer-compact")} aria-label="写作输入">
         <WritingComposer
           ref={composerRef}
           compact={composerWidth === "compact"}

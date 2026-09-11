@@ -6,6 +6,10 @@ import type { DocumentVersion, QualityState, Revision, RevisionSet } from "@/lib
 import { QUALITY_STATE_COPY } from "@/lib/writing-runtime-types";
 import { CitationAwareText, CitationRenderContext, InlineCitationText, type CitationRenderContextValue } from "@/components/writing/research-citation-popover";
 import { SelectionLumi } from "@/components/lumi/selection-lumi";
+import { RotatingText } from "@/components/animation";
+
+/** 欢迎页轮换词：笔润智谈能完成的文档类型（长度相近，轮换更整齐） */
+const WELCOME_SUBJECTS = ["一篇深度文章", "一封正式邮件", "一份读书笔记", "一篇产品文案", "一个短篇故事"];
 
 interface DocumentSurfaceProps {
   title: string;
@@ -16,6 +20,8 @@ interface DocumentSurfaceProps {
   onRevisionSet?: (set: RevisionSet) => void;
   beforePaper?: ReactNode;
   afterPaper?: ReactNode;
+  /** 用户已发出第一条消息：欢迎区随即让位给对话流，不再展示 */
+  conversationStarted?: boolean;
   /** 选中正文后点「让 Lumi 润色」回调选中文本 */
   onPolishSelection?: (text: string) => void;
   /**
@@ -34,6 +40,7 @@ export function DocumentSurface({
   onRevisionSet,
   beforePaper,
   afterPaper,
+  conversationStarted = false,
   onPolishSelection,
   citationContext = null,
 }: DocumentSurfaceProps) {
@@ -86,13 +93,14 @@ export function DocumentSurface({
           )}
 
         </div>
-      </article> : (
+      </article> : !conversationStarted ? (
         <section className="document-welcome" aria-label="欢迎写作">
-          <p className="document-kicker">THE WRITING DESK</p>
-          <h2>先描述你要完成的文档</h2>
-          <p>从一句要求开始。对话会整理目标、材料和写作步骤，第一版完成后再进入稿件预览。</p>
+          <h2>
+            从<RotatingText words={WELCOME_SUBJECTS} />开始
+          </h2>
+          <p>对话会整理目标、材料和写作步骤，第一版完成后再进入稿件预览。</p>
         </section>
-      )}
+      ) : null}
       {hasDraft && afterPaper && <footer className="document-feedback">{afterPaper}</footer>}
     </main>
   );

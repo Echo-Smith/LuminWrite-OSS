@@ -2,6 +2,7 @@
 .env
 .env.*
 env.docker
+env.secrets.local
 !.env.example
 !.env.docker.example
 

@@ -104,7 +104,7 @@ export function AddMaterialDialog({
         <DialogHeader>
           <DialogTitle>添加素材</DialogTitle>
           <DialogDescription>
-            支持文本/Markdown 或上传文件，素材将存入个人素材库供写作时检索使用。
+            支持文本/Markdown 或上传文件，素材将存入个人知识库供写作时检索使用。
           </DialogDescription>
         </DialogHeader>
 

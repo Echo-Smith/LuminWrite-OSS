@@ -127,7 +127,7 @@ export interface AgentStartPayload {
   word_limit?: number;
   /** 热搜选题原始链接（用于后端抓取事件背景增强写作叙事） */
   topic_url?: string;
-  /** 是否启用素材库自动检索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
+  /** 是否启用知识库自动检索（默认 true）。关闭后 LLM 不会获得 search_knowledge 工具 */
   kb_enabled?: boolean;
   /** Task10 治理控制：旧入口仅作兼容适配，正式运行以 WritingContract 为准。与 writing-runtime-types 的 OrchestrationMode（含 research_review）保持一致。 */
   orchestration_mode?: "auto" | "fast" | "outline_first" | "sourced" | "strict_research" | "research_review";
