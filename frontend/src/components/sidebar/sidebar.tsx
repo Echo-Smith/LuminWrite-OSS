@@ -7,8 +7,7 @@
 import { useEffect, useState } from "react";
 import {
   Plus, Trash2, Compass, Database,
-  Settings, Sun, Moon, LogOut, UserPlus,
-  PanelLeftClose,
+  Settings, Sun, Moon, Monitor, LogOut, UserPlus,
   ChevronRight, User, AlertTriangle, Newspaper,
   CreditCard,
 } from "lucide-react";
@@ -26,17 +25,16 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { useBillingStore } from "@/stores/billing-store";
 import { useSettingsStore } from "@/stores/settings-store";
-import { useTheme } from "@/hooks/use-theme";
+import { useTheme, type Theme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { StaggerItem } from "@/components/animation";
 
 interface SidebarProps {
-  onClose?: () => void;
   onNavigate?: () => void;
 }
 
-export function Sidebar({ onClose, onNavigate }: SidebarProps) {
+export function Sidebar({ onNavigate }: SidebarProps) {
   const navigate = useNavigate();
   const sessions = useAgentStore((s) => s.sessions);
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
@@ -89,20 +87,10 @@ export function Sidebar({ onClose, onNavigate }: SidebarProps) {
   };
 
   return (
-    <aside className="flex h-full w-64 flex-col bg-surface/70 backdrop-blur-2xl backdrop-saturate-150 anim-slide-right" data-panel-state="expanded" aria-label="全局导航">
-      {/* 顶部品牌区；完整侧栏在任意屏宽都可收起 */}
+    <aside className="flex h-full w-56 flex-col bg-[color:var(--desk-canvas)] anim-slide-right" aria-label="全局导航">
+      {/* 顶部品牌区；关闭按钮移至工作台顶栏（标题左侧） */}
       <div className="flex items-center gap-2.5 px-3 py-3.5">
         <BrandIcon size="md" showLabel />
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
-            title="关闭侧栏"
-            aria-label="关闭侧栏"
-          >
-            <PanelLeftClose className="h-4 w-4" />
-          </button>
-        )}
       </div>
 
       {/* 新建写作 */}
@@ -330,7 +318,7 @@ function RunningSessionBar() {
 interface UserMenuContentProps {
   isGuest: boolean;
   isAdmin: boolean;
-  theme: "light" | "dark";
+  theme: Theme;
   onToggleTheme: () => void;
   onNavigate: (path: string) => void;
   onLogout: () => void;
@@ -391,9 +379,10 @@ function UserMenuContent({
       <div className="h-px bg-border/60 my-1" />
 
       {/* 深浅模式切换 */}
+      {/* 深浅模式切换：浅色 → 深色 → 跟随系统 循环；label/icon 指向下一个模式 */}
       <MenuRow
-        icon={theme === "dark" ? Sun : Moon}
-        label={theme === "dark" ? "浅色模式" : "深色模式"}
+        icon={theme === "light" ? Moon : theme === "dark" ? Monitor : Sun}
+        label={theme === "light" ? "深色模式" : theme === "dark" ? "跟随系统" : "浅色模式"}
         onClick={onToggleTheme}
       />
 

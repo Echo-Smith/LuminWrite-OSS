@@ -82,7 +82,7 @@ export function BrandIcon({
     <div className="flex items-center gap-2.5">
       {iconContainer}
       <div className="flex flex-col min-w-0">
-        <span className={cn("font-bold tracking-tight", config.label)}>
+        <span className={cn("truncate whitespace-nowrap font-bold tracking-tight", config.label)}>
           笔润智谈 | LuminWrite
         </span>
         {subtitle && (

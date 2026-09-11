@@ -32,9 +32,14 @@ test("global navigation is a full drawer that can close at every width", () => {
   const page = source("../src/pages/writing-workspace.tsx");
   const sidebar = source("../src/components/sidebar/sidebar.tsx");
   const styles = source("../src/index.css");
-  assert.match(sidebar, /w-64/);
-  assert.match(sidebar, /ml-auto flex h-7 w-7/);
-  assert.match(sidebar, /aria-label="关闭侧栏"/);
+  assert.match(sidebar, /w-56/);
+  // 侧边栏与画布同色（无面板感），无圆角、无透明质感
+  assert.match(sidebar, /"flex h-full w-56 flex-col bg-\[color:var\(--desk-canvas\)\] anim-slide-right"/);
+  assert.doesNotMatch(sidebar, /rounded-2xl/);
+  // 侧栏关闭按钮位于工作台顶栏（标题左侧），不在侧栏内部
+  assert.match(page, /PanelLeftClose className="h-4 w-4" \/>/);
+  assert.match(page, /aria-label="关闭侧栏"/);
+  assert.doesNotMatch(sidebar, /关闭侧栏|PanelLeftClose|onClose/);
   assert.match(page, /useState\(\(\) => typeof window === "undefined" \|\| window\.innerWidth >= 1024\)/);
   assert.match(page, /onToggleSidebar: \(\) => setSidebarOpen/);
   assert.match(page, /data-sidebar-open=\{sidebarOpen\}/);
@@ -44,7 +49,7 @@ test("global navigation is a full drawer that can close at every width", () => {
   assert.doesNotMatch(styles, /data-sidebar-state="collapsed"|--workspace-sidebar-width: 56px/);
   assert.match(styles, /\.workspace-global-sidebar \{[\s\S]*transform: translateX\(-100%\)/);
   assert.match(styles, /\.workspace-global-sidebar-open \{[^}]*transform: translateX\(0\)/);
-  assert.match(styles, /data-sidebar-open="true"[^}]*--workspace-sidebar-width: 256px/);
+  assert.match(styles, /data-sidebar-open="true"[^}]*--workspace-sidebar-width: 224px/);
   assert.match(styles, /@media \(max-width: 1023px\)[\s\S]*data-sidebar-open[^}]*--workspace-sidebar-width: 0px/);
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.workspace-detail/);
 });
@@ -58,13 +63,13 @@ test("the floating detail card overlays the right edge and the composer slots be
   assert.doesNotMatch(styles, /data-detail-state="expanded"\s*\{[^}]*--workspace-detail-space/);
   // 宽屏详情展开时写作区避让面板（右移），不被遮挡
   assert.match(styles, /data-detail-state="expanded"\] \.workspace-document-region \{[^}]*padding-right: calc\(var\(--workspace-detail-width\)/);
-  // 面板从顶栏按钮下方落下（触发器常驻可见、原地切换开合），齐平 16px 网格
-  assert.match(styles, /\.workspace-detail \{[^}]*position: absolute; top: 60px; right: 16px; bottom: var\(--workspace-composer-clearance/);
+  // 面板从顶栏按钮下方落下（顶栏按钮是唯一开合入口）
+  assert.match(styles, /\.workspace-detail \{[^}]*position: absolute; top: 68px; right: 16px; bottom: var\(--workspace-composer-clearance/);
   assert.match(styles, /\.workspace-detail \{[^}]*border-radius: 16px/);
-  // 材质与侧边/顶栏同款磨砂；开合动画以锚点按钮方向为原点
-  assert.match(styles, /\.workspace-detail \{[^}]*background: hsl\(var\(--surface\) \/ \.78\)/);
-  assert.match(styles, /\.workspace-detail \{[^}]*backdrop-filter: blur\(20px\) saturate\(160%\)/);
-  assert.match(styles, /\.workspace-detail \{[^}]*box-shadow: var\(--shadow-composer-focus\)/);
+  // 实色面板：手机端全屏铺开时磨砂玻璃观感不佳，不再使用半透明 + backdrop-filter
+  assert.match(styles, /\.workspace-detail \{[^}]*background: hsl\(var\(--surface\)\);/);
+  assert.doesNotMatch(styles, /\.workspace-detail \{[^}]*backdrop-filter/);
+  assert.match(styles, /\.workspace-detail \{[^}]*box-shadow: var\(--shadow-composer\)/);
   assert.match(styles, /\.workspace-detail \{[^}]*transform-origin: top right/);
   assert.match(styles, /\.workspace-composer-layer \{[^}]*right: 16px/);
   // 紧凑输入区时底部遮罩自动隐藏
@@ -135,10 +140,21 @@ test("user requests and agent process are independent flow items", () => {
 
 test("the document workspace shares the toolbar surface without a seam", () => {
   const styles = source("../src/index.css");
-  assert.match(styles, /\.workspace-document-region \{[^}]*background: var\(--desk-writing-bg\)/);
-  // 侧边栏与顶栏相连为一体，圆角只出现在靠近 document-stage 的交界处
-  assert.match(styles, /\.workspace-document-region \{[^}]*border-top-left-radius: var\(--composer-radius\)/);
+  // Kimi 式内容卡片：顶栏融进卡片，写作区底色由 workspace-center 统一提供、四周圆角包边
+  assert.match(styles, /\.workspace-center \{[^}]*background: var\(--desk-writing-bg\)/);
+  assert.match(styles, /\.workspace-center \{[^}]*border-radius: 16px/);
+  assert.match(styles, /\.workspace-center \{[^}]*margin: 8px/);
+  // 输入框（composer-shell）距卡片右/底缘各 8px（layer 贴底 + 组件 pb-4），圆角与内容卡片对齐
+  assert.match(styles, /\.workspace-composer-layer \{[^}]*bottom: 0/);
+  assert.match(styles, /\.composer-shell \{[^}]*border-radius: 16px/);
+  // 文档区自身透明融入卡片，不再自备底色与圆角
+  assert.doesNotMatch(styles, /\.workspace-document-region \{[^}]*background:/);
+  assert.doesNotMatch(styles, /\.workspace-document-region \{[^}]*border-top-left-radius/);
   assert.doesNotMatch(styles, /\.workspace-toolbar \{[^}]*border-bottom/);
+  // 顶栏不做磨砂材质，交界处无补角伪元素/合成色变量
+  assert.doesNotMatch(styles, /\.workspace-toolbar \{[^}]*background:/);
+  assert.doesNotMatch(styles, /workspace-(?:toolbar|center)::after/);
+  assert.doesNotMatch(styles, /--desk-canvas-saturated/);
 });
 
 test("article feedback is rendered immediately below the manuscript paper", () => {
@@ -253,6 +269,9 @@ test("detail chrome is compact, icon-only, and spaced", () => {
   // 工具栏按钮双态：点击固定悬浮 / 收起（点击后固定悬浮的交互入口）
   assert.match(page, /aria-label=\{detailPanel === "expanded" \? "收起详情面板" : "固定悬浮详情面板"\}/);
   assert.match(page, /PanelRightClose className="h-4 w-4" \/>/);
+  // 桌面端单一开合入口：面板头部收起按钮只在移动端抽屉显示
+  assert.match(styles, /\.governed-detail-header button \{ display: none;/);
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.governed-detail-header button \{ display: inline-flex/);
   assert.match(styles, /\.governed-detail-header \{[^}]*height: 52px/);
   assert.match(styles, /\.run-detail-tablist \{[^}]*gap: 4px/);
 });

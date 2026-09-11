@@ -4,7 +4,7 @@
  * 研究综述（research_review）的面板在运行激活时出现在文档区域上方。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpenText, ChevronDown, Menu, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
+import { BookOpenText, ChevronDown, Menu, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -66,7 +66,7 @@ type WorkspaceStyle = CSSProperties & { "--workspace-detail-width": string };
 
 function clampDetailWidth(width: number, sidebarOpen: boolean): number {
   if (typeof window === "undefined" || window.innerWidth < DETAIL_RESIZE_VIEWPORT_MIN) return width;
-  const navigationWidth = sidebarOpen ? 256 : 0;
+  const navigationWidth = sidebarOpen ? 224 : 0;
   const safeMaximum = Math.max(DETAIL_WIDTH_MIN, Math.min(DETAIL_WIDTH_MAX, window.innerWidth - navigationWidth - DOCUMENT_SAFE_WIDTH));
   return Math.min(Math.max(width, DETAIL_WIDTH_MIN), safeMaximum);
 }
@@ -397,7 +397,7 @@ export function WritingWorkspace() {
     const root = layer?.closest<HTMLElement>(".governed-workspace") ?? null;
     if (!layer || !root) return;
     const apply = () => {
-      root.style.setProperty("--workspace-composer-clearance", `${Math.round(layer.offsetHeight + 16)}px`);
+      root.style.setProperty("--workspace-composer-clearance", `${Math.round(layer.offsetHeight)}px`);
     };
     apply();
     const observer = new ResizeObserver(apply);
@@ -473,7 +473,6 @@ export function WritingWorkspace() {
       {sidebarOpen && <button className="workspace-scrim lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
       <div className={cn("workspace-global-sidebar", sidebarOpen && "workspace-global-sidebar-open")}>
         <Sidebar
-          onClose={() => setSidebarOpen(false)}
           onNavigate={() => { if (window.innerWidth < 1024) setSidebarOpen(false); }}
         />
       </div>
@@ -481,6 +480,16 @@ export function WritingWorkspace() {
       <section className="workspace-center">
         <header className="workspace-toolbar">
           <div className="flex min-w-0 items-center gap-2">
+            {sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+                title="关闭侧栏"
+                aria-label="关闭侧栏"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            )}
             {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="workspace-icon-button" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>}
             <div className="min-w-0"><h2>{title}</h2></div>
             {/* Lumi 运行指示：思考（含等提纲确认）/书写/出错；完成后闪一次星星 */}
@@ -497,7 +506,7 @@ export function WritingWorkspace() {
                 variant="ghost"
                 size="icon"
                 aria-label={detailPanel === "expanded" ? "收起详情面板" : "固定悬浮详情面板"}
-                title={detailPanel === "expanded" ? "收起详情" : "固定悬浮详情"}
+                title={detailPanel === "expanded" ? "收起" : "固定悬浮详情"}
                 onClick={() => setDetailPanel(detailPanel === "expanded" ? "collapsed" : (window.innerWidth < 768 ? "drawer" : "expanded"))}
                 className="workspace-icon-button"
               >

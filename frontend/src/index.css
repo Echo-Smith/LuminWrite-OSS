@@ -95,6 +95,8 @@
 }
 
 /* ═══ Task10 · 文档优先写作工作台 ═══ */
+/* 布局参考 Kimi：实色侧边栏 + 四周留画布包边的内容卡片（顶栏融在卡片内），
+   卡片圆角 = 输入框圆角 + 包边 8px，与输入框四角成同心圆 */
 .governed-workspace {
   --workspace-sidebar-width: 0px;
   --workspace-detail-width: 360px;
@@ -109,7 +111,7 @@
   background: var(--desk-canvas);
   color: hsl(var(--foreground));
 }
-.governed-workspace[data-sidebar-open="true"] { --workspace-sidebar-width: 256px; }
+.governed-workspace[data-sidebar-open="true"] { --workspace-sidebar-width: 224px; }
 
 /* ── 写作区底色（个人中心-自定义）── */
 .governed-workspace { --desk-writing-bg: #fbfaf6; }                 /* 淡白（默认，纸感） */
@@ -121,10 +123,8 @@
 .governed-workspace[data-writing-bg="kraft"] { --desk-writing-bg: #f3e7cd; }   /* 牛皮纸（淡黄） */
 .dark .governed-workspace[data-writing-bg="kraft"] { --desk-writing-bg: #211c13; }
 
-/* 侧边栏收起时顶栏通栏，交界的圆角随之消失 */
-.governed-workspace[data-sidebar-open="false"] .workspace-document-region { border-top-left-radius: 0; }
-
 /* 详情面板展开时为悬浮卡片，不再占列宽——文档区始终保持完整宽度 */
+/* 侧边栏：实色、全幅、直角，不随内容卡片圆角化 */
 .workspace-global-sidebar {
   position: fixed; top: 0; bottom: 0; left: 0; z-index: 40; flex: none;
   opacity: 0; pointer-events: none; transform: translateX(-100%);
@@ -133,15 +133,16 @@
 .workspace-global-sidebar-open { opacity: 1; pointer-events: auto; transform: translateX(0); }
 .workspace-center {
   position: relative; z-index: 1; display: flex; min-width: 0; flex: 1; flex-direction: column; overflow: hidden;
-  margin-left: var(--workspace-sidebar-width);
+  margin: 8px;
+  margin-left: calc(var(--workspace-sidebar-width) + 8px);
+  border-radius: 16px;
+  background: var(--desk-writing-bg);
   transition: margin-left var(--workspace-motion-duration) var(--workspace-motion-ease);
 }
+/* 顶栏融在内容卡片内：不再自备材质，直接透出卡片底色（写作区底色） */
 .workspace-toolbar {
   display: flex; height: 52px; flex: none; align-items: center; justify-content: space-between;
   padding: 0 16px;
-  background: hsl(var(--surface) / .78);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
 }
 .workspace-toolbar h2 { max-width: 42rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .875rem; font-weight: 600; }
 .workspace-icon-button, .run-control { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 8px; color: hsl(var(--muted-foreground)); }
@@ -160,9 +161,7 @@
 
 .workspace-document-region {
   position: relative; min-height: 0; flex: 1; overflow: hidden;
-  /* 写作区底色铺满整个区域（含避让面板后的空槽），保证与详情面板磨砂背景同色无色差 */
-  background: var(--desk-writing-bg);
-  border-top-left-radius: var(--composer-radius);
+  /* 底色由内容卡片（workspace-center）统一提供，自身保持透明融入卡片 */
   transition: padding-right var(--workspace-motion-duration) var(--workspace-motion-ease);
 }
 /* 宽屏 + 详情展开：写作区避让悬浮面板（右移），不被其遮挡；窄屏维持覆盖 */
@@ -234,8 +233,8 @@
 .workspace-detail-resizer { display: none; }
 @media (min-width: 1180px) and (pointer: fine) {
   .workspace-detail-resizer {
-    /* 悬浮卡片左缘：面板 top 60px 起、右缘 16px + 卡片宽，把手中心与卡片边缘重合 */
-    position: absolute; top: 60px; bottom: var(--workspace-composer-clearance, 96px);
+    /* 悬浮卡片左缘：面板 top 68px 起、右缘 16px + 卡片宽，把手中心与卡片边缘重合 */
+    position: absolute; top: 68px; bottom: var(--workspace-composer-clearance, 96px);
     right: calc(var(--workspace-detail-width) + 10px); z-index: 24; display: block; width: 12px;
     cursor: col-resize; touch-action: none; pointer-events: auto;
   }
@@ -248,7 +247,8 @@
 }
 .workspace-sidecar-main { position: relative; min-height: 0; flex: 1; overflow: visible; pointer-events: none; }
 .workspace-composer-layer {
-  position: absolute; right: 16px; bottom: 8px; left: calc(var(--workspace-sidebar-width) + 16px); z-index: 15;
+  /* 组件自带 pb-4（16px）：layer 贴住视口底后，输入框底缘距卡片底缘恰为 8px，与右缘相等，圆角同心 */
+  position: absolute; right: 16px; bottom: 0; left: calc(var(--workspace-sidebar-width) + 16px); z-index: 15;
   background: transparent; pointer-events: none;
   transition: left var(--composer-motion-duration) var(--workspace-motion-ease), right var(--composer-motion-duration) var(--workspace-motion-ease);
 }
@@ -272,14 +272,13 @@
   }
 }
 .workspace-detail {
-  /* 悬浮卡片：材质与侧边/顶栏同款磨砂（78% 表面色 + blur 20px saturate 160%），
-     从顶栏按钮下方落下、底部让出输入区空间，阴影与输入区同为 --shadow-composer-focus 层级 */
-  position: absolute; top: 60px; right: 16px; bottom: var(--workspace-composer-clearance, 96px); z-index: 10;
+  /* 悬浮面板：实色不透明（磨砂玻璃在手机屏观感不佳），从顶栏按钮下方落下、
+     底部让出输入区空间。外边缘（边框/投影/圆角）参考输入框外边缘同款处理 */
+  position: absolute; top: 68px; right: 16px; bottom: var(--workspace-composer-clearance, 96px); z-index: 10;
   width: var(--workspace-detail-width); max-width: calc(100% - 24px);
-  overflow: hidden; border: 1px solid color-mix(in srgb, var(--desk-brass) 26%, hsl(var(--border)));
-  border-radius: 16px; background: hsl(var(--surface) / .78); backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
-  box-shadow: var(--shadow-composer-focus);
+  overflow: hidden; border: 1px solid hsl(var(--border) / 0.6);
+  border-radius: 16px; background: hsl(var(--surface));
+  box-shadow: var(--shadow-composer);
   opacity: 1; transform: translateX(0); visibility: visible; pointer-events: auto;
   transform-origin: top right;
   transition: transform var(--workspace-motion-duration) var(--workspace-motion-ease), opacity 180ms linear, visibility 0s linear;
@@ -293,7 +292,8 @@
 .governed-detail-panel { display: flex; width: 100%; height: 100%; flex-direction: column; background: transparent; }
 .governed-detail-header { display: flex; height: 52px; flex: none; align-items: center; justify-content: space-between; border-bottom: 1px solid hsl(var(--border) / .7); padding: 0 14px 0 18px; }
 .governed-detail-header h3 { font-size: .875rem; font-weight: 600; }
-.governed-detail-header button { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 8px; color: hsl(var(--muted-foreground)); }
+/* 头部收起按钮仅移动端抽屉显示：桌面端由顶栏按钮统一开合（单一入口，无重复按钮） */
+.governed-detail-header button { display: none; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 8px; color: hsl(var(--muted-foreground)); }
 .governed-detail-header button:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
 .run-detail-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column; }
 .run-detail-tablist { display: grid; flex: none; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; border-bottom: 1px solid hsl(var(--border)); padding: 6px; }
@@ -350,8 +350,7 @@
 
 @media (max-width: 1023px) {
   .governed-workspace[data-sidebar-open] { --workspace-sidebar-width: 0px; }
-  /* 窄屏下侧边栏为覆盖式抽屉、不占布局：交界圆角随之消失 */
-  .governed-workspace .workspace-document-region { border-top-left-radius: 0; }
+  /* 窄屏下侧边栏为覆盖式抽屉、不占布局：内容卡片仅保留画布包边 */
 }
 
 @media (max-width: 767px) {
@@ -361,18 +360,27 @@
   .provisional-layer { margin-right: 18px; margin-left: 18px; padding: 14px; }
   .quality-status-compact { display: none; }
   .governed-workspace { --workspace-detail-space: 0px; }
+  /* 手机上内容卡片退化为全幅，不再留画布包边 */
+  .workspace-center { margin: 0; border-radius: 0; }
+  /* 移动端抽屉盖住顶栏：头部收起按钮在抽屉内显示 */
+  .governed-detail-header button { display: inline-flex; }
   .workspace-sidecar { position: fixed; inset: 0; z-index: 30; width: auto; border-left: 0; background: transparent; pointer-events: none; transition: none; }
   .workspace-sidecar-main { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
   .workspace-composer-layer, .workspace-composer-layer-compact { right: 8px; bottom: 8px; left: 8px; width: auto; }
   .composer-width-toggle { display: none; }
   .workspace-detail {
+    /* 容器只承载遮罩+抽屉（透明），实色底移到抽屉面板自身 */
     position: fixed; inset: 0; z-index: 50; width: auto; max-width: none;
     border: 0; border-radius: 0; box-shadow: none; pointer-events: auto;
+    background: transparent;
   }
   .workspace-detail[data-panel-state="collapsed"] { pointer-events: none; transform: none; }
   .workspace-detail-scrim { position: absolute; inset: 0; display: block; background: rgb(0 0 0 / .34); }
   .governed-detail-panel {
+    /* 与左侧栏同款的盖屏抽屉：实色右列 + 左缘细线 + 投影，滑入滑出 */
     position: absolute; top: 0; right: 0; width: min(390px, 92vw); transform: translateX(0);
+    background: hsl(var(--surface)); border-left: 1px solid hsl(var(--border) / .7);
+    box-shadow: -16px 0 40px -24px rgb(0 0 0 / .4);
     transition: transform var(--workspace-motion-duration) var(--workspace-motion-ease);
   }
   .workspace-detail[data-panel-state="collapsed"] .governed-detail-panel { transform: translateX(100%); }
@@ -467,7 +475,8 @@
   .composer-shell {
     position: relative;
     border: 1px solid hsl(var(--border) / 0.6);
-    border-radius: var(--composer-radius);
+    /* 圆角与内容卡片对齐（16px） */
+    border-radius: 16px;
     background: hsl(var(--card));
     box-shadow: var(--shadow-composer);
     transition:
