@@ -394,3 +394,54 @@ export interface AuditLogEntry {
   user_agent: string;
   created_at: string;
 }
+
+// ─── AR-012 候选评估控制台（T10）──
+
+export interface ArReviewArtifactRef {
+  kind: string;
+  content_hash: string;
+  media_type: string;
+  size: number;
+}
+
+export interface ArReviewJobItem {
+  job_id: string;
+  run_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "outcome_unknown" | "cancelled";
+  cancel_requested: boolean;
+  surrogate_project_id: string;
+  remote_run_id?: string;
+  artifact_refs: ArReviewArtifactRef[];
+  usage: Record<string, unknown>;
+  corpus_warnings: string[];
+  error_code?: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface ArReviewOverview {
+  enabled: boolean;
+  jobs: ArReviewJobItem[];
+}
+
+/** review-metrics/1（backend/internal/arreview/metrics.go 的机械对比指标） */
+export interface ArReviewMetrics {
+  schema_version: string;
+  generator: string;
+  candidate: {
+    cjk_characters: number;
+    headings: number;
+    citation_occurrences: number;
+    unique_citations: number;
+    distinct_sources: number;
+    unresolved_citations: string[];
+    source_coverage: number;
+  };
+  baseline: {
+    cjk_characters: number;
+    evidence_citations: number;
+    unique_evidence_citations: number;
+  };
+}

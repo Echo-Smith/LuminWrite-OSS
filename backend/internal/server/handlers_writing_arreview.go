@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -149,6 +150,67 @@ func (s *Server) handleCancelArReviewCandidate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	response.OK(w, arReviewJobViewOf(updated))
+}
+
+// ─── Admin console (T10): /api/v2/admin/ar-review/*, eval.view RBAC ───
+
+type arReviewAdminOverview struct {
+	Enabled bool              `json:"enabled"`
+	Jobs    []arReviewJobView `json:"jobs"`
+}
+
+// GET /api/v2/admin/ar-review/jobs — cross-owner job list for the internal
+// evaluation console. Reports enabled=false as data (not 503) so the page
+// can render the deployment hint instead of an error toast.
+func (s *Server) handleAdminListArReviewJobs(w http.ResponseWriter, r *http.Request) {
+	overview := arReviewAdminOverview{Enabled: false, Jobs: []arReviewJobView{}}
+	if s.arReview == nil {
+		response.OK(w, overview)
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+	jobs, err := s.arReview.AdminListJobs(r.Context(), limit)
+	if err != nil {
+		s.writeWritingError(w, err)
+		return
+	}
+	overview.Enabled = true
+	for _, job := range jobs {
+		overview.Jobs = append(overview.Jobs, arReviewJobViewOf(job))
+	}
+	response.OK(w, overview)
+}
+
+// GET /api/v2/admin/ar-review/jobs/{jobId}/artifacts/{kind} — raw content of
+// one imported sidecar output, admin-scoped (RBAC gates access; no owner
+// check — the console must inspect any job).
+func (s *Server) handleAdminReadArReviewArtifact(w http.ResponseWriter, r *http.Request) {
+	if s.arReview == nil {
+		s.writeWritingError(w, errArReviewDisabled)
+		return
+	}
+	mediaType, contentHash, body, err := s.arReview.AdminReadArtifact(r.Context(),
+		chi.URLParam(r, "jobId"), chi.URLParam(r, "kind"))
+	if err != nil {
+		if errors.Is(err, writingstore.ErrNotFound) {
+			s.writeWritingError(w, errResearchResourceNotFound)
+			return
+		}
+		s.writeWritingError(w, err)
+		return
+	}
+	if mediaType == "" {
+		mediaType = "application/json"
+	}
+	w.Header().Set("Content-Type", mediaType+"; charset=utf-8")
+	w.Header().Set("X-Content-Hash", contentHash)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // GET /runs/{runId}/research/ar012-candidate/artifacts/{kind} — raw content

@@ -11,6 +11,7 @@
 | Go 适配层（client/corpus/exchange/idempotency/metrics） | `backend/internal/arreview/` |
 | 持久作业表 + 租约/对账/取消（迁移 111） | `backend/internal/writingstore/ar_review_jobs.go`、`migrations/111_ar_review_jobs.*.sql` |
 | 服务与 REST 端点 | `backend/internal/server/arreview_api.go`、`handlers_writing_arreview.go`、`writing_routes.go` |
+| Admin 控制台（跨用户作业列表/产物查看/发起/取消） | `backend` admin 组 `/api/v2/admin/ar-review/*`（eval.view）+ `frontend/src/components/admin/ar-review-panel.tsx`（侧边栏「AR-012 候选」） |
 | 配置（默认关闭） | `AR012_CANDIDATE_ENABLED` / `AR_REVIEW_*`（`config.go`、`.env.docker.example`） |
 | 部署 overlay | `docker-compose.ar012.yml`（profile `ar012`，仅 internal 网络） |
 | 上游 fork（不入仓库） | 工作区 `review-sidecar/`（ReviewSpec 参数化 + Dockerfile + 18 项测试） |

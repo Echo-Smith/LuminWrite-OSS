@@ -1018,6 +1018,13 @@ r.With(s.jwtAuthMiddleware).Get("/auth/sessions", s.handleListUserActiveSessions
 			// Unified capability inventory (M1.5 slice 2)
 			r.Get("/capabilities", s.handleAdminCapabilities)
 
+			// AR-012 candidate evaluation console (T10, eval.view)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("eval.view"))
+				r.Get("/ar-review/jobs", s.handleAdminListArReviewJobs)
+				r.Get("/ar-review/jobs/{jobId}/artifacts/{kind}", s.handleAdminReadArReviewArtifact)
+			})
+
 			// Traces (audit.view)
 			r.Group(func(r chi.Router) {
 				r.Use(s.requirePermission("audit.view"))

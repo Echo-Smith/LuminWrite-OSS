@@ -33,6 +33,7 @@ export type AdminPageKey =
   | "mcp"
   | "cron"
   | "evaluation"
+  | "ar-review"
   | "feedback"
   | "usage"
   | "sensitive"
@@ -57,6 +58,7 @@ import {
   Server,
   Clock,
   ClipboardCheck,
+  FlaskConical,
   MessageSquareText,
   TrendingUp,
   Shield,
@@ -74,6 +76,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "mcp", label: "MCP 管理", icon: Server, permissions: ["apikey.manage", "sandbox.manage"] },
   { key: "cron", label: "定时任务", icon: Clock, permissions: ["cron.manage"] },
   { key: "evaluation", label: "评测面板", icon: ClipboardCheck, permissions: ["eval.view"] },
+  { key: "ar-review", label: "AR-012 候选", icon: FlaskConical, permissions: ["eval.view"] },
   { key: "feedback", label: "反馈分析", icon: MessageSquareText, permissions: ["audit.view"] },
   {
     key: "usage",

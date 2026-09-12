@@ -513,6 +513,34 @@ func usageFromReceipt(receiptJSON []byte) map[string]any {
 	}
 }
 
+// AdminListJobs serves GET /api/v2/admin/ar-review/jobs: the cross-owner job
+// console for the internal evaluation phase. Unlike the run-scoped endpoints
+// this one reports disabled state as data (enabled=false) instead of 503, so
+// the admin page can render the "not enabled" hint instead of an error.
+func (s *arReviewService) AdminListJobs(ctx context.Context, limit int) ([]writingstore.ArReviewJob, error) {
+	return s.store.ListArReviewJobs(ctx, limit)
+}
+
+// AdminReadArtifact serves GET /api/v2/admin/ar-review/jobs/{jobId}/artifacts/{kind}
+// for the admin console: same content-addressed blob store, but scoped by the
+// job row alone (admin RBAC gates access instead of run ownership).
+func (s *arReviewService) AdminReadArtifact(ctx context.Context, jobID, kind string) (mediaType string, contentHash string, body []byte, err error) {
+	job, err := s.store.GetArReviewJobAdmin(ctx, jobID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	for _, ref := range job.ArtifactRefs {
+		if ref.Kind == kind {
+			_, body, err = s.store.GetArtifactContent(ctx, ref.ContentHash)
+			if err != nil {
+				return "", "", nil, err
+			}
+			return ref.MediaType, ref.ContentHash, body, nil
+		}
+	}
+	return "", "", nil, errResearchResourceNotFound
+}
+
 func refsSoFar(refs []writingstore.ArReviewArtifactRef) []writingstore.ArReviewArtifactRef {
 	if refs == nil {
 		return []writingstore.ArReviewArtifactRef{}

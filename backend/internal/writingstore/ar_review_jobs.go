@@ -157,6 +157,39 @@ func (s *Store) LatestArReviewJobForRun(ctx context.Context, ownerUserID, runID 
 	return job, err
 }
 
+// ListArReviewJobs lists the newest jobs across all owners (admin console).
+// New first; limit bounds the page (<= 200).
+func (s *Store) ListArReviewJobs(ctx context.Context, limit int) ([]ArReviewJob, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+arReviewJobColumns()+` FROM writing_ar_review_jobs ORDER BY created_at DESC, id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list ar review jobs: %w", err)
+	}
+	defer rows.Close()
+	jobs := []ArReviewJob{}
+	for rows.Next() {
+		job, err := scanArReviewJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+// GetArReviewJobAdmin loads one job without owner scoping (admin console;
+// access control is the admin RBAC middleware, not row ownership).
+func (s *Store) GetArReviewJobAdmin(ctx context.Context, jobID string) (ArReviewJob, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+arReviewJobColumns()+` FROM writing_ar_review_jobs WHERE id=$1`, jobID)
+	job, err := scanArReviewJob(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArReviewJob{}, ErrNotFound
+	}
+	return job, err
+}
+
 // ClaimPendingArReviewJob leases the oldest pending job for the named worker
 // with a conditional UPDATE, so two workers can never hold the same job.
 func (s *Store) ClaimPendingArReviewJob(ctx context.Context, worker string, ttl time.Duration, now time.Time) (ArReviewJob, bool, error) {

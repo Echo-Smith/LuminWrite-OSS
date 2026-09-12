@@ -16,6 +16,7 @@ import { TraceHistoryPage } from "./admin/trace-history";
 import { SensitiveWordsPage } from "./admin/sensitive-words";
 import { FeedbackAnalysisPage } from "./admin/feedback-analysis";
 import { EvaluationPage } from "./admin/evaluation-panel";
+import { ArReviewPanelPage } from "@/components/admin/ar-review-panel";
 import { ModelConfigsPage } from "./admin/model-configs";
 import { MCPManagementPage } from "./admin/mcp-management";
 import { CronJobsPage } from "./admin/cron-jobs";
@@ -91,6 +92,7 @@ export function AdminDashboard() {
       {activePage === "cron" && <GuardedPage page="cron"><CronJobsPage /></GuardedPage>}
       {activePage === "feedback" && <GuardedPage page="feedback"><FeedbackAnalysisPage /></GuardedPage>}
       {activePage === "evaluation" && <GuardedPage page="evaluation"><EvaluationPage /></GuardedPage>}
+      {activePage === "ar-review" && <GuardedPage page="ar-review"><ArReviewPanelPage /></GuardedPage>}
       {activePage === "usage" && <GuardedPage page="usage"><UsageBillingPage /></GuardedPage>}
       {activePage === "sensitive" && <GuardedPage page="sensitive"><SensitiveWordsPage /></GuardedPage>}
       {activePage === "kb" && <GuardedPage page="kb"><KnowledgeBasePage /></GuardedPage>}
