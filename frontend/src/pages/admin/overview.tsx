@@ -57,9 +57,6 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STYLE_LABELS: Record<string, string> = {
-  yinyue: "预设评论风格",
-  shenlun: "申论",
-  xiaohongshu: "小红书",
   unknown: "未知",
 };
 

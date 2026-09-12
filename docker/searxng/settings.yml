@@ -1,0 +1,13 @@
+# SearXNG settings for the LuminWrite OSS quickstart stack.
+# use_default_settings pulls upstream defaults; we only enable the JSON API
+# (required by the backend's searxng adapter) and disable the bot limiter
+# (traffic is local-only inside the compose network).
+use_default_settings: true
+server:
+  secret_key: "luminwrite-quickstart-secret-key-change-me"
+  limiter: false
+  image_proxy: false
+search:
+  formats:
+    - html
+    - json

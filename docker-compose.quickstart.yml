@@ -1,0 +1,132 @@
+# ─── 笔润智谈丨LuminWrite OSS — Quickstart Compose ──────────
+# 开箱即用的完整自托管栈：预构建 ghcr 镜像 + 内置 SearXNG 搜索（无需任何
+# 搜索源 API key）。仅需一个 LLM key 即可跑通全部写作流。
+#
+# 使用：
+#   cp .env.docker.example .env.docker   # 至少填写 DEEPSEEK_API_KEY
+#   docker compose -f docker-compose.quickstart.yml up -d
+#
+# 与 docker-compose.yml 的区别：本文件引用 ghcr.io 预构建镜像（无需本地
+# 构建）、内置 SearXNG 服务并默认启用；不含 1Panel 生产部署的端口/证书
+# 约定。生产部署请用 docker-compose.yml（见 DEPLOY.md）。
+#
+# Services: postgres · redis · docreader · searxng · backend · frontend
+
+services:
+  postgres:
+    image: paradedb/paradedb:v0.22.2-pg17
+    container_name: luminwrite-quickstart-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: writing_agent_v2
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d writing_agent_v2"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: luminwrite-quickstart-redis
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    networks:
+      - internal
+    restart: unless-stopped
+
+  docreader:
+    image: ghcr.io/echo-smith/luminbuddy-v2-docreader:latest
+    container_name: luminwrite-quickstart-docreader
+    volumes:
+      - docreader_tmp:/tmp/docreader
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ── SearXNG：自托管元搜索（OSS 版默认搜索源，无 API key）──
+  searxng:
+    image: searxng/searxng:latest
+    container_name: luminwrite-quickstart-searxng
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/echo-smith/luminbuddy-v2-backend:latest
+    container_name: luminwrite-quickstart-backend
+    env_file:
+      - .env.docker
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/writing_agent_v2?sslmode=disable
+      DOCREADER_ADDR: docreader:50051
+      DOCREADER_TRANSPORT: tcp
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379/0
+      # 内置 SearXNG 作为默认搜索源（零 key 开箱可用）
+      SEARXNG_BASE_URL: http://searxng:8080
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    networks:
+      - internal
+      - frontend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docreader:
+        condition: service_started
+      redis:
+        condition: service_started
+      searxng:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    init: true
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/echo-smith/luminbuddy-v2-frontend:latest
+    container_name: luminwrite-quickstart-frontend
+    ports:
+      - "${FRONTEND_PORT:-3002}:8080"
+    networks:
+      - frontend
+      - internal
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    init: true
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+  frontend:
+    driver: bridge
+
+volumes:
+  pg_data:
+    driver: local
+  docreader_tmp:
+    driver: local

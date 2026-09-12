@@ -38,6 +38,7 @@ type SearchClient struct {
 	extraHot          *ExtraHotClient
 	bing              *BingClient
 	anysearch         *AnySearchClient
+	searxng           *SearXNGClient
 	credibilityLookup engine.CredibilityLookup // optional: enrich results with source credibility
 }
 
@@ -50,6 +51,7 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	bingEnabled bool, bingBaseURL string, bingTimeout time.Duration,
 	tencentCLIPath string, tencentCLITimeout time.Duration,
 	anysearchAPIKey, anysearchEndpoint string, anysearchTimeout time.Duration,
+	searxngBaseURL string, searxngTimeout time.Duration,
 ) *SearchClient {
 	c := &SearchClient{}
 
@@ -83,6 +85,12 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	// AnySearch: always init (anonymous tier works without API key)
 	c.anysearch = NewAnySearchClient(anysearchAPIKey, anysearchEndpoint, anysearchTimeout)
 
+	// SearXNG: self-hosted metasearch, the OSS edition's key-free default
+	// source. Inactive until SEARXNG_BASE_URL points at an instance.
+	if searxngBaseURL != "" {
+		c.searxng = NewSearXNGClient(searxngBaseURL, searxngTimeout)
+	}
+
 	return c
 }
 
@@ -95,7 +103,7 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 
 // HasSources returns true if at least one search source is configured.
 func (c *SearchClient) HasSources() bool {
-	return c.tavily != nil || c.zhihu != nil || c.tencent != nil || (c.tencentCLI != nil && c.tencentCLI.IsConfigured()) || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil
+	return c.tavily != nil || c.zhihu != nil || c.tencent != nil || (c.tencentCLI != nil && c.tencentCLI.IsConfigured()) || c.weibo != nil || c.extraHot != nil || c.bing != nil || c.anysearch != nil || c.searxng != nil
 }
 
 // Search executes concurrent multi-source search and returns aggregated results.
@@ -182,6 +190,21 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 			r, err := c.bing.Search(ctx, query, maxPerSource)
 			if err != nil {
 				slog.Warn("bing search failed", "error", err, "query", query)
+				return
+			}
+			mu.Lock()
+			results = append(results, r...)
+			mu.Unlock()
+		}()
+	}
+
+	if c.searxng != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := c.searxng.Search(ctx, query, maxPerSource)
+			if err != nil {
+				slog.Warn("searxng search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -312,6 +335,9 @@ func (c *SearchClient) activeSources() []string {
 	}
 	if c.extraHot != nil {
 		sources = append(sources, "extra_hot")
+	}
+	if c.searxng != nil {
+		sources = append(sources, "searxng")
 	}
 	if c.anysearch != nil {
 		sources = append(sources, "anysearch")

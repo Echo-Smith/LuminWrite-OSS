@@ -15,8 +15,6 @@ import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
 import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 工作台页面组件（内部保留 EditorialBoard 命名）
 import { MyStylesPage } from "@/pages/my-styles";
-import { TermsPage } from "@/pages/legal/terms";
-import { PrivacyPage } from "@/pages/legal/privacy";
 import PricingPage from "@/pages/pricing";
 import BillingResultPage from "@/pages/billing-result";
 import { ToastContainer } from "@/components/ui/toast";
@@ -134,10 +132,6 @@ export function App() {
 
           {/* /workflow 已集成到 /write 的工作台模式中，重定向 */}
           <Route path="/workflow" element={<Navigate to="/write" replace />} />
-
-          {/* 法律页面 — 公开访问，无需登录 */}
-          <Route path="/terms" element={<PageTransition><TermsPage /></PageTransition>} />
-          <Route path="/privacy" element={<PageTransition><PrivacyPage /></PageTransition>} />
 
           {/* 定价页 — 公开访问 */}
           <Route path="/pricing" element={<PageTransition><PricingPage /></PageTransition>} />

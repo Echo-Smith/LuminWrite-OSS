@@ -4,7 +4,7 @@
 import { useState } from "react";
 import {
   Info, Heart, BookOpen, Zap, ScrollText, Sparkles,
-  Palette, Shield, Brain, ChevronRight, Mail, FileText, Github,
+  Palette, Shield, Brain, ChevronRight, Github,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icon";
 import { Card, CardContent } from "@/components/ui/card";
@@ -82,8 +82,8 @@ export function AboutSection() {
       {/* 品牌区域 */}
       <div className="flex flex-col items-center text-center py-6">
         <BrandIcon size="xl" />
-        <h2 className="text-xl font-semibold tracking-tight">笔润智谈</h2>
-        <p className="text-xs text-muted-foreground mt-1">你的私人 AI 写作伙伴</p>
+        <h2 className="text-xl font-semibold tracking-tight">笔润智谈丨LuminWrite OSS</h2>
+        <p className="text-xs text-muted-foreground mt-1">自托管的开源 AI 写作工作台</p>
         <Badge variant="secondary" className="mt-2 text-xs">v{appVersion}</Badge>
       </div>
 
@@ -91,9 +91,9 @@ export function AboutSection() {
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">产品简介</h3>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          笔润智谈是一款面向内容创作者的 AI 写作助手。它理解你的写作风格，记住你的创作偏好，
-          帮助你从选题构思到成稿审校，全程陪伴每一步创作。
-          无论是日常随笔、深度文章还是系列内容，笔润智谈都能成为你得力的写作伙伴。
+          笔润智谈（LuminWrite OSS）是一款面向中文内容创作场景的自托管 AI 写作工作台。
+          它不追求「一键生成」的魔法，而是把写作拆成可观察、可干预、可迭代的工程流程：
+          素材检索、提纲确认、风格化成稿、写后自检与记忆沉淀，关键决策始终由你掌控。
         </p>
       </div>
 
@@ -167,40 +167,8 @@ export function AboutSection() {
         )}
       </div>
 
-      {/* 联系方式 */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-semibold">联系方式</h3>
-        <a
-          href="mailto:[contact removed]"
-          className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2.5 hover:bg-accent/50 transition-ui"
-        >
-          <Mail className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm text-muted-foreground">[contact removed]</span>
-        </a>
-      </div>
-
       {/* 链接 */}
       <div className="space-y-2">
-        <a
-          href="/terms"
-          className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5 hover:bg-accent/50 transition-ui"
-        >
-          <div className="flex items-center gap-2">
-            <FileText className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">服务条款</span>
-          </div>
-          <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-        </a>
-        <a
-          href="/privacy"
-          className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5 hover:bg-accent/50 transition-ui"
-        >
-          <div className="flex items-center gap-2">
-            <Shield className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">隐私政策</span>
-          </div>
-          <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-        </a>
         <a
           href="https://github.com/Echo-Smith/luminbuddy-writing-agent-v2"
           target="_blank"
@@ -209,7 +177,7 @@ export function AboutSection() {
         >
           <div className="flex items-center gap-2">
             <Github className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">开源项目</span>
+            <span className="text-sm">开源项目（MIT）</span>
           </div>
           <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
         </a>
@@ -219,10 +187,10 @@ export function AboutSection() {
       <div className="flex flex-col items-center text-center pt-4 border-t">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Heart className="h-3 w-3 text-red-400" />
-          <span>由 LuminBuddy 团队精心打造</span>
+          <span>由 LuminWrite 开源社区构建</span>
         </div>
         <p className="text-[10px] text-muted-foreground/60 mt-1">
-          © {new Date().getFullYear()} LuminBuddy. All rights reserved.
+          © {new Date().getFullYear()} LuminWrite OSS · MIT License
         </p>
       </div>
     </div>

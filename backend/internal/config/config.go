@@ -31,6 +31,7 @@ type Config struct {
 	ExtraHot       ExtraHotConfig
 	Bing           BingConfig
 	AnySearch      AnySearchConfig
+	SearXNG        SearXNGConfig
 	WebAuthn       WebAuthnConfig
 	Jiaozhen       JiaozhenConfig
 	SMTP           SMTPConfig
@@ -217,6 +218,13 @@ type AnySearchConfig struct {
 	Timeout  time.Duration
 }
 
+// SearXNGConfig points at a self-hosted SearXNG metasearch instance — the
+// OSS edition's key-free default search source. Empty BaseURL disables it.
+type SearXNGConfig struct {
+	BaseURL string
+	Timeout time.Duration
+}
+
 // KbInternalConfig holds configuration for the internal knowledge base
 // (replaces the external WeKnora integration).
 type KbInternalConfig struct {
@@ -368,6 +376,10 @@ func Load() *Config {
 			APIKey:   getEnv("ANYSEARCH_API_KEY", ""),
 			Endpoint: getEnv("ANYSEARCH_ENDPOINT", "https://api.anysearch.com"),
 			Timeout:  getEnvDuration("ANYSEARCH_TIMEOUT", 30*time.Second),
+		},
+		SearXNG: SearXNGConfig{
+			BaseURL: getEnv("SEARXNG_BASE_URL", ""),
+			Timeout: getEnvDuration("SEARXNG_TIMEOUT", 15*time.Second),
 		},
 		Kb: KbInternalConfig{
 			DocreaderAddr:      getEnv("DOCREADER_ADDR", "docreader:50051"),

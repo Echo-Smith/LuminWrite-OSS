@@ -87,11 +87,7 @@ const STEP_LABELS: Record<string, string> = {
   parallel_pre_write: "并行预处理",
 };
 
-const STYLE_LABELS: Record<string, string> = {
-  yinyue: "预设评论风格",
-  shenlun: "申论",
-  xiaohongshu: "小红书",
-};
+const STYLE_LABELS: Record<string, string> = {};
 
 const SCORE_LABELS: Record<string, string> = {
   factuality: "事实准确性",
@@ -183,9 +179,6 @@ export function TraceHistoryPage() {
             <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部</SelectItem>
-              <SelectItem value="yinyue">预设评论风格</SelectItem>
-              <SelectItem value="shenlun">申论</SelectItem>
-              <SelectItem value="xiaohongshu">小红书</SelectItem>
             </SelectContent>
           </Select>
         </div>

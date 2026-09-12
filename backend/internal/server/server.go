@@ -319,6 +319,7 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Bing.Enabled, cfg.Bing.BaseURL, cfg.Bing.Timeout,
 		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
 		cfg.AnySearch.APIKey, cfg.AnySearch.Endpoint, cfg.AnySearch.Timeout,
+		cfg.SearXNG.BaseURL, cfg.SearXNG.Timeout,
 	)
 
 	if !searchClient.HasSources() {

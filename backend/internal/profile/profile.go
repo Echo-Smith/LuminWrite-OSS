@@ -18,27 +18,26 @@ import (
 
 // StyleProfile is a complete style configuration.
 type StyleProfile struct {
-	Slug             string          `json:"slug"`
-	Name             string          `json:"name"`
-	Description      string          `json:"description"`
-	Version          int             `json:"version"`
-	Tags             []string        `json:"tags"`
-	WordRange        WordRange       `json:"word_range"`
-	Structure        Structure       `json:"structure"`
-	Rhetoric         Rhetoric        `json:"rhetoric"`
-	ValueOrientation ValueOrientation `json:"value_orientation"`
-	TitleGuidelines  TitleGuidelines `json:"title_guidelines"`
-	SystemPrompt     string          `json:"system_prompt"`
-	WritingStandard  string          `json:"writing_standard"`
-	FactGuard        FactGuard       `json:"fact_guard"`
-	OutputFormat     OutputFormat    `json:"output_format"`
+	Slug             string               `json:"slug"`
+	Name             string               `json:"name"`
+	Description      string               `json:"description"`
+	Version          int                  `json:"version"`
+	Tags             []string             `json:"tags"`
+	WordRange        WordRange            `json:"word_range"`
+	Structure        Structure            `json:"structure"`
+	Rhetoric         Rhetoric             `json:"rhetoric"`
+	ValueOrientation ValueOrientation     `json:"value_orientation"`
+	TitleGuidelines  TitleGuidelines      `json:"title_guidelines"`
+	SystemPrompt     string               `json:"system_prompt"`
+	WritingStandard  string               `json:"writing_standard"`
+	FactGuard        FactGuard            `json:"fact_guard"`
+	OutputFormat     OutputFormat         `json:"output_format"`
 	LengthProfiles   map[string]WordRange `json:"length_profiles"`
 
 	// KbID binds this style to a specific knowledge base.
 	// When non-empty, the search_knowledge tool will scope its search
 	// to this KB (via HybridSearchInKB). When empty, searches all KBs.
-	// Example: "default" for the built-in 预设评论风格 article library.
-	KbID             string          `json:"kb_id,omitempty"`
+	KbID string `json:"kb_id,omitempty"`
 }
 
 type WordRange struct {
@@ -48,18 +47,18 @@ type WordRange struct {
 }
 
 type Structure struct {
-	Type           string      `json:"type"` // three_part | free_form | custom
-	Opening        string      `json:"opening"`
-	Body           string      `json:"body"`
-	Conclusion     string      `json:"conclusion"`
-	ArgumentPattern string     `json:"argument_pattern"`
-	ArgumentVariations []string `json:"argument_variations"`
-	ArgumentInstruction string  `json:"argument_instruction"`
-	ArgumentCount  CountRange  `json:"argument_count"`
+	Type                string     `json:"type"` // three_part | free_form | custom
+	Opening             string     `json:"opening"`
+	Body                string     `json:"body"`
+	Conclusion          string     `json:"conclusion"`
+	ArgumentPattern     string     `json:"argument_pattern"`
+	ArgumentVariations  []string   `json:"argument_variations"`
+	ArgumentInstruction string     `json:"argument_instruction"`
+	ArgumentCount       CountRange `json:"argument_count"`
 	// Sections 是自定义结构段列表，用于 custom 类型。
 	// 当 Type == "custom" 时，Sections 优先于 Opening/Body/Conclusion。
 	// 每个 SectionPart 代表一个结构骨架节点（如：引言→方法→实验→讨论→结论）。
-	Sections       []SectionPart `json:"sections,omitempty"`
+	Sections []SectionPart `json:"sections,omitempty"`
 }
 
 // SectionPart 表示一个自定义结构段。
@@ -76,37 +75,37 @@ type CountRange struct {
 }
 
 type Rhetoric struct {
-	RequiredMetaphor            bool   `json:"required_metaphor"`
-	RequiredParallelism         bool   `json:"required_parallelism"`
-	RequiredRhetoricalQuestion  bool   `json:"required_rhetorical_question"`
-	MetaphorDescription         string `json:"metaphor_description"`
+	RequiredMetaphor           bool   `json:"required_metaphor"`
+	RequiredParallelism        bool   `json:"required_parallelism"`
+	RequiredRhetoricalQuestion bool   `json:"required_rhetorical_question"`
+	MetaphorDescription        string `json:"metaphor_description"`
 }
 
 type ValueOrientation struct {
-	Type             string   `json:"type"`
-	EmotionalGradient string  `json:"emotional_gradient"`
-	Keywords         []string `json:"keywords"`
+	Type              string   `json:"type"`
+	EmotionalGradient string   `json:"emotional_gradient"`
+	Keywords          []string `json:"keywords"`
 }
 
 type TitleGuidelines struct {
-	Length           CountRange `json:"length"`
-	Style            string     `json:"style"`
-	ForbiddenPatterns []string  `json:"forbidden_patterns"`
-	Examples         []string   `json:"examples"`
+	Length            CountRange `json:"length"`
+	Style             string     `json:"style"`
+	ForbiddenPatterns []string   `json:"forbidden_patterns"`
+	Examples          []string   `json:"examples"`
 }
 
 type FactGuard struct {
-	FutureTenseRequired []string `json:"future_tense_required"`
-	ForbiddenResults    []string `json:"forbidden_results"`
-	UserMaterialPriority bool    `json:"user_material_priority"`
+	FutureTenseRequired  []string `json:"future_tense_required"`
+	ForbiddenResults     []string `json:"forbidden_results"`
+	UserMaterialPriority bool     `json:"user_material_priority"`
 }
 
 type OutputFormat struct {
-	UseMarkdown          bool   `json:"use_markdown"`
-	TitlePrefix          string `json:"title_prefix"`
-	Separator            string `json:"separator"`
-	IncludeModificationNotes bool `json:"include_modification_notes"`
-	NoteLabel            string `json:"note_label"`
+	UseMarkdown              bool   `json:"use_markdown"`
+	TitlePrefix              string `json:"title_prefix"`
+	Separator                string `json:"separator"`
+	IncludeModificationNotes bool   `json:"include_modification_notes"`
+	NoteLabel                string `json:"note_label"`
 }
 
 // StyleOption is the summary shown in the style picker.
@@ -228,15 +227,15 @@ func (l *Loader) LoadFromDB() {
 
 	for rows.Next() {
 		var (
-			slug            string
-			name            string
-			description     string
-			version         int
-			status          string
-			configJSON      []byte
-			rolloutType     string
-			whitelistUIDs   []string
-			rolloutPercent  int
+			slug           string
+			name           string
+			description    string
+			version        int
+			status         string
+			configJSON     []byte
+			rolloutType    string
+			whitelistUIDs  []string
+			rolloutPercent int
 		)
 
 		if err := rows.Scan(&slug, &name, &description, &version, &status,
@@ -815,22 +814,13 @@ func (l *Loader) List() []StyleOption {
 }
 
 // getBuiltinProfiles returns the built-in style profiles.
+//
+// LuminWrite OSS ships WITHOUT preset style content: editorial style guides
+// are first-party content assets and deliberately stay out of the open-source
+// repository. Fresh installations start with an empty style catalog — build
+// your own via the in-app style builder (工作台 → 风格) or seed profiles
+// through the Admin style API. The seeding infrastructure
+// (seedBuiltinToDB) is kept intact and becomes a no-op on an empty catalog.
 func getBuiltinProfiles() map[string]*StyleProfile {
-	yinyueJSON := `{}`
-
-	shenlunJSON := `{}`
-
-	xiaohongshuJSON := `{}`
-
-	profiles := make(map[string]*StyleProfile)
-	for _, jsonStr := range []string{yinyueJSON, shenlunJSON, xiaohongshuJSON} {
-		var p StyleProfile
-		if err := json.Unmarshal([]byte(jsonStr), &p); err != nil {
-			slog.Error("failed to parse builtin profile", "error", err)
-			continue
-		}
-		profiles[p.Slug] = &p
-	}
-
-	return profiles
+	return map[string]*StyleProfile{}
 }
