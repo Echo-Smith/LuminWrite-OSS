@@ -68,12 +68,10 @@ var allowedTransitions = map[transitionPair]struct{}{
 	{StatePlanned, StateAwaitingApproval}: {},
 	{StatePlanned, StateRunning}:          {},
 	{StatePlanned, StateReplanning}:       {},
-	{StatePlanned, StateFailed}:           {},
 	{StatePlanned, StateCancelling}:       {},
 
 	{StateAwaitingApproval, StateRunning}:    {},
 	{StateAwaitingApproval, StateReplanning}: {},
-	{StateAwaitingApproval, StateFailed}:     {},
 	{StateAwaitingApproval, StateCancelling}: {},
 
 	{StateRunning, StatePausing}:    {},

@@ -2,6 +2,8 @@ package writingstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database/dbtest"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/projectmemory"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 )
@@ -18,27 +23,23 @@ import (
 var integrationDB *database.DB
 
 func TestMain(m *testing.M) {
-	databaseURL := os.Getenv("TEST_DATABASE_URL")
-	if databaseURL == "" {
+	// Each test binary gets its own database: parallel packages must not
+	// TRUNCATE each other's rows (dbtest package doc explains the history).
+	db, cleanup, err := dbtest.Open(os.Getenv("TEST_DATABASE_URL"), 5, 2)
+	if errors.Is(err, dbtest.ErrNoDatabaseURL) {
 		if os.Getenv("CI") == "true" {
 			fmt.Fprintln(os.Stderr, "CI=true but TEST_DATABASE_URL is not set")
 			os.Exit(1)
 		}
 		os.Exit(m.Run())
 	}
-	db, err := database.NewPostgres(databaseURL, 5, 2)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect writingstore test database: %v\n", err)
-		os.Exit(1)
-	}
-	if err := database.Migrate(db); err != nil {
-		fmt.Fprintf(os.Stderr, "migrate writingstore test database: %v\n", err)
-		_ = db.Close()
+		fmt.Fprintf(os.Stderr, "open writingstore test database: %v\n", err)
 		os.Exit(1)
 	}
 	integrationDB = db
 	code := m.Run()
-	_ = db.Close()
+	cleanup()
 	os.Exit(code)
 }
 
@@ -416,6 +417,124 @@ func TestRuntimeEvidenceIsAppendOnlyAndBoundToNodeAttempt(t *testing.T) {
 	}
 }
 
+func TestTask13ShadowContentAndPromotionRecordsAreDurable(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	body := []byte("isolated shadow body")
+	bodyHash := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
+	policyHash := testHash("task13-policy")
+	key := strings.TrimPrefix(policyHash, "sha256:") + "/" + fixture.runID + "-node_draft-1-draft/" + strings.TrimPrefix(bodyHash, "sha256:")
+	record := ShadowContentRecord{ContentKey: key, PolicyHash: policyHash, RunID: fixture.runID,
+		MediaType: "text/markdown", ContentHash: bodyHash, Body: body,
+		StoredAt: now, ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.PutShadowContent(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutShadowContent(ctx, record); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	reopened, err := New(integrationDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.GetShadowContent(ctx, key)
+	if err != nil || string(loaded.Body) != string(body) || loaded.ContentHash != record.ContentHash {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+	if removed, err := reopened.DeleteShadowContentPrefix(ctx, strings.TrimPrefix(policyHash, "sha256:")+"/"+fixture.runID+"-"); err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+
+	if _, _, err := store.StartNodeAttempt(ctx, fixture.nodeAttempt(), testTrace()); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		evidence := RuntimeEvidenceRecord{EvidenceID: StableID("evt_", "task13", fmt.Sprint(index)),
+			RunID: fixture.runID, NodeID: fixture.nodeID, Attempt: 1, Kind: "shadow_comparison",
+			Payload:    map[string]any{"kind": "shadow_comparison", "policy_hash": policyHash, "status": "different", "error_code": ""},
+			OccurredAt: now.Add(time.Duration(index) * time.Minute)}
+		if err := store.RecordRuntimeEvidence(ctx, evidence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	health, err := reopened.RolloutEvidenceHealth(ctx, policyHash, now.Add(-time.Hour))
+	if err != nil || health.ComparisonRecords != 3 || health.FailedRecords != 0 || health.LastRecordedAt.IsZero() {
+		t.Fatalf("health=%#v err=%v", health, err)
+	}
+	approval := RolloutApprovalRecord{ApprovalID: "approval_task13", PolicyHash: policyHash, PolicyVersion: 2,
+		ActivationKey: "change-task13", TargetMode: "allowlist", ApprovedBy: "operator_test", Reason: "integration test",
+		EvidenceHealth: health, EvidenceCutoff: health.Cutoff, EvidenceLastRecordedAt: health.LastRecordedAt,
+		CreatedAt: now.Add(4 * time.Minute), ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.RecordRolloutApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reopened.LatestRolloutApproval(ctx, policyHash, 2, "change-task13")
+	if err != nil || persisted.ApprovalID != approval.ApprovalID || persisted.EvidenceHealth.ComparisonRecords != 3 {
+		t.Fatalf("approval=%#v err=%v", persisted, err)
+	}
+	refreshed := approval
+	refreshed.ApprovalID = "approval_task13_refresh"
+	refreshed.CreatedAt = approval.CreatedAt.Add(time.Minute)
+	refreshed.ExpiresAt = approval.ExpiresAt.Add(time.Minute)
+	if err := store.RecordRolloutApproval(ctx, refreshed); err != nil {
+		t.Fatalf("append refreshed approval: %v", err)
+	}
+	persisted, err = reopened.LatestRolloutApproval(ctx, policyHash, 2, "change-task13")
+	if err != nil || persisted.ApprovalID != refreshed.ApprovalID {
+		t.Fatalf("latest refreshed approval=%#v err=%v", persisted, err)
+	}
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE writing_rollout_approvals SET reason='mutated' WHERE approval_id=$1`, refreshed.ApprovalID); err == nil {
+		t.Fatal("append-only approval accepted an update")
+	}
+
+	percentageHealth := health
+	percentageHealth.PolicyHash = testHash("task13-percentage-policy")
+	percentageApproval := RolloutApprovalRecord{ApprovalID: "approval_task13_percentage", PolicyHash: percentageHealth.PolicyHash,
+		PolicyVersion: 2, ActivationKey: "change-task13", TargetMode: "percentage", ApprovedBy: "operator_test",
+		Reason: "integration test percentage", EvidenceHealth: percentageHealth, EvidenceCutoff: percentageHealth.Cutoff,
+		EvidenceLastRecordedAt: percentageHealth.LastRecordedAt, CreatedAt: now.Add(6 * time.Minute), ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.RecordRolloutApproval(ctx, percentageApproval); err != nil {
+		t.Fatalf("record percentage approval: %v", err)
+	}
+	ladder, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-task13", "allowlist")
+	if err != nil || ladder.TargetMode != "allowlist" || ladder.ApprovalID != refreshed.ApprovalID {
+		t.Fatalf("allowlist ladder=%#v err=%v", ladder, err)
+	}
+	latestPercentage, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-task13", "percentage")
+	if err != nil || latestPercentage.ApprovalID != percentageApproval.ApprovalID {
+		t.Fatalf("percentage ladder=%#v err=%v", latestPercentage, err)
+	}
+	if _, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-absent", "allowlist"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing ladder err=%v", err)
+	}
+
+	// Enabled approvals certify the percentage stage's evidence health, so the
+	// certified health carries the percentage policy hash rather than the
+	// enabled policy's own hash; the store must accept that pairing and reject
+	// the mismatched pairing for the lower rungs.
+	enabledHealth := percentageHealth
+	enabledApproval := RolloutApprovalRecord{ApprovalID: "approval_task13_enabled", PolicyHash: testHash("task13-enabled-policy"),
+		PolicyVersion: 3, ActivationKey: "change-task13", TargetMode: "enabled", ApprovedBy: "operator_test",
+		Reason: "integration test enabled", EvidenceHealth: enabledHealth, EvidenceCutoff: enabledHealth.Cutoff,
+		EvidenceLastRecordedAt: enabledHealth.LastRecordedAt, CreatedAt: now.Add(7 * time.Minute), ExpiresAt: now.Add(24 * time.Hour)}
+	if err := store.RecordRolloutApproval(ctx, enabledApproval); err != nil {
+		t.Fatalf("record enabled approval: %v", err)
+	}
+	latestEnabled, err := reopened.LatestRolloutApprovalByActivationKey(ctx, "change-task13", "enabled")
+	if err != nil || latestEnabled.ApprovalID != enabledApproval.ApprovalID {
+		t.Fatalf("enabled ladder=%#v err=%v", latestEnabled, err)
+	}
+	misbound := percentageApproval
+	misbound.ApprovalID = "approval_task13_misbound"
+	misbound.PolicyHash = testHash("task13-unrelated-policy")
+	misbound.CreatedAt = now.Add(8 * time.Minute)
+	misbound.ExpiresAt = misbound.ExpiresAt.Add(time.Minute)
+	if err := store.RecordRolloutApproval(ctx, misbound); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("misbound percentage approval err=%v", err)
+	}
+}
+
 func TestNodeAttemptLifecycleCommitsArtifactAndUsageAtomically(t *testing.T) {
 	store, fixture := newIntegrationFixture(t, true)
 	ctx := context.Background()
@@ -585,7 +704,7 @@ func newIntegrationFixture(t *testing.T, complete bool) (*Store, integrationFixt
 		t.Skip("TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE writing_documents CASCADE`); err != nil {
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE writing_rollout_approvals, writing_documents CASCADE`); err != nil {
 		t.Fatalf("reset writing tables: %v", err)
 	}
 	var userID string
@@ -786,4 +905,555 @@ func testTrace() TraceContext {
 
 func testHash(seed string) string {
 	return StableID("sha256:", seed) + strings.Repeat("0", 32)
+}
+
+func TestProjectMemoryCandidateLifecycleRequiresUserCommit(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	// Truncate project scopes first: writing_documents references
+	// writing_projects, so a later CASCADE would drop the fixture document.
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_store"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M1", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetProject(ctx, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetDocumentProject(ctx, fixture.documentID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetDocumentProject(ctx, fixture.documentID, "prj_absent"); err == nil {
+		t.Fatal("missing project accepted by FK")
+	}
+
+	asOf := time.Now().UTC().Add(-2 * time.Hour)
+	candidate := func(id, batchID, subject, predicate, object string) projectmemory.Candidate {
+		return projectmemory.Candidate{CandidateID: id, BatchID: batchID, ProjectID: projectID,
+			Subject: subject, Predicate: predicate, Object: object, AsOf: asOf,
+			SourceRefs: []string{"doc_store"}, SubmittedByType: string(ActorModel)}
+	}
+	mustCommit := func(id, factID string) projectmemory.Fact {
+		t.Helper()
+		fact, committed, err := store.CommitMemoryCandidate(ctx, id, user, factID)
+		if err != nil || !committed {
+			t.Fatalf("commit %s fact=%#v committed=%v err=%v", id, fact, committed, err)
+		}
+		return fact
+	}
+
+	// A batch containing one invalid candidate fails whole: no partial lanes.
+	invalid := []projectmemory.Candidate{candidate("cand_store_1", "bat_store", "林然", "location", "旧书店"),
+		{CandidateID: "cand_store_bad", BatchID: "bat_store", ProjectID: projectID,
+			Subject: "林然", Predicate: "location", Object: "无处", AsOf: asOf, SubmittedByType: string(ActorModel)}}
+	if err := store.StageMemoryCandidates(ctx, invalid); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("invalid batch err=%v", err)
+	}
+	if staged, err := store.ListStagedMemoryCandidates(ctx, projectID, ""); err != nil || len(staged) != 0 {
+		t.Fatalf("staged after failed batch=%d err=%v", len(staged), err)
+	}
+
+	batch := []projectmemory.Candidate{candidate("cand_store_1", "bat_store", "林然", "location", "旧书店"),
+		candidate("cand_store_rel", "bat_store", "林然", "relationship", "陈默"),
+		candidate("cand_store_ext", "bat_store", "林然", "x-mood", "沉静")}
+	if err := store.StageMemoryCandidates(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := store.ListStagedMemoryCandidates(ctx, projectID, "bat_store")
+	if err != nil || len(staged) != 3 {
+		t.Fatalf("staged=%d err=%v", len(staged), err)
+	}
+	var extended *projectmemory.Candidate
+	for i := range staged {
+		if staged[i].CandidateID == "cand_store_ext" {
+			extended = &staged[i]
+		}
+	}
+	if extended == nil || len(extended.Warnings) != 1 || extended.Warnings[0] != "extended_predicate:x-mood" || !extended.ExtendedPredicate {
+		t.Fatalf("extension candidate=%#v", extended)
+	}
+
+	// HITL gate: only a user actor may turn candidates into canon.
+	if _, _, err := store.CommitMemoryCandidate(ctx, "cand_store_1", Actor{Type: ActorModel, ID: "extractor"}, "fact_store_1"); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model commit err=%v", err)
+	}
+	fact := mustCommit("cand_store_1", "fact_store_1")
+	if fact.Predicate != "location" || fact.Subject != "林然" || fact.ValidTo != nil || fact.ContentHash == "" {
+		t.Fatalf("active fact=%#v", fact)
+	}
+
+	// Replaying the same triple through a new candidate is idempotent: the
+	// existing fact comes back and the replayed candidate closes.
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_replay", "bat_store_replay", "林然", "location", "旧书店")}); err != nil {
+		t.Fatal(err)
+	}
+	fact, committed, err := store.CommitMemoryCandidate(ctx, "cand_store_replay", user, "fact_store_replay")
+	if err != nil || committed || fact.FactID != "fact_store_1" {
+		t.Fatalf("replay fact=%#v committed=%v err=%v", fact, committed, err)
+	}
+
+	// A state change supersedes the previous location. A state change predating
+	// the active fact is rejected: the closed interval would violate
+	// valid_to > valid_from.
+	relocation := candidate("cand_store_move", "bat_store_move", "林然", "location", "咖啡馆")
+	relocation.AsOf = asOf.Add(time.Hour)
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{relocation}); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit("cand_store_move", "fact_store_move")
+	old, err := store.GetFact(ctx, "fact_store_1")
+	if err != nil || old.ValidTo == nil || old.SupersededBy != "fact_store_move" {
+		t.Fatalf("superseded old=%#v err=%v", old, err)
+	}
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_back", "bat_store_back", "林然", "location", "车站")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CommitMemoryCandidate(ctx, "cand_store_back", user, "fact_store_back"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("backdated commit err=%v", err)
+	}
+
+	// Relationship facts fold their endpoint pair: committing the reverse
+	// direction is the idempotent path, while a different pair coexists.
+	mustCommit("cand_store_rel", "fact_store_rel")
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_rel_reverse", "bat_store_rel_reverse", "陈默", "relationship", "林然")}); err != nil {
+		t.Fatal(err)
+	}
+	fact, committed, err = store.CommitMemoryCandidate(ctx, "cand_store_rel_reverse", user, "fact_store_rel_reverse")
+	if err != nil || committed || fact.FactID != "fact_store_rel" {
+		t.Fatalf("reverse rel fact=%#v committed=%v err=%v", fact, committed, err)
+	}
+	if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{candidate("cand_store_rel2", "bat_store_rel2", "陈默", "relationship", "老周")}); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit("cand_store_rel2", "fact_store_rel2")
+
+	active, err := store.ListActiveFacts(ctx, projectID, "")
+	if err != nil || len(active) != 3 {
+		t.Fatalf("active=%d err=%v", len(active), err)
+	}
+	bySubject, err := store.ListActiveFacts(ctx, projectID, "  林然 ")
+	if err != nil || len(bySubject) != 2 {
+		t.Fatalf("bySubject=%d err=%v", len(bySubject), err)
+	}
+	if bySubject, err = store.ListActiveFacts(ctx, projectID, "陈默"); err != nil || len(bySubject) != 1 {
+		t.Fatalf("bySubject=%d err=%v", len(bySubject), err)
+	}
+
+	// Fact content is immutable at the database level; only the interval
+	// columns may move.
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_facts SET subject='篡改' WHERE fact_id=$1`, "fact_store_1"); err == nil {
+		t.Fatal("immutable fact accepted a content update")
+	}
+	// Supersede is HITL-only and requires a successor that exists.
+	if err := store.SupersedeFact(ctx, "fact_store_move", "fact_absent", time.Now().UTC(), Actor{Type: ActorModel, ID: "worker"}); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model supersede err=%v", err)
+	}
+	if err := store.SupersedeFact(ctx, "fact_store_move", "fact_absent", time.Now().UTC(), user); err == nil {
+		t.Fatal("absent successor accepted")
+	}
+	if err := store.RejectMemoryCandidate(ctx, "cand_store_ext", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectMemoryCandidate(ctx, "cand_store_back", user); err != nil {
+		t.Fatal(err)
+	}
+	if staged, err := store.ListStagedMemoryCandidates(ctx, projectID, ""); err != nil || len(staged) != 0 {
+		t.Fatalf("staged after reject=%d err=%v", len(staged), err)
+	}
+}
+
+func TestProjectMemoryClaimCorroborationAndPromotion(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, project_claim_evidence, project_claims, project_entities, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_claim"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M2", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+
+	claim := projectmemory.Claim{ClaimID: "claim_store_1", BatchID: "bat_claim", ProjectID: projectID,
+		Subject: "LuminBuddy", Predicate: "state", Object: "开源", AsOf: time.Now().UTC().Add(-time.Hour),
+		SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageMemoryClaims(ctx, []projectmemory.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Duplicate staging of the same open triple is rejected: corroboration
+	// accumulates on the existing claim, never fragments.
+	duplicate := claim
+	duplicate.ClaimID = "claim_store_dup"
+	if err := store.StageMemoryClaims(ctx, []projectmemory.Claim{duplicate}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate claim err=%v", err)
+	}
+
+	// The raising run is already one citation; a model may corroborate.
+	supported, err := store.CorroborateMemoryClaim(ctx, "claim_store_1", "evd_store_2", "run_store_2", nil, Actor{Type: ActorModel, ID: "researcher"})
+	if err != nil || supported.Status != "supported" {
+		t.Fatalf("supported=%#v err=%v", supported, err)
+	}
+	// Re-recording the same citation is idempotent and does not flip again.
+	replayed, err := store.CorroborateMemoryClaim(ctx, "claim_store_1", "evd_store_2_replay", "run_store_2", nil, Actor{Type: ActorModel, ID: "researcher"})
+	if err != nil || replayed.Status != "supported" {
+		t.Fatalf("replay=%#v err=%v", replayed, err)
+	}
+
+	// Promotion is HITL-only, and support never auto-promotes.
+	if _, _, err := store.CommitMemoryClaim(ctx, "claim_store_1", Actor{Type: ActorModel, ID: "writer"}, "fact_claim_1"); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model promotion err=%v", err)
+	}
+	fact, promoted, err := store.CommitMemoryClaim(ctx, "claim_store_1", user, "fact_claim_1")
+	if err != nil || !promoted || fact.Subject != "luminbuddy" || fact.Predicate != "state" {
+		t.Fatalf("fact=%#v promoted=%v err=%v", fact, promoted, err)
+	}
+	claims, err := store.ListMemoryClaims(ctx, projectID, "promoted")
+	if err != nil || len(claims) != 1 || claims[0].PromotedFactID != fact.FactID {
+		t.Fatalf("promoted claims=%#v err=%v", claims, err)
+	}
+	// The promoted claim no longer accepts evidence or re-promotion.
+	if _, err := store.CorroborateMemoryClaim(ctx, "claim_store_1", "evd_store_3", "run_store_3", nil, Actor{Type: ActorModel, ID: "researcher"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("evidence on promoted claim err=%v", err)
+	}
+	if _, _, err := store.CommitMemoryClaim(ctx, "claim_store_1", user, "fact_claim_replay"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("re-promotion err=%v", err)
+	}
+
+	// A second claim stays open, is rejected by the user, then vanishes from
+	// the rejectable pool.
+	if err := store.StageMemoryClaims(ctx, []projectmemory.Claim{{
+		ClaimID: "claim_store_2", BatchID: "bat_claim_2", ProjectID: projectID,
+		Subject: "LuminBuddy", Predicate: "state", Object: "闭源", AsOf: time.Now().UTC(),
+		SourceRefs: []string{"doc_store"}, RaisedByType: string(ActorModel)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectMemoryClaim(ctx, "claim_store_2", Actor{Type: ActorModel, ID: "writer"}); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model rejection err=%v", err)
+	}
+	if err := store.RejectMemoryClaim(ctx, "claim_store_2", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectMemoryClaim(ctx, "claim_store_2", user); err == nil {
+		t.Fatal("double rejection accepted")
+	}
+}
+
+func TestProjectMemoryEntityCandidatePool(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, project_claim_evidence, project_claims, project_entities, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_entity"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M2 entities", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A model stages a candidate birth certificate with case-variant aliases.
+	entity := &projectmemory.Entity{EntityID: "ent_store_1", ProjectID: projectID, EntityKind: "organization",
+		CanonicalName: "Acme Labs", Aliases: []string{"ACME", "acme"}, SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageMemoryEntity(ctx, entity); err != nil {
+		t.Fatal(err)
+	}
+	if len(entity.Aliases) != 1 || entity.Aliases[0] != "ACME" || entity.Status != "candidate" {
+		t.Fatalf("normalized entity=%#v", entity)
+	}
+
+	// A second live identity with the same (project, kind, name) collides.
+	twin := &projectmemory.Entity{EntityID: "ent_store_twin", ProjectID: projectID, EntityKind: "organization",
+		CanonicalName: "Acme Labs", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageMemoryEntity(ctx, twin); err == nil {
+		t.Fatal("live identity collision accepted")
+	}
+
+	// Promotion is HITL-only; then the name is freed by archiving.
+	if err := store.PromoteMemoryEntity(ctx, "ent_store_1", Actor{Type: ActorModel, ID: "writer"}); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model promotion err=%v", err)
+	}
+	if err := store.PromoteMemoryEntity(ctx, "ent_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.ListMemoryEntities(ctx, projectID, "organization", "promoted")
+	if err != nil || len(promoted) != 1 || promoted[0].EntityID != "ent_store_1" {
+		t.Fatalf("promoted=%#v err=%v", promoted, err)
+	}
+	if err := store.ArchiveMemoryEntity(ctx, "ent_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	// The archived identity can be re-registered.
+	if err := store.StageMemoryEntity(ctx, twin); err != nil {
+		t.Fatalf("re-register after archive: %v", err)
+	}
+	entities, err := store.ListMemoryEntities(ctx, projectID, "", "")
+	if err != nil || len(entities) != 2 {
+		t.Fatalf("entities=%d err=%v", len(entities), err)
+	}
+	// Entity identity columns are immutable at the database level.
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_entities SET canonical_name='篡改' WHERE entity_id=$1`, "ent_store_1"); err == nil {
+		t.Fatal("immutable entity accepted an identity update")
+	}
+	if err := store.ArchiveMemoryEntity(ctx, "ent_absent", user); err == nil {
+		t.Fatal("absent entity archived")
+	}
+}
+
+func TestProjectMemoryCuratedStateLifecycle(t *testing.T) {
+	if integrationDB == nil {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	if _, err := integrationDB.ExecContext(ctx, `TRUNCATE project_facts, project_memory_candidates, project_claim_evidence, project_claims, project_entities, project_terminology, project_decisions, project_open_questions, project_threads, writing_projects CASCADE`); err != nil {
+		t.Fatalf("reset project tables: %v", err)
+	}
+	store, fixture := newIntegrationFixture(t, false)
+	var userID string
+	if err := integrationDB.QueryRowContext(ctx, `SELECT owner_user_id::text FROM writing_documents WHERE document_id=$1`, fixture.documentID).Scan(&userID); err != nil {
+		t.Fatalf("load fixture user: %v", err)
+	}
+	user := Actor{Type: ActorUser, ID: userID}
+	projectID := "prj_curated"
+	if err := store.CreateProject(ctx, ProjectRecord{ProjectID: projectID, OwnerUserID: userID, Title: "V2.9 M2.5", Actor: user}); err != nil {
+		t.Fatal(err)
+	}
+	model := Actor{Type: ActorModel, ID: "curator"}
+
+	// Terminology: stage -> model promotion refused -> user promotion ->
+	// duplicate live term rejected by the partial unique index -> archive
+	// frees the term for re-registration.
+	entry := &projectmemory.Terminology{TerminologyID: "term_store_1", ProjectID: projectID,
+		Term: "生成式检索", Definition: "由模型直接生成检索结果的方法", Aliases: []string{"GSR"},
+		Forbidden: []string{"AI搜索"}, SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageTerminology(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Status != "candidate" {
+		t.Fatalf("status=%q", entry.Status)
+	}
+	if err := store.PromoteTerminology(ctx, "term_store_1", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model promotion err=%v", err)
+	}
+	if err := store.PromoteTerminology(ctx, "term_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	// The (project, term) identity collides at stage time while an entry is
+	// live — same rule as the entity pool; archiving frees the term.
+	twin := &projectmemory.Terminology{TerminologyID: "term_store_twin", ProjectID: projectID,
+		Term: "生成式检索", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageTerminology(ctx, twin); err == nil {
+		t.Fatal("duplicate live term staged")
+	}
+	if err := store.ArchiveTerminology(ctx, "term_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StageTerminology(ctx, twin); err != nil {
+		t.Fatalf("stage after archive: %v", err)
+	}
+	if err := store.PromoteTerminology(ctx, "term_store_twin", user); err != nil {
+		t.Fatalf("promote after archive: %v", err)
+	}
+	glossary, err := store.ListTerminology(ctx, projectID, "active")
+	if err != nil || len(glossary) != 1 || glossary[0].TerminologyID != "term_store_twin" {
+		t.Fatalf("glossary=%#v err=%v", glossary, err)
+	}
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_terminology SET term='篡改' WHERE terminology_id=$1`, "term_store_twin"); err == nil {
+		t.Fatal("immutable terminology accepted a content update")
+	}
+
+	// Decisions: two candidates, promotion order decides the supersede chain.
+	first := &projectmemory.Decision{DecisionID: "dec_store_1", ProjectID: projectID,
+		Statement: "全文统一用“模型”指代底层引擎", Rationale: "与产品文案一致", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	second := &projectmemory.Decision{DecisionID: "dec_store_2", ProjectID: projectID,
+		Statement: "全文统一用“引擎”指代底层引擎", Rationale: "更中性", Supersedes: "dec_store_1",
+		SourceRefs: []string{"doc_store"}, RaisedByType: string(ActorModel)}
+	if err := store.StageDecision(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StageDecision(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_2", user); err == nil {
+		t.Fatal("superseding an inactive decision accepted")
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_2", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model decision promotion err=%v", err)
+	}
+	if err := store.PromoteDecision(ctx, "dec_store_2", user); err != nil {
+		t.Fatal(err)
+	}
+	decisions, err := store.ListDecisions(ctx, projectID, "superseded")
+	if err != nil || len(decisions) != 1 || decisions[0].DecisionID != "dec_store_1" {
+		t.Fatalf("superseded=%#v err=%v", decisions, err)
+	}
+
+	// Open questions: raise by model, answer/drop by user only.
+	question := &projectmemory.OpenQuestion{QuestionID: "qu_store_1", ProjectID: projectID,
+		Question: "数据口径以哪家年报为准？", Context: "第三章引用营收数据", SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.RaiseOpenQuestion(ctx, question); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerOpenQuestion(ctx, "qu_store_1", "以 2025 年度报告为准", "", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model answer err=%v", err)
+	}
+	if err := store.AnswerOpenQuestion(ctx, "qu_store_1", "", "", user); err == nil {
+		t.Fatal("empty answer accepted")
+	}
+	if err := store.AnswerOpenQuestion(ctx, "qu_store_1", "以 2025 年度报告为准", "", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DropOpenQuestion(ctx, "qu_store_1", user); err == nil {
+		t.Fatal("answering twice via drop accepted")
+	}
+	if err := store.RaiseOpenQuestion(ctx, &projectmemory.OpenQuestion{QuestionID: "qu_store_2", ProjectID: projectID,
+		Question: "是否引用竞品定价？", SourceRefs: []string{"doc_store"}, RaisedByType: string(ActorModel)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DropOpenQuestion(ctx, "qu_store_2", user); err != nil {
+		t.Fatal(err)
+	}
+	openQuestions, err := store.ListOpenQuestions(ctx, projectID, "open")
+	if err != nil || len(openQuestions) != 0 {
+		t.Fatalf("open questions=%d err=%v", len(openQuestions), err)
+	}
+
+	// Threads: resident thread survives, resolution links a fact.
+	fact, _, err := store.CommitMemoryCandidate(ctx, func() string {
+		if err := store.StageMemoryCandidates(ctx, []projectmemory.Candidate{{
+			CandidateID: "cand_thread", BatchID: "bat_thread", ProjectID: projectID,
+			Subject: "LuminBuddy", Predicate: "state", Object: "开源", AsOf: time.Now().UTC().Add(-time.Hour),
+			SourceRefs: []string{"doc_store"}, SubmittedByType: string(ActorModel)}}); err != nil {
+			t.Fatal(err)
+		}
+		return "cand_thread"
+	}(), user, "fact_thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := &projectmemory.Thread{ThreadID: "thr_store_1", ProjectID: projectID,
+		Label: "论点链：检索优于重排", Summary: "贯穿全文的核心论证", Resident: true,
+		SourceRunID: "run_store", RaisedByType: string(ActorModel)}
+	if err := store.StageThread(ctx, thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveThread(ctx, "thr_store_1", "", model); err == nil || !strings.Contains(err.Error(), "user actor") {
+		t.Fatalf("model resolution err=%v", err)
+	}
+	if err := store.PromoteThread(ctx, "thr_store_1", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveThread(ctx, "thr_store_1", fact.FactID, user); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListThreads(ctx, projectID, "resolved")
+	if err != nil || len(threads) != 1 || threads[0].ResolvedFactID != fact.FactID {
+		t.Fatalf("resolved threads=%#v err=%v", threads, err)
+	}
+	// Fact content is immutable; only interval columns move (M1 rule holds
+	// for curated references too).
+	if _, err := integrationDB.ExecContext(ctx, `UPDATE project_threads SET label='篡改' WHERE thread_id=$1`, "thr_store_1"); err == nil {
+		t.Fatal("immutable thread accepted a content update")
+	}
+}
+
+func TestContextEnvelopePersistenceIsReplayIdempotent(t *testing.T) {
+	store, fixture := newIntegrationFixture(t, true)
+	ctx := context.Background()
+
+	envelope, err := contextcompiler.Compile(contextcompiler.Input{
+		ProjectID:      "prj_env",
+		ContractDigest: "长文报告：检索优于重排",
+		ThreadLabels:   []string{"论点链：检索优于重排"},
+		FactLines:      []string{"luminbuddy | state | 开源"},
+		Wanted:         []string{contextcompiler.ResidentBlock},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := ContextEnvelopeRecord{EnvelopeID: "env_store_1", RunID: fixture.runID,
+		NodeID: fixture.nodeID, Attempt: 1, CompilerVersion: envelope.CompilerVersion,
+		EnvelopeHash: envelope.Hash, Payload: rendered,
+		Missing: envelope.Missing, Trimmed: envelope.Trimmed, Diagnostics: envelope.Diagnostics()}
+	if err := store.SaveContextEnvelope(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	// Re-saving the identical compilation is a no-op (unique index) and must
+	// not duplicate the row.
+	if err := store.SaveContextEnvelope(ctx, record); err != nil {
+		t.Fatalf("replay save: %v", err)
+	}
+	envelopes, err := store.ListContextEnvelopes(ctx, fixture.runID, fixture.nodeID, 1)
+	if err != nil || len(envelopes) != 1 {
+		t.Fatalf("envelopes=%d err=%v", len(envelopes), err)
+	}
+	persisted := envelopes[0]
+	if persisted.EnvelopeHash != envelope.Hash || persisted.CompilerVersion != contextcompiler.CompilerVersion {
+		t.Fatalf("persisted=%#v", persisted)
+	}
+	var replayed contextcompiler.Envelope
+	if err := json.Unmarshal(persisted.Payload, &replayed); err != nil {
+		t.Fatal(err)
+	}
+	// Replay: the persisted payload re-hashes to the same envelope hash.
+	if replayed.Hash != envelope.Hash {
+		t.Fatal("persisted payload does not replay to the recorded hash")
+	}
+	renderedBlocks, err := json.Marshal(replayed.Blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(renderedBlocks)
+	if "sha256:"+fmt.Sprintf("%x", sum[:]) != envelope.Hash {
+		t.Fatal("persisted blocks do not re-hash to the recorded hash")
+	}
+
+	// A different compilation for the same attempt is retained separately.
+	changed := record
+	changed.EnvelopeID = "env_store_2"
+	changed.EnvelopeHash = testHash("changed-envelope")
+	changed.Payload = json.RawMessage(`{"compiler_version":1,"blocks":[{"name":"contract_digest","body":"其它输入","tokens":1}],"hash":"sha256:dead"}`)
+	if err := store.SaveContextEnvelope(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	envelopes, err = store.ListContextEnvelopes(ctx, fixture.runID, fixture.nodeID, 1)
+	if err != nil || len(envelopes) != 2 {
+		t.Fatalf("envelopes after change=%d err=%v", len(envelopes), err)
+	}
+	if _, err := store.GetContextEnvelope(ctx, "env_store_2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetContextEnvelope(ctx, "env_absent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("absent envelope err=%v", err)
+	}
 }

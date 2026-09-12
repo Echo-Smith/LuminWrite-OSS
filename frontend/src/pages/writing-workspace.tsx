@@ -1,27 +1,51 @@
 /**
- * 未来写作工作台：全局导航 | 文档主舞台 | 运行摘要 | 详情分页 | 对话停靠。
+ * 未来写作工作台：全局导航 | Codex 式内联对话 | 连续文档纸面 | 详情分页。
  * 运行资源与布局偏好是两套独立状态，任何事件都不能替用户展开或切换面板。
+ * 研究综述（research_review）的面板在运行激活时出现在文档区域上方。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Menu, PanelRightOpen, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { BookOpenText, ChevronDown, Menu, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
-import { ConversationDock } from "@/components/assistant-ui/conversation-dock";
 import { WritingComposer, type WritingComposerHandle } from "@/components/composer/writing-composer";
 import { DocumentSurface } from "@/components/document/document-surface";
 import { RevisionDiff } from "@/components/document/revision-diff";
-import { RunSummaryStrip } from "@/components/runtime/run-summary-strip";
+import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { PulseIndicator } from "@/components/animation";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBillingStore } from "@/stores/billing-store";
+import { useSettingsStore } from "@/stores/settings-store";
+import { useWritingBg } from "@/hooks/use-writing-bg";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
+import { pendingGate, researchSliceActive, type ResearchSlice } from "@/stores/research-slice";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { Lumi, type LumiState } from "@/components/lumi/lumi";
 import { useAgentWebSocket } from "@/hooks/use-agent-websocket";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { ResearchProgress, researchPhaseLabel } from "@/components/writing/research-progress";
+import { ResearchGatePanel } from "@/components/writing/research-gate-panel";
+import { ResearchEvidencePanel } from "@/components/writing/research-evidence-panel";
+import { ResearchQualityGateCard } from "@/components/writing/research-quality-gate-card";
+import { CitationMarker, findCitationMarkers } from "@/components/writing/research-citation-popover";
+import type { CitationRenderContextValue } from "@/components/writing/research-citation-popover";
+import {
+  EVIDENCE_REPORT_ARTIFACT_ID,
+  VALIDATION_DETAILS_ARTIFACT_ID,
+  buildBibliographyNumbers,
+  fetchEvidencePack,
+  fetchRunArtifactContent,
+  getLastResearchSpec,
+  qualityGatePauseGuidance,
+  type EvidenceReportView,
+  type ResearchCitationIndex,
+  type ResearchEvidencePack,
+  type ResearchValidationDetailsView,
+} from "@/lib/research-api";
+import type { DocumentNode } from "@/lib/writing-runtime-types";
 import type { RevisionSet } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
 
@@ -34,10 +58,231 @@ function currentDeviceId(): string {
   return created;
 }
 
+const DETAIL_WIDTH_MIN = 320;
+const DETAIL_WIDTH_MAX = 520;
+const DETAIL_RESIZE_VIEWPORT_MIN = 1180;
+const DOCUMENT_SAFE_WIDTH = 560;
+type WorkspaceStyle = CSSProperties & { "--workspace-detail-width": string };
+
+function clampDetailWidth(width: number, sidebarOpen: boolean): number {
+  if (typeof window === "undefined" || window.innerWidth < DETAIL_RESIZE_VIEWPORT_MIN) return width;
+  const navigationWidth = sidebarOpen ? 224 : 0;
+  const safeMaximum = Math.max(DETAIL_WIDTH_MIN, Math.min(DETAIL_WIDTH_MAX, window.innerWidth - navigationWidth - DOCUMENT_SAFE_WIDTH));
+  return Math.min(Math.max(width, DETAIL_WIDTH_MIN), safeMaximum);
+}
+
+/** 从正式文档版本树收集纯文本，用于扫描 [@ev_xxx] 引用标记。 */
+function collectDocumentText(node: DocumentNode | null | undefined): string {
+  if (!node) return "";
+  let text = typeof node.text === "string" ? node.text : "";
+  for (const child of node.children ?? []) text += collectDocumentText(child);
+  return text;
+}
+
+/**
+ * 研究综述工作台：进度投影 + 待确认 gate + 证据包 + 草稿引用核对。
+ * 只在研究切片活跃时渲染；数据以 GET 兜底（refreshResearch）+ 事件流合并。
+ */
+function ResearchWorkbench({ runId }: { runId: string }) {
+  const research: ResearchSlice = useWritingRuntimeStore((state) => state.research);
+  const applyGateView = useWritingRuntimeStore((state) => state.applyGateView);
+  const artifacts = useWritingRuntimeStore((state) => state.artifacts);
+  const nodeStatuses = useWritingRuntimeStore((state) => state.nodeStatuses);
+  const runStatus = useWritingRuntimeStore((state) => state.run?.status ?? null);
+  const provisionalDeltas = useWritingRuntimeStore((state) => state.provisionalDeltas);
+  const versions = useWritingRuntimeStore((state) => state.versions);
+
+  const [evidenceOpen, setEvidenceOpen] = useState(true);
+  const [citations, setCitations] = useState<ResearchCitationIndex | null>(null);
+  const [pack, setPack] = useState<ResearchEvidencePack | null>(null);
+  const [evidenceReport, setEvidenceReport] = useState<EvidenceReportView | null>(null);
+  const [validationDetails, setValidationDetails] = useState<ResearchValidationDetailsView | null>(null);
+
+  const packRef = research.progress?.pack_ref ?? null;
+  const gate = pendingGate(research);
+  const decidedGates = Object.values(research.gates).filter((item) => item.status !== "pending");
+  // 阅读上限：运行合同投影（GET research 的 spec.max_papers）优先，回退启动表单值。
+  const maxPapers = research.spec?.max_papers ?? getLastResearchSpec()?.max_papers ?? null;
+  const packArtifactId = packRef?.artifact_id ?? null;
+
+  useEffect(() => {
+    if (!packRef || !packArtifactId) { setPack(null); return; }
+    let cancelled = false;
+    fetchEvidencePack(runId, packRef)
+      .then((content) => { if (!cancelled) setPack(content); })
+      .catch(() => { if (!cancelled) setPack(null); });
+    return () => { cancelled = true; };
+  }, [runId, packArtifactId]);
+
+  const citationArtifactId = useMemo(
+    () => artifacts.find((artifact) => artifact.artifact_type === "research_citation_index")?.artifact_id ?? "art_citation_index_demo",
+    [artifacts],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRunArtifactContent(runId, citationArtifactId)
+      .then((content) => {
+        if (!cancelled && (content as ResearchCitationIndex)?.schema_version === "research-citation-index/1") setCitations(content as ResearchCitationIndex);
+      })
+      .catch(() => { /* 引用索引不可用时不阻塞工作台 */ });
+    return () => { cancelled = true; };
+  }, [runId, citationArtifactId]);
+
+  // 质量门校验产物：evidence_report（blocker issues）与 research_validation_details
+  // （可检查发现 + bibliography 编号投影）。加载失败不阻塞工作台。
+  useEffect(() => {
+    let cancelled = false;
+    fetchRunArtifactContent(runId, EVIDENCE_REPORT_ARTIFACT_ID)
+      .then((content) => { if (!cancelled) setEvidenceReport(content as EvidenceReportView); })
+      .catch(() => { /* 无校验产物（尚未跑到质量门） */ });
+    fetchRunArtifactContent(runId, VALIDATION_DETAILS_ARTIFACT_ID)
+      .then((content) => { if (!cancelled) setValidationDetails(content as ResearchValidationDetailsView); })
+      .catch(() => { /* 同上 */ });
+    return () => { cancelled = true; };
+  }, [runId]);
+
+  // 质量门暂停引导：paused + node_quality failed（EVIDENCE_INVALID 语义）才出现。
+  const qualityGuidance = qualityGatePauseGuidance({
+    runStatus,
+    nodeStatuses,
+    reportIssues: evidenceReport?.issues ?? null,
+    validationFindings: validationDetails?.findings ?? null,
+    serverErrorCode: evidenceReport?.passed === false ? "EVIDENCE_INVALID" : null,
+  });
+
+  // 纸面内联引用上下文：编号来自 T07 bibliography 顺序投影，缺省按出现顺序本地编号。
+  const citationContext: CitationRenderContextValue | null = useMemo(() => {
+    if (!citations) return null;
+    return { index: citations, numbers: buildBibliographyNumbers(validationDetails) };
+  }, [citations, validationDetails]);
+
+  const provisionalText = Object.values(provisionalDeltas).join("");
+  const draftText = provisionalText || collectDocumentText(versions[versions.length - 1]?.document.root ?? null);
+  const markers = findCitationMarkers(draftText);
+
+  return (
+    <section className="research-workbench" aria-label="研究综述工作台">
+      {/* Lumi 研究指示：检索阅读=思考圆点，撰写=摆笔，失败=断墨 */}
+      {(() => {
+        const phase = research.progress?.phase ?? null;
+        const state: LumiState =
+          phase === "failed" ? "error"
+          : phase === "writing" ? "writing"
+          : phase && phase !== "pending" ? "thinking"
+          : "idle";
+        const show = state !== "idle";
+        return show ? (
+          <div className="flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground">
+            <Lumi state={state} size={16} />
+            <span>{phase === "failed" ? "研究运行失败" : `Lumi 正在${researchPhaseLabel(phase ?? "")}`}</span>
+          </div>
+        ) : null;
+      })()}
+      <div className="research-workbench-grid">
+        <div className="research-workbench-main">
+          <ResearchProgress runId={runId} slice={research} maxPapers={maxPapers} />
+          {qualityGuidance && <ResearchQualityGateCard guidance={qualityGuidance} />}
+          {gate && (
+            <ResearchGatePanel runId={runId} gate={gate} pack={pack} onGateUpdated={applyGateView} />
+          )}
+          {!gate && !qualityGuidance && decidedGates.length > 0 && (
+            <p className="research-workbench-decided">已确认 {decidedGates.length} 个确认点（运行按计划继续）。</p>
+          )}
+          <Collapsible open={evidenceOpen} onOpenChange={setEvidenceOpen}>
+            <CollapsibleTrigger asChild>
+              <button className="research-workbench-toggle" aria-expanded={evidenceOpen}>
+                <BookOpenText className="h-3.5 w-3.5" />
+                <span>来源与证据包</span>
+                <ChevronDown className={cn("h-4 w-4 opacity-50 transition-transform", evidenceOpen && "rotate-180")} />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <ResearchEvidencePanel runId={runId} packRef={packRef} />
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
+
+        <aside className="research-workbench-citations" aria-label="草稿引用核对">
+          <h4 className="text-xs font-semibold">草稿引用核对（[@ev_xxx]）</h4>
+          {citations && markers.length > 0 ? (
+            <ul className="research-citation-list">
+              {markers.map((marker, index) => {
+                const citation = citations.citations.find((item) => item.evidence_id === marker);
+                const displayNumber = citationContext?.numbers?.[marker] ?? index + 1;
+                return (
+                  <li key={marker}>
+                    <CitationMarker index={citations} evidenceId={marker} ordinal={displayNumber} />
+                    {citation ? (
+                      <span className="min-w-0">
+                        <strong className="block truncate text-xs">{citation.paper_title}</strong>
+                        <small className="block text-[10px] text-muted-foreground">
+                          {citation.evidence_scope === "abstract" ? "摘要证据 · " : "全文证据 · "}页码 {citation.page}
+                          {citation.partial ? " · 部分覆盖" : ""}
+                        </small>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-destructive">引用索引中不存在 {marker}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="text-xs text-muted-foreground">草稿中出现 [@ev_xxx] 标记后，可在此核对原文摘录、页码与覆盖范围。</p>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 纸面内联引用上下文（T09）：引用索引加载后，正文中的 [@ev_xxx] 在渲染时
+ * 转换为上标编号链接（编号来自 T07 bibliography 顺序，缺省本地编号）；
+ * 模型层数据不改写。非研究上下文（无索引）时为 null，正文原样渲染。
+ */
+function useCitationSurfaceContext(): CitationRenderContextValue | null {
+  const artifacts = useWritingRuntimeStore((state) => state.artifacts);
+  const [citations, setCitations] = useState<ResearchCitationIndex | null>(null);
+  const [validationDetails, setValidationDetails] = useState<ResearchValidationDetailsView | null>(null);
+
+  const runId = useWritingRuntimeStore((state) => state.run?.run_id ?? null);
+  const citationArtifactId = useMemo(
+    () => artifacts.find((artifact) => artifact.artifact_type === "research_citation_index")?.artifact_id ?? "art_citation_index_demo",
+    [artifacts],
+  );
+
+  useEffect(() => {
+    if (!runId) { setCitations(null); setValidationDetails(null); return; }
+    let cancelled = false;
+    fetchRunArtifactContent(runId, citationArtifactId)
+      .then((content) => {
+        if (!cancelled && (content as ResearchCitationIndex)?.schema_version === "research-citation-index/1") setCitations(content as ResearchCitationIndex);
+        else if (!cancelled) setCitations(null);
+      })
+      .catch(() => { if (!cancelled) setCitations(null); });
+    fetchRunArtifactContent(runId, VALIDATION_DETAILS_ARTIFACT_ID)
+      .then((content) => {
+        if (!cancelled && (content as ResearchValidationDetailsView)?.schema_version === "research-validation-details/1") setValidationDetails(content as ResearchValidationDetailsView);
+        else if (!cancelled) setValidationDetails(null);
+      })
+      .catch(() => { if (!cancelled) setValidationDetails(null); });
+    return () => { cancelled = true; };
+  }, [runId, citationArtifactId]);
+
+  return useMemo(() => {
+    if (!citations) return null;
+    return { index: citations, numbers: buildBibliographyNumbers(validationDetails) };
+  }, [citations, validationDetails]);
+}
+
 export function WritingWorkspace() {
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
+  const [detailWidth, setDetailWidth] = useState(360);
   const [pendingRevision, setPendingRevision] = useState<RevisionSet | null>(null);
   const composerRef = useRef<WritingComposerHandle | null>(null);
+  const composerLayerRef = useRef<HTMLDivElement | null>(null);
   const { connected } = useAgentWebSocket();
 
   const sessions = useAgentStore((state) => state.sessions);
@@ -48,30 +293,56 @@ export function WritingWorkspace() {
   const token = useAuthStore((state) => state.token);
   const user = useAuthStore((state) => state.user);
 
-  const billingBalance = useBillingStore((state) => state.balance);
-  const loadBalance = useBillingStore((state) => state.loadBalance);
   const finalArticle = useWorkflowStore((state) => state.finalArticle);
-  const workflowStatus = useWorkflowStore((state) => state.runStatus);
 
   const runtimeDocument = useWritingRuntimeStore((state) => state.document);
   const versions = useWritingRuntimeStore((state) => state.versions);
   const run = useWritingRuntimeStore((state) => state.run);
-  const nodeStatuses = useWritingRuntimeStore((state) => state.nodeStatuses);
   const provisionalDeltas = useWritingRuntimeStore((state) => state.provisionalDeltas);
   const quality = useWritingRuntimeStore((state) => state.quality);
   const runtimeError = useWritingRuntimeStore((state) => state.error);
+  const research = useWritingRuntimeStore((state) => state.research);
   const loadDocument = useWritingRuntimeStore((state) => state.loadDocument);
   const loadRun = useWritingRuntimeStore((state) => state.loadRun);
   const refreshRunEvents = useWritingRuntimeStore((state) => state.refreshRunEvents);
-  const controlRun = useWritingRuntimeStore((state) => state.controlRun);
+  const refreshResearch = useWritingRuntimeStore((state) => state.refreshResearch);
 
-  const globalSidebar = useWorkspaceLayoutStore((state) => state.globalSidebar);
   const detailPanel = useWorkspaceLayoutStore((state) => state.detailPanel);
-  const conversationPanel = useWorkspaceLayoutStore((state) => state.conversationPanel);
-  const setGlobalSidebar = useWorkspaceLayoutStore((state) => state.setGlobalSidebar);
+  const composerWidth = useWorkspaceLayoutStore((state) => state.composerWidth);
   const setDetailPanel = useWorkspaceLayoutStore((state) => state.setDetailPanel);
-  const setConversationPanel = useWorkspaceLayoutStore((state) => state.setConversationPanel);
+  const setComposerWidth = useWorkspaceLayoutStore((state) => state.setComposerWidth);
   const setLayoutScope = useWorkspaceLayoutStore((state) => state.setScope);
+
+  const citationSurfaceContext = useCitationSurfaceContext();
+
+  // 写作区底色（个人中心-自定义，localStorage 持久化）
+  const [writingBg] = useWritingBg();
+
+  // 工具栏 Lumi 指示：合并 agent 会话状态与编辑部工作流状态
+  const agentMode = useSettingsStore((state) => state.agentMode);
+  const wfRunStatus = useWorkflowStore((state) => state.runStatus);
+  const sessionStatus = session?.status ?? "idle";
+  const awaitingInput = session?.awaitInputAt != null;
+  const lumiToolbarState: LumiState = useMemo(() => {
+    if (agentMode === "editorial") {
+      if (wfRunStatus === "failed") return "error";
+      if (wfRunStatus === "paused") return "paused";
+      if (wfRunStatus === "planning" || wfRunStatus === "created") return "thinking";
+      if (wfRunStatus === "running") return "writing";
+      return "idle";
+    }
+    if (sessionStatus === "error") return "error";
+    if (sessionStatus === "paused") return "paused";
+    if (awaitingInput) return "thinking";
+    if (sessionStatus === "running") return "writing";
+    return "idle";
+  }, [agentMode, wfRunStatus, sessionStatus, awaitingInput]);
+  const lumiToolbarTitle =
+    lumiToolbarState === "writing" ? "写作进行中"
+    : lumiToolbarState === "thinking" ? "等待确认"
+    : lumiToolbarState === "paused" ? "已暂停"
+    : lumiToolbarState === "error" ? "运行失败"
+    : "";
 
   const governedVersion = useMemo(() => {
     return versions.find((item) => item.document.version_id === runtimeDocument?.current_version_id)?.document
@@ -91,7 +362,48 @@ export function WritingWorkspace() {
   const documentId = runtimeDocument?.document_id ?? session?.id ?? "new";
   const title = runtimeDocument?.title ?? finalArticle?.title ?? session?.title ?? "未命名文档";
 
-  useEffect(() => { void loadSessions(); void loadBalance(); }, [loadBalance, loadSessions]);
+  const feedbackContext = useMemo(() => {
+    if (!session?.traceId) return null;
+    for (const message of session.messages.slice().reverse()) {
+      if (message.role !== "assistant") continue;
+      const feedbackPart = message.parts.slice().reverse().find((part) => part.type === "data" && part.dataType === "feedback");
+      if (!feedbackPart || feedbackPart.type !== "data") continue;
+      const data = feedbackPart.data as { article?: string; has_feedback?: boolean };
+      if (data.article?.trim()) return { traceId: session.traceId, article: data.article, hasFeedback: data.has_feedback };
+    }
+    return null;
+  }, [session?.messages, session?.traceId]);
+
+  useEffect(() => { void loadSessions(); }, [loadSessions]);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const syncSidebarDefault = (event: MediaQueryListEvent) => setSidebarOpen(event.matches);
+    desktopQuery.addEventListener("change", syncSidebarDefault);
+    return () => desktopQuery.removeEventListener("change", syncSidebarDefault);
+  }, []);
+
+  useEffect(() => {
+    const keepDetailWidthSafe = () => setDetailWidth((width) => clampDetailWidth(width, sidebarOpen));
+    keepDetailWidthSafe();
+    window.addEventListener("resize", keepDetailWidthSafe);
+    return () => window.removeEventListener("resize", keepDetailWidthSafe);
+  }, [sidebarOpen]);
+
+  // 悬浮详情卡片底部让位：实测 composer 高度写入 CSS 变量，
+  // 卡片 bottom 随输入区宽度模式（compact/wide）自动抬降。
+  useEffect(() => {
+    const layer = composerLayerRef.current;
+    const root = layer?.closest<HTMLElement>(".governed-workspace") ?? null;
+    if (!layer || !root) return;
+    const apply = () => {
+      root.style.setProperty("--workspace-composer-clearance", `${Math.round(layer.offsetHeight)}px`);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(layer);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -109,6 +421,20 @@ export function WritingWorkspace() {
     return () => window.clearInterval(timer);
   }, [refreshRunEvents, run?.run_id, token]);
 
+  // 研究综述：以 GET 为准的兜底轮询（断线重连/刷新恢复后由 GET 重建待确认页面）。
+  // 每次载入运行先做一次 GET 探测；确认切片活跃后才持续轮询。
+  const researchActive = researchSliceActive(research);
+  const researchRunId = research.runId;
+  useEffect(() => {
+    if (!run?.run_id) return;
+    if (!researchActive && researchRunId === run.run_id && researchRunId !== null) return;
+    const sync = () => void refreshResearch(run.run_id, token ?? undefined);
+    sync();
+    if (!researchActive) return;
+    const timer = window.setInterval(sync, 4000);
+    return () => window.clearInterval(timer);
+  }, [refreshResearch, researchActive, researchRunId, run?.run_id, token]);
+
   useEffect(() => {
     setLayoutScope({
       userId: user?.userId ?? "guest",
@@ -119,44 +445,80 @@ export function WritingWorkspace() {
   }, [documentId, setLayoutScope, user?.userId]);
 
   useKeyboardShortcuts({
-    onToggleSidebar: () => window.innerWidth < 768
-      ? setMobileSidebarOpen((value) => !value)
-      : setGlobalSidebar(globalSidebar === "expanded" ? "collapsed" : "expanded"),
-    onToggleDetail: () => setDetailPanel(detailPanel === "collapsed" ? (window.innerWidth < 1280 ? "drawer" : "expanded") : "collapsed"),
+    onToggleSidebar: () => setSidebarOpen((value) => !value),
+    onToggleDetail: () => setDetailPanel(detailPanel === "collapsed" ? (window.innerWidth < 768 ? "drawer" : "expanded") : "collapsed"),
     onFocusInput: () => composerRef.current?.focusTextarea(),
     onEscape: () => {
-      if (mobileSidebarOpen) setMobileSidebarOpen(false);
+      if (sidebarOpen) setSidebarOpen(false);
       else if (detailPanel !== "collapsed") setDetailPanel("collapsed");
     },
   });
 
   const handleReconnect = useCallback(() => connectWS(), [connectWS]);
-  const handleRunControl = useCallback((action: "pause" | "resume" | "cancel") => {
-    if (run) void controlRun(run.run_id, action, token ?? undefined);
-  }, [controlRun, run, token]);
-
+  const resizeDetailFromPointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    setDetailWidth(clampDetailWidth(window.innerWidth - event.clientX, sidebarOpen));
+  };
+  const resizeDetailFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const increments: Record<string, number> = { ArrowLeft: 16, ArrowRight: -16 };
+    if (event.key === "Home") { event.preventDefault(); setDetailWidth(DETAIL_WIDTH_MIN); return; }
+    if (event.key === "End") { event.preventDefault(); setDetailWidth(clampDetailWidth(DETAIL_WIDTH_MAX, sidebarOpen)); return; }
+    if (!(event.key in increments)) return;
+    event.preventDefault();
+    setDetailWidth((width) => clampDetailWidth(width + increments[event.key], sidebarOpen));
+  };
+  const workspaceStyle: WorkspaceStyle = { "--workspace-detail-width": `${detailWidth}px` };
   return (
-    <div className="governed-workspace">
-      {mobileSidebarOpen && <button className="workspace-scrim md:hidden" onClick={() => setMobileSidebarOpen(false)} aria-label="关闭导航" />}
-      <div className={cn("workspace-global-sidebar", mobileSidebarOpen && "workspace-global-sidebar-open")}>
-        <Sidebar collapsed={globalSidebar === "collapsed"} onToggle={() => setGlobalSidebar(globalSidebar === "expanded" ? "collapsed" : "expanded")} />
+    <div className="governed-workspace" style={workspaceStyle} data-sidebar-open={sidebarOpen} data-detail-state={detailPanel} data-composer-width={composerWidth} data-writing-bg={writingBg}>
+      {sidebarOpen && <button className="workspace-scrim lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
+      <div className={cn("workspace-global-sidebar", sidebarOpen && "workspace-global-sidebar-open")}>
+        <Sidebar
+          onNavigate={() => { if (window.innerWidth < 1024) setSidebarOpen(false); }}
+        />
       </div>
 
       <section className="workspace-center">
         <header className="workspace-toolbar">
           <div className="flex min-w-0 items-center gap-2">
-            <button onClick={() => setMobileSidebarOpen(true)} className="workspace-icon-button md:hidden" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>
-            <div className="min-w-0"><p className="workspace-eyebrow">WRITING WORKSPACE</p><h2>{title}</h2></div>
+            {sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"
+                title="关闭侧栏"
+                aria-label="关闭侧栏"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            )}
+            {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="workspace-icon-button" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>}
+            <div className="min-w-0"><h2>{title}</h2></div>
+            {/* Lumi 运行指示：思考（含等提纲确认）/书写/出错；完成后闪一次星星 */}
+            {lumiToolbarState !== "idle" && (
+              <span key={`lumi-${lumiToolbarState}`} className="anim-fade-scale flex items-center" title={lumiToolbarTitle}>
+                <Lumi state={lumiToolbarState} size={18} />
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
-            {billingBalance && billingBalance.point_balance > 0 && <span className="workspace-balance">{Math.floor(billingBalance.point_balance)} 积分</span>}
             {!connected && <button className="workspace-connection" onClick={handleReconnect}><PulseIndicator status="paused" size="sm" ring={false} /><span>重新连接</span><RefreshCw className="h-3 w-3" /></button>}
-            {detailPanel === "collapsed" && <Button variant="ghost" size="sm" aria-label="打开详情面板" onClick={() => setDetailPanel(window.innerWidth < 1280 ? "drawer" : "expanded")} className="gap-1.5"><PanelRightOpen className="h-4 w-4" /><span className="hidden sm:inline">详情</span></Button>}
+            {detailPanel !== "drawer" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={detailPanel === "expanded" ? "收起详情面板" : "固定悬浮详情面板"}
+                title={detailPanel === "expanded" ? "收起" : "固定悬浮详情"}
+                onClick={() => setDetailPanel(detailPanel === "expanded" ? "collapsed" : (window.innerWidth < 768 ? "drawer" : "expanded"))}
+                className="workspace-icon-button"
+              >
+                {detailPanel === "expanded" ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+              </Button>
+            )}
           </div>
         </header>
 
-        <RunSummaryStrip run={run} nodeStatuses={nodeStatuses} quality={quality} legacyStatus={workflowStatus === "idle" ? session?.status : workflowStatus} onControl={handleRunControl} />
         {runtimeError && <div className="runtime-error" role="alert">{runtimeError}</div>}
+
+        {researchActive && run?.run_id && <ResearchWorkbench runId={run.run_id} />}
 
         <div className="workspace-document-region">
           <DocumentSurface
@@ -166,22 +528,58 @@ export function WritingWorkspace() {
             provisionalDeltas={provisionalDeltas}
             qualityState={quality?.quality_state ?? versions[versions.length - 1]?.quality_state}
             onRevisionSet={setPendingRevision}
+            onPolishSelection={(text) => composerRef.current?.beginPolish(text)}
+            citationContext={citationSurfaceContext}
+            beforePaper={session?.messages.length ? <Thread variant="flow" /> : undefined}
+            conversationStarted={Boolean(session?.messages.some((message) => message.role === "user"))}
+            afterPaper={feedbackContext ? (
+              <FeedbackBar traceId={feedbackContext.traceId} article={feedbackContext.article} hasFeedback={feedbackContext.hasFeedback} />
+            ) : undefined}
           />
           <RevisionDiff revisionSet={pendingRevision} />
+          {/* 底部过渡遮罩：配合悬浮输入区遮住缝隙文字，随写作区底色联动 */}
+          <div className="workspace-bottom-fade" aria-hidden="true" />
         </div>
 
-        <ConversationDock state={conversationPanel} onStateChange={setConversationPanel} statusText={run?.status === "running" ? "运行中，可继续补充要求" : "修改合约、解释决策与控制执行"}>
-          <div className="conversation-thread"><Thread variant="dock" /></div>
-          <WritingComposer ref={composerRef} compact />
-        </ConversationDock>
       </section>
 
-      {detailPanel !== "collapsed" && (
-        <div className={cn("workspace-detail", detailPanel === "drawer" && "workspace-detail-drawer")} data-panel-state={detailPanel}>
-          <button className="workspace-detail-scrim" onClick={() => setDetailPanel("collapsed")} aria-label="关闭详情" />
-          <DetailPanel governed onClose={() => setDetailPanel("collapsed")} />
+      <aside className="workspace-sidecar" data-panel-state={detailPanel} aria-label="写作控制栏">
+        {detailPanel === "expanded" && (
+          <button
+            className="workspace-detail-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整详情栏宽度"
+            aria-valuemin={DETAIL_WIDTH_MIN}
+            aria-valuemax={DETAIL_WIDTH_MAX}
+            aria-valuenow={detailWidth}
+            title="拖动调整详情栏宽度"
+            onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)}
+            onPointerMove={resizeDetailFromPointer}
+            onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+            onKeyDown={resizeDetailFromKeyboard}
+          />
+        )}
+        <div className="workspace-sidecar-main">
+          <div
+            className={cn("workspace-detail", detailPanel === "drawer" && "workspace-detail-drawer")}
+            data-panel-state={detailPanel}
+            aria-hidden={detailPanel === "collapsed"}
+          >
+            <button className="workspace-detail-scrim" onClick={() => setDetailPanel("collapsed")} aria-label="关闭详情" />
+            <DetailPanel governed onClose={() => setDetailPanel("collapsed")} />
+          </div>
         </div>
-      )}
+      </aside>
+
+      <div ref={composerLayerRef} className={cn("workspace-composer-layer", composerWidth === "compact" && "workspace-composer-layer-compact")} aria-label="写作输入">
+        <WritingComposer
+          ref={composerRef}
+          compact={composerWidth === "compact"}
+          floating
+          onToggleWidth={() => setComposerWidth(composerWidth === "wide" ? "compact" : "wide")}
+        />
+      </div>
     </div>
   );
 }

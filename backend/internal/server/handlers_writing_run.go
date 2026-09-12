@@ -48,16 +48,6 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 		s.writeWritingError(w, err)
 		return
 	}
-	// Fail closed before the service layer touches persistence: a runtime
-	// that cannot dispatch must never create a zombie planned run.
-	if s.governedRuntime != nil && !s.governedRuntime.Ready() {
-		blockedCode := "WRITING_RUNTIME_NOT_READY"
-		if s.governedRuntime != nil && s.governedRuntime.BlockedCode() != "" {
-			blockedCode = s.governedRuntime.BlockedCode()
-		}
-		s.writeWritingError(w, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, blockedCode))
-		return
-	}
 	key, err := writingIdempotencyKey(r)
 	if err != nil {
 		s.writeWritingError(w, err)
@@ -69,6 +59,7 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 		ContractVersion int                             `json:"contract_version"`
 		ContractHash    string                          `json:"contract_hash"`
 		BaseVersionID   string                          `json:"base_version_id"`
+		StyleSlug       string                          `json:"style_slug"`
 		Plan            writingplan.WritingPlanEnvelope `json:"plan"`
 		Budget          writingplan.PlanBudget          `json:"budget"`
 		Permissions     []writingplan.Permission        `json:"permissions"`
@@ -77,7 +68,7 @@ func (s *Server) handleCreateWritingRun(w http.ResponseWriter, r *http.Request) 
 		s.writeWritingError(w, err)
 		return
 	}
-	run, err := s.writingAPI.CreateRun(r.Context(), access, createWritingRunCommand{IdempotencyKey: key, DocumentID: body.DocumentID, ContractID: body.ContractID, ContractVersion: body.ContractVersion, ContractHash: body.ContractHash, BaseVersionID: body.BaseVersionID, Plan: body.Plan, Budget: body.Budget, Permissions: body.Permissions})
+	run, err := s.writingAPI.CreateRun(r.Context(), access, createWritingRunCommand{IdempotencyKey: key, DocumentID: body.DocumentID, ContractID: body.ContractID, ContractVersion: body.ContractVersion, ContractHash: body.ContractHash, BaseVersionID: body.BaseVersionID, StyleSlug: body.StyleSlug, Plan: body.Plan, Budget: body.Budget, Permissions: body.Permissions})
 	if err != nil {
 		s.writeWritingError(w, err)
 		return

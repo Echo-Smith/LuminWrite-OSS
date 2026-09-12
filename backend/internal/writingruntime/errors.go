@@ -22,7 +22,16 @@ const (
 	CodeArtifactCommitFailed           ErrorCode = "ARTIFACT_COMMIT_FAILED"
 	CodeRolloutPolicyInvalid           ErrorCode = "ROLLOUT_POLICY_INVALID"
 	CodeRolloutEvidenceFailed          ErrorCode = "ROLLOUT_EVIDENCE_FAILED"
+	CodeRolloutPromotionDenied         ErrorCode = "ROLLOUT_PROMOTION_DENIED"
+	CodeContextRequiredMissing         ErrorCode = "CONTEXT_REQUIRED_MISSING"
 	CodeExecutionFailed                ErrorCode = "EXECUTION_FAILED"
+)
+
+var (
+	// ErrContextRequiredMissing marks a node whose capability enforces its
+	// context contract and whose envelope lacks a required block. It is
+	// fail-node (never a retry): the data gap does not heal by re-running.
+	ErrContextRequiredMissing = errors.New("writingruntime: required context blocks are missing")
 )
 
 type RetryClass string

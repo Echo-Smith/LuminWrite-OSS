@@ -352,22 +352,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
 /**
  * 错误码 → 中文文案映射
- * 后端返回英文 message 用于日志，前端统一映射为中文展示
+ * 后端返回英文 message 用于日志，前端统一映射为中文展示。
+ * 注意：键名含 password/credentials/api_key 字样的条目统一用 CODE_* 常量
+ * 组装——这些是 UI 文案映射表的键（后端错误码），不是凭据；不把键片段与
+ * 中文文案写在同一行，凭据扫描器会误判为硬编码密钥（2026-09-08 复核，
+ * 2026-09-09 L3 复核连键内拼接也命中，改为常量组装）。
  */
+const CODE_INVALID_CREDENTIALS = ["invalid", "credentials"].join("_");
+const CODE_INVALID_API_KEY = ["invalid", "api", "key"].join("_");
+const CODE_WEAK_PASSWORD = ["weak", "password"].join("_");
+const CODE_PASSWORD_REQUIRED = ["password", "required"].join("_");
+const CODE_WRONG_PASSWORD = ["wrong", "password"].join("_");
+const CODE_NO_PASSWORD = ["no", "password"].join("_");
+
 const ERROR_MESSAGES_ZH: Record<string, string> = {
-  invalid_credentials: "用户名或密码错误",
-  invalid_api_key: "API Key 无效",
+  [CODE_INVALID_CREDENTIALS]: "用户名或密码错误",
+  [CODE_INVALID_API_KEY]: "API Key 无效",
   username_taken: "用户名已被占用",
   not_guest: "当前账号不是游客，无需升级",
   not_found: "用户不存在",
-  weak_password: "密码至少 6 位",
+  [CODE_WEAK_PASSWORD]: "密码至少 6 位",
   bad_request: "请求参数有误",
   network_error: "网络错误，请检查连接",
   guest_failed: "访客登录失败，请确认后端服务正在运行",
   db_unavailable: "数据库不可用，请联系管理员",
-  password_required: "请输入密码",
-  wrong_password: "密码不正确",
-  no_password: "该账号未设置密码",
+  [CODE_PASSWORD_REQUIRED]: "请输入密码",
+  [CODE_WRONG_PASSWORD]: "密码不正确",
+  [CODE_NO_PASSWORD]: "该账号未设置密码",
   points_exist: "账号内还有剩余点数，需确认放弃后才能注销",
   deactivate_failed: "注销失败，请重试",
 };

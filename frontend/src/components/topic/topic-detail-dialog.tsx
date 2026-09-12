@@ -204,7 +204,7 @@ function TopicMaterialsSection({ topicId, topicTitle }: { topicId: string; topic
             </div>
           ) : availableMaterials.length === 0 ? (
             <p className="text-center text-xs text-muted-foreground py-2">
-              没有可选素材，请先在「我的素材库」中上传
+              没有可选素材，请先在「知识库」中上传
             </p>
           ) : (
             availableMaterials.map((mat) => (

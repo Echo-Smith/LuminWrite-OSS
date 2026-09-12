@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -33,7 +34,11 @@ type ContentGateway interface {
 }
 
 type LegacyNodeInput struct {
-	Request  ExecutionRequest
+	Request ExecutionRequest
+	// Context is the compiled envelope for this attempt, injected by the
+	// orchestrator's shadow wiring. Nil when compilation is disabled or
+	// degraded; runners treat it as advisory.
+	Context  *contextcompiler.Envelope
 	Payloads map[writingplan.ArtifactType][][]byte
 }
 
@@ -166,7 +171,7 @@ func (executor *LegacyExecutor) Execute(ctx context.Context, request ExecutionRe
 	}
 	started := executor.now()
 	legacyCtx, cancel := context.WithTimeout(ctx, time.Duration(request.Node.Bounds.TimeoutMS)*time.Millisecond)
-	outputs, usage, err := executor.runner.Run(legacyCtx, LegacyNodeInput{Request: request, Payloads: payloads})
+	outputs, usage, err := executor.runner.Run(legacyCtx, LegacyNodeInput{Request: request, Context: request.Context, Payloads: payloads})
 	cancel()
 	if err != nil {
 		return ExecutionResult{}, err
@@ -228,12 +233,18 @@ func adapterFamilyForExecutor(executorID string) AdapterFamily {
 	}
 }
 
+// EngineStepRunner adapts one legacy engine step as a governed node runner.
+// The step is built per attempt through StepFactory with a StepEnv carrying
+// the request and the per-request style profile resolution (M1.3): the
+// composition stays style-agnostic, the run decides.
 type EngineStepRunner struct {
-	StepFactory func() engine.Step
-	Emitter     engine.EventEmitter
-	Seed        engine.CompatibilityInput
-	Materials   MaterialSnapshotResolver
-	Usage       func(*engine.ExecutionContext) (LegacyUsage, error)
+	StepFactory func(StepEnv) (engine.Step, error)
+	// Styles resolves the run's style slug to a profile. Nil (or a resolution
+	// miss/failure) means default profile semantics — never a node failure.
+	Styles  StyleResolver
+	Emitter engine.EventEmitter
+	Seed    engine.CompatibilityInput
+	Usage   func(*engine.ExecutionContext) (LegacyUsage, error)
 }
 
 func NewEngineStepExecutorAdapter(descriptor ExecutorDescriptor, capabilityID, capabilityVersion string, required []writingplan.Permission, content ContentGateway, runner EngineStepRunner) (*LegacyExecutor, error) {
@@ -289,22 +300,19 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 	}
 	execCtx := engine.NewCompatibilityExecutionContext(runner.Seed)
 	execCtx.TraceID = input.Request.IdempotencyKey
+	execCtx.UserID = input.Request.UserID
+	execCtx.StyleSlug = input.Request.StyleSlug
 	for _, artifactType := range sortedPayloadTypes(input.Payloads) {
 		for _, payload := range input.Payloads[artifactType] {
 			switch artifactType {
 			case "contract":
 				execCtx.UserInput = string(payload)
 			case "materials":
-				if runner.Materials == nil {
-					return nil, LegacyUsage{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
-						"engine material manifest has no resolver", ErrRuntimeNotReady)
-				}
-				resolved, err := runner.Materials.ResolveMaterialSnapshots(ctx, payload)
-				if err != nil {
-					return nil, LegacyUsage{}, err
-				}
-				for _, body := range resolved {
-					execCtx.UserMaterials = append(execCtx.UserMaterials, string(body))
+				var texts []string
+				if json.Unmarshal(payload, &texts) == nil {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, texts...)
+				} else {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, string(payload))
 				}
 			case "source_pack":
 				var wrapper struct {
@@ -324,7 +332,10 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 			}
 		}
 	}
-	step := runner.StepFactory()
+	step, err := runner.StepFactory(StepEnv{Request: input.Request, Profile: resolveStepProfile(runner.Styles, input.Request)})
+	if err != nil {
+		return nil, LegacyUsage{}, err
+	}
 	if step == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
 	}
@@ -410,6 +421,8 @@ func (runner EditorialRoleNodeRunner) Run(ctx context.Context, input LegacyNodeI
 	}
 	execCtx := engine.NewCompatibilityExecutionContext(runner.Seed)
 	execCtx.TraceID = input.Request.IdempotencyKey
+	execCtx.UserID = input.Request.UserID
+	execCtx.StyleSlug = input.Request.StyleSlug
 	task := &editorial.Task{ID: input.Request.NodeID, Title: input.Request.Node.Capability,
 		Description: execCtx.UserInput, OwnerID: runner.Seed.UserID, TokenBudget: runner.Seed.MaxTokens,
 		StyleSlug: runner.Seed.StyleSlug, CreatedBy: "writingruntime"}
@@ -580,10 +593,9 @@ type AgentHarnessCore interface {
 // AgentHarnessCoreBridge adapts the real Harness tool loop after RunCore has
 // removed session persistence and terminal event side effects.
 type AgentHarnessCoreBridge struct {
-	Core      AgentHarnessCore
-	Seed      engine.CompatibilityInput
-	Materials MaterialSnapshotResolver
-	Usage     func(agent.HarnessCoreOutput) (LegacyUsage, error)
+	Core  AgentHarnessCore
+	Seed  engine.CompatibilityInput
+	Usage func(agent.HarnessCoreOutput) (LegacyUsage, error)
 }
 
 func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request HarnessCoreRequest) (HarnessCoreResult, error) {
@@ -599,18 +611,8 @@ func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request Harnes
 			case "contract":
 				execCtx.UserInput = string(value)
 			case "materials":
-				if bridge.Materials == nil {
-					return HarnessCoreResult{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
-						"harness material manifest has no resolver", ErrRuntimeNotReady)
-				}
-				resolved, err := bridge.Materials.ResolveMaterialSnapshots(ctx, value)
-				if err != nil {
-					return HarnessCoreResult{}, err
-				}
-				for _, body := range resolved {
-					execCtx.UserMaterials = append(execCtx.UserMaterials, string(body))
-					session.UserMaterials = append(session.UserMaterials, string(body))
-				}
+				execCtx.UserMaterials = append(execCtx.UserMaterials, string(value))
+				session.UserMaterials = append(session.UserMaterials, string(value))
 			case "outline":
 				var outline engine.OutlineData
 				if err := json.Unmarshal(value, &outline); err != nil {

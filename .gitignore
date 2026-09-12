@@ -2,6 +2,7 @@
 .env
 .env.*
 env.docker
+env.secrets.local
 !.env.example
 !.env.docker.example
 
@@ -33,6 +34,9 @@ docker-compose.override.yml
 *.swo
 *~
 .DS_Store
+
+# ─── 本地工具状态（Mimosa hook 会话缓存，不入库）───
+.mimosa/
 
 # ─── 日志 / 临时文件 ──────────────────────────────────
 *.log

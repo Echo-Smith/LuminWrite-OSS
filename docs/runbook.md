@@ -742,5 +742,148 @@ docker exec writing-agent-pg psql -U postgres -d writing_agent_v2 -c "
 
 ---
 
-*最后更新：2026-08-03*
+## 9. Task13 治理运行时晋升门禁
+
+Task13 只把系统推进到“allowlist 可评估、可审批”的工程状态。以下命令不会改变流量；percentage、enabled 和生产部署均需另行授权。
+
+### 9.1 前置检查
+
+1. 数据库迁移必须包含 `096_governance_productionization`。
+2. 待评估 policy 必须是经过 `WithComputedHash` 封装的 `allowlist` JSON，且包含非空 `activation_key` 和 `allow_subjects`。
+3. 最近 7 天至少有 3 条同一 policy hash 的 `runtime.shadow_compared`，失败数为 0，最后证据不早于 24 小时前。
+4. shadow body 只能存在于 `writing_shadow_contents`，canonical Artifact/Document 不得出现 `shadow://` 引用。
+
+### 9.2 只读评估
+
+```bash
+DATABASE_URL='postgres://...' go run ./backend/cmd/governance-gate \
+  -action assess \
+  -policy /absolute/path/to/allowlist-policy.json
+```
+
+`allowed=false` 时不得审批。常见原因包括 `insufficient_comparisons`、`evidence_failures_exceeded`、`evidence_stale`、`approval_missing` 和 `approval_evidence_stale`。
+
+### 9.3 显式审批
+
+```bash
+DATABASE_URL='postgres://...' go run ./backend/cmd/governance-gate \
+  -action approve \
+  -policy /absolute/path/to/allowlist-policy.json \
+  -operator release-operator-id \
+  -reason 'ticket/change reference and reviewed evidence' \
+  -approval-ttl 24h
+```
+
+审批记录绑定 exact policy hash、policy version、activation key 和证据水位，数据库禁止更新或删除。审批后产生的新证据会让旧审批失效，必须重新评估。该命令只写审批，不修改配置、不重启服务、不切流。
+
+### 9.4 真实模型纵向验收
+
+凭据只能通过本地未跟踪环境变量提供：
+
+```bash
+export TASK13_LLM_BASE_URL='https://api.b.ai/v1'
+export TASK13_LLM_MODEL='deepseek-v4-flash'
+export TASK13_LLM_API_KEY='temporary-test-key'
+export TEST_DATABASE_URL='postgres://isolated-test-database'
+./scripts/run-task13-live-acceptance.sh
+```
+
+验收覆盖长文、多材料综合、忠实改写；每场均检查 governed run 完成、质量门、canonical/shadow 隔离、PostgreSQL evidence 和 shadow body 重读、凭据不进入 evidence。测试结束后立即撤销提供方密钥并删除本地环境文件。
+
+### 9.5 allowlist 证据积累（只采证据，不做授权）
+
+allowlist 晋升门禁要求目标 policy hash 下最近 7 天 ≥3 条 `runtime.shadow_compared` 且无失败。运行时语义保证这一点：allowlist 未命中主体正常走 baseline，同时继续执行 shadow 对比（`allowlist_miss` → RunShadow），因此证据在当前 allowlist policy hash 下持续累积。采集作业：
+
+```bash
+export TASK13_LLM_BASE_URL='https://api.b.ai/v1'
+export TASK13_LLM_MODEL='deepseek-v4-flash'
+export TASK13_LLM_API_KEY='collector-key'
+export TEST_DATABASE_URL='postgres://...same-database-as-assessment...'
+make evidence-accumulate
+```
+
+采集作业每次运行追加独立的 run/document lineage（幂等键按 run 隔离，重复执行会累积而不是覆盖），并把允许清单政策绑定到三个纵向场景的治理节点上。运行输出每个 policy hash 的 evidence health 与只读 `EvidenceAssessment` 结果；`allowed=false` 时按 `insufficient_comparisons`、`evidence_stale` 等原因继续按日采集。门禁默认要求 24 小时内仍有新证据，建议每日 cron。
+
+边界与注意：
+
+- 采集只写 evidence/shadow/lineage，不审批、不激活、不改配置、不影响 baseline 服务。
+- 不要在采集数据库上运行 `run-task13-live-acceptance.sh`：该验收套件会 TRUNCATE documents 并级联清空累积证据。建议用独立数据库，或接受验收即重置。
+- 采集作业中 allowlist 主体（policy 的 `allow_subjects`）不会出现在请求里；若把真实主体加入 policy 前先激活，候选权威执行器会按预期拒绝并记 `candidate_lane_blocked`，这会计入失败数。
+- `make evidence-gate ROLLOUT_POLICY_FILE=/abs/path/policy.json` 只做只读评估；审批仍必须走 §9.3 的 `approve` + 受控激活变更。
+
+#### §9.5.1 policy 固化与审批走查（2026-09-02 实测路径）
+
+采集作业内部按 `EvidenceScenarioPolicies()` 生成治理 allowlist policy。要把证据挂到可审计、可复核的 policy hash 上，先用 dump 工具把三份 policy JSON 固化到磁盘（hash 与库中证据一致）：
+
+```bash
+go run ./backend/cmd/evidence-policy-dump -out /absolute/path/to/policy-dir
+# 输出 JSON lines：{scenario, policy_hash, file}
+```
+
+注意：policy hash 覆盖全部字段（含 `mode`）。若运行时政策表或采集代码变动，hash 会随之变化，需重新 dump 并重新累积证据。之后走查：
+
+1. `governance-gate -action assess -policy <dump 出的 policy.json>`：要求 `allowed=true`（≥3 条对比、0 失败、24h 内有新证据）。
+2. `governance-gate -action approve -policy <policy.json> -operator <操作者> -reason '<变更依据>' -approval-ttl 24h`：写入 append-only 审批，绑定 exact hash / version / activation key。
+3. **审批后立即停止采集**：审批产生后新证据会使审批 `approval_evidence_stale` 失效。按日 cron 只适用于"持续积累、尚未审批"阶段；审批后如需续期，重新评估并重新审批。
+4. 审批 ≠ 激活。对指定 subject 启用候选路径仍是独立受控变更（§9.6）。
+
+### 9.6 percentage 阶梯工程与审批（不切流）
+
+percentage 是 allowlist 之后的下一级晋升阶梯：同一 activation key 必须先持有 allowlist 阶段审批（机械阶梯检查，缺失即拒绝），percentage 审批本身仍由相同的证据标准约束（最近 7 天 ≥3 条对比、0 失败、24h 内有新证据）+ exact policy hash 审批绑定。
+
+运行时语义（已被测试钉死，双仓一致）：
+
+- 命中主体（stable bucket < basis_points）走候选 lane（`percentage_match`），不运行 shadow。
+- 未命中主体走 baseline，同时在 shadow 执行器上继续 shadow 对比（`percentage_miss` → RunShadow），证据在 percentage policy hash 下持续累积——与 allowlist 未命中语义对称。
+- bucket 只由 `activation_key + subject` 决定，与 policy hash 无关：调大 basis points 只会单调扩容命中人群，不会重排全部主体（换 activation key 才会重排）。
+- 权威（candidate-authoritative）执行器对未命中主体按预期流量服务 baseline，不记 authority violation。
+- `GatedRolloutPolicyProvider` 未配置 `PercentageGate` 时对 percentage policy 一律 fail-closed（`percentage_gate_not_configured`），即使有审批也拒绝。
+
+证据积累：`EvidenceScenarioPolicies()` 采集作业当前固定产出 allowlist 模式 policy。percentage policy 可用 `percentagePolicyForTest` 同样的字段构造（mode=percentage + basis_points + 同一 activation_key），证据未达标时按日采集直到 `assess` 返回 `allowed=true`。
+
+审批走查（与 §9.3 相同的命令；percentage policy JSON 会自动走 percentage 门禁）：
+
+1. 确认阶梯：`psql -c "SELECT target_mode, approved_by, expires_at FROM writing_rollout_approvals WHERE activation_key='<key>' AND target_mode='allowlist' ORDER BY created_at DESC LIMIT 1"`——必须存在且未过期。
+2. `governance-gate -action assess -policy <percentage-policy.json>`：要求 `allowed=true`。
+3. `governance-gate -action approve -policy <percentage-policy.json> ...`：CLI 会机械校验同 activation key 的 allowlist 阶段审批，缺失时报 `allowlist stage approval missing`。
+4. 迁移 `097_percentage_promotion` 放开 `writing_rollout_approvals.target_mode` 的 CHECK 到 allowlist|percentage；审批记录仍是 append-only。
+5. 审批 ≠ 激活。把 basis points 从 0 调到目标灰度值并部署，是下一次独立受控变更（§9.6）。
+
+### 9.8 production（enabled）晋升策略（不切流）
+
+enabled 是阶梯最后一级：所有主体走候选 lane，运行时不再产生任何对比证据（对比证据只存在于 shadow/allowlist/percentage policy hash 下）。因此 production 门禁不要求 enabled policy 自身的证据，而是要求 **percentage 阶段证明变更已就绪**：
+
+1. **阶梯证据**：同一 activation key 必须已持有 percentage 阶段审批，且该审批记录的 percentage policy hash 下最近 7 天 ≥3 条对比、0 失败、24h 内有新证据（缺失即 `percentage_stage_missing`）。
+2. **阶段审批在期**：percentage 阶段审批本身未过期（`percentage_stage_expired`）。审批后立即停止采集的规则（§9.5.1）在这里同样适用。
+3. **exact-scope 生产审批**：enabled 审批绑定 exact enabled policy hash / version / activation key（走查同 §9.3，CLI 自动路由到 `ProductionPromotionGate`；输出 `target_mode: enabled`）。
+
+运行时强制（与 percentage 门禁同款 fail-closed）：
+
+- `GatedRolloutPolicyProvider.ProductionGate` 未配置时，enabled policy 一律拒绝（`production_gate_not_configured`），即使库里有生产审批。
+- `assess` 阶段即可复核阶梯：`governance-gate -action assess -policy <enabled-policy.json>` 返回 `percentage_stage_missing` / `evidence_stale` 等原因。
+- 迁移 `098_production_promotion` 放开 `target_mode` CHECK 到 allowlist|percentage|enabled；enabled 审批的 `evidence_health` 刻意携带 **percentage** policy hash（enabled 模式无 shadow 对比，这是 store 层唯一允许 hash 与 record hash 不同的模式）。
+
+审批 ≠ 激活。把生产 policy 部署到运行时并让流量真正走候选 lane，仍是独立的受控变更（§9.7），需要：双仓回归 + 迁移检查 + 真实模型纵向验收 + 审批在有效期内 + 显式授权。
+
+### 9.9 Memory Forgetting sweep（V2.9 M6，显式运行）
+
+遗忘 sweep 是治理卫生操作，不是后台自动行为：preview → 走查 → apply，与证据采集纪律一致。canon（`project_facts`）结构性不在 sweep 范围内——策略没有 fact horizon，sweep 表集合没有 facts 表；canon 的退出路径只有区间失效与 user supersede。
+
+1. **查看策略**（无库）：`memory-forget -policy-dump` 输出 v1 默认配置（候选 30d / claim 60d / 决策冷却 90d）与 `policy_hash`。覆盖配置写 JSON 文件经 `-policy` 传入——horizon 改动即换 hash，台账按 hash 归因。
+2. **preview（默认，只数不动）**：`memory-forget -project prj_x` 输出各 lane 将被转换的计数。走查要点：计数是否异常（大量 claim 同时到期 = 佐证采集停了，先修采集再谈遗忘）；canon 相关计数恒为 0（本命令无 canon 字段，出现即工具被改坏）。
+3. **apply**：`memory-forget -project prj_x -apply -operator <id>` 单事务执行，逐行落 `project_memory_forgetting_log`（真实 from→to、规则、policy version+hash、actor、时间）。幂等：重跑零转换零落账。actor 门禁 = policy 或 user；model/capability/validator 无权。
+4. **审计**：`memory-forget -project prj_x -log N` 读台账；或直接查 `project_memory_forgetting_log`。"忘了什么、为什么忘、谁忘的"全部可重放。
+
+禁止：把 sweep 接成无人走查的定时任务（v1 刻意不接调度器）；用 sweep 绕过 HITL 动 canon 或 user-promoted 对象（sweep 只动 candidate/staged/终态冷却行）；把 preview 计数当作授权——apply 仍是显式操作。
+
+### 9.7 明确禁止
+
+- 不得把 `assess` 或 `approve` 的成功等同于生产授权。
+- 不得把 allowlist policy 改为 percentage/enabled 绕过门禁；生产 gate 会拒绝。
+- 不得在未通过双仓回归、迁移检查和真实模型验收时激活 allowlist。
+- 本手册不授权 push、deploy、生产数据库写入或真实用户流量。
+
+---
+
+*最后更新：2026-09-03*
 *维护者：Writing Agent V2 Team*

@@ -10,21 +10,22 @@
  *   - 点击建议时携带 topic_url 等完整 Topic 上下文（后端可据此抓取事件背景）
  *   - 请求失败或为空时 fallback 到硬编码建议
  */
-import { useRef, useEffect, useCallback, useState } from "react";
-import { PenLine, Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-react";
+import { useRef, useEffect, useCallback, useMemo, useState } from "react";
+import { Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-react";
 import { UserMessage } from "./user-message";
 import { AssistantMessage } from "./assistant-message";
 import { useAgentStore } from "@/stores/agent-store";
+import { Lumi } from "@/components/lumi/lumi";
 import { FadeIn, StaggerItem } from "@/components/animation";
 import type { Topic, AgentStartPayload } from "@/lib/types";
 
-export function Thread({ variant = "full" }: { variant?: "full" | "dock" }) {
+export function Thread({ variant = "full" }: { variant?: "full" | "dock" | "flow" }) {
   const sessions = useAgentStore((s) => s.sessions);
   const activeSessionId = useAgentStore((s) => s.activeSessionId);
   const streamingText = useAgentStore((s) => s.streamingText);
 
   const session = sessions.find((s) => s.id === activeSessionId);
-  const messages = session?.messages ?? [];
+  const messages = useMemo(() => session?.messages ?? [], [session?.messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -63,15 +64,15 @@ export function Thread({ variant = "full" }: { variant?: "full" | "dock" }) {
 
   // 空状态
   if (messages.length === 0) {
-    return <EmptyState compact={variant === "dock"} />;
+    return variant === "flow" ? null : <EmptyState compact={variant !== "full"} />;
   }
 
   return (
-    <div className="relative h-full">
+    <div className={variant === "flow" ? "assistant-flow relative" : "relative h-full"}>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className={variant === "dock" ? "h-full overflow-y-auto px-2" : "h-full overflow-y-auto"}
+        className={variant === "dock" ? "h-full overflow-y-auto px-2" : variant === "flow" ? "assistant-flow-list" : "h-full overflow-y-auto"}
       >
       {messages.map((message, idx) => {
         // 计算文章版本号：统计到当前位置为止有多少条带文本内容的 assistant 消息
@@ -102,6 +103,7 @@ export function Thread({ variant = "full" }: { variant?: "full" | "dock" }) {
             traceId={session?.traceId ?? null}
             version={hasText ? articleVersion : undefined}
             totalVersions={hasText && totalArticleVersions > 1 ? totalArticleVersions : undefined}
+            suppressArticle={variant !== "full"}
           />
         );
       })}
@@ -240,14 +242,14 @@ function EmptyState({ compact = false }: { compact?: boolean }) {
       {compact ? (
         <div className="w-full max-w-2xl text-center">
           <p className="text-sm font-medium">从一句写作要求开始</p>
-          <p className="mt-1 text-xs text-muted-foreground">系统会先整理合约与计划，正文始终留在上方文档区。</p>
+          <p className="mt-1 text-xs text-muted-foreground">系统会先整理任务与计划，正文始终保留在稿纸中。</p>
         </div>
       ) : (
       <div className="max-w-md text-center space-y-8">
-        {/* 品牌图标 */}
+        {/* Lumi 品牌形象（替代静态渐变图标，idle 态轻微摇曳） */}
         <FadeIn direction="scale" className="flex justify-center">
-          <div className="relative flex h-20 w-20 items-center justify-center rounded-3xl bg-brand-gradient shadow-lg">
-            <PenLine className="h-9 w-9 text-white" />
+          <div className="relative flex h-24 w-24 items-center justify-center rounded-3xl bg-brand-gradient shadow-lg">
+            <Lumi state="idle" size={56} label="Lumi" className="text-white" />
             <div className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 shadow-sm">
               <Sparkles className="h-3.5 w-3.5 text-white" />
             </div>

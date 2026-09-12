@@ -89,12 +89,8 @@ export function platformGradient(p?: string) {
 }
 
 export function styleLabel(style?: string) {
-  switch (style) {
-    case "yinyue": return "预设评论风格";
-    case "shenlun": return "申论";
-    case "xiaohongshu": return "小红书";
-    default: return style ?? "";
-  }
+  // OSS 不内置任何风格目录；slug 的显示名以风格系统返回的数据为准。
+  return style ?? "";
 }
 
 /**

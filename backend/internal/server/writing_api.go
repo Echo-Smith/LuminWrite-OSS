@@ -12,10 +12,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/arreview"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingquality"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -29,6 +31,27 @@ var (
 	errWritingRuntimeUnavailable     = errors.New("writing api: runtime unavailable")
 	errWritingIdempotencyKeyRequired = errors.New("writing api: idempotency key required")
 )
+
+// researchErrorCode returns the contracts.md error.code for the research
+// sentinel errors (those whose code is not simply derivable from the status).
+func researchErrorCode(err error) string {
+	switch {
+	case errors.Is(err, errGateStale):
+		return "STALE_GATE"
+	case errors.Is(err, errGateAlreadyDecided):
+		return "GATE_ALREADY_DECIDED"
+	case errors.Is(err, errGateIdempotencyConflict):
+		return "IDEMPOTENCY_CONFLICT"
+	case errors.Is(err, errInsufficientEvidence):
+		return "INSUFFICIENT_EVIDENCE"
+	case errors.Is(err, errEvidenceInvalid):
+		return "EVIDENCE_INVALID"
+	case errors.Is(err, errOutlineEvidenceMismatch):
+		return "OUTLINE_EVIDENCE_MISMATCH"
+	default:
+		return "RESEARCH_UNAVAILABLE"
+	}
+}
 
 var governedWritingPermissions = []writingplan.Permission{
 	"document.revision", "external.research", "materials.read", "model.invoke", "validation.run",
@@ -84,6 +107,7 @@ type createWritingRunCommand struct {
 	ContractVersion int
 	ContractHash    string
 	BaseVersionID   string
+	StyleSlug       string
 	Plan            writingplan.WritingPlanEnvelope
 	Budget          writingplan.PlanBudget
 	Permissions     []writingplan.Permission
@@ -136,21 +160,39 @@ type persistentWritingAPI struct {
 	capabilities *writingplan.CapabilityRegistry
 	templates    *writingplan.TemplateRegistry
 	controller   writingRunController
-	runtime      *GovernedRuntime
+	trigger      *governedRunTrigger
+	// Research-gate wiring (T02): the store-backed checkpoint repository and
+	// orchestrator the gate decision transaction needs. Nil when the governed
+	// runtime is unmounted — the research API then reports unavailable.
+	gateCheckpoints  *writingruntime.PersistentCheckpointRepository
+	gateOrchestrator *writingruntime.Orchestrator
+	// researchReviewEnabled mirrors cfg.WritingRuntime.ResearchReviewEnabled
+	// (RESEARCH_REVIEW_ENABLED, R14 default false): with the flag off, the
+	// research_review entries (compile / run creation) refuse with
+	// errResearchReviewDisabled — read-only research endpoints and legacy
+	// modes keep working for the rollback drill.
+	researchReviewEnabled bool
 }
 
-func newPersistentWritingAPI(store *writingstore.Store, runtime *GovernedRuntime) *persistentWritingAPI {
-	var capabilities *writingplan.CapabilityRegistry
-	if runtime != nil {
-		capabilities = runtime.capabilities
+func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {
+	return &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(), templates: writingplan.DefaultTemplateRegistry()}
+}
+
+// errResearchReviewDisabled is R14's explicit refusal: the research_review
+// path is disabled by configuration. It maps to 503 RESEARCH_UNAVAILABLE —
+// the spec/contract itself is valid, so a 400 INVALID_RESEARCH_SPEC would
+// mislead clients into "fixing" a perfectly valid request; and it matches the
+// worker-unavailable error code so the frontend's unavailable state covers
+// both deployment shapes.
+var errResearchReviewDisabled = errors.New("writing api: research review is disabled by configuration")
+
+// requireResearchReviewEnabled rejects research_review entries while the
+// feature flag is off (R14: 明确不可用，绝不静默降级到普通模板).
+func (service *persistentWritingAPI) requireResearchReviewEnabled(contract writingkernel.WritingContract) error {
+	if service.researchReviewEnabled || contract.Collaboration.OrchestrationMode != writingkernel.OrchestrationModeResearchReview {
+		return nil
 	}
-	if capabilities == nil {
-		// Runtime composition failed; keep the declared registry so plan
-		// compilation reports the missing capabilities instead of panicking.
-		capabilities = writingplan.DefaultCapabilityRegistry()
-	}
-	return &persistentWritingAPI{store: store, capabilities: capabilities,
-		templates: writingplan.DefaultTemplateRegistry(), controller: runtime, runtime: runtime}
+	return errResearchReviewDisabled
 }
 
 func writingAccessFromRequest(r *http.Request) (writingAccess, error) {
@@ -270,17 +312,21 @@ func (service *persistentWritingAPI) CompilePlan(ctx context.Context, access wri
 	if document.CurrentVersionID != command.BaseVersionID {
 		return writingPlanPreview{}, errWritingVersionConflict
 	}
-	serverInitialArtifacts := []writingplan.ArtifactType{"contract", "materials"}
-	if len(command.InitialArtifactTypes) > 0 &&
-		!sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) &&
-		!sameArtifactTypes(command.InitialArtifactTypes, serverInitialArtifacts) {
+	// R14: the research_review entry is configuration-gated; with the flag
+	// off the request fails explicitly instead of degrading to a legacy
+	// template (the system recommendation stays authoritative for legacy
+	// modes, which this check never touches).
+	if err := service.requireResearchReviewEnabled(contract.Contract); err != nil {
+		return writingPlanPreview{}, err
+	}
+	if len(command.InitialArtifactTypes) > 0 && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract"}) && !sameArtifactTypes(command.InitialArtifactTypes, []writingplan.ArtifactType{"contract", "materials"}) {
 		return writingPlanPreview{}, fmt.Errorf("%w: initial artifacts must be backed by persisted server references", writingstore.ErrInvalidRecord)
 	}
 	if command.RequiredFinalArtifact != "" && command.RequiredFinalArtifact != "revision_set" {
 		return writingPlanPreview{}, fmt.Errorf("%w: governed writing plans must produce revision_set", writingstore.ErrInvalidRecord)
 	}
-	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel), command.RequiredValidators)
-	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: serverInitialArtifacts, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation})
+	requiredValidators := unionWritingStrings(writingplan.RequiredValidatorsForContract(contract.Contract), command.RequiredValidators)
+	result, err := writingplan.Compile(writingplan.CompileRequest{IntentPlan: command.IntentPlan, Contract: contract.Contract, Registry: service.capabilities, Templates: service.templates, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: requiredValidators, RequiredFinalArtifact: "revision_set", SystemRecommendation: command.SystemRecommendation, HasUserMaterials: documentHasUserMaterials(document)})
 	envelope := writingplan.WritingPlanEnvelope{SchemaVersion: writingplan.SchemaVersion, IntentPlan: command.IntentPlan, ExecutablePlan: result.Plan, StrategyDecision: result.Decision}
 	permissions := permissionsForPlan(result.Plan, service.capabilities)
 	preview := writingPlanPreview{Envelope: envelope, Budget: command.Budget, Permissions: permissions, BaseVersionID: command.BaseVersionID}
@@ -308,6 +354,12 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	if document.CurrentVersionID != command.BaseVersionID {
 		return writingstore.RuntimeRun{}, errWritingVersionConflict
 	}
+	// R14: run creation for a research_review contract is configuration-gated
+	// (compile plan already refuses while disabled; this is the second gate on
+	// the dispatch path).
+	if err := service.requireResearchReviewEnabled(contract.Contract); err != nil {
+		return writingstore.RuntimeRun{}, err
+	}
 	if err := command.Plan.Validate(); err != nil || !command.Plan.ExecutablePlan.StaticValidation.Valid {
 		return writingstore.RuntimeRun{}, errWritingPlanRequired
 	}
@@ -318,7 +370,7 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	if !sameWritingPermissions(permissions, command.Permissions) || !permissionSubset(permissions, governedWritingPermissions) {
 		return writingstore.RuntimeRun{}, errWritingApprovalScope
 	}
-	validators := writingplan.RequiredValidatorsForAssurance(contract.Contract.Collaboration.AssuranceLevel)
+	validators := writingplan.RequiredValidatorsForContract(contract.Contract)
 	validation := writingplan.ValidationContext{Registry: service.capabilities, InitialArtifactTypes: []writingplan.ArtifactType{"contract", "materials"}, AllowedPermissions: governedWritingPermissions, Budget: command.Budget, RequiredValidators: validators, RequiredFinalArtifact: "revision_set", ExternalResearchAllowed: contract.Contract.MaterialPolicy.AllowExternalResearch}
 	if err := command.Plan.ValidateForDispatch(validation); err != nil {
 		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %v", errWritingPlanRequired, err)
@@ -326,46 +378,24 @@ func (service *persistentWritingAPI) CreateRun(ctx context.Context, access writi
 	if strings.TrimSpace(command.IdempotencyKey) == "" {
 		return writingstore.RuntimeRun{}, writingstore.ErrInvalidRecord
 	}
-	// Fail closed before any persistence: a runtime that cannot dispatch must
-	// never leave an unexplained planned run behind.
-	if service.runtime == nil || !service.runtime.Ready() {
-		blockedCode := "WRITING_RUNTIME_NOT_READY"
-		if service.runtime != nil && service.runtime.BlockedCode() != "" {
-			blockedCode = service.runtime.BlockedCode()
-		}
-		return writingstore.RuntimeRun{}, fmt.Errorf("%w: %s", errWritingRuntimeNotReady, blockedCode)
-	}
 	runID := writingstore.StableID("run_", access.UserID, command.IdempotencyKey)
 	status := "planned"
 	if command.Plan.StrategyDecision.ApprovalRequired {
 		status = "awaiting_approval"
 	}
 	trace := writingTrace(access, "run.create")
-	run := writingstore.RunRecord{RunID: runID, DocumentID: command.DocumentID, ContractID: command.ContractID, ContractVersion: command.ContractVersion, ContractHash: command.ContractHash, BaseVersionID: command.BaseVersionID, Status: status, ApprovalMode: contract.Contract.Collaboration.ApprovalMode, RequestedAssurance: contract.Contract.Collaboration.AssuranceLevel, Budget: command.Budget, Permissions: permissions, Trace: trace}
+	run := writingstore.RunRecord{RunID: runID, DocumentID: command.DocumentID, ContractID: command.ContractID, ContractVersion: command.ContractVersion, ContractHash: command.ContractHash, BaseVersionID: command.BaseVersionID, StyleSlug: command.StyleSlug, Status: status, ApprovalMode: contract.Contract.Collaboration.ApprovalMode, RequestedAssurance: contract.Contract.Collaboration.AssuranceLevel, Budget: command.Budget, Permissions: permissions, Trace: trace}
 	plan := writingstore.PlanRecord{RunID: runID, PlanVersion: 1, Envelope: command.Plan, Budget: command.Budget, Permissions: permissions, Trace: trace}
 	if err := service.store.CreateRunWithPlan(ctx, run, plan, status); err != nil {
 		return writingstore.RuntimeRun{}, err
 	}
-	created, err := service.store.LoadRuntimeRun(ctx, runID)
-	if err != nil {
-		return writingstore.RuntimeRun{}, err
+	// M1.4 execution trigger: a plan that needs no approval is dispatchable
+	// the moment its run exists (planned state); an approval-required plan
+	// waits for ApproveRun's trigger instead.
+	if !command.Plan.StrategyDecision.ApprovalRequired {
+		service.triggerGovernedRun(runID)
 	}
-	// Ordinary runs dispatch on a server-owned context as soon as the
-	// creation transaction has committed. If scheduling fails, a stable
-	// transition rejection is recorded so the planned run stays explained.
-	if created.Status == "planned" && service.runtime != nil {
-		if err := service.runtime.Dispatch(created.RunID); err != nil {
-			if _, recordErr := service.store.RecordRunTransition(ctx, writingstore.RunTransitionCommand{
-				RunID: created.RunID, ExpectedFrom: "planned", RequestedTo: "running",
-				RuleAccepted: false, Cause: "dispatch_failed", ReasonCode: "WRITING_RUNTIME_NOT_READY",
-				Summary: "governed runtime could not schedule the run", IdempotencyKey: created.RunID + ":transition:dispatch_failed",
-				Trace: writingTrace(access, "run.dispatch_rejected")}); recordErr != nil {
-				slog.Error("governed run dispatch rejection could not be recorded", "run_id", created.RunID, "error", recordErr)
-			}
-			return writingstore.RuntimeRun{}, fmt.Errorf("%w: dispatch failed", errWritingRuntimeNotReady)
-		}
-	}
-	return created, nil
+	return service.store.LoadRuntimeRun(ctx, runID)
 }
 
 func (service *persistentWritingAPI) GetRun(ctx context.Context, access writingAccess, runID string) (writingstore.RuntimeRun, error) {
@@ -408,9 +438,6 @@ func (service *persistentWritingAPI) ApproveRun(ctx context.Context, access writ
 	if run.ActivePlanID != command.PlanID || run.ActivePlanVersion != command.PlanVersion || !sameWritingPermissions(run.Permissions, command.Permissions) {
 		return writingstore.RuntimeRun{}, errWritingApprovalScope
 	}
-	if service.runtime == nil || !service.runtime.Ready() {
-		return writingstore.RuntimeRun{}, errWritingRuntimeNotReady
-	}
 	approvalKey := command.RunID + ":approval:" + access.UserID + ":" + command.IdempotencyKey
 	err = service.store.ApprovePlan(ctx, writingstore.PlanApprovalCommand{RunID: command.RunID, PlanID: command.PlanID, PlanVersion: command.PlanVersion, PlanHash: command.PlanHash, Permissions: command.Permissions, IdempotencyKey: approvalKey, Actor: writingstore.Actor{Type: writingstore.ActorUser, ID: access.UserID}})
 	if errors.Is(err, writingstore.ErrConflict) || errors.Is(err, writingstore.ErrIdempotencyConflict) {
@@ -419,27 +446,31 @@ func (service *persistentWritingAPI) ApproveRun(ctx context.Context, access writ
 	if err != nil {
 		return writingstore.RuntimeRun{}, err
 	}
-	approved, err := service.store.LoadRuntimeRun(ctx, command.RunID)
-	if err != nil {
-		return writingstore.RuntimeRun{}, err
+	// M1.4 execution trigger: the approval transition above is the sole
+	// authority that moved the run to running; fire the governed executor in
+	// the background (idempotent per run per process).
+	service.triggerGovernedRun(command.RunID)
+	return service.store.LoadRuntimeRun(ctx, command.RunID)
+}
+
+// triggerGovernedRun launches background execution for an approved run when
+// the governed runtime is mounted. Nil trigger (mode=off) is a no-op.
+func (service *persistentWritingAPI) triggerGovernedRun(runID string) {
+	if service.trigger == nil {
+		return
 	}
-	// Approval-gated runs dispatch only after the approval transaction has
-	// committed and the run reached the planned state.
-	if approved.Status == "planned" {
-		if err := service.runtime.Dispatch(approved.RunID); err != nil {
-			if _, recordErr := service.store.RecordRunTransition(ctx, writingstore.RunTransitionCommand{
-				RunID: approved.RunID, ExpectedFrom: "planned", RequestedTo: "running",
-				RuleAccepted: false, Cause: "dispatch_failed", ReasonCode: "WRITING_RUNTIME_NOT_READY",
-				Summary:        "governed runtime could not schedule the approved run",
-				IdempotencyKey: approved.RunID + ":transition:approval_dispatch_failed",
-				Trace:          writingTrace(access, "run.approval_dispatch_rejected"),
-			}); recordErr != nil {
-				slog.Error("approved run dispatch rejection could not be recorded", "run_id", approved.RunID, "error", recordErr)
-			}
-			return writingstore.RuntimeRun{}, fmt.Errorf("%w: dispatch failed after approval", errWritingRuntimeNotReady)
-		}
+	service.trigger.TriggerAfterApproval(runID)
+}
+
+// triggerGateResume launches the post-decision resume (design.md §5.3): the
+// API-direct in-memory trigger plus the periodic gate-resume scan as the
+// durable backstop. Nil trigger (mode=off) leaves the run paused — GET will
+// show the approved decision whenever the runtime returns.
+func (service *persistentWritingAPI) triggerGateResume(runID string) {
+	if service.trigger == nil {
+		return
 	}
-	return approved, nil
+	service.trigger.TriggerAfterGateDecision(runID)
 }
 
 func (service *persistentWritingAPI) ControlRun(ctx context.Context, access writingAccess, command controlWritingRunCommand) (writingstore.RuntimeRun, error) {
@@ -503,6 +534,25 @@ func (service *persistentWritingAPI) qualityReport(ctx context.Context, access w
 		return writingkernel.QualityReport{}, err
 	}
 	return report, nil
+}
+
+// documentHasUserMaterials reports whether the run's document carries a
+// non-empty owner material selection (F5 compile gate: a no-external-research
+// research contract needs an owner material manifest to read).
+func documentHasUserMaterials(document writingstore.DocumentRecord) bool {
+	raw, ok := document.Metadata["material_refs"]
+	if !ok || raw == nil {
+		return false
+	}
+	refs, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var decoded []websocket.MaterialReference
+	if json.Unmarshal(refs, &decoded) != nil {
+		return false
+	}
+	return len(decoded) > 0
 }
 
 func permissionsForPlan(plan writingplan.ExecutablePlan, registry *writingplan.CapabilityRegistry) []writingplan.Permission {
@@ -686,8 +736,29 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusConflict, "APPROVAL_SCOPE_MISMATCH"
 	case errors.Is(err, errWritingRuntimeUnavailable):
 		status, code = http.StatusServiceUnavailable, "RUNTIME_UNAVAILABLE"
-	case errors.Is(err, errWritingRuntimeNotReady):
-		status, code = http.StatusServiceUnavailable, "WRITING_RUNTIME_NOT_READY"
+	// Research-review error family (contracts.md §3).
+	case errors.Is(err, errGateStale), errors.Is(err, errGateAlreadyDecided), errors.Is(err, errGateIdempotencyConflict):
+		status, code = http.StatusConflict, researchErrorCode(err)
+	case errors.Is(err, writingruntime.ErrGateApprovalRequired):
+		status, code = http.StatusConflict, "GATE_APPROVAL_REQUIRED"
+	case errors.Is(err, errResearchUnavailable), errors.Is(err, errResearchReviewDisabled):
+		status, code = http.StatusServiceUnavailable, "RESEARCH_UNAVAILABLE"
+	case errors.Is(err, errArReviewDisabled):
+		status, code = http.StatusServiceUnavailable, "AR_REVIEW_UNAVAILABLE"
+	case errors.Is(err, errArReviewRunNotComplete):
+		status, code = http.StatusConflict, "AR_REVIEW_RUN_NOT_COMPLETE"
+	case errors.Is(err, errArReviewInputsMissing):
+		status, code = http.StatusUnprocessableEntity, "AR_REVIEW_INPUTS_MISSING"
+	case errors.Is(err, arreview.ErrInsufficientCorpus):
+		status, code = http.StatusUnprocessableEntity, "AR_REVIEW_INSUFFICIENT_CORPUS"
+	case errors.Is(err, arreview.ErrExchangeConflict):
+		status, code = http.StatusConflict, "AR_REVIEW_EXCHANGE_CONFLICT"
+	case errors.Is(err, errInsufficientEvidence), errors.Is(err, errEvidenceInvalid), errors.Is(err, errOutlineEvidenceMismatch):
+		status, code = http.StatusUnprocessableEntity, researchErrorCode(err)
+	case errors.Is(err, errInvalidResearchSpec):
+		status, code = http.StatusBadRequest, "INVALID_RESEARCH_SPEC"
+	case errors.Is(err, errResearchResourceNotFound):
+		status, code = http.StatusNotFound, "WRITING_RESOURCE_NOT_FOUND"
 	case errors.Is(err, writingstore.ErrNotFound):
 		status, code = http.StatusNotFound, "WRITING_RESOURCE_NOT_FOUND"
 	case errors.Is(err, writingstore.ErrImmutableConflict):
@@ -702,6 +773,11 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		if errors.As(err, &syntaxError) || errors.As(err, &typeError) || strings.Contains(err.Error(), "json: unknown field") || strings.Contains(err.Error(), "duplicate JSON key") || errors.Is(err, io.EOF) {
 			status, code = http.StatusBadRequest, "INVALID_JSON"
 		}
+	}
+	if status == http.StatusInternalServerError && err != nil {
+		// Unmapped errors would otherwise reach the client masked; log them
+		// so 500 responses stay diagnosable.
+		slog.Warn("governed writing request failed", "error", err)
 	}
 	if data == nil {
 		message := err.Error()

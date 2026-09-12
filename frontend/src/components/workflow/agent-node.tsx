@@ -13,6 +13,7 @@ import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Lumi } from "@/components/lumi/lumi";
 import { getRoleTheme, getRoleIllustration } from "./agent-illustration";
 
 export interface AgentNodeData {
@@ -132,9 +133,8 @@ function AgentNodeCardComponent({ data, selected }: { data: AgentNodeData; selec
           className="flex items-center gap-1 text-xs font-medium shrink-0"
           style={{ color: statusColor }}
         >
-          {status === "running" && (
-            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-          )}
+          {status === "running" && <Lumi state="writing" size={16} />}
+          {status === "failed" && <Lumi state="error" size={16} />}
           {statusLabel[status] || status}
         </div>
       </div>

@@ -1,0 +1,29 @@
+# Task13 Implementation Tasks
+
+- [x] 1. Add migration 096 for isolated shadow content and append-only rollout approvals.
+  - Add up/down migrations and compatibility checks.
+  - _Requirements: Durable evidence and shadow content; Allowlist gate_
+- [x] 2. Add persistent shadow-content and evidence-health storage.
+  - Implement typed writingstore records and PostgreSQL operations.
+  - Add restart, purge, sweep, redaction, and aggregation tests.
+  - _Requirements: Durable evidence and shadow content_
+- [x] 3. Add allowlist approval persistence and fail-closed promotion gate.
+  - Bind approval to the exact policy and health report.
+  - Reject percentage/enabled and unhealthy/stale evidence.
+  - _Requirements: Allowlist gate_
+- [x] 4. Add the operator gate CLI and runbook checklist.
+  - Support assess and explicit approve without changing traffic.
+  - _Requirements: Allowlist gate; Regression and parity_
+- [x] 5. Add the environment-gated live-model vertical suite.
+  - Exercise long-form, multi-material, and faithful-rewrite paths.
+  - Persist redacted evidence and isolated shadow bodies.
+  - _Requirements: Live-model vertical acceptance_
+- [x] 6. Wire durable Task13 dependencies in the server composition root.
+  - Remove memory-only production composition for evidence/sink/gate.
+  - _Requirements: Durable evidence and shadow content; Allowlist gate_
+- [x] 7. Synchronize OSS and Commercial shared code and verify parity.
+  - Run backend, database, frontend, live-model, security, and parity gates.
+  - _Requirements: Regression and parity_
+- [x] 8. Update readiness evidence, file index, and project ledger.
+  - Record exact achieved level and preserve separate percentage/production authorization.
+  - _Requirements: Regression and parity_

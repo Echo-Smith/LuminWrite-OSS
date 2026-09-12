@@ -42,7 +42,7 @@ func (c *Counter) Inc(labelValues ...string) {
 
 // Add increments the counter by delta for the given label values.
 func (c *Counter) Add(delta int64, labelValues ...string) {
-	key := labelKey(labelValues)
+	key := metricLabelKey(c.name, c.labels, labelValues)
 	val, _ := c.values.LoadOrStore(key, &atomic.Int64{})
 	val.(*atomic.Int64).Add(delta)
 }
@@ -74,7 +74,7 @@ func NewHistogram(name, help string, buckets []float64, labels ...string) *Histo
 
 // Observe records a duration for the given label values.
 func (h *Histogram) Observe(d time.Duration, labelValues ...string) {
-	key := labelKey(labelValues)
+	key := metricLabelKey(h.name, h.labels, labelValues)
 	val, _ := h.data.LoadOrStore(key, &histogramData{
 		buckets: make([]atomic.Int64, len(h.buckets)),
 	})
@@ -189,6 +189,10 @@ type MetricsRegistry struct {
 	GovernedUsageTokensTotal       *Counter
 	GovernedCostMicroUSDTotal      *Counter
 	GovernedExecutionDuration      *Histogram
+	GovernedContextTotal           *Counter
+	GovernedLifecycleTotal         *Counter
+	GovernedStyleTotal             *Counter
+	GovernedRunDuration            *Histogram
 
 	// All metrics for export
 	counters   []*Counter
@@ -247,7 +251,12 @@ func NewMetricsRegistry() *MetricsRegistry {
 			"family", "executor", "capability", "lane", "status"),
 	}
 
+	r.GovernedContextTotal = NewCounter("governed_context_events_total", "Context compilation and pressure outcomes", "kind", "capability", "status", "reason")
+	r.GovernedLifecycleTotal = NewCounter("governed_lifecycle_total", "Governed lifecycle outcomes", "event", "state")
+	r.GovernedStyleTotal = NewCounter("governed_style_resolution_total", "Governed profile resolution outcomes", "kind", "status")
+	r.GovernedRunDuration = NewHistogram("governed_run_duration_seconds", "Governed completed run duration", []float64{1, 5, 15, 30, 60, 120, 300, 600, 1200}, "state")
 	r.counters = []*Counter{
+		r.GovernedContextTotal, r.GovernedLifecycleTotal, r.GovernedStyleTotal,
 		r.HTTPRequestsTotal,
 		r.WSErrorsTotal,
 		r.AgentExecutionsTotal,
@@ -277,6 +286,7 @@ func NewMetricsRegistry() *MetricsRegistry {
 	}
 
 	r.histograms = []*Histogram{
+		r.GovernedRunDuration,
 		r.HTTPRequestDuration,
 		r.AgentDuration,
 		r.LLMDuration,
@@ -397,6 +407,20 @@ func (r *MetricsRegistry) Export(w io.Writer) {
 // ─── Helpers ────────────────────────────────────────────
 
 // labelKey builds a Prometheus label key string from label values.
+func metricLabelKey(metric string, names, values []string) string {
+	if !strings.HasPrefix(metric, "governed_") {
+		return labelKey(values)
+	}
+	parts := make([]string, len(names))
+	for i, name := range names {
+		value := ""
+		if i < len(values) {
+			value = values[i]
+		}
+		parts[i] = fmt.Sprintf("%s=\"%s\"", name, escapeLabelValue(value))
+	}
+	return strings.Join(parts, ",")
+}
 func labelKey(values []string) string {
 	if len(values) == 0 {
 		return ""
@@ -436,6 +460,13 @@ func (r *MetricsRegistry) Observe(_ context.Context, metric writingruntime.Runti
 	family, executor, capability := string(metric.Family), metric.ExecutorID, metric.Capability
 	mode, lane, status, code := string(metric.Mode), string(metric.Lane), metric.Status, string(metric.ErrorCode)
 	switch metric.Kind {
+	case writingruntime.MetricContextEnvelope, writingruntime.MetricContextPressure:
+		r.GovernedContextTotal.Inc(string(metric.Kind), capability, status, metric.Reason)
+	case writingruntime.MetricLifecycle:
+		r.GovernedLifecycleTotal.Inc(status, metric.Reason)
+		if status == "run.completed" {
+			r.GovernedRunDuration.Observe(time.Duration(metric.DurationMS)*time.Millisecond, metric.Reason)
+		}
 	case writingruntime.MetricRouteDecision:
 		r.GovernedRouteDecisionsTotal.Inc(family, executor, capability, mode, lane, status, metric.Reason, code)
 	case writingruntime.MetricExecution:

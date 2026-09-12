@@ -15,3 +15,7 @@ export { AdminSidebar, CollapseToggle, getPageLabel, hasPagePermission, type Adm
 export { AdminPageHeader } from "./admin-page-header";
 export { AdminBulkActions } from "./admin-bulk-actions";
 export { AdminPermissionGuard } from "./admin-permission-guard";
+export { AdminTabbedPage, type AdminTabDef } from "./admin-tabbed-page";
+export { AgentArchitectureCard } from "./agent-architecture";
+export { AdminAlertsCard } from "./admin-alerts-card";
+export { ArReviewPanelPage } from "./ar-review-panel";

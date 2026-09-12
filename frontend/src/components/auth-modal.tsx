@@ -770,26 +770,8 @@ function ConsentCheckbox({
         htmlFor={id}
         className="text-xs text-muted-foreground leading-relaxed cursor-pointer select-none"
       >
-        我已阅读并同意
-        <a
-          href="/terms"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-foreground underline underline-offset-2 hover:text-primary transition-ui"
-          onClick={(e) => e.stopPropagation()}
-        >
-          《使用条款》
-        </a>
-        和
-        <a
-          href="/privacy"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-foreground underline underline-offset-2 hover:text-primary transition-ui"
-          onClick={(e) => e.stopPropagation()}
-        >
-          《隐私政策》
-        </a>
+        我了解这是自托管的开源实例，生成内容以「草稿素材」对待，
+        发布前由我自行审核并对用途负责。
       </label>
     </div>
   );

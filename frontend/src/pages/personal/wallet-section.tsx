@@ -91,7 +91,7 @@ export function WalletSection() {
       planning: "规划",
       review: "审阅",
       fact_check: "事实核查",
-      kb_search: "素材库检索",
+      kb_search: "知识库检索",
       rewrite: "改写",
     };
     return labels[taskType] || taskType;

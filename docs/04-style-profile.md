@@ -14,44 +14,91 @@
 ```jsonc
 {
   "slug": "my-style",
-  "name": "...",
-  "//": "schema skeleton only - preset style content is not part of this repository"
+  "name": "我的风格",
+  "description": "一句话描述",
+  "version": 1,
+  "tags": ["自定义"],
+
+  // 篇幅配置
+  "word_range": { "min": 1000, "max": 1500, "hard_limit": true },
+
+  // 结构框架
+  "structure": {
+    "type": "three_part",              // three_part | free_form | custom
+    "opening": "…",                     // 开头类型
+    "body": "…",
+    "conclusion": "…",
+    "argument_pattern": "…",           // 分论点递进模式
+    "argument_count": { "min": 2, "max": 4 }
+  },
+
+  // 修辞要求
+  "rhetoric": {
+    "required_metaphor": false,
+    "required_parallelism": false,
+    "required_rhetorical_question": false,
+    "metaphor_description": ""
+  },
+
+  // 价值导向
+  "value_orientation": {
+    "type": "custom",                   // people_livelihood | governance | policy | custom
+    "emotional_gradient": "…",
+    "keywords": ["…"]
+  },
+
+  // 标题规范
+  "title_guidelines": {
+    "length": { "min": 10, "max": 25 },
+    "style": "…",
+    "forbidden_patterns": ["…"],
+    "examples": ["…"]
+  },
+
+  // 系统提示词与写作规范（风格的核心内容，随 Profile 存储）
+  "system_prompt": "…",
+  "writing_standard": "…",
+
+  // 事实与时态红线
+  "fact_guard": {
+    "future_tense_required": ["将", "预计", "计划"],
+    "forbidden_results": ["…"],
+    "user_material_priority": true
+  },
+
+  // 输出格式
+  "output_format": {
+    "use_markdown": true,
+    "title_prefix": "## ",
+    "separator": "---MODIFICATIONS---",
+    "include_modification_notes": true,
+    "note_label": "成文说明"
+  },
+
+  // 篇幅配置（按任务类型）
+  "length_profiles": {
+    "writing": { "min": 1000, "max": 1500 },
+    "polish_short": { "min": 100, "max": 600 },
+    "polish_long": { "min": 600, "max": 1200 }
+  }
 }
 ```
 
-## 3. 内置风格
+## 3. 风格目录
 
-### 3.1 预设评论风格（yinyue）
+**LuminWrite OSS 不内置任何风格内容。** 编辑风格指南属于第一方内容资产，
+有意不进入开源仓库；全新安装的风格目录为空（`getBuiltinProfiles()` 返回
+空目录，种子机制保持可用但为 no-op）。
 
-- 来源：V1 `writing-standard.md` + `system.js`
-- 定位：深度政论时评
-- 篇幅：1000-1500 字
-- 结构：三段式闭环 + 首在-重在-贵在递进
-- 核心修辞：比喻 + 排比 + 设问
-- 状态：上架
+建立风格目录的三种方式：
 
-### 3.2 应用文风格（shenlun）
+1. **风格工作台（推荐）**：工作台 → 风格 → 风格构建器，上传范文自动提炼
+   或手工填写结构/修辞/标题规范；
+2. **Admin 风格 API**：`POST /api/v2/admin/styles` 直接写入 Profile JSON
+   （数据结构见上节），支持版本与发布流程；
+3. **自行 seed**：参考本节字段结构构造 JSON，经 Admin API 导入。
 
-- 定位：公务员申论写作
-- 篇幅：800-1200 字
-- 结构：提出问题 → 分析问题 → 解决问题
-- 核心修辞：规范表达 + 政策引用
-- 状态：上架
-
-### 3.3 小红书风格（xiaohongshu）
-
-- 定位：社交媒体种草/分享
-- 篇幅：300-800 字
-- 结构：吸引眼球的开头 → 核心内容 → 互动引导
-- 核心修辞：emoji + 短句 + 口语化
-- 状态：上架
-
-### 3.4 用户自定义风格（custom）— 预留
-
-- 用户上传范文 → 系统提取风格特征（句式、用词、结构、修辞偏好）
-- 生成用户专属 Profile
-- 初期不上架，预留埋点（`profile_extraction_triggered` 事件）
-
+商业部署可将自有风格目录随部署包分发；开源部署请使用自己的风格内容。
 ## 4. Profile 加载流程
 
 ```
@@ -64,7 +111,7 @@
        │         │
        │         └─ 注入到 ExecutionContext.StyleProfile
        │
-       └─ 未命中 → 降级到默认 Profile (yinyue latest published)
+       └─ 未命中 → 降级到默认 Profile（当前已发布版本的 latest）
 ```
 
 ### 4.1 缓存策略
@@ -122,12 +169,12 @@ Profile 本身不直接控制灰度——灰度由独立的 `rollout` 配置管�
 用户端（写作工作台）
 ┌─────────────────────────────────────────┐
 │  选择写作风格                             │
-│  ┌─────────┐ ┌─────────┐ ┌──────────┐  │
-│  │ 预设评论风格  │ │ 应用文风格  │ │ 小红书风格 │  │
-│  │ ✓ 已选择  │ │         │ │          │  │
-│  │ 1000-1500│ │ 800-1200│ │ 300-800  │  │
-│  └─────────┘ └─────────┘ └──────────┘  │
-│  [自定义风格 — 敬请期待]                  │
+│  ┌─────────┐ ┌─────────┐              │
+│  │ 风格 A    │ │ 风格 B   │              │
+│  │ ✓ 已选择  │ │         │              │
+│  │ 1000-1500│ │ 800-1200│              │
+│  └─────────┘ └─────────┘              │
+│  （目录内容由部署方自行建立）              │
 └─────────────────────────────────────────┘
 ```
 

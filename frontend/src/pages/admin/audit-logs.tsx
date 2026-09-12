@@ -8,9 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const RESOURCE_LABELS: Record<string, string> = {
-  model_config: "Model Config", api_key: "API Key", cron_job: "Cron Job",
-  style: "Style", sensitive_word: "Sensitive Word", pending_style: "Pending Style",
-  evaluation: "Evaluation", kb: "Knowledge Base", mcp_server: "MCP Server",
+  model_config: "模型配置", api_key: "API 密钥", cron_job: "定时任务",
+  style: "风格", sensitive_word: "敏感词", pending_style: "待审核风格",
+  evaluation: "评测", kb: "知识库", mcp_server: "MCP 服务",
+};
+const ACTION_LABELS: Record<string, string> = {
+  create: "创建", update: "更新", delete: "删除", batch_delete: "批量删除",
+  batch_activate: "批量启用", batch_deactivate: "批量停用",
+  publish: "发布", archive: "归档", approve: "通过", reject: "拒绝",
 };
 const ACTION_COLORS: Record<string, string> = {
   create: "bg-green-100 text-green-700", update: "bg-blue-100 text-blue-700",
@@ -50,32 +55,32 @@ export function AuditLogsPage() {
   const totalPages = Math.ceil(total / pageSize);
   return (
     <div className="p-6 space-y-6">
-      <AdminPageHeader title="Audit Logs" description="Append-only log of all admin write operations" />
+      <AdminPageHeader title="操作日志" description="所有管理员写操作的追加式审计日志" />
       <div className="flex items-center gap-3">
         <Filter className="h-4 w-4 text-muted-foreground" />
         <Select value={filterResource} onValueChange={(v) => { setFilterResource(v === "all" ? "" : v); setPage(1); }}>
-          <SelectTrigger className="w-40"><SelectValue placeholder="All Resources" /></SelectTrigger>
-          <SelectContent><SelectItem value="all">All Resources</SelectItem>
+          <SelectTrigger className="w-40"><SelectValue placeholder="全部资源" /></SelectTrigger>
+          <SelectContent><SelectItem value="all">全部资源</SelectItem>
             {Object.entries(RESOURCE_LABELS).map(([k,v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent>
         </Select>
         <Select value={filterAction} onValueChange={(v) => { setFilterAction(v === "all" ? "" : v); setPage(1); }}>
-          <SelectTrigger className="w-40"><SelectValue placeholder="All Actions" /></SelectTrigger>
-          <SelectContent><SelectItem value="all">All Actions</SelectItem>
-            <SelectItem value="create">Create</SelectItem><SelectItem value="update">Update</SelectItem>
-            <SelectItem value="delete">Delete</SelectItem><SelectItem value="batch_delete">Batch Delete</SelectItem>
-            <SelectItem value="batch_activate">Batch Activate</SelectItem><SelectItem value="batch_deactivate">Batch Deactivate</SelectItem>
+          <SelectTrigger className="w-40"><SelectValue placeholder="全部操作" /></SelectTrigger>
+          <SelectContent><SelectItem value="all">全部操作</SelectItem>
+            <SelectItem value="create">创建</SelectItem><SelectItem value="update">更新</SelectItem>
+            <SelectItem value="delete">删除</SelectItem><SelectItem value="batch_delete">批量删除</SelectItem>
+            <SelectItem value="batch_activate">批量启用</SelectItem><SelectItem value="batch_deactivate">批量停用</SelectItem>
           </SelectContent>
         </Select>
       </div>
-      {loading ? <AdminLoading /> : logs.length === 0 ? <AdminEmptyState icon={Shield} title="No audit logs" description="No operations logged yet." /> : (
+      {loading ? <AdminLoading /> : logs.length === 0 ? <AdminEmptyState icon={Shield} title="暂无审计日志" description="尚无被记录的管理操作。" /> : (
         <div className="space-y-2">
           {logs.map((log) => (
             <Card key={log.id}><CardContent className="p-3 flex items-start gap-3">
-              <Badge className={ACTION_COLORS[log.action] ?? "bg-gray-100 text-gray-700"} variant="secondary">{log.action}</Badge>
+              <Badge className={ACTION_COLORS[log.action] ?? "bg-gray-100 text-gray-700"} variant="secondary">{ACTION_LABELS[log.action] ?? log.action}</Badge>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 text-sm"><span className="font-medium">{RESOURCE_LABELS[log.resource] ?? log.resource}</span>{log.resource_id && <span className="text-muted-foreground">#{log.resource_id.slice(0,8)}</span>}</div>
                 <p className="text-xs text-muted-foreground mt-0.5">{log.detail}</p>
-                <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground"><span>by {log.actor_id}</span><span>{new Date(log.created_at).toLocaleString()}</span>{log.ip_address && <span>{log.ip_address}</span>}</div>
+                <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground"><span>操作人 {log.actor_id}</span><span>{new Date(log.created_at).toLocaleString()}</span>{log.ip_address && <span>{log.ip_address}</span>}</div>
               </div>
             </CardContent></Card>
           ))}
@@ -83,8 +88,8 @@ export function AuditLogsPage() {
       )}
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Page {page} of {totalPages} ({total} total)</span>
-          <div className="flex gap-2"><Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p-1)}>Prev</Button><Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(p => p+1)}>Next</Button></div>
+          <span className="text-sm text-muted-foreground">第 {page} / {totalPages} 页（共 {total} 条）</span>
+          <div className="flex gap-2"><Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p-1)}>上一页</Button><Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(p => p+1)}>下一页</Button></div>
         </div>
       )}
     </div>

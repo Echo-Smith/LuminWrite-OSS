@@ -1,7 +1,7 @@
 import type { AgentStartPayload } from "./types.ts";
 
 export const TASK_MODES = ["auto", "writing", "guided", "polish"] as const;
-export const ORCHESTRATION_MODES = ["auto", "fast", "outline_first", "sourced", "strict_research"] as const;
+export const ORCHESTRATION_MODES = ["auto", "fast", "outline_first", "sourced", "strict_research", "research_review"] as const;
 export const ASSURANCE_LEVELS = ["flexible", "standard", "sourced", "strict"] as const;
 export const APPROVAL_MODES = ["conditional", "always", "auto"] as const;
 export const QUALITY_STATES = ["candidate_draft", "accepted_draft", "verified_deliverable"] as const;
@@ -13,6 +13,44 @@ export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 export type QualityState = (typeof QUALITY_STATES)[number];
 export type DocumentLifecycle = "provisional" | "committed";
 export type UserChoice<T> = { value: T; source: "user" | "system_inference" | "platform_default" };
+
+// Research review contract types: server-side mirror of
+// backend/internal/writingkernel/research_spec.go (contracts.md §1).
+// research_review mode requires schema_version "lcp/1.1" and a non-null
+// research spec; v1.0 contracts must not carry the field.
+export const SCHEMA_VERSION_V1 = "lcp/1.0" as const;
+export const SCHEMA_VERSION_V11 = "lcp/1.1" as const;
+
+export const EVIDENCE_REQUIREMENTS = ["abstract_allowed", "full_text_required"] as const;
+export type EvidenceRequirement = (typeof EVIDENCE_REQUIREMENTS)[number];
+
+export interface ResearchSpec {
+  version: "research-spec/1";
+  review_kind: "narrative";
+  year_from: number | null;
+  year_to: number | null;
+  exclusion_terms: string[];
+  /** 1..3 */
+  max_queries: number;
+  /** >= max_papers, <= 60 */
+  max_candidates: number;
+  /** >= min_citable_sources, <= 20 (suggested default 10) */
+  max_papers: number;
+  /** >= 1 */
+  min_citable_sources: number;
+  evidence_requirement: EvidenceRequirement;
+  selection_policy_version: string;
+  reader_policy_version: string;
+  /** v1.1 accepts only "lumin_writer" */
+  generator: "lumin_writer";
+  /** v1.1 accepts only "numeric" */
+  citation_style: "numeric";
+}
+
+export interface WritingContractV11Shape {
+  schema_version: typeof SCHEMA_VERSION_V11;
+  research: ResearchSpec;
+}
 
 export interface ExecutionControls {
   taskMode: UserChoice<TaskMode>;

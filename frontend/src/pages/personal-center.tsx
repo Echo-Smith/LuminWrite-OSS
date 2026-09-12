@@ -18,6 +18,7 @@ import { ProfileSection } from "@/pages/personal/profile-section";
 import { StyleSection } from "@/pages/personal/styles-section";
 import { MemorySection } from "@/pages/personal/memory-section";
 import { SettingsSection } from "@/pages/personal/settings-section";
+import { CustomizationSection } from "@/pages/personal/customization-section";
 import { WalletSection } from "@/pages/personal/wallet-section";
 import { NotificationsSection } from "@/pages/personal/notifications-section";
 import { AccountSection } from "@/pages/personal/account-section";
@@ -115,6 +116,7 @@ export function PersonalCenter() {
             {activeMenu === "styles" && <StyleSection />}
             {activeMenu === "memory" && <MemorySection />}
             {activeMenu === "settings" && <SettingsSection onClosePanel={() => { navigate("/write", { replace: true }); setOpen(false); }} />}
+            {activeMenu === "customization" && <CustomizationSection />}
             {activeMenu === "wallet" && <WalletSection />}
             {activeMenu === "notifications" && <NotificationsSection />}
             {activeMenu === "account" && <AccountSection />}

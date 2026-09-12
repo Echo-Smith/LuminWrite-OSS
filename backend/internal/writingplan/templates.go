@@ -110,7 +110,76 @@ func DefaultTemplateRegistry() *TemplateRegistry {
 		templateNode("node_quality", NodeValidate, "validation.quality", []string{"node_draft", "node_factcheck", "node_evidence"}, []ArtifactType{"full_draft", "fact_report", "evidence_report"}, []ArtifactType{"quality_report"}),
 		templateNode("node_finalize", NodeAction, "document.finalize", []string{"node_draft", "node_quality"}, []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}),
 	}, "core.validation.fact", "core.validation.evidence", "core.validation.quality")
+	// tpl_research_review_v1 (T06, design.md §3 fixed node table): the ten
+	// research-review nodes with their exact dependency edges — discover(0);
+	// read→discover; gate_evidence→read; outline→read,gate_evidence;
+	// gate_outline→outline; draft→read,gate_evidence,gate_outline;
+	// citations→read,draft; fact→read,draft; quality→draft,citations,fact;
+	// finalize→draft,quality.
+	researchReview := []TemplateNode{
+		researchNode("node_research_discover", NodeAction, ClassResearchDiscover, nil,
+			[]ArtifactType{"contract", "materials"}, []ArtifactType{"research_candidates"}),
+		researchNode("node_research_read", NodeAction, ClassResearchRead, []string{"node_research_discover"},
+			[]ArtifactType{"contract", "research_candidates", "materials"}, []ArtifactType{"research_evidence_pack"},
+			// MaxAttempts=2: the research budget boundary pauses inside the
+			// node (T05 sentinel); the resume re-dispatch continues the
+			// remaining papers from the sub-task ledger without re-reading
+			// finished ones (design.md §3/§7).
+			bounds(2, 1, 20, 20*60*1000)),
+		researchNode("node_gate_evidence", NodeHumanGate, ClassResearchGateEvidence, []string{"node_research_read"},
+			[]ArtifactType{"research_evidence_pack"}, []ArtifactType{"evidence_approval"}, gateBounds()),
+		researchNode("node_research_outline", NodeAction, ClassResearchOutline, []string{"node_research_read", "node_gate_evidence"},
+			[]ArtifactType{"contract", "research_evidence_pack", "evidence_approval"}, []ArtifactType{"research_outline"}),
+		researchNode("node_gate_outline", NodeHumanGate, ClassResearchGateOutline, []string{"node_research_outline"},
+			[]ArtifactType{"research_outline"}, []ArtifactType{"approved_research_outline"}, gateBounds()),
+		researchNode("node_research_draft", NodeAction, ClassResearchDraft, []string{"node_research_read", "node_gate_evidence", "node_gate_outline"},
+			[]ArtifactType{"contract", "research_evidence_pack", "evidence_approval", "approved_research_outline"},
+			[]ArtifactType{"full_draft", "research_citation_index"}),
+		researchNode("node_research_citations", NodeValidate, ClassResearchValidateCitation, []string{"node_research_read", "node_research_draft"},
+			[]ArtifactType{"research_evidence_pack", "full_draft", "research_citation_index"},
+			[]ArtifactType{"evidence_report", "research_validation_details"}),
+		researchNode("node_research_fact", NodeValidate, ClassResearchValidateFact, []string{"node_research_read", "node_research_draft"},
+			[]ArtifactType{"research_evidence_pack", "full_draft"}, []ArtifactType{"fact_report"}),
+		researchNode("node_quality", NodeValidate, "validation.quality", []string{"node_research_draft", "node_research_citations", "node_research_fact"},
+			[]ArtifactType{"full_draft", "evidence_report", "fact_report"}, []ArtifactType{"quality_report"}),
+		researchNode("node_finalize", NodeAction, "document.finalize", []string{"node_research_draft", "node_quality"},
+			[]ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}),
+	}
+	if err := registry.Register(PlanTemplate{ID: "tpl_research_review_v1", Mode: writingkernel.OrchestrationModeResearchReview,
+		TrustLevel: TrustT1, RootNodeID: researchReview[0].NodeID, Nodes: researchReview,
+		RequiredValidators: []string{CapabilityResearchCitations, CapabilityResearchFact, "core.validation.quality"}}); err != nil {
+		panic(err)
+	}
 	return registry
+}
+
+// researchNode is one research-review template node. Every node keeps
+// MaxConcurrency=1 and FailurePath=FailurePause (a research failure pauses
+// for an owner decision rather than failing the run); MaxCostUSD keeps the
+// 5-per-node convention as a conservative ceiling, but the research path's
+// real budget is the duration boundary (design.md §3: read ≤ 20 minutes per
+// node, 30 minutes proactive execution overall), which lives in TimeoutMS and
+// the manifest ceilings. Gate nodes are kernel-owned: zero cost, the pinned
+// human-gate bounds, and their own (default) pause failure path.
+func researchNode(id string, kind NodeKind, class string, deps []string, inputs, outputs []ArtifactType, overrides ...Bounds) TemplateNode {
+	node := templateNode(id, kind, class, deps, inputs, outputs)
+	if len(overrides) > 0 {
+		node.Bounds = overrides[0]
+	}
+	return node
+}
+
+func bounds(maxAttempts, maxConcurrency, maxItems int, timeoutMS int64) Bounds {
+	return Bounds{MaxAttempts: maxAttempts, MaxConcurrency: maxConcurrency, MaxItems: maxItems,
+		MaxCostUSD: 5, TimeoutMS: timeoutMS}
+}
+
+// gateBounds pins the kernel gate node's bounds: the gate never executes, so
+// it carries zero cost and a nominal ceiling from its manifest (the manifest
+// MaxBounds timeout stays the 20-minute research ceiling; the plan-level
+// timeout records the decision window).
+func gateBounds() Bounds {
+	return Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 0, TimeoutMS: 120000}
 }
 
 func templateNode(id string, kind NodeKind, class string, deps []string, inputs, outputs []ArtifactType) TemplateNode {

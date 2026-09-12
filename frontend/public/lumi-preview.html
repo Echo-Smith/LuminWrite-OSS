@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lumi 预览（dev only）</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      // public/ 下的 HTML 不会被注入 react-refresh preamble，这里手动补齐
+      import RefreshRuntime from "/@react-refresh";
+      RefreshRuntime.injectIntoGlobalHook(window);
+      window.$RefreshReg$ = () => {};
+      window.$RefreshSig$ = () => (type) => type;
+      window.__vite_plugin_react_preamble_installed__ = true;
+    </script>
+    <script type="module" src="/src/lumi-preview.tsx"></script>
+  </body>
+</html>

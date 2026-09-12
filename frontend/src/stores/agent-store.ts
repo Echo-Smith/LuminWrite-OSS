@@ -103,7 +103,7 @@ export interface WritingSession {
   injectedMaterials?: string[]; // 从选题关联注入的素材标签
   articleTitle?: string | null; // AI 生成的文章标题（完成后才有）
   artifacts?: WritingArtifact[]; // 写作流程交付物（加载详情时获取）
-  kbEnabled: boolean; // 是否启用素材库自动检索（默认 true）
+  kbEnabled: boolean; // 是否启用知识库自动检索（默认 true）
 }
 
 // ─── Store 定义 ──────────────────────────────────────────

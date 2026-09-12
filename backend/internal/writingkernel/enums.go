@@ -44,11 +44,15 @@ const (
 	OrchestrationModeOutlineFirst   OrchestrationMode = "outline_first"
 	OrchestrationModeSourced        OrchestrationMode = "sourced"
 	OrchestrationModeStrictResearch OrchestrationMode = "strict_research"
+	// OrchestrationModeResearchReview is v1.1-only. Contracts must carry
+	// schema_version lcp/1.1 and a valid ResearchSpec; the compiler fails
+	// closed when no research_review template is registered (T06).
+	OrchestrationModeResearchReview OrchestrationMode = "research_review"
 )
 
 func (v OrchestrationMode) Valid() bool {
 	switch v {
-	case OrchestrationModeAuto, OrchestrationModeFast, OrchestrationModeOutlineFirst, OrchestrationModeSourced, OrchestrationModeStrictResearch:
+	case OrchestrationModeAuto, OrchestrationModeFast, OrchestrationModeOutlineFirst, OrchestrationModeSourced, OrchestrationModeStrictResearch, OrchestrationModeResearchReview:
 		return true
 	default:
 		return false

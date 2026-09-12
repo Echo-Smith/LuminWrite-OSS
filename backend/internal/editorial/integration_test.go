@@ -3,22 +3,25 @@ package editorial
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database/dbtest"
 )
 
 // testDB is a shared PostgreSQL connection for integration tests.
-// It is only initialized when TEST_DATABASE_URL is set.
+// It is only initialized when TEST_DATABASE_URL is set, and points at this
+// process's own database (dbtest.Open) so parallel packages never truncate
+// each other's rows.
 var testDB *sql.DB
 
 func TestMain(m *testing.M) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
+	db, cleanup, err := dbtest.Open(os.Getenv("TEST_DATABASE_URL"), 5, 2)
+	if errors.Is(err, dbtest.ErrNoDatabaseURL) {
 		if os.Getenv("CI") == "true" {
 			// In CI, a missing TEST_DATABASE_URL is a hard failure —
 			// integration tests MUST run, not silently skip.
@@ -29,20 +32,15 @@ func TestMain(m *testing.M) {
 		// Integration tests will skip themselves via testStore's t.Skip().
 		os.Exit(m.Run())
 	}
-
-	db, err := database.NewPostgres(dbURL, 5, 2)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to connect to test database: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := database.Migrate(db); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to open test database: %v\n", err)
 		os.Exit(1)
 	}
 
 	testDB = db.DB
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // testStore creates a fresh Store for testing.
@@ -69,7 +67,7 @@ func testStore(t *testing.T) *Store {
 		"editorial_agent_run_events",
 		"editorial_decisions",
 		"editorial_artifacts",
-		"editorial_tasks",
+		"agent_traces",
 		"editorial_knowledge",
 	}
 	// TRUNCATE all tables in one command to avoid FK constraint issues
@@ -83,7 +81,8 @@ func testStore(t *testing.T) *Store {
 	return NewStore(testDB)
 }
 
-// testUser creates a test user UUID in the database.
+// testUser creates a test user and returns its id (the users.id primary key,
+// which is what agent_traces.user_id and friends reference via FK).
 func testUser(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	var userID string

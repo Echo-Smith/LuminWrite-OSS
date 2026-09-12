@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { DocumentNode, Revision } from "@/lib/writing-runtime-types";
+import { CitationAwareText } from "@/components/writing/research-citation-popover";
 import { cn } from "@/lib/utils";
 
 function nodeText(node: DocumentNode): string {
@@ -8,7 +9,10 @@ function nodeText(node: DocumentNode): string {
 
 function InlineNode({ node }: { node: DocumentNode }) {
   const children = node.children.map((child, index) => <InlineNode key={child.block_id ?? `${child.type}-${index}`} node={child} />);
-  if (node.type === "text") return <>{node.text}</>;
+  if (node.type === "text") {
+    // 渲染时转换 [@ev_xxx] 为引用链接（数据不改写）；无引用上下文时原样渲染。
+    return <CitationAwareText text={node.text ?? ""} />;
+  }
   if (node.type === "strong") return <strong>{children}</strong>;
   if (node.type === "emphasis") return <em>{children}</em>;
   if (node.type === "link") return <a href={node.destination} rel="noreferrer" target="_blank">{children}</a>;
@@ -21,7 +25,13 @@ function EditableTextBlock({ node, className, onRevision }: { node: DocumentNode
   const [draft, setDraft] = useState(original);
   const canEdit = Boolean(onRevision && node.block_id && node.content_hash);
 
-  if (!canEdit) return <div className={className}>{node.children.map((child, index) => <InlineNode key={child.block_id ?? index} node={child} />)}</div>;
+  if (!canEdit) return (
+    <div className={className}>
+      {node.children.map((child, index) => <InlineNode key={child.block_id ?? index} node={child} />)}
+      {/* 纯文本段落：同样走渲染时引用转换（不改写数据）。 */}
+      {node.children.length === 0 && node.text && <CitationAwareText text={node.text} />}
+    </div>
+  );
   return (
     <div
       className={cn(className, "document-editable-block")}

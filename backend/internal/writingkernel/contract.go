@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	hashPrefix      = "sha256:"
-	SchemaVersionV1 = "lcp/1.0"
+	hashPrefix       = "sha256:"
+	SchemaVersionV1  = "lcp/1.0"
+	SchemaVersionV11 = "lcp/1.1"
 )
 
 var (
@@ -45,6 +46,10 @@ type WritingContract struct {
 	Collaboration      ExecutionControl    `json:"collaboration"`
 	SourceAttributions []SourceAttribution `json:"source_attributions"`
 	Inferences         []Inference         `json:"inferences"`
+	// Research is v1.1-only (research review path). It must stay the last
+	// field so v1.0 JSON serialization order — and therefore the golden
+	// hashes pinned in contract_golden_test.go — never changes.
+	Research *ResearchSpec `json:"research,omitempty"`
 }
 
 type IntentSpec struct {
@@ -131,8 +136,26 @@ type ExecutionRecommendation struct {
 }
 
 func (c WritingContract) Validate() error {
-	if c.SchemaVersion != SchemaVersionV1 {
-		return fmt.Errorf("schema_version must be %q", SchemaVersionV1)
+	// Version branch: v1.0 keeps the historical shape (research must be
+	// nil); v1.1 exists only for the research review path and requires a
+	// complete, valid ResearchSpec.
+	switch c.SchemaVersion {
+	case SchemaVersionV1:
+		if c.Research != nil {
+			return fmt.Errorf("research must be nil for schema_version %q", SchemaVersionV1)
+		}
+		if c.Collaboration.OrchestrationMode == OrchestrationModeResearchReview {
+			return fmt.Errorf("orchestration_mode %q requires schema_version %q with a research spec", OrchestrationModeResearchReview, SchemaVersionV11)
+		}
+	case SchemaVersionV11:
+		if c.Research == nil {
+			return fmt.Errorf("research spec is required for schema_version %q", SchemaVersionV11)
+		}
+		if err := c.Research.Validate(); err != nil {
+			return fmt.Errorf("invalid research spec: %w", err)
+		}
+	default:
+		return fmt.Errorf("schema_version must be %q or %q", SchemaVersionV1, SchemaVersionV11)
 	}
 	if !contractIDPattern.MatchString(c.ContractID) {
 		return errors.New("contract_id must use the ctr_ prefix and contain only letters, digits, underscore, or hyphen")
@@ -142,6 +165,14 @@ func (c WritingContract) Validate() error {
 	}
 	if !hashPattern.MatchString(c.ContractHash) {
 		return errors.New("contract_hash must be a lowercase sha256 digest")
+	}
+	if c.Collaboration.OrchestrationMode == OrchestrationModeResearchReview {
+		if c.SchemaVersion != SchemaVersionV11 {
+			return fmt.Errorf("orchestration_mode %q requires schema_version %q with a research spec", OrchestrationModeResearchReview, SchemaVersionV11)
+		}
+		if c.Research == nil {
+			return fmt.Errorf("orchestration_mode %q requires a research spec", OrchestrationModeResearchReview)
+		}
 	}
 	if !c.Status.Valid() {
 		return fmt.Errorf("invalid contract status %q", c.Status)
@@ -480,6 +511,19 @@ func ValidateTransition(previous, next WritingContract) error {
 
 // DecodeWritingContractStrict rejects duplicate and unknown JSON fields.
 func DecodeWritingContractStrict(data []byte) (WritingContract, error) {
+	return decodeWritingContract(data, false)
+}
+
+// DecodeWritingContractResearchStrict decodes a research review contract:
+// in addition to the top-level unknown/duplicate rejection, the research
+// object itself is decoded with DisallowUnknownFields so no extra key
+// inside research can sneak past Go validation (contracts.md §1: all
+// unknown fields are rejected).
+func DecodeWritingContractResearchStrict(data []byte) (WritingContract, error) {
+	return decodeWritingContract(data, true)
+}
+
+func decodeWritingContract(data []byte, strictResearch bool) (WritingContract, error) {
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return WritingContract{}, err
 	}
@@ -491,6 +535,23 @@ func DecodeWritingContractStrict(data []byte) (WritingContract, error) {
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
 		return WritingContract{}, err
+	}
+	if strictResearch {
+		if contract.Research == nil {
+			if contract.SchemaVersion == SchemaVersionV11 {
+				return WritingContract{}, errors.New("research spec is required for schema_version " + SchemaVersionV11)
+			}
+			return contract, nil
+		}
+		payload, err := json.Marshal(contract.Research)
+		if err != nil {
+			return WritingContract{}, err
+		}
+		research, err := DecodeResearchSpecStrict(payload)
+		if err != nil {
+			return WritingContract{}, err
+		}
+		contract.Research = &research
 	}
 	return contract, nil
 }

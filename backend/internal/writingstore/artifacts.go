@@ -49,6 +49,12 @@ var validArtifactTypes = map[string]bool{
 	"full_draft": true, "review_report": true,
 	"revision_set": true, "quality_report": true, "evidence_report": true,
 	"fact_report": true,
+	// Research-review gate decision artifact (migration 107, contracts.md §2).
+	"evidence_approval": true,
+	// Research-review frozen contract types (migration 108, contracts.md §2).
+	"research_candidates": true, "research_evidence_pack": true,
+	"research_outline": true, "approved_research_outline": true,
+	"research_citation_index": true, "research_validation_details": true,
 }
 
 var validArtifactStatuses = map[string]bool{

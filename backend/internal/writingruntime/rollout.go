@@ -152,14 +152,22 @@ func DecideRoute(policy AdapterRolloutPolicy, request ExecutionRequest, now time
 		if containsString(policy.AllowSubjects, routeSubject(request)) {
 			base.Lane, base.Reason = LaneCandidate, "allowlist_match"
 		} else {
-			base.Reason = "allowlist_miss"
+			// Unmatched subjects keep running the shadow lane under the
+			// authoritative policy hash, so promotion evidence stays fresh
+			// without ever granting misses the candidate lane.
+			base.RunShadow, base.Reason = true, "allowlist_miss"
 		}
 	case RolloutPercentage:
 		base.SubjectBucket = stableBucket(policy, routeSubject(request))
 		if base.SubjectBucket < policy.BasisPoints {
 			base.Lane, base.Reason = LaneCandidate, "percentage_match"
 		} else {
-			base.Reason = "percentage_miss"
+			// Unmatched subjects keep running the shadow lane under the
+			// authoritative policy hash (on shadow executors), so percentage
+			// promotion evidence stays fresh without granting misses the
+			// candidate lane. Authoritative executors serve these misses the
+			// baseline lane as expected traffic.
+			base.RunShadow, base.Reason = true, "percentage_miss"
 		}
 	case RolloutEnabled:
 		base.Lane, base.Reason = LaneCandidate, "enabled"
@@ -176,8 +184,13 @@ func routeSubject(request ExecutionRequest) string {
 	return request.RunID
 }
 
+// stableBucket maps a subject to a deterministic bucket in [0, 10000). The
+// bucket must depend only on the activation key and subject: folding the
+// policy hash in would reshuffle every subject whenever the operator changes
+// the basis points, turning a widening step into a full audience reshuffle.
+// ActivationKey is validated non-empty for percentage policies.
 func stableBucket(policy AdapterRolloutPolicy, subject string) int {
-	payload := strings.Join([]string{policy.PolicyHash, policy.ActivationKey, subject}, "\x00")
+	payload := strings.Join([]string{"writing-rollout-v1", policy.ActivationKey, subject}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return int(binary.BigEndian.Uint64(sum[:8]) % 10000)
 }

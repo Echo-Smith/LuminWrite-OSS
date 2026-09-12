@@ -4,7 +4,7 @@
  * 显示约X积分/千字和费用档位（经济/标准/高消耗）
  */
 import { useState, useEffect, useRef } from "react";
-import { Cpu, ChevronDown, Star, Loader2 } from "lucide-react";
+import { ChevronDown, Star } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +22,7 @@ interface ModelOption {
 interface ModelPickerProps {
   value: string;
   onChange: (v: string) => void;
+  compact?: boolean;
 }
 
 // 费用档位配置
@@ -31,7 +32,19 @@ const COST_LEVELS: Record<string, { label: string; color: string }> = {
   premium: { label: "高消耗", color: "text-orange-500" },
 };
 
-export function ModelPicker({ value, onChange }: ModelPickerProps) {
+function modelTierLabel(name: string, costLevel?: string): string {
+  if (costLevel === "premium" || /\bpro\b/i.test(name)) return "Pro";
+  if (/flash|lite|turbo|fast/i.test(name)) return "快速";
+  return name;
+}
+
+function fallbackCostLevel(name: string): keyof typeof COST_LEVELS | null {
+  if (/flash|lite|turbo|fast/i.test(name)) return "economy";
+  if (/\bpro\b/i.test(name)) return "premium";
+  return null;
+}
+
+export function ModelPicker({ value, onChange, compact = false }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -53,23 +66,24 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   }, []);
 
   const selected = models.find((m) => m.model_name === value);
+  const fallbackLevel = fallbackCostLevel(value);
 
   // If no models loaded yet, show a simple label
   if (loading && models.length === 0) {
     return (
-      <div className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground">
-        <Loader2 className="h-[18px] w-[18px] animate-spin text-blue-500" />
-        <span className="hidden sm:inline">加载模型...</span>
+      <div className={cn("flex h-8 items-center rounded-xl px-2.5 text-sm text-muted-foreground", compact ? "max-w-[116px]" : "max-w-[45vw] sm:max-w-none")}>
+        <span className="truncate">{value || "加载模型..."}</span>
       </div>
     );
   }
 
   // If models are empty (fetch failed or no config), show fallback
   if (models.length === 0) {
+    const level = fallbackLevel ? COST_LEVELS[fallbackLevel] : null;
     return (
-      <div className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground">
-        <Cpu className="h-[18px] w-[18px] text-blue-500" />
-        <span className="hidden sm:inline">{value || "默认模型"}</span>
+      <div className={cn("composer-model-trigger flex h-8 items-center gap-1 rounded-xl px-2.5 text-sm text-muted-foreground", compact && "max-w-[116px]")}>
+        <span className="composer-model-speed truncate">{modelTierLabel(value || "默认模型", fallbackLevel ?? undefined)}</span>
+        {level && <><span aria-hidden="true">·</span><span className={cn("composer-model-cost text-[11px]", level.color)}>{level.label}</span></>}
       </div>
     );
   }
@@ -77,15 +91,14 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="flex items-center gap-1.5 h-8 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground">
-          <Cpu className="h-[18px] w-[18px] text-blue-500" />
-          <span className="hidden sm:inline">{selected?.display_name ?? selected?.model_name ?? "选择模型"}</span>
+        <button className={cn("composer-model-trigger flex h-8 items-center gap-1 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground", compact && "max-w-[116px]")}>
+          <span className="composer-model-speed truncate">{modelTierLabel(selected?.display_name ?? selected?.model_name ?? "选择模型", selected?.cost_level)}</span>
           {selected && selected.cost_level && COST_LEVELS[selected.cost_level] && (
-            <span className={cn("ml-0.5 text-[11px] hidden sm:inline", COST_LEVELS[selected.cost_level].color)}>
+            <><span aria-hidden="true">·</span><span className={cn("composer-model-cost text-[11px]", COST_LEVELS[selected.cost_level].color)}>
               {COST_LEVELS[selected.cost_level].label}
-            </span>
+            </span></>
           )}
-          <ChevronDown className="h-4 w-4 opacity-50 hidden sm:block" />
+          <ChevronDown className={cn("composer-control-chevron h-4 w-4 opacity-50", compact && "hidden")} />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-64 p-1">
@@ -99,11 +112,10 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
                 setOpen(false);
               }}
               className={cn(
-                "flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
+                "flex w-full items-start rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
                 m.model_name === value && "bg-accent/50"
               )}
             >
-              <Cpu className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1">
                   <span className="text-sm font-medium">{m.display_name || m.model_name}</span>

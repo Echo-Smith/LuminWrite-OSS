@@ -1,16 +1,24 @@
 # ─── Writing Agent V2 — Root Makefile ───────────────────
 # Common Docker commands for development and deployment.
 
-.PHONY: help up down build rebuild logs ps shell clean dev weknora verify verify-backend verify-frontend
+.PHONY: help up down build rebuild logs ps shell clean dev weknora sync-env env-check verify verify-backend verify-frontend evidence-accumulate evidence-gate
 
 # Default: show available commands
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
+# ── Env 同步（.env.docker = 最新模板 + env.secrets.local）──
+
+sync-env: ## 由最新模板 + 密钥文件重新生成 .env.docker
+	@./scripts/sync-env.sh
+
+env-check: ## 只检查密钥配置是否齐全，不写文件
+	@./scripts/sync-env.sh --check
+
 # ── Docker Compose ──────────────────────────────────────
 
-up: ## Start all services (detached)
+up: sync-env ## Start all services (detached)
 	docker compose up -d
 
 down: ## Stop all services
@@ -19,7 +27,7 @@ down: ## Stop all services
 build: ## Build images without starting
 	docker compose build
 
-rebuild: ## Rebuild images (no cache) and restart
+rebuild: sync-env ## Rebuild images (no cache) and restart
 	docker compose build --no-cache
 	docker compose up -d
 
@@ -50,9 +58,17 @@ verify-frontend: ## Lint, build, and test the frontend
 	cd frontend && npm run build
 	cd frontend && npm run test:wabench
 
+# ── Governance (local shadow only) ──────────────────────
+
+evidence-accumulate: ## Append allowlist shadow evidence via live verticals (needs TASK13_LLM_*/TEST_DATABASE_URL)
+	./scripts/run-allowlist-evidence-accumulation.sh
+
+evidence-gate: ## Read-only allowlist promotion assessment (needs DATABASE_URL + ROLLOUT_POLICY_FILE)
+	cd backend && go run ./cmd/governance-gate -action assess -policy "$(ROLLOUT_POLICY_FILE)"
+
 # ── WeKnora (optional RAG service) ──────────────────────
 
-weknora: ## Start with WeKnora profile
+weknora: sync-env ## Start with WeKnora profile
 	docker compose --profile weknora up -d
 
 # ── Database ────────────────────────────────────────────

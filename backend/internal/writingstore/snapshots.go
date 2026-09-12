@@ -68,6 +68,14 @@ func (s *Store) CommitCheckpoint(ctx context.Context, bundle CheckpointBundle) (
 	return committed, err
 }
 
+// CommitCheckpointWithin exposes the checkpoint commit to composed
+// transactions: the research-gate flow commits the waiting-gate checkpoint
+// (and its cleared successor) atomically with the gate rows and run
+// transitions instead of as adjacent independent writes.
+func (tx *Tx) CommitCheckpointWithin(ctx context.Context, bundle CheckpointBundle) (SnapshotRecord, error) {
+	return tx.CommitCheckpoint(ctx, bundle)
+}
+
 func (tx *Tx) CommitCheckpoint(ctx context.Context, bundle CheckpointBundle) (SnapshotRecord, error) {
 	snapshot := bundle.Snapshot
 	if err := validateID(snapshot.SnapshotID, "snap_", "snapshot_id"); err != nil {

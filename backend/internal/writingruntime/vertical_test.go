@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -339,14 +340,23 @@ type verticalRewriteStep struct{}
 func (*verticalRewriteStep) Name() engine.StepName { return engine.StepName("vertical_rewrite") }
 func (*verticalRewriteStep) CanPause() bool        { return false }
 func (*verticalRewriteStep) Execute(_ context.Context, execCtx *engine.ExecutionContext, _ engine.EventEmitter) error {
+	contract, err := writingkernel.DecodeWritingContractStrict([]byte(execCtx.UserInput))
+	if err != nil {
+		return err
+	}
+	var manifest MaterialManifest
+	for _, material := range execCtx.UserMaterials {
+		if err := json.Unmarshal([]byte(material), &manifest); err != nil {
+			return err
+		}
+	}
 	var builder strings.Builder
 	builder.WriteString("# 忠实改写\n")
-	for _, material := range execCtx.UserMaterials {
-		title := "来源材料"
-		if firstLine, _, ok := strings.Cut(material, "\n"); ok && strings.HasPrefix(firstLine, "[材料: ") {
-			title = strings.TrimSuffix(strings.TrimPrefix(firstLine, "[材料: "), "]")
-		}
-		builder.WriteString("\n## " + title + "\n\n" + material + "\n\n以上内容仅调整表述，不改变原意。\n")
+	for _, point := range contract.Content.RequiredPoints {
+		builder.WriteString("\n## " + point + "\n\n忠实改写覆盖 " + point + "。\n")
+	}
+	for _, material := range manifest.Materials {
+		builder.WriteString("\n## " + material.Title + "\n\n忠实保留 " + material.Title + " 的原意与全部要点，仅调整表述。\n")
 	}
 	execCtx.Article = builder.String()
 	return nil
@@ -364,12 +374,28 @@ type verticalNode struct {
 }
 
 type verticalResult struct {
-	store     *fakeRuntimeStore
-	canonical *verticalGateway
-	evidence  *MemoryRolloutEvidenceStore
-	sink      *MemoryShadowContentSink
-	outcome   RunOutcome
-	runID     string
+	store           *fakeRuntimeStore
+	canonical       *verticalGateway
+	evidenceRecords func(*testing.T) []RuntimeEvidence
+	shadowKeys      func(*testing.T) []string
+	policyHashes    []string
+	outcome         RunOutcome
+	runID           string
+}
+
+type verticalRolloutBackend struct {
+	evidence RolloutEvidenceStore
+	sink     ShadowContentSink
+	prepare  func(*testing.T, writingkernel.WritingContract, writingplan.WritingPlanEnvelope, []verticalNode, string, string)
+	records  func(*testing.T, string) []RuntimeEvidence
+	keys     func(*testing.T, string) []string
+	// ids, when set, replaces the default run/document ids so evidence
+	// accumulation suites can append fresh lineage per invocation while
+	// scenario names (and therefore capability and policy hashes) stay stable.
+	ids func(name string) (runID, documentID string)
+	// nodePolicy, when set and non-nil, replaces the default shadow policy of
+	// one node so a governed policy can accumulate comparison evidence.
+	nodePolicy func(index int, capability, candidateID string) *AdapterRolloutPolicy
 }
 
 type verticalMaterialSelection struct{ materials []MaterialDescriptor }
@@ -380,17 +406,85 @@ func (selection verticalMaterialSelection) MaterialsForRun(_ context.Context, ru
 }
 
 func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMaterials bool) verticalResult {
+	return runVerticalScenarioWithTimeout(t, name, nodes, withMaterials, 2*time.Second)
+}
+
+func runVerticalScenarioWithTimeout(t *testing.T, name string, nodes []verticalNode, withMaterials bool, nodeTimeout time.Duration) verticalResult {
+	evidence := &MemoryRolloutEvidenceStore{}
+	sink := NewMemoryShadowContentSink()
+	return runVerticalScenarioWithBackend(t, name, nodes, withMaterials, nodeTimeout, verticalRolloutBackend{
+		evidence: evidence,
+		sink:     sink,
+		records:  func(*testing.T, string) []RuntimeEvidence { return evidence.Records() },
+		keys:     func(*testing.T, string) []string { return sink.Keys() },
+	})
+}
+
+func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalNode, withMaterials bool, nodeTimeout time.Duration, backend verticalRolloutBackend) verticalResult {
 	t.Helper()
+	if nodeTimeout <= 0 {
+		nodeTimeout = 2 * time.Second
+	}
+	if backend.evidence == nil || backend.sink == nil || backend.records == nil || backend.keys == nil {
+		t.Fatal("vertical rollout backend is incomplete")
+	}
 	now := time.Date(2026, 8, 29, 16, 0, 0, 0, time.UTC)
 	contractBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "specs", "lcp", "v1", "fixtures", "writing-contract.valid.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := "run_vertical_" + name
-	documentID := "doc_vertical_" + name
+	contract, err := writingkernel.DecodeWritingContractStrict(contractBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, documentID := "run_vertical_"+name, "doc_vertical_"+name
+	if backend.ids != nil {
+		runID, documentID = backend.ids(name)
+	}
+	// Contracts are immutable per (contract_id, version) alongside their
+	// document: per-invocation ids must therefore also derive the contract id,
+	// or a second accumulation run collides with the first one's record.
+	contractID := "ctr_vertical_" + name
+	// Contracts, intent plans, plans, and strategy decisions are all immutable
+	// alongside their per-invocation lineage: per-invocation ids must derive
+	// every object id, or a second accumulation run collides with the first.
+	lineageSuffix := ""
+	if backend.ids != nil {
+		lineageSuffix = "_" + strings.TrimPrefix(strings.TrimPrefix(runID, "run_vertical_"), "evidence_")
+		contractID = "ctr_vertical_" + name + lineageSuffix
+	}
+	contract.ContractID = contractID
+	if len(contract.Content.RequiredPoints) == 0 {
+		contract.Content.RequiredPoints = []string{"治理边界", "用户控制", "可审计证据"}
+	}
+	contract, err = contract.WithComputedHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractBytes, err = json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
 	capabilityVersion := "1.0.0"
-	plan := writingplan.ExecutablePlan{PlanID: "plan_vertical_" + name, Status: writingplan.PlanValidated,
-		TrustLevel: writingplan.TrustT1, RootNodeID: "node_" + nodes[0].name, Nodes: []writingplan.PlanNode{},
+	proposed := make([]writingplan.ProposedStep, 0, len(nodes))
+	for index, node := range nodes {
+		dependencies := []string{}
+		if index > 0 {
+			dependencies = []string{nodes[index-1].name}
+		}
+		proposed = append(proposed, writingplan.ProposedStep{StepID: node.name, Objective: "execute governed " + node.name,
+			CapabilityHint: "core.vertical." + name + "." + node.name, DependsOn: dependencies})
+	}
+	intent, err := (writingplan.IntentPlan{IntentPlanID: "iplan_vertical_" + name + lineageSuffix,
+		ContractRef: writingplan.ObjectRef{ID: contract.ContractID, Version: contract.Version, Hash: contract.ContractHash},
+		Summary:     "execute governed vertical scenario", ProposedSteps: proposed,
+		CreatedBy: writingplan.ActorSystem, CreatedAt: now}).WithComputedHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := writingplan.ExecutablePlan{PlanID: "plan_vertical_" + name + lineageSuffix, Status: writingplan.PlanValidated,
+		IntentPlanRef: writingplan.ObjectRef{ID: intent.IntentPlanID, Version: 1, Hash: intent.IntentPlanHash},
+		TrustLevel:    writingplan.TrustT1, RootNodeID: "node_" + nodes[0].name, Nodes: []writingplan.PlanNode{},
 		StaticValidation: writingplan.StaticValidation{Valid: true, CheckedAt: now, Errors: []string{},
 			CapabilityRegistryVersion: "vertical-" + name, BudgetValid: true, PermissionsValid: true,
 			ArtifactFlowValid: true, FailurePathsValid: true}}
@@ -405,7 +499,7 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 			Capability: capability, CapabilityVersion: capabilityVersion, DependsOn: dependencies,
 			InputArtifactTypes:  append([]writingplan.ArtifactType(nil), node.inputs...),
 			OutputArtifactTypes: []writingplan.ArtifactType{node.output},
-			Bounds:              writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 5, TimeoutMS: 2000},
+			Bounds:              writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 5, TimeoutMS: nodeTimeout.Milliseconds()},
 			FailurePath:         writingplan.FailureFail})
 		for _, input := range node.inputs {
 			accepted = appendUniqueArtifact(accepted, input)
@@ -416,26 +510,32 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical := newVerticalGateway(map[string][]byte{"memory://contract": contractBytes})
-	sink := NewMemoryShadowContentSink()
-	var materialAdapter *MaterialAdapter
-	if withMaterials {
-		materialAdapter, err = NewMaterialAdapter(fakeMaterialSource{bodies: map[string]MaterialContent{"mat_forest": {Body: []byte("森林深处的狐狸在晨雾中活动，狐狸是森林生态的重要成员。"), SourceRefs: []string{"https://vertical.example.com/forest"}}}}, canonical)
-		if err != nil {
-			t.Fatal(err)
-		}
+	decision := writingplan.StrategyDecision{DecisionID: "decision_vertical_" + name + lineageSuffix, IntentPlanRef: plan.IntentPlanRef,
+		Candidates: []writingplan.StrategyCandidate{{PlanHash: plan.PlanHash, TrustLevel: plan.TrustLevel,
+			EstimatedCostUSD: 1, EstimatedDurationMS: int64(nodeTimeout.Milliseconds()), EstimatedConfidence: .8}},
+		SelectedPlanHash: plan.PlanHash, SelectionSource: writingplan.SelectionSystem,
+		RequestedOrchestration: writingkernel.OrchestrationModeAuto, EffectiveOrchestration: writingkernel.OrchestrationModeFast,
+		ReasonCode: "vertical_acceptance", Summary: "governed vertical acceptance plan", Confidence: .8,
+		DegradationConditions: []string{}, CreatedAt: now}
+	envelope := writingplan.WritingPlanEnvelope{SchemaVersion: writingplan.SchemaVersion,
+		IntentPlan: intent, ExecutablePlan: plan, StrategyDecision: decision}
+	if err := envelope.Validate(); err != nil {
+		t.Fatal(err)
 	}
+	if backend.prepare != nil {
+		backend.prepare(t, contract, envelope, nodes, runID, documentID)
+	}
+	canonical := newVerticalGateway(map[string][]byte{"memory://contract": contractBytes})
 	store := &fakeRuntimeStore{run: writingstore.RuntimeRun{RunID: runID, DocumentID: documentID,
-		ContractID: "ctr_vertical_" + name, ContractVersion: 1, ContractHash: hashForTest("contract"),
+		ContractID: contract.ContractID, ContractVersion: contract.Version, ContractHash: contract.ContractHash,
 		Status: string(StatePlanned), ActivePlanID: plan.PlanID, ActivePlanVersion: 1,
-		Budget:      writingplan.PlanBudget{MaxCostUSD: 40, MaxDurationMS: 60000, MaxConcurrency: 1, MaxNodes: len(nodes) + 2, MaxItems: 4},
+		Budget:      writingplan.PlanBudget{MaxCostUSD: 40, MaxDurationMS: max(int64(60000), nodeTimeout.Milliseconds()*int64(len(nodes))), MaxConcurrency: 1, MaxNodes: len(nodes) + 2, MaxItems: 4},
 		Permissions: []writingplan.Permission{"model.invoke", "materials.read"}},
-		plan: writingstore.PlanRecord{RunID: runID, PlanVersion: 1, ApprovalStatus: "not_required",
-			Envelope: writingplan.WritingPlanEnvelope{IntentPlan: writingplan.IntentPlan{ContractRef: writingplan.ObjectRef{ID: "ctr_vertical_" + name, Version: 1, Hash: hashForTest("contract")}}, ExecutablePlan: plan}}}
+		plan: writingstore.PlanRecord{RunID: runID, PlanVersion: 1, ApprovalStatus: "not_required", Envelope: envelope}}
 	capabilities := writingplan.NewCapabilityRegistry("vertical-" + name)
 	executors := NewExecutorRegistry()
-	evidence := &MemoryRolloutEvidenceStore{}
 	policyHashes := make([]string, 0, len(nodes))
+	governedHashes := make([]string, 0, len(nodes))
 	for index, node := range nodes {
 		capability := "core.vertical." + name + "." + node.name
 		bindingID := fmt.Sprintf("vertical.%s.baseline.%d", name, index)
@@ -459,16 +559,18 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 		// candidate descriptor for the binding check.
 		candidateID := fmt.Sprintf("vertical.%s.candidate.%d", name, index)
 		nodePolicy := DefaultShadowPolicy(candidateID, AdapterFamilyEngine, capability, capabilityVersion)
+		if backend.nodePolicy != nil {
+			if governed := backend.nodePolicy(index, capability, candidateID); governed != nil {
+				nodePolicy = *governed
+			}
+		}
 		policyHashes = append(policyHashes, strings.TrimPrefix(nodePolicy.PolicyHash, "sha256:"))
-		nodeGateway, err := NewShadowContentGateway(canonical, sink, nodePolicy)
+		governedHashes = append(governedHashes, nodePolicy.PolicyHash)
+		nodeGateway, err := NewShadowContentGateway(canonical, backend.sink, nodePolicy)
 		if err != nil {
 			t.Fatal(err)
 		}
 		runner := node.runner(t, documentID)
-		if engineRunner, ok := runner.(EngineStepRunner); ok && materialAdapter != nil {
-			engineRunner.Materials = materialAdapter
-			runner = engineRunner
-		}
 		baseline, err := NewLegacyExecutorAdapter(AdapterFamilyEngine,
 			ExecutorDescriptor{ExecutorID: bindingID, Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction, writingplan.NodeValidate}},
 			capability, capabilityVersion, []writingplan.Permission{"model.invoke", "materials.read"}, canonical, runner)
@@ -486,7 +588,7 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 		if err != nil {
 			t.Fatal(err)
 		}
-		rollout, err := NewShadowRolloutExecutor(baseline, candidate, nodeProvider, evidence, &metricCapture{})
+		rollout, err := NewShadowRolloutExecutor(baseline, candidate, nodeProvider, backend.evidence, &metricCapture{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -497,7 +599,11 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 	providers := []InitialArtifactProvider{fixedInitialProvider{{ArtifactID: "art_" + runID + "_contract", Version: 1,
 		ArtifactType: "contract", ContentHash: contentHash(contractBytes), MediaType: "application/json", ContentRef: "memory://contract"}}}
 	if withMaterials {
-		providers = append(providers, &MaterialArtifactProvider{Adapter: materialAdapter,
+		adapter, err := NewMaterialAdapter(fakeMaterialSource{bodies: map[string]MaterialContent{"mat_forest": {Body: []byte("森林深处的狐狸在晨雾中活动，狐狸是森林生态的重要成员。"), SourceRefs: []string{"https://vertical.example.com/forest"}}}}, canonical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		providers = append(providers, &MaterialArtifactProvider{Adapter: adapter,
 			Selection: verticalMaterialSelection{materials: []MaterialDescriptor{{MaterialID: "mat_forest",
 				OwnerID: "user_vertical", Title: "森林狐狸观察", SourceKind: MaterialSourceText,
 				SourceRef: "mem://forest", MediaType: "text/plain", UpdatedAt: now}}}})
@@ -508,15 +614,43 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 	}
 	orchestrator := &Orchestrator{Store: store, Capabilities: capabilities, Executors: executors,
 		State: NewStateMachine(store), Checkpoints: &memoryCheckpoints{}, Initial: initial,
-		Materials: store, Now: func() time.Time { return now }}
+		Materials: store, Now: func() time.Time { return now },
+		// V2.9 context wiring: every vertical run compiles + persists one
+		// envelope per node attempt, so the governed runtime's context path
+		// is exercised in every vertical scenario (live and offline).
+		Context:        &fixedContextSource{input: contextcompiler.Input{ContractDigest: "vertical governed contract"}},
+		Envelopes:      store,
+		ContextRuntime: &ContextRuntime{}}
 	out, err := orchestrator.Execute(context.Background(), runID)
 	if err != nil || out.State != StateCompleted || len(out.CompletedNodes) != len(nodes) {
 		t.Fatalf("vertical scenario %s: out=%#v err=%v", name, out, err)
 	}
-	result := verticalResult{store: store, canonical: canonical, evidence: evidence, sink: sink, outcome: out, runID: runID}
+	// One compiled envelope per node attempt proves the V2.9 context
+	// compilation ran inside the governed execution, not just alongside it.
+	if len(store.envelopes) != len(nodes) {
+		t.Fatalf("context envelopes=%d want %d (one per node)", len(store.envelopes), len(nodes))
+	}
+	for _, envelope := range store.envelopes {
+		if envelope.EnvelopeHash == "" || envelope.CompilerVersion == 0 {
+			t.Fatalf("persisted envelope unattributed: %#v", envelope)
+		}
+	}
+	result := verticalResult{store: store, canonical: canonical, outcome: out, runID: runID,
+		evidenceRecords: func(t *testing.T) []RuntimeEvidence { return backend.records(t, runID) },
+		shadowKeys:      func(t *testing.T) []string { return backend.keys(t, runID) },
+		policyHashes:    governedHashes}
 	persisted, err := store.ListRunArtifacts(context.Background(), runID)
-	if err != nil || len(persisted) != len(nodes) {
-		t.Fatalf("artifacts=%#v err=%v", persisted, err)
+	// M1.0: the initial capture persists the run's initial artifacts as real
+	// rows, so the ledger holds the initial rows plus one per node output.
+	// Count node-output artifacts by excluding the synthetic initial rows.
+	nodeOutputs := 0
+	for _, artifact := range persisted {
+		if artifact.NodeID != InitialCaptureNodeID {
+			nodeOutputs++
+		}
+	}
+	if err != nil || nodeOutputs != len(nodes) {
+		t.Fatalf("node outputs=%d want %d (artifacts=%#v)", nodeOutputs, len(nodes), persisted)
 	}
 	for _, artifact := range persisted {
 		if artifact.Status != "provisional" || IsShadowContentRef(artifact.ContentRef) {
@@ -524,21 +658,25 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 		}
 	}
 	expectedComparisons := 4 * len(nodes)
-	deadline := time.Now().Add(2 * time.Second)
+	evidenceWait := 2 * time.Second
+	if nodeTimeout > evidenceWait {
+		evidenceWait = nodeTimeout + 5*time.Second
+	}
+	deadline := time.Now().Add(evidenceWait)
 	for time.Now().Before(deadline) {
-		if len(evidence.Records()) >= expectedComparisons {
+		if len(result.evidenceRecords(t)) >= expectedComparisons {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	records := evidence.Records()
+	records := result.evidenceRecords(t)
 	if len(records) < expectedComparisons {
 		for _, record := range records {
 			t.Logf("record kind=%s lane=%s status=%s node=%s", record.Kind, record.Lane, record.Status, record.Identity.NodeID)
 		}
 		t.Fatalf("evidence records=%d want >= %d", len(records), expectedComparisons)
 	}
-	for _, key := range sink.Keys() {
+	for _, key := range result.shadowKeys(t) {
 		matched := false
 		for _, prefix := range policyHashes {
 			if strings.HasPrefix(key, prefix+"/"+runID) {
@@ -559,7 +697,7 @@ func runVerticalScenario(t *testing.T, name string, nodes []verticalNode, withMa
 
 func verticalEngineRunner(step engine.Step) func(t *testing.T, documentID string) LegacyNodeRunner {
 	return func(t *testing.T, documentID string) LegacyNodeRunner {
-		return EngineStepRunner{StepFactory: func() engine.Step { return step },
+		return EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return step, nil },
 			Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
 				return LegacyUsage{Measured: true, InputTokens: 5, OutputTokens: 5}, nil
 			}}
@@ -686,7 +824,7 @@ func TestVerticalFaithfulRewriteThroughRealAdapters(t *testing.T) {
 				verticalAssertValidator(t, comparison, writingquality.ValidatorSemanticPreservation, writingkernel.ValidatorStatusPassed)
 			}},
 	}, true)
-	if len(result.sink.Keys()) < 2 {
+	if len(result.shadowKeys(t)) < 2 {
 		t.Fatal("shadow lane did not stage both nodes")
 	}
 }
@@ -694,7 +832,7 @@ func TestVerticalFaithfulRewriteThroughRealAdapters(t *testing.T) {
 func verticalLastComparison(t *testing.T, ctx verticalResult) *ShadowComparison {
 	t.Helper()
 	var comparison *ShadowComparison
-	for _, record := range ctx.evidence.Records() {
+	for _, record := range ctx.evidenceRecords(t) {
 		if record.Kind == "shadow_comparison" && record.Comparison != nil {
 			comparison = record.Comparison
 		}

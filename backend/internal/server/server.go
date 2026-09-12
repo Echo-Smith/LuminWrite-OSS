@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -27,7 +28,6 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -102,11 +102,13 @@ type Server struct {
 	db *database.DB
 
 	// Governed writing API. Nil only when persistence is unavailable.
-	writingAPI writingAPIService
-
-	// Governed runtime composition (Task13). Present whenever persistence is
-	// available; readiness decides whether runs may be created.
-	governedRuntime *GovernedRuntime
+	writingAPI      writingAPIService
+	governedRollout *governedRolloutDependencies
+	governedTrigger *governedRunTrigger
+	arReview        *arReviewService
+	kbSearch        tools.KnowledgeSearcher
+	editorialTools  *editorial.EditorialToolRegistry
+	editorialAgents *editorial.DynamicAgentRegistry
 
 	// Deployment readiness is stricter than liveness: configured external
 	// dependencies remain unready until a bounded probe succeeds.
@@ -117,6 +119,10 @@ type Server struct {
 	billingRepo *database.BillingRepo
 	pointCalc   *services.PointCalculator
 	alipaySvc   *AlipayService
+
+	// Ops patrol (rule-based health checks → admin alerts)
+	adminAlertRepo *database.AdminAlertRepo
+	opsPatrol      *OpsPatrol
 
 	// Email verification (commercial feature)
 	emailSvc    *EmailService
@@ -318,6 +324,7 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Bing.Enabled, cfg.Bing.BaseURL, cfg.Bing.Timeout,
 		cfg.Jiaozhen.CLIPath, cfg.Jiaozhen.Timeout,
 		cfg.AnySearch.APIKey, cfg.AnySearch.Endpoint, cfg.AnySearch.Timeout,
+		cfg.SearXNG.BaseURL, cfg.SearXNG.Timeout,
 	)
 
 	if !searchClient.HasSources() {
@@ -538,24 +545,23 @@ func New(cfg *config.Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("initialize governed writing store: %w", err)
 		}
-		var governedKB tools.KnowledgeSearcher
-		if s.kbMgr != nil {
-			governedKB = services.NewKbSearchAdapter(s.kbMgr)
+		s.writingAPI = newPersistentWritingAPI(governedStore)
+		// R14 feature flag: RESEARCH_REVIEW_ENABLED (default false) gates the
+		// research_review compile/run entries; read-only research endpoints
+		// and legacy modes are untouched.
+		if api, ok := s.writingAPI.(*persistentWritingAPI); ok {
+			api.researchReviewEnabled = cfg.WritingRuntime.ResearchReviewEnabled
 		}
-		s.governedRuntime = ComposeGovernedRuntime(GovernedRuntimeDeps{Store: governedStore, DB: db.DB,
-			LLM: llm, Search: searchClient, KB: governedKB, Metrics: s.metrics},
-			writingplan.DefaultCapabilityRegistry())
-		s.writingAPI = newPersistentWritingAPI(governedStore, s.governedRuntime)
-		if s.governedRuntime.Ready() {
-			go func(runtime *GovernedRuntime) {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if recovered, err := runtime.RecoverPending(ctx); err != nil {
-					slog.Error("governed runtime recovery scan failed", "error", err)
-				} else if recovered > 0 {
-					slog.Info("governed runtime recovered pending runs", "count", recovered)
-				}
-			}(s.governedRuntime)
+		s.governedRollout = newGovernedRolloutDependencies(governedStore, s.metrics)
+		// M1.4: mount the governed runtime behind WRITING_RUNTIME_MODE
+		// (default off — zero behavior change) and wire its controller into
+		// the writing API's control routes plus the post-approval trigger.
+		s.mountGovernedRuntime(governedStore)
+		// T10: AR-012 candidate evaluation sidecar (default off; nil = every
+		// endpoint reports AR_REVIEW_UNAVAILABLE).
+		s.arReview = newArReviewService(governedStore, cfg.WritingRuntime.ArReview)
+		if s.arReview != nil {
+			slog.Info("ar review sidecar enabled", "exchange", cfg.WritingRuntime.ArReview.ExchangeDir)
 		}
 	}
 	if llm != nil {
@@ -575,6 +581,15 @@ func New(cfg *config.Config) (*Server, error) {
 		// ── Canary Health Monitor (auto-rollback) ──
 		s.canaryMonitor = NewCanaryHealthMonitor(s, 30*time.Second)
 		s.canaryMonitor.Start()
+	}
+
+	// ── Ops Patrol (rule-based health checks → admin alerts) ──
+	// OPS_PATROL_ENABLED=false 可在部署层面整体禁用（运行时开关见 admin_patrol_config）。
+	if dbAvail && s.adminRepo != nil && opsPatrolEnabledFromEnv() {
+		s.adminAlertRepo = database.NewAdminAlertRepo(db)
+		s.opsPatrol = NewOpsPatrol(s, 0)
+		s.opsPatrol.Start()
+		slog.Info("ops patrol initialized")
 	}
 
 	// ── MCP Security Sandbox ──
@@ -685,8 +700,9 @@ func New(cfg *config.Config) (*Server, error) {
 		// 传入 LLMResolver 而非静态 LLMClient，使 admin 面板模型配置变更即时生效
 		if s.llmSvc != nil {
 			s.planner = editorial.NewPlanner(s.llmSvc)
+			agentRegistry := editorial.NewDynamicAgentRegistry()
 			s.dagExecutor = editorial.NewDAGExecutor(
-				editorial.NewDynamicAgentRegistry(), edStore, edEmitter,
+				agentRegistry, edStore, edEmitter,
 			)
 			// 注册预设 Agent 执行器到 DAGExecutor（以 BaseRole 作为 key）
 			kbAdapter := services.NewKbSearchAdapter(s.kbMgr)
@@ -694,6 +710,10 @@ func New(cfg *config.Config) (*Server, error) {
 			// ── 初始化编辑部工具注册中心（DAG 模式独立实例）──
 			dagToolRegistry := editorial.NewEditorialToolRegistry()
 			editorial.RegisterBuiltinTools(dagToolRegistry)
+			// Keep the unified capability view able to see the editorial
+			// surface (M1.5); registration authority stays with the DAG.
+			s.editorialTools = dagToolRegistry
+			s.editorialAgents = agentRegistry
 
 			researchExec := editorial.NewResearchAgentExecutor(s.llmSvc, searchClient, embeddingClient, edStore, kbAdapter, dagToolRegistry)
 			s.dagExecutor.RegisterExecutor("researcher", researchExec)
@@ -1008,6 +1028,15 @@ func (s *Server) Router() http.Handler {
 			r.Get("/routes", s.handleAdminRoutes)
 			r.Get("/provider-preflight", s.handleAdminGetProviderPreflight)
 			r.Post("/provider-preflight", s.handleAdminRunProviderPreflight)
+			// Unified capability inventory (M1.5 slice 2)
+			r.Get("/capabilities", s.handleAdminCapabilities)
+
+			// AR-012 candidate evaluation console (T10, eval.view)
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePermission("eval.view"))
+				r.Get("/ar-review/jobs", s.handleAdminListArReviewJobs)
+				r.Get("/ar-review/jobs/{jobId}/artifacts/{kind}", s.handleAdminReadArReviewArtifact)
+			})
 
 			// Traces (audit.view)
 			r.Group(func(r chi.Router) {
@@ -1212,6 +1241,13 @@ func (s *Server) Router() http.Handler {
 
 			// SSE Notifications (admin test — any admin)
 			r.Post("/sse/notify", s.handleSSESendNotification)
+
+			// Ops Patrol Alerts (any admin; ack/resolve audit-logged)
+			r.Get("/alerts", s.handleAdminListAlerts)
+			r.Post("/alerts/{id}/ack", s.handleAdminAckAlert)
+			r.Post("/alerts/{id}/resolve", s.handleAdminResolveAlert)
+			r.Get("/patrol/config", s.handleAdminGetPatrolConfig)
+			r.Put("/patrol/config", s.handleAdminUpdatePatrolConfig)
 		})
 	})
 
@@ -1271,10 +1307,18 @@ func (s *Server) Start(ctx context.Context) error {
 		if s.canaryMonitor != nil {
 			s.canaryMonitor.Stop()
 		}
+		if s.opsPatrol != nil {
+			s.opsPatrol.Stop()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.WriteTimeout)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
 	}()
+
+	if s.governedTrigger != nil { go s.governedTrigger.Serve(ctx) }
+
+	// AR-012 candidate evaluation worker (nil when the sidecar is disabled).
+	if s.arReview != nil { go s.arReview.Serve(ctx) }
 
 	// Start SSE topic push background task
 	go s.PushTopicsFromDB(ctx, 30*time.Second)
@@ -2134,12 +2178,30 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 // browser sends identities only; tenant-scoped material content is read here.
 // Task12 replaces this projection with MaterialArtifactProvider.
 func (s *Server) resolveLegacyMaterialReferences(parent context.Context, userID string, refs []websocket.MaterialReference) ([]string, error) {
+	resolved, err := s.resolveMaterialContents(parent, userID, refs)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(resolved))
+	for _, material := range resolved {
+		result = append(result, fmt.Sprintf("[material_ref:%s source:%s title:%s]\n%s",
+			material.MaterialID, material.SourceRef, material.Title, material.Content))
+	}
+	return result, nil
+}
+
+// resolveMaterialContents resolves browser-supplied material identities onto
+// tenant-scoped, owner-authorized raw contents (resolvedMaterial in
+// governed_runners.go). The research executors read these bytes by
+// material_ref from the content store — no external download, no
+// client-controlled path.
+func (s *Server) resolveMaterialContents(parent context.Context, userID string, refs []websocket.MaterialReference) ([]resolvedMaterial, error) {
 	if s.kbMgr == nil || strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("material store unavailable")
 	}
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	result := make([]string, 0, len(refs))
+	result := make([]resolvedMaterial, 0, len(refs))
 	seen := map[string]struct{}{}
 	for _, ref := range refs {
 		if strings.TrimSpace(ref.MaterialID) == "" {
@@ -2161,7 +2223,10 @@ func (s *Server) resolveLegacyMaterialReferences(parent context.Context, userID 
 		if err != nil || document == nil || strings.TrimSpace(document.Content) == "" {
 			return nil, fmt.Errorf("material content unavailable")
 		}
-		result = append(result, fmt.Sprintf("[material_ref:%s source:%s title:%s]\n%s", material.ID, expectedRef, material.Title, document.Content))
+		content := []byte(document.Content)
+		sum := sha256.Sum256(content)
+		result = append(result, resolvedMaterial{MaterialID: material.ID, Title: material.Title,
+			SourceRef: expectedRef, MediaType: "text/plain", Content: content, contentSum: sum})
 	}
 	return result, nil
 }

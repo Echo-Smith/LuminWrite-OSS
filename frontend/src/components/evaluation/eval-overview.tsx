@@ -21,8 +21,8 @@ export function EvalOverview({ overview, runs, releases, onNavigate }: {
         description="只展示 WABench v1 可比较证据。历史 0—1 分和旧风格分组不进入这里的质量均分。"
       />
 
-      <section className="grid gap-0 border-y border-[#161917]/20 dark:border-border xl:grid-cols-[1.4fr_0.6fr]">
-        <div className="py-6 xl:border-r xl:border-[#161917]/15 xl:pr-8 dark:xl:border-border">
+      <section className="grid gap-0 border-y dark:border-border xl:grid-cols-[1.4fr_0.6fr]">
+        <div className="py-6 xl:border-r xl:border-border/60 xl:pr-8 dark:xl:border-border">
           <div className="flex items-start gap-4">
             <div className={`mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${hasBlockingSignal ? "bg-red-700/10 text-red-800 dark:text-red-300" : "bg-emerald-700/10 text-emerald-800 dark:text-emerald-300"}`}>
               {hasBlockingSignal ? <ShieldAlert className="h-5 w-5" aria-hidden="true" /> : <CircleCheck className="h-5 w-5" aria-hidden="true" />}
@@ -40,7 +40,7 @@ export function EvalOverview({ overview, runs, releases, onNavigate }: {
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
-            <Button className="min-h-11 gap-2 bg-[#161917] text-[#f4f3ee] hover:bg-[#161917]/85 dark:bg-foreground dark:text-background" onClick={() => onNavigate("release")}>
+            <Button className="min-h-11 gap-2 bg-foreground text-[color:var(--desk-canvas)] hover:bg-foreground/85 dark:bg-foreground dark:text-background" onClick={() => onNavigate("release")}>
               查看发布证据 <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </Button>
             <Button variant="outline" className="min-h-11" onClick={() => onNavigate("badcases")}>Inspect Badcases</Button>

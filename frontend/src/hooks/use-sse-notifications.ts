@@ -104,6 +104,20 @@ export function useSSENotifications() {
           toast.info(data.title || "通知", data.body, 5000);
         } catch { /* ignore */ }
       });
+
+      // ── 运维告警（ops patrol 产生，服务端仅定向推送给管理员）──
+      es.addEventListener("admin:alert", (e) => {
+        try {
+          const data = JSON.parse((e as MessageEvent).data);
+          const title = data.title || "运维告警";
+          const body = data.detail || data.body;
+          if (data.severity === "critical") {
+            toast.error(title, body, 8000);
+          } else {
+            toast.warning(title, body, 6000);
+          }
+        } catch { /* ignore */ }
+      });
     };
 
     connect();

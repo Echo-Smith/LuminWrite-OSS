@@ -17,7 +17,7 @@ func TestThreeB2AdaptersShareOfflineAuthorityBoundary(t *testing.T) {
 	}
 	engineAdapter, err := NewEngineStepExecutorAdapter(descriptor("candidate.engine"), request.Node.Capability,
 		request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")},
-		EngineStepRunner{StepFactory: func() engine.Step { return &fixedEngineStep{} }, Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
+		EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &fixedEngineStep{}, nil }, Usage: func(*engine.ExecutionContext) (LegacyUsage, error) {
 			return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil
 		}})
 	if err != nil {
@@ -151,25 +151,25 @@ type foreignStepEmitter struct {
 	deltas int
 }
 
-func (emitter *foreignStepEmitter) StepStart(engine.StepName, int)                  {}
-func (emitter *foreignStepEmitter) StepComplete(engine.StepName, interface{}, int64) {}
-func (emitter *foreignStepEmitter) StreamDelta(string)                              { emitter.deltas++ }
-func (emitter *foreignStepEmitter) StreamReset()                                    {}
-func (emitter *foreignStepEmitter) ReasoningDelta(string)                           {}
-func (emitter *foreignStepEmitter) ArticleTitle(string)                             {}
-func (emitter *foreignStepEmitter) StreamDone(string)                               {}
+func (emitter *foreignStepEmitter) StepStart(engine.StepName, int)                              {}
+func (emitter *foreignStepEmitter) StepComplete(engine.StepName, interface{}, int64)            {}
+func (emitter *foreignStepEmitter) StreamDelta(string)                                          { emitter.deltas++ }
+func (emitter *foreignStepEmitter) StreamReset()                                                {}
+func (emitter *foreignStepEmitter) ReasoningDelta(string)                                       {}
+func (emitter *foreignStepEmitter) ArticleTitle(string)                                         {}
+func (emitter *foreignStepEmitter) StreamDone(string)                                           {}
 func (emitter *foreignStepEmitter) AwaitInput(engine.StepName, interface{}, []string, int, int) {}
-func (emitter *foreignStepEmitter) Paused(engine.StepName, interface{})             {}
-func (emitter *foreignStepEmitter) PausedWithReason(engine.StepName, interface{}, string) {}
-func (emitter *foreignStepEmitter) Resumed(engine.StepName)                         {}
-func (emitter *foreignStepEmitter) Error(string, string, engine.StepName)           {}
-func (emitter *foreignStepEmitter) Completed(string, string, interface{}, interface{}) {}
-func (emitter *foreignStepEmitter) Cancelled()                                      {}
-func (emitter *foreignStepEmitter) Compaction(int, int, string, uint64, string)     {}
+func (emitter *foreignStepEmitter) Paused(engine.StepName, interface{})                         {}
+func (emitter *foreignStepEmitter) PausedWithReason(engine.StepName, interface{}, string)       {}
+func (emitter *foreignStepEmitter) Resumed(engine.StepName)                                     {}
+func (emitter *foreignStepEmitter) Error(string, string, engine.StepName)                       {}
+func (emitter *foreignStepEmitter) Completed(string, string, interface{}, interface{})          {}
+func (emitter *foreignStepEmitter) Cancelled()                                                  {}
+func (emitter *foreignStepEmitter) Compaction(int, int, string, uint64, string)                 {}
 
 func TestEngineStepAdapterRejectsLegacyEmitters(t *testing.T) {
 	request := legacyRequest([]byte("contract"))
-	runner := EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} }, Emitter: &foreignStepEmitter{},
+	runner := EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &emittingEngineStep{}, nil }, Emitter: &foreignStepEmitter{},
 		Usage: func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true}, nil }}
 	adapter, err := NewEngineStepExecutorAdapter(ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
 		request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, runner)
@@ -184,7 +184,9 @@ func TestEngineStepAdapterRejectsLegacyEmitters(t *testing.T) {
 
 func TestEngineStepAdapterRunsOnNilOrGovernedEmitterOnly(t *testing.T) {
 	request := legacyRequest([]byte("contract"))
-	usage := func(*engine.ExecutionContext) (LegacyUsage, error) { return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil }
+	usage := func(*engine.ExecutionContext) (LegacyUsage, error) {
+		return LegacyUsage{Measured: true, InputTokens: 1, OutputTokens: 2}, nil
+	}
 	for _, tt := range []struct {
 		name    string
 		emitter engine.EventEmitter
@@ -193,7 +195,7 @@ func TestEngineStepAdapterRunsOnNilOrGovernedEmitterOnly(t *testing.T) {
 		{"governed observer emitter", NewGovernedStepEmitter()},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			runner := EngineStepRunner{StepFactory: func() engine.Step { return &emittingEngineStep{} }, Emitter: tt.emitter, Usage: usage}
+			runner := EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &emittingEngineStep{}, nil }, Emitter: tt.emitter, Usage: usage}
 			adapter, err := NewEngineStepExecutorAdapter(ExecutorDescriptor{ExecutorID: "candidate.engine", Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction}},
 				request.Node.Capability, request.Node.CapabilityVersion, []writingplan.Permission{"model.invoke"}, &memoryGateway{body: []byte("contract")}, runner)
 			if err != nil {

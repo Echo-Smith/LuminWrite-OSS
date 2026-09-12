@@ -21,7 +21,7 @@ export function EvalCandidates({ items }: { items: WABenchCandidateItem[] }) {
     <div className="space-y-7">
       <EvalSectionHeader eyebrow="Immutable manifests / 03" title="比较的不是“某个模型”，而是整套候选版本" description="Prompt、Memory、模型、代码、工具与 feature flag 全部冻结。同一 candidateId 不能覆写为另一套配置。" />
       {items.length === 0 ? <EvalEmptyState icon={Boxes} title="还没有冻结候选" description="运行前必须通过 Admin API 写入完整 manifest；Memory 开启时必须包含 memoryHash。" /> : (
-        <div className="space-y-0 border-y border-[#161917]/20 dark:border-border">
+        <div className="space-y-0 border-y border-border/60 dark:border-border">
           {items.map((item) => {
             const memoryEnabled = item.featureFlags.memoryEnabled === true;
             const sourceGate = item.featureFlags.sourceEvidenceGateEnabled !== false;

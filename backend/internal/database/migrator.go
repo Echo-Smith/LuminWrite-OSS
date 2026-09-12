@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"embed"
 	"encoding/hex"
 	"fmt"
@@ -11,6 +12,23 @@ import (
 	"strings"
 	"time"
 )
+
+// migrationDB is the subset of database operations the migration engine
+// needs. Both *DB (the pooled wrapper) and *sql.Conn (a single pinned
+// connection) satisfy it, so MigrateDB can run the whole migration on one
+// connection while tests keep calling the helpers with the pool.
+type migrationDB interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+// migrationAdvisoryLockKey is a fixed application-wide advisory-lock key that
+// serializes concurrent migration runs — multiple test binaries sharing one
+// fresh TEST_DATABASE_URL, or multiple backend instances migrating at startup.
+// Without it, two migrators both read an empty schema_migrations, both apply
+// the same migration, and collide on the primary key or on non-idempotent DDL.
+const migrationAdvisoryLockKey int64 = 7258234
 
 // ─── 迁移引擎 ─────────────────────────────────────────────
 //
@@ -30,7 +48,7 @@ type migrationRecord struct {
 }
 
 // ensureMigrationsTable 创建 schema_migrations 追踪表（如果不存在）
-func ensureMigrationsTable(ctx context.Context, db *DB) error {
+func ensureMigrationsTable(ctx context.Context, db migrationDB) error {
 	_, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     VARCHAR(256) PRIMARY KEY,
@@ -45,7 +63,7 @@ func ensureMigrationsTable(ctx context.Context, db *DB) error {
 }
 
 // getAppliedMigrations 查询已应用的迁移记录
-func getAppliedMigrations(ctx context.Context, db *DB) (map[string]migrationRecord, error) {
+func getAppliedMigrations(ctx context.Context, db migrationDB) (map[string]migrationRecord, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT version, checksum, applied_at FROM schema_migrations
 	`)
@@ -105,7 +123,7 @@ func discoverMigrations(fs embed.FS) ([]string, error) {
 }
 
 // runMigration 在事务中执行单条迁移
-func runMigration(ctx context.Context, db *DB, version, sqlContent, checksum string) error {
+func runMigration(ctx context.Context, db migrationDB, version, sqlContent, checksum string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx for migration %s: %w", version, err)
@@ -145,8 +163,33 @@ func runMigration(ctx context.Context, db *DB, version, sqlContent, checksum str
 //     - 已应用 → 校验 checksum（防止篡改）
 //     - 未应用 → 在事务中执行 + 记录
 func MigrateDB(ctx context.Context, db *DB, fs embed.FS) error {
+	// Serialize concurrent migrators on a session-level advisory lock held by
+	// one pinned connection for the whole run. The lock is taken BEFORE the
+	// applied-migrations snapshot so a second migrator waits, then re-reads a
+	// complete schema and skips everything. Running the migrations on the same
+	// pinned connection means a pool of size 1 cannot deadlock (the lock
+	// holder never needs a second connection).
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockKey); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	defer func() {
+		// Unlock on the live session before the connection returns to the
+		// pool; a fresh context so a cancelled caller ctx cannot strand the
+		// lock (session end would release it anyway).
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", migrationAdvisoryLockKey); err != nil {
+			slog.Warn("release migration advisory lock failed", "error", err)
+		}
+	}()
+
 	// 1. 确保追踪表存在
-	if err := ensureMigrationsTable(ctx, db); err != nil {
+	if err := ensureMigrationsTable(ctx, conn); err != nil {
 		return err
 	}
 	slog.Info("schema_migrations table ready")
@@ -162,7 +205,7 @@ func MigrateDB(ctx context.Context, db *DB, fs embed.FS) error {
 	slog.Info("discovered migrations", "count", len(versions))
 
 	// 3. 查询已应用的迁移
-	applied, err := getAppliedMigrations(ctx, db)
+	applied, err := getAppliedMigrations(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -190,7 +233,7 @@ func MigrateDB(ctx context.Context, db *DB, fs embed.FS) error {
 
 		// 未应用 — 执行
 		start := time.Now()
-		if err := runMigration(ctx, db, version, sqlContent, checksum); err != nil {
+		if err := runMigration(ctx, conn, version, sqlContent, checksum); err != nil {
 			return fmt.Errorf("migration %s failed: %w", version, err)
 		}
 		duration := time.Since(start)

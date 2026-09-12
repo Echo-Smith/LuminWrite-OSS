@@ -28,7 +28,7 @@ export function EvalDatasets({ items, onSeedRedTeam, seeding, canMutate = false 
       {items.length === 0 ? (
         <EvalEmptyState icon={DatabaseZap} title="还没有 WABench 数据集" description="可先创建开发集，或写入独立红队套件。私有 Holdout 正文不会出现在列表 API 中。" action={canMutate ? { label: "写入红队套件", onClick: onSeedRedTeam } : undefined} />
       ) : (
-        <div className="overflow-x-auto border-y border-[#161917]/20 dark:border-border">
+        <div className="overflow-x-auto border-y border-border/60 dark:border-border">
           <table className="eval-data-table w-full min-w-[980px] text-left text-sm">
             <thead><tr><th>数据集</th><th>分区</th><th>状态</th><th>样本</th><th>任务覆盖</th><th>隐私</th><th>内容哈希</th></tr></thead>
             <tbody>{items.map((item) => (

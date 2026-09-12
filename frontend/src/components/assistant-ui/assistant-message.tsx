@@ -8,13 +8,14 @@
  *   data parts      → OutlineTool / FeedbackBar / ReviewCard
  */
 import { useEffect, useState } from "react";
-import { Copy, Check, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType, Save, Loader2 } from "lucide-react";
+import { Copy, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType, Save, Loader2 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, CompactionPart } from "@/stores/agent-store";
 import type { WriteMode } from "@/lib/types";
 import { exportMarkdown, exportWord, exportPDF } from "@/lib/export-utils";
 import { useAgentStore } from "@/stores/agent-store";
+import { Lumi, type LumiState } from "@/components/lumi/lumi";
 import { MarkdownContent } from "./markdown-content";
 import { OutlineTool } from "@/components/tools/outline-tool";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
@@ -28,9 +29,10 @@ interface AssistantMessageProps {
   traceId: string | null;
   version?: number;
   totalVersions?: number;
+  suppressArticle?: boolean;
 }
 
-export function AssistantMessage({ message, traceId, version = 1, totalVersions = 1 }: AssistantMessageProps) {
+export function AssistantMessage({ message, traceId, version = 1, totalVersions = 1, suppressArticle = false }: AssistantMessageProps) {
 
   // 分离 tool-call parts 和其他 parts
   const toolCallParts = message.parts.filter(
@@ -53,15 +55,26 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
   const beforeTextParts = firstTextIdx >= 0 ? otherParts.slice(0, firstTextIdx) : otherParts;
   // text parts
   const textParts = otherParts.filter((p): p is TextPart => p.type === "text");
+  const isDocumentDelivery = Boolean(message.articleTitle)
+    || toolCallParts.some((part) => part.toolName === "write" || part.toolName === "write_article")
+    || otherParts.some((part) => part.type === "data" && (part.dataType === "review" || part.dataType === "feedback"));
+  const visibleTextParts = suppressArticle && isDocumentDelivery ? [] : textParts;
   // text 之后的 data parts（review 等）
   const afterTextParts = firstTextIdx >= 0 ? otherParts.slice(firstTextIdx + 1).filter((p) => p.type !== "text") : [];
 
   const isRunning = message.status === "running";
   const hasContent = message.parts.length > 0;
+  // Lumi 头像：出错断墨 → 等待思考圆点 → 生成中摆笔 → 完成静置
+  const lumiState: LumiState =
+    message.status === "error" ? "error"
+    : isRunning ? (hasContent ? "writing" : "thinking")
+    : "idle";
 
   return (
-    <div className="px-4 py-3 anim-fade-up">
-      <div className="space-y-2">
+    <div className={cn("px-4 py-3 anim-fade-up", suppressArticle && "assistant-process-message")}>
+      <div className="flex items-start gap-2.5">
+        <Lumi state={lumiState} size={24} className="mt-0.5 shrink-0 text-foreground" />
+        <div className="min-w-0 flex-1 space-y-2">
         {/* 对话历史压缩状态条 */}
         {compactionParts.length > 0 && (
           <CompactionBanner part={compactionParts[compactionParts.length - 1]} />
@@ -79,13 +92,13 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
 
         {/* text 之前的 data parts（如 outline） */}
         {beforeTextParts
-          .filter((p): p is DataPart => p.type === "data")
+          .filter((p): p is DataPart => p.type === "data" && (!suppressArticle || p.dataType !== "feedback"))
           .map((part, i) => (
             <DataPartRenderer key={`before-${i}`} part={part} traceId={traceId} />
           ))}
 
         {/* 流式文章输出 — 无对话框包裹，直接输出内容 */}
-        {textParts.length > 0 && (
+        {visibleTextParts.length > 0 && (
           <div>
             {/* 版本标签 + 文章标题 */}
             {((message.articleTitle || totalVersions > 1) && (
@@ -103,7 +116,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
                 )}
               </div>
             ))}
-            {textParts.map((part, i) => (
+            {visibleTextParts.map((part, i) => (
               <div key={i}>
                 <StreamText streaming={part.streaming ?? false}>
                   <MarkdownContent content={part.text} />
@@ -114,21 +127,28 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
               </div>
             ))}
             {/* 流式字数进度条 */}
-            {isRunning && textParts.some((p) => p.streaming) && (
-              <WordCountProgress text={textParts.map((t) => t.text).join("")} />
+            {isRunning && visibleTextParts.some((p) => p.streaming) && (
+              <WordCountProgress text={visibleTextParts.map((t) => t.text).join("")} />
             )}
             {/* 消息操作按钮 */}
-            {!isRunning && textParts.some((p) => p.text.trim()) && (
-              <MessageActions text={textParts.map((t) => t.text).join("")} title={message.articleTitle} traceId={traceId} pointsUsed={message.pointsUsed} />
+            {!isRunning && visibleTextParts.some((p) => p.text.trim()) && (
+              <MessageActions text={visibleTextParts.map((t) => t.text).join("")} title={message.articleTitle} traceId={traceId} pointsUsed={message.pointsUsed} />
             )}
+          </div>
+        )}
+
+        {suppressArticle && isDocumentDelivery && textParts.length > 0 && (
+          <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+            <FileText className="h-3.5 w-3.5 shrink-0" />
+            <span>正文已同步到文档纸面</span>
           </div>
         )}
 
         {/* text 之后的 data parts（仅 feedback，review 已移至右侧详情面板） */}
         {afterTextParts
-          .filter((p): p is DataPart => p.type === "data" && p.dataType !== "review")
+          .filter((p): p is DataPart => p.type === "data" && p.dataType !== "review" && (!suppressArticle || p.dataType !== "feedback"))
           .map((part, i) => (
-            <DataPartRenderer key={`after-${i}`} part={part} traceId={traceId} article={textParts.map(t => t.text).join("")} />
+            <DataPartRenderer key={`after-${i}`} part={part} traceId={traceId} article={suppressArticle ? "" : textParts.map(t => t.text).join("")} />
           ))}
 
         {/* 等待提示 */}
@@ -137,6 +157,7 @@ export function AssistantMessage({ message, traceId, version = 1, totalVersions 
             <TypingDots label="正在思考中" shimmer />
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -155,26 +176,11 @@ function ThinkingPanel({ parts, isRunning }: { parts: ReasoningPart[]; isRunning
   // If the last part is completed, show nothing (it's from a previous step)
   const currentText = lastPart && !lastPart.completed ? lastPart.text : "";
   const [open, setOpen] = useState(false);
-  const [userToggled, setUserToggled] = useState(false);
-
-  // 运行中自动展开，完成后自动折叠（除非用户手动操作过）
-  useEffect(() => {
-    if (isRunning && !userToggled) {
-      setOpen(true);
-    } else if (!isRunning && !userToggled) {
-      setOpen(false);
-    }
-  }, [isRunning, userToggled]);
-
-  const handleToggle = (next: boolean) => {
-    setUserToggled(true);
-    setOpen(next);
-  };
 
   if (!currentText.trim()) return null;
 
   return (
-    <Collapsible open={open} onOpenChange={handleToggle}>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
         <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-ui py-1 group">
           <Brain className={cn(
@@ -246,7 +252,7 @@ function DataPartRenderer({
 /**
  * 质量评分卡片
  */
-function ReviewCard({ data }: { data: Record<string, unknown> }) {
+function _ReviewCard({ data }: { data: Record<string, unknown> }) {
   const scores = (data.scores ?? {}) as Record<string, number>;
   const passed = data.passed as boolean | undefined;
   const issues = (data.issues ?? []) as Array<Record<string, unknown>>;

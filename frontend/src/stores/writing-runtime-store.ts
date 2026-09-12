@@ -8,6 +8,9 @@ import type {
   WritingArtifactEventPayload,
   WritingEvent,
 } from "../lib/writing-runtime-types.ts";
+import type { GateView, ResearchProgressView } from "../lib/research-api.ts";
+import { fetchResearchProgress, fetchRunShim, isMockResearchRunId, mockNodeStatuses } from "../lib/research-api.ts";
+import { applyResearchEvent, initialResearchSlice, mergeGateView, mergeResearchProgress, type ResearchSlice } from "./research-slice.ts";
 
 export interface WritingRuntimeProjection {
   document: DocumentRecord | null;
@@ -21,6 +24,8 @@ export interface WritingRuntimeProjection {
   quality: UserQualitySummary | null;
   auditReport: AuditQualityReport | null;
   events: WritingEvent[];
+  /** 研究综述切片：进度投影 + 两个 gate 的最新已知状态。 */
+  research: ResearchSlice;
 }
 
 export const initialWritingRuntimeProjection: WritingRuntimeProjection = {
@@ -35,6 +40,7 @@ export const initialWritingRuntimeProjection: WritingRuntimeProjection = {
   quality: null,
   auditReport: null,
   events: [],
+  research: initialResearchSlice,
 };
 
 export function projectWritingEvent(
@@ -48,6 +54,9 @@ export function projectWritingEvent(
     ...current,
     lastSequence: event.sequence,
     events: [...current.events, event].slice(-200),
+    // 研究事件家族（research.progress / gate.pending / gate.decided / 未来扩展）
+    // 由独立 reducer 消费；未知研究事件类型只更新序列，不使页面崩溃。
+    research: applyResearchEvent(current.research, event),
   };
 
   if (event.type === "writing.run.status") {
@@ -108,6 +117,10 @@ interface WritingRuntimeActions {
   refreshRunEvents: (runId: string, token?: string) => Promise<void>;
   controlRun: (runId: string, action: "pause" | "resume" | "cancel", token?: string) => Promise<void>;
   applyEvent: (event: WritingEvent) => void;
+  /** 研究综述：以 GET 为准重建进度与待确认 gate（刷新/断线重连后调用）。 */
+  refreshResearch: (runId: string, token?: string) => Promise<void>;
+  /** 用一次 GET gate 覆盖本地 gate 状态（确认 202 后轮询走这里）。 */
+  applyGateView: (gate: GateView) => void;
   resetRuntime: () => void;
 }
 
@@ -132,13 +145,31 @@ export const useWritingRuntimeStore = create<WritingRuntimeProjection & WritingR
   loadRun: async (runId, token) => {
     set({ loading: true, error: null });
     try {
-      const run = await writingRequest<RuntimeRun>(`/api/v2/runs/${encodeURIComponent(runId)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      set({ run, lastSequence: 0, events: [], nodeStatuses: {}, artifacts: [], provisionalDeltas: {}, loading: false });
+      // mock 研究运行：不请求真实 /runs/{id}，由 research-api 提供投影。
+      const run = isMockResearchRunId(runId)
+        ? await fetchRunShim(runId)
+        : await writingRequest<RuntimeRun>(`/api/v2/runs/${encodeURIComponent(runId)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      // mock 的 nodeStatuses 投影与真实 writing.node.status 事件语义一致
+      // （质量门暂停演示需要 node_quality=failed）。
+      const mockStatuses = isMockResearchRunId(runId) ? mockNodeStatuses(runId) : {};
+      set({
+        run,
+        lastSequence: 0,
+        events: [],
+        nodeStatuses: Object.keys(mockStatuses).length > 0 ? mockStatuses : {},
+        artifacts: [],
+        provisionalDeltas: {},
+        research: { ...initialResearchSlice, runId: isMockResearchRunId(runId) ? runId : null },
+        loading: false,
+      });
+      if (isMockResearchRunId(runId)) await get().refreshResearch(runId, token);
     } catch (error) {
       set({ error: error instanceof Error ? error.message : "无法加载运行", loading: false });
     }
   },
   refreshRunEvents: async (runId, token) => {
+    // mock 运行没有真实事件流；状态由 research-api 的 GET 投影驱动。
+    if (isMockResearchRunId(runId)) return;
     try {
       const page = await writingRequest<{ events: WritingEvent[]; next_sequence: number }>(
         `/api/v2/runs/${encodeURIComponent(runId)}/events?after=${get().lastSequence}`,
@@ -165,5 +196,22 @@ export const useWritingRuntimeStore = create<WritingRuntimeProjection & WritingR
     }
   },
   applyEvent: (event) => set((state) => projectWritingEvent(state, event)),
+  refreshResearch: async (runId, token) => {
+    try {
+      const progress = await fetchResearchProgress(runId, token);
+      set((state) => {
+        const research = mergeResearchProgress(state.research, progress);
+        const activeGate = progress.active_gate;
+        const gates = activeGate
+          ? mergeGateView(research.gates, activeGate)
+          : research.gates;
+        // 恢复待确认页面：从 GET 投影重建，无需等待事件流。
+        return { research: { ...research, runId, gates, restoredFromGetAt: Date.now(), restoredFromGet: research.restoredFromGet + 1 } };
+      });
+    } catch {
+      // 非研究运行或暂时不可用时保持现状：研究切片只是没有数据，不是页面错误。
+    }
+  },
+  applyGateView: (gate) => set((state) => ({ research: { ...state.research, gates: mergeGateView(state.research.gates, gate) } })),
   resetRuntime: () => set({ ...initialWritingRuntimeProjection, loading: false, error: null }),
 }));

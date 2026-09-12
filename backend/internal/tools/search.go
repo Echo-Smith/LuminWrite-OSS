@@ -65,6 +65,7 @@ type SearchClient struct {
 	extraHot          *ExtraHotClient
 	bing              *BingClient
 	anysearch         *AnySearchClient
+	searxng           *SearXNGClient
 	credibilityLookup engine.CredibilityLookup // optional: enrich results with source credibility
 }
 
@@ -77,10 +78,15 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 	bingEnabled bool, bingBaseURL string, bingTimeout time.Duration,
 	tencentCLIPath string, tencentCLITimeout time.Duration,
 	anysearchAPIKey, anysearchEndpoint string, anysearchTimeout time.Duration,
+	searxngBaseURL string, searxngTimeout time.Duration,
 ) *SearchClient {
-	// The OSS edition deliberately ignores commercial source configuration.
-	// The long legacy signature remains temporarily for source compatibility;
-	// Task13 moves edition-specific construction out of the shared interface.
+	c := &SearchClient{}
+
+	// The OSS edition deliberately ignores commercial source configuration
+	// (Tavily / Zhihu / Tencent / Weibo / ExtraHot / Bing / AnySearch): paid
+	// sources are a Commercial responsibility. The long legacy signature
+	// remains temporarily for source compatibility; Task13 moves
+	// edition-specific construction out of the shared interface.
 	_ = []any{
 		tavilyAPIKey, tavilyEndpoint, tavilyTimeout,
 		zhihuEnabled, zhihuBaseURL, zhihuAccessSecret, zhihuTimeout,
@@ -91,7 +97,14 @@ func NewSearchClient(tavilyAPIKey, tavilyEndpoint string, tavilyTimeout time.Dur
 		tencentCLIPath, tencentCLITimeout,
 		anysearchAPIKey, anysearchEndpoint, anysearchTimeout,
 	}
-	return &SearchClient{}
+
+	// SearXNG: the one exception — the OSS edition's key-free self-hosted
+	// default source. Inactive until SEARXNG_BASE_URL points at an instance.
+	if searxngBaseURL != "" {
+		c.searxng = NewSearXNGClient(searxngBaseURL, searxngTimeout)
+	}
+
+	return c
 }
 
 // SetCredibilityLookup sets an optional credibility lookup provider.
@@ -101,7 +114,8 @@ func (c *SearchClient) SetCredibilityLookup(lookup engine.CredibilityLookup) {
 	c.credibilityLookup = lookup
 }
 
-// HasSources returns true if at least one search source is configured.
+// HasSources reports whether any source is actually initialized. On the OSS
+// edition only SearXNG can satisfy this.
 func (c *SearchClient) HasSources() bool {
 	return c.HasExternalSources()
 }
@@ -115,6 +129,8 @@ func (c *SearchClient) HasExternalSources() bool {
 
 // Capabilities returns no paid identities in OSS. The provider extension
 // contract is public; concrete paid sources are a Commercial responsibility.
+// SearXNG is the edition's self-hosted source and is always installed; it is
+// configured only when SEARXNG_BASE_URL points at an instance.
 func (c *SearchClient) Capabilities() []SearchCapability {
 	return []SearchCapability{}
 }
@@ -208,6 +224,21 @@ func (c *SearchClient) Search(ctx context.Context, query string, maxTotal int) [
 			r, err := c.bing.Search(ctx, query, maxPerSource)
 			if err != nil {
 				slog.Warn("bing search failed", "error", err, "query", query)
+				return
+			}
+			mu.Lock()
+			results = append(results, r...)
+			mu.Unlock()
+		}()
+	}
+
+	if c.searxng != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := c.searxng.Search(ctx, query, maxPerSource)
+			if err != nil {
+				slog.Warn("searxng search failed", "error", err, "query", query)
 				return
 			}
 			mu.Lock()
@@ -338,6 +369,9 @@ func (c *SearchClient) activeSources() []string {
 	}
 	if c.extraHot != nil {
 		sources = append(sources, "extra_hot")
+	}
+	if c.searxng != nil {
+		sources = append(sources, "searxng")
 	}
 	if c.anysearch != nil {
 		sources = append(sources, "anysearch")

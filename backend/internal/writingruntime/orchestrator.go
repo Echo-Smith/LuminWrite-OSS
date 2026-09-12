@@ -29,6 +29,12 @@ var (
 	ErrNoReadyNode      = errors.New("writingruntime: no ready node")
 )
 
+// InitialCaptureNodeID is the synthetic node id the M1.0 delivery protocol's
+// initial-artifact capture is recorded under. It is bookkeeping, not a plan
+// node: recovery ignores it, and the checkpoint manifest counts only plan
+// nodes toward completion.
+const InitialCaptureNodeID = "initial"
+
 type RuntimeStore interface {
 	LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error)
 	LoadActivePlan(context.Context, string) (writingstore.PlanRecord, error)
@@ -36,7 +42,11 @@ type RuntimeStore interface {
 	ListRunArtifacts(context.Context, string) ([]writingstore.ArtifactRecord, error)
 	StartNodeAttempt(context.Context, writingstore.NodeAttempt, writingstore.TraceContext) (writingstore.NodeAttempt, bool, error)
 	CompleteNodeAttempt(context.Context, writingstore.AttemptCompletion) error
-	CommitInitialArtifacts(context.Context, writingstore.NodeAttempt, []writingstore.ArtifactRecord, writingstore.TraceContext) error
+	// SaveInitialArtifacts persists the run's initial artifacts as real
+	// artifact rows on first capture: the lineage edges of every downstream
+	// node output reference them, and the artifact FKs require the rows.
+	// Idempotent: re-running a capture must not duplicate rows.
+	SaveInitialArtifacts(context.Context, []writingstore.ArtifactRecord) error
 }
 
 // MaterialSnapshotRepository persists the run-level initial material manifest.
@@ -150,6 +160,16 @@ func (provider ContractArtifactProvider) InitialArtifacts(ctx context.Context, r
 		MediaType: "application/json", ContentRef: fmt.Sprintf("db://writing_contracts/%s/%d", run.ContractID, run.ContractVersion)}}, nil
 }
 
+// BudgetBoundaryGuard is the research budget hook (design.md §3/§7): given
+// the next dispatchable node, it reports whether the run has reached the
+// proactive execution budget and should pause cleanly instead of dispatching.
+// The research executors (T05/T06) supply the real node-class policy; the
+// orchestrator only owns the mechanics: save a progress checkpoint and
+// transition to paused so the run stays resumable and decidable.
+type BudgetBoundaryGuard interface {
+	BudgetBoundaryReached(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, node writingplan.PlanNode) (bool, string)
+}
+
 type Orchestrator struct {
 	Store        RuntimeStore
 	Capabilities *writingplan.CapabilityRegistry
@@ -160,16 +180,46 @@ type Orchestrator struct {
 	Materials    MaterialSnapshotRepository
 	Telemetry    RuntimeTelemetry
 	Now          func() time.Time
+	// Delivery drives the M1.0 delivery-commit protocol after a successful
+	// node (docs/21 §21.8): draft commits its candidate document version,
+	// quality commits the delivery bundle. Nil disables the protocol (mode
+	// off / harness keeps its current behavior).
+	Delivery *DeliveryProtocol
 	// Subject resolves the rollout audience (user/tenant) for allowlist and
 	// percentage routing. Nil means executions route by run id.
 	Subject func(writingstore.RuntimeRun) string
+	// Context compiles per-attempt envelopes from the capability's manifest
+	// contract; Envelopes persists them. Nil Context disables the context
+	// shadow wiring entirely (M4a: compilation and audit only — required
+	// blocks going unsupplied never fail the node).
+	Context   ContextSource
+	Envelopes ContextEnvelopeSink
+	// ContextRuntime consumes envelope lifecycles for the M5 Context
+	// Runtime (docs/18 §18.5.6): pressure warn/compress with guarded
+	// pre-compression and named recovery paths. Nil disables pressure
+	// handling; Execute defaults it whenever Context wiring is present.
+	ContextRuntime *ContextRuntime
+	// Hooks are the M3 lifecycle observers (docs/27). Nil is the zero
+	// posture; Execute also auto-registers the telemetry projection hook
+	// whenever Telemetry is present, so the metric stream and the hook bus
+	// stay one pipeline.
+	Hooks []RuntimeHook
+	// BudgetBoundary lets the research path (T05/T06) pause the run at the
+	// proactive execution budget boundary instead of dispatching the next
+	// research read class node: a clean pause (checkpoint, paused
+	// transitions, resumable) rather than a failure (design.md §7). Nil
+	// disables the check — current behavior for all non-research plans.
+	BudgetBoundary BudgetBoundaryGuard
 
+	initOnce sync.Once
 	mu       sync.Mutex
 	controls map[string]*runControl
 	commands atomic.Uint64
+	bus      *hookBus
 }
 
 type runControl struct {
+	initOnce sync.Once
 	mu       sync.Mutex
 	intent   string
 	cancel   context.CancelFunc
@@ -190,9 +240,20 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if orchestrator == nil || orchestrator.Store == nil || orchestrator.Capabilities == nil || orchestrator.Executors == nil || orchestrator.State == nil || orchestrator.Checkpoints == nil || orchestrator.Initial == nil || orchestrator.Materials == nil {
 		return RunOutcome{}, ErrRuntimeNotReady
 	}
-	if orchestrator.Now == nil {
-		orchestrator.Now = func() time.Time { return time.Now().UTC() }
-	}
+	orchestrator.initOnce.Do(func() {
+		if orchestrator.Now == nil {
+			orchestrator.Now = func() time.Time { return time.Now().UTC() }
+		}
+		if orchestrator.Context != nil && orchestrator.ContextRuntime == nil {
+			orchestrator.ContextRuntime = &ContextRuntime{}
+		}
+		// M3 lifecycle bus (docs/27): the telemetry projection hook rides the
+		// bus so metrics and hook observers share one pipeline.
+		orchestrator.bus = newHookBus(orchestrator.Hooks...)
+		if orchestrator.Telemetry != nil {
+			orchestrator.bus.register(lifecycleTelemetryHook{telemetry: orchestrator.Telemetry})
+		}
+	})
 	control, err := orchestrator.acquire(runID)
 	if err != nil {
 		return RunOutcome{}, err
@@ -203,6 +264,8 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if err != nil {
 		return RunOutcome{}, err
 	}
+	orchestrator.bus.emit(ctx, LifecycleRunDispatched, LifecycleSnapshot{RunID: runID, DocumentID: run.DocumentID,
+		State: RunState(run.Status)})
 	planRecord, err := orchestrator.Store.LoadActivePlan(ctx, runID)
 	if err != nil {
 		return RunOutcome{}, err
@@ -219,13 +282,6 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	initial, err := orchestrator.initialArtifacts(ctx, run, planRecord)
 	if err != nil {
 		return RunOutcome{}, fmt.Errorf("load initial artifacts: %w", err)
-	}
-	// Persist the initial artifacts (contract, material snapshots) through a
-	// terminal pseudo attempt. writing_artifacts is deliberately FK-bound to a
-	// node attempt, so the attempt and all of its artifacts must commit in the
-	// same transaction; otherwise a real database correctly rejects the write.
-	if err := orchestrator.persistInitialArtifacts(ctx, run, planRecord, initial); err != nil {
-		return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not persist initial artifacts", err)
 	}
 	if planRecord.Envelope.StrategyDecision.ApprovalRequired && planRecord.ApprovalStatus != "approved" {
 		if RunState(run.Status) == StatePlanned {
@@ -248,6 +304,9 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if err != nil {
 		return RunOutcome{}, err
 	}
+	// pendingDelivery carries the quality node's delivery payload to the
+	// next checkpoint save (M1.0 delivery protocol, docs/21 §21.8).
+	var pendingDelivery *QualityDelivery
 	manifests := make(map[string]writingplan.CapabilityManifest)
 	for _, node := range plan.Nodes {
 		if manifest, ok := orchestrator.Capabilities.Get(node.Capability); ok {
@@ -275,11 +334,6 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		return RunOutcome{}, err
 	}
 	for _, artifact := range persisted {
-		// The node_initial rows mirror the in-memory initial artifacts; skip
-		// them here so downstream inputs never see duplicates.
-		if artifact.NodeID == "node_initial" {
-			continue
-		}
 		artifacts = append(artifacts, InputArtifact{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
 			ArtifactType: writingplan.ArtifactType(artifact.ArtifactType), ContentHash: artifact.ContentHash,
 			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef})
@@ -289,6 +343,7 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	nextAttempts := recovery.NextAttempts
 	spentCost, spentDuration := recovery.SpentCostUSD, recovery.SpentDurationMS
 	for len(completed) < len(plan.Nodes) {
+		// ── Decide: control intents and node readiness ──
 		if intent := controlIntent(control); intent != "" {
 			return orchestrator.finishControl(ctx, run, plan, completed, artifacts, spentCost, spentDuration, intent)
 		}
@@ -297,55 +352,69 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			_, _ = orchestrator.transition(ctx, runID, StateRunning, StateFailed, "dependency_deadlock")
 			return outcome(runID, StateFailed, completed, artifacts, spentCost), ErrNoReadyNode
 		}
+		// Proactive execution budget boundary (design.md §7): the research
+		// path may pause cleanly before the next dispatch instead of
+		// overrunning; the checkpoint carries no unsafe node so the run stays
+		// plainly resumable.
+		if orchestrator.BudgetBoundary != nil {
+			if reached, reason := orchestrator.BudgetBoundary.BudgetBoundaryReached(ctx, run, plan, node); reached {
+				return orchestrator.pauseAtBudgetBoundary(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, reason)
+			}
+		}
 		if node.Kind == writingplan.NodeHumanGate {
-			_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "human_gate")
-			_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "human_gate")
-			_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID})
-			return outcome(runID, StatePaused, completed, artifacts, spentCost), ErrApprovalRequired
+			// T02 atomic gate arrival (design.md §5.1): the pending gate, the
+			// waiting-gate checkpoint, the paused transitions, and the
+			// gate.pending event commit in ONE transaction. The gate node
+			// never enters UnsafeInFlight — a gate wait is not in-flight
+			// execution, so T00's recovery reconciliation does not block it.
+			gateKind, input := orchestrator.gateBinding(node, artifacts)
+			arrival := GateArrival{Run: run, Plan: plan, Node: node, PlanVersion: planRecord.PlanVersion,
+				GateKind: gateKind, Input: input, Completed: completed, Artifacts: artifacts,
+				SpentCostUSD: spentCost, SpentDurationMS: spentDuration}
+			pauseStore, pauseOK := orchestrator.Store.(GatePauseStore)
+			committer, commitOK := orchestrator.Checkpoints.(CheckpointTxCommitter)
+			if !pauseOK || !commitOK {
+				// Harnesses without the store-backed gate flow keep the
+				// legacy three-write pause (behavioral baseline for tests).
+				_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "human_gate")
+				_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "human_gate")
+				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
+				out := outcome(runID, StatePaused, completed, artifacts, spentCost)
+				out.HumanRequired = []string{node.NodeID}
+				return out, ErrApprovalRequired
+			}
+			if _, gateErr := orchestrator.PauseAtGate(ctx, pauseStore, committer, arrival); gateErr != nil {
+				return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not commit the gate pause", gateErr)
+			}
+			out := outcome(runID, StatePaused, completed, artifacts, spentCost)
+			out.HumanRequired = []string{node.NodeID}
+			return out, ErrApprovalRequired
 		}
-		manifest, exists := manifests[node.Capability]
-		if !exists || !manifest.Available {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, ErrExecutorNotFound)
-		}
-		if !permissionsContain(run.Permissions, manifest.Permissions) {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, ErrPermissionDenied)
-		}
-		if spentCost+manifest.EstimatedCostUSD > run.Budget.MaxCostUSD || spentDuration+manifest.EstimatedDurationMS > run.Budget.MaxDurationMS {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, ErrRuntimeBudget)
-		}
-		executor, err := orchestrator.Executors.Resolve(manifest, node)
-		if err != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
-		}
-		inputs, err := selectInputs(node, artifacts)
-		if err != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
+		// ── Resolve + Authorize: manifest, permissions, budget, executor ──
+		manifest, executor, authorizeErr := orchestrator.authorizeNode(run, node, manifests, spentCost, spentDuration)
+		if authorizeErr != nil {
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, authorizeErr)
 		}
 		attemptNumber := nextAttempts[node.NodeID]
 		if attemptNumber < 1 {
 			attemptNumber = 1
 		}
 		if attemptNumber > node.Bounds.MaxAttempts {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, errors.New("attempt bound exhausted"))
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, errAttemptExhausted)
 		}
-		key, _ := writingstore.NodeAttemptKey(runID, node.NodeID, attemptNumber)
-		request := ExecutionRequest{RunID: runID, PlanID: plan.PlanID, PlanVersion: planRecord.PlanVersion,
-			NodeID: node.NodeID, Attempt: attemptNumber, IdempotencyKey: key,
-			ContractRef: planRecord.Envelope.IntentPlan.ContractRef, Node: node,
-			Inputs: inputs, Permissions: append([]writingplan.Permission(nil), run.Permissions...)}
-		if orchestrator.Subject != nil {
-			request.Subject = orchestrator.Subject(run)
+		// ── Dispatch setup: inputs, request, context, attempt ledger ──
+		request, prepErr := orchestrator.prepareDispatch(ctx, run, planRecord, plan, node, manifest, artifacts, attemptNumber)
+		if prepErr != nil {
+			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, prepErr)
 		}
-		if err := request.Validate(); err != nil {
-			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, err)
-		}
-		attempt := writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,
+		// M3: before-capability observation (docs/27).
+		orchestrator.bus.emit(ctx, LifecycleBeforeCapability, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, nil))
+		saved, dispatch, err := orchestrator.Store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,
 			PlanVersion: planRecord.PlanVersion, NodeID: node.NodeID, Attempt: attemptNumber,
-			IdempotencyKey: key, NodeKind: node.Kind, CapabilityID: node.Capability,
+			IdempotencyKey: request.IdempotencyKey, NodeKind: node.Kind, CapabilityID: node.Capability,
 			CapabilityVersion: node.CapabilityVersion, ExecutorID: manifest.Executor,
-			FailurePath: node.FailurePath, Bounds: node.Bounds, InputHash: hashInputs(inputs),
-			InputArtifactIDs: artifactIDs(inputs)}
-		saved, dispatch, err := orchestrator.Store.StartNodeAttempt(ctx, attempt, runtimeTrace(node.Capability))
+			FailurePath: node.FailurePath, Bounds: node.Bounds, InputHash: hashInputs(request.Inputs),
+			InputArtifactIDs: artifactIDs(request.Inputs)}, runtimeTrace(node.Capability))
 		if err != nil {
 			return RunOutcome{}, err
 		}
@@ -356,12 +425,8 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			}
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, fmt.Errorf("attempt is %s", saved.Status))
 		}
-
-		execCtx, cancel := context.WithTimeout(ctx, time.Duration(node.Bounds.TimeoutMS)*time.Millisecond)
-		setActiveExecution(control, executor, request.Handle(), cancel)
-		result, executeErr := executor.Execute(execCtx, request)
-		cancel()
-		clearActiveExecution(control)
+		// ── Dispatch: the timed executor invocation ──
+		result, executeErr := dispatchAttempt(ctx, orchestrator, control, executor, request, node.Bounds.TimeoutMS)
 		if intent := controlIntent(control); intent != "" {
 			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 				NodeID: node.NodeID, Attempt: attemptNumber, Status: map[string]string{"pause": "paused", "cancel": "cancelled"}[intent],
@@ -369,17 +434,26 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 				Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
 			return orchestrator.finishControl(ctx, run, plan, completed, artifacts, spentCost, spentDuration, intent)
 		}
+		// ── Observe: result validation, budget, kernel invariants ──
 		if executeErr == nil {
-			executeErr = result.Validate(request)
-		}
-		if executeErr == nil && (result.Usage.CostUSD > node.Bounds.MaxCostUSD || spentCost+result.Usage.CostUSD > run.Budget.MaxCostUSD || result.Usage.DurationMS > node.Bounds.TimeoutMS || spentDuration+result.Usage.DurationMS > run.Budget.MaxDurationMS) {
-			executeErr = ErrRuntimeBudget
-		}
-		if executeErr == nil && containsShadowContentRef(result.Artifacts) {
-			executeErr = runtimeError(CodeArtifactCommitFailed, RetryNever,
-				"canonical artifacts cannot reference shadow content", ErrShadowContentLeak)
+			executeErr = observeResult(result, request, node, spentCost, spentDuration, run)
 		}
 		if executeErr != nil {
+			// T05→T06 sentinel integration: the research read executor's
+			// budget-boundary sentinel is a CLEAN pause (design.md §7), not a
+			// failure — the completed sub-tasks stay in the ledger and the
+			// resume re-dispatch continues the remaining papers. The node's
+			// FailurePath is pause; the attempt records the paused outcome
+			// with the sentinel code, and the run keeps a plainly resumable
+			// checkpoint (no unsafe marker).
+			if errors.Is(executeErr, ErrResearchBudgetBoundary) {
+				_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
+					NodeID: node.NodeID, Attempt: attemptNumber, Status: "paused",
+					ErrorCode: string(CodeResearchBudgetBoundary), ErrorMessage: executeErr.Error(),
+					Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
+				nextAttempts[node.NodeID] = attemptNumber + 1
+				return orchestrator.pauseAtBudgetBoundary(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, "budget_boundary")
+			}
 			_ = orchestrator.completeAttempt(ctx, manifest.Executor, node.Capability, writingstore.AttemptCompletion{RunID: runID,
 				NodeID: node.NodeID, Attempt: attemptNumber, Status: "failed", ErrorCode: string(ErrorCodeOf(executeErr)),
 				ErrorMessage: executeErr.Error(), Trace: runtimeTrace(node.Capability), CompletedAt: orchestrator.Now()})
@@ -390,13 +464,14 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			if manifest.Idempotency != writingplan.IdempotencySafe {
 				_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "unsafe_retry")
 				_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "unsafe_retry")
-				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID})
+				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
 				out := outcome(runID, StatePaused, completed, artifacts, spentCost)
 				out.HumanRequired = []string{node.NodeID}
 				return out, fmt.Errorf("%w: %s", ErrHumanRecoveryRequired, node.NodeID)
 			}
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, executeErr)
 		}
+		// ── Observe: commit the attempt ledger and artifact lineage ──
 		storedArtifacts := make([]writingstore.ArtifactRecord, 0, len(result.Artifacts))
 		for _, draft := range result.Artifacts {
 			storedArtifacts = append(storedArtifacts, artifactRecord(request, draft, runtimeTrace(node.Capability), orchestrator.Now()))
@@ -415,35 +490,41 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		nextAttempts[node.NodeID] = attemptNumber + 1
 		spentCost += result.Usage.CostUSD
 		spentDuration += result.Usage.DurationMS
-		if err := orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{}); err != nil {
+		// M3: artifact-submitted observation (artifacts durable, delivery not
+		// yet driven) then after-capability once the node fully commits.
+		artifactTypes := make([]string, 0, len(storedArtifacts))
+		for _, artifact := range storedArtifacts {
+			artifactTypes = append(artifactTypes, artifact.ArtifactType)
+		}
+		orchestrator.bus.emit(ctx, LifecycleArtifactSubmitted, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, artifactTypes))
+		// M1.0 delivery protocol (docs/21 §21.8) via the M2 routing table
+		// (docs/26): the delivery protocol owns its class→driver table, so
+		// the loop asks "does this class carry delivery?" instead of
+		// hard-coding draft/quality branches. A protocol failure is a node
+		// failure (evidence gap, fail closed).
+		if orchestrator.Delivery != nil {
+			delivery, deliveryErr := orchestrator.Delivery.Drive(ctx, manifest.Class, run, node, storedArtifacts)
+			if deliveryErr != nil {
+				return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetryNever, "delivery commit failed", deliveryErr)
+			}
+			if delivery != nil {
+				pendingDelivery = delivery
+			}
+		}
+		if err := orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{}, pendingDelivery); err != nil {
 			return RunOutcome{}, err
 		}
+		pendingDelivery = nil
+		// M3: after-capability observation (artifacts + delivery + checkpoint
+		// all committed — the node is fully done).
+		orchestrator.bus.emit(ctx, LifecycleAfterCapability, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, artifactTypes))
 	}
 	if _, err := orchestrator.transition(ctx, runID, StateRunning, StateCompleted, "plan_completed"); err != nil {
 		return RunOutcome{}, err
 	}
+	// M3: terminal lifecycle observation (docs/27).
+	orchestrator.bus.emit(ctx, LifecycleRunCompleted, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, writingplan.PlanNode{}, 0, StateCompleted, completed, spentCost, spentDuration, nil))
 	return outcome(runID, StateCompleted, completed, artifacts, spentCost), nil
-}
-
-func (orchestrator *Orchestrator) persistInitialArtifacts(ctx context.Context, run writingstore.RuntimeRun, planRecord writingstore.PlanRecord, initial []InputArtifact) error {
-	records := make([]writingstore.ArtifactRecord, 0, len(initial))
-	for _, artifact := range initial {
-		records = append(records, writingstore.ArtifactRecord{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
-			RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID, PlanVersion: planRecord.PlanVersion,
-			NodeID: "node_initial", Attempt: 1, OutputKey: string(artifact.ArtifactType),
-			ArtifactType: string(artifact.ArtifactType), Status: "provisional", ContentHash: artifact.ContentHash,
-			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef, Parents: []writingstore.ArtifactRef{},
-			InputHashes: []string{}, Producer: "writingruntime.initial", CapabilityVersion: "initial-1",
-			Trace: runtimeTrace("runtime.initial.artifacts"), CreatedAt: orchestrator.Now()})
-	}
-	return orchestrator.Store.CommitInitialArtifacts(ctx, writingstore.NodeAttempt{
-		RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID, PlanVersion: planRecord.PlanVersion,
-		NodeID: "node_initial", Attempt: 1, NodeKind: writingplan.NodeAction,
-		CapabilityID: "runtime.initial.artifacts", CapabilityVersion: "initial-1", ExecutorID: "writingruntime.initial",
-		FailurePath: writingplan.FailureFail,
-		Bounds:      writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: len(records), MaxCostUSD: 0, TimeoutMS: 1000},
-		InputHash:   hashInputs(initial), InputArtifactIDs: []string{}, CreatedAt: orchestrator.Now(),
-	}, records, runtimeTrace("runtime.initial.artifacts"))
 }
 
 // initialArtifacts returns the run's immutable initial artifact set. The
@@ -487,6 +568,29 @@ func (orchestrator *Orchestrator) initialArtifacts(ctx context.Context, run writ
 		// A concurrent dispatch captured first; adopt its snapshot verbatim.
 		return orchestrator.initialArtifacts(ctx, run, planRecord)
 	}
+	// Persist the initial artifacts as real artifact rows: downstream node
+	// outputs record lineage edges to them, and the artifact FKs require the
+	// rows to exist. The rows bind to a synthetic succeeded "initial" attempt
+	// so the attempt FK resolves. Idempotent at the store layer.
+	initialKey, err := writingstore.NodeAttemptKey(run.RunID, "initial", 1)
+	if err != nil {
+		return nil, runtimeError(CodeArtifactCommitFailed, RetrySafe, "initial attempt key", err)
+	}
+	initialRows := make([]writingstore.ArtifactRecord, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		initialRows = append(initialRows, writingstore.ArtifactRecord{ArtifactID: artifact.ArtifactID,
+			Version: artifact.Version, RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID,
+			PlanVersion: planRecord.PlanVersion,
+			NodeID:      InitialCaptureNodeID, Attempt: 1, IdempotencyKey: initialKey,
+			OutputKey: string(artifact.ArtifactType), ArtifactType: string(artifact.ArtifactType),
+			Status: "provisional", ContentHash: artifact.ContentHash, MediaType: artifact.MediaType,
+			ContentRef: artifact.ContentRef, Producer: "initial." + string(artifact.ArtifactType),
+			CapabilityVersion: "initial", Trace: writingstore.TraceContext{
+				Provenance: map[string]any{"initial": true}, SourceRefs: []string{}, Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime.initial"}}})
+	}
+	if err := orchestrator.Store.SaveInitialArtifacts(ctx, initialRows); err != nil {
+		return nil, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not persist initial artifacts", err)
+	}
 	return artifacts, nil
 }
 
@@ -506,7 +610,11 @@ func (orchestrator *Orchestrator) completeAttempt(ctx context.Context, executorI
 }
 
 // Resume is the only entry point that advances a paused run. It reloads the
-// persisted checkpoint and executes the same active plan version.
+// persisted checkpoint and executes the same active plan version. A run
+// paused at an unconfirmed human gate cannot be resumed this way: plain
+// resume returns ErrGateApprovalRequired and the run stays paused (design.md
+// §5.4). An approved gate consumes its persisted decision transparently —
+// the decision transaction already completed the gate node's attempt.
 func (orchestrator *Orchestrator) Resume(ctx context.Context, runID, commandID string, actor writingstore.Actor) (RunOutcome, error) {
 	run, err := orchestrator.Store.LoadRuntimeRun(ctx, runID)
 	if err != nil {
@@ -515,33 +623,16 @@ func (orchestrator *Orchestrator) Resume(ctx context.Context, runID, commandID s
 	if RunState(run.Status) != StatePaused {
 		return RunOutcome{}, fmt.Errorf("writingruntime: run is not paused")
 	}
+	if decisionStore, ok := orchestrator.Store.(GateDecisionStore); ok {
+		if _, gateErr := CheckRunGateForResume(ctx, decisionStore, runID); gateErr != nil {
+			return RunOutcome{RunID: runID, State: StatePaused}, gateErr
+		}
+	}
 	if _, err := orchestrator.State.Transition(ctx, TransitionRequest{CommandID: commandID, RunID: runID,
 		From: StatePaused, To: StateRunning, Cause: "user_resume", Summary: "resume requested", Actor: actor}); err != nil {
 		return RunOutcome{}, err
 	}
 	return orchestrator.Execute(ctx, runID)
-}
-
-// FailDispatch terminates an unexpected asynchronous dispatch failure with a
-// durable, auditable run transition. Expected human/control outcomes are
-// handled by Execute itself and must not call this method.
-func (orchestrator *Orchestrator) FailDispatch(ctx context.Context, runID string, code ErrorCode) error {
-	run, err := orchestrator.Store.LoadRuntimeRun(ctx, runID)
-	if err != nil {
-		return err
-	}
-	from := RunState(run.Status)
-	switch from {
-	case StatePlanned, StateAwaitingApproval, StateRunning, StatePausing, StateReplanning:
-		cause := "dispatch_failed"
-		if code != "" {
-			cause += "_" + strings.ToLower(string(code))
-		}
-		_, err := orchestrator.transition(ctx, runID, from, StateFailed, cause)
-		return err
-	default:
-		return nil
-	}
 }
 
 func (orchestrator *Orchestrator) Pause(ctx context.Context, runID, commandID string, actor writingstore.Actor) error {
@@ -578,34 +669,90 @@ func (orchestrator *Orchestrator) transition(ctx context.Context, runID string, 
 		Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime"}})
 }
 
+// pauseAtBudgetBoundary is the clean pause the budget guard triggers: the
+// progress checkpoint (no UnsafeInFlight) and the paused transitions commit
+// exactly like a user pause, so resume, gate decisions, and cancel all keep
+// working from this state.
+func (orchestrator *Orchestrator) pauseAtBudgetBoundary(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, node writingplan.PlanNode, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, reason string) (RunOutcome, error) {
+	if reason == "" {
+		reason = "budget_boundary"
+	}
+	_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StatePausing, reason)
+	_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, reason)
+	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{}, nil)
+	orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StatePaused, completed, cost, duration, nil))
+	return outcome(run.RunID, StatePaused, completed, artifacts, cost), fmt.Errorf("%w: %s", ErrRunPaused, reason)
+}
+
 func (orchestrator *Orchestrator) failNode(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, node writingplan.PlanNode, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, cause error) (RunOutcome, error) {
 	if node.FailurePath == writingplan.FailureFallback {
 		_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StateReplanning, "fallback_requested")
-		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID})
+		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
 		return outcome(run.RunID, StateReplanning, completed, artifacts, cost), fmt.Errorf("%w: %v", ErrRunReplanning, cause)
 	}
 	if node.FailurePath == writingplan.FailurePause || node.FailurePath == writingplan.FailurePartial {
 		_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StatePausing, "node_failure")
 		_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, "node_failure")
-		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID})
+		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
+		orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StatePaused, completed, cost, duration, nil))
 		return outcome(run.RunID, StatePaused, completed, artifacts, cost), fmt.Errorf("%w: %v", ErrRunPaused, cause)
 	}
 	_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StateFailed, "node_failure")
+	orchestrator.bus.emit(ctx, LifecycleRunFailed, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StateFailed, completed, cost, duration, nil))
 	return outcome(run.RunID, StateFailed, completed, artifacts, cost), cause
 }
 
 func (orchestrator *Orchestrator) finishControl(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, intent string) (RunOutcome, error) {
 	unsafe := []string{}
-	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, unsafe)
+	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, unsafe, nil)
 	if intent == "cancel" {
 		_, _ = orchestrator.transition(ctx, run.RunID, StateCancelling, StateCancelled, "cancelled")
+		orchestrator.bus.emit(ctx, LifecycleRunCancelled, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, writingplan.PlanNode{}, 0, StateCancelled, completed, cost, duration, nil))
 		return outcome(run.RunID, StateCancelled, completed, artifacts, cost), ErrRunCancelled
 	}
 	_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, "paused")
+	orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, writingplan.PlanNode{}, 0, StatePaused, completed, cost, duration, nil))
 	return outcome(run.RunID, StatePaused, completed, artifacts, cost), ErrRunPaused
 }
 
-func (orchestrator *Orchestrator) saveCheckpoint(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, unsafe []string) error {
+// gateBinding resolves the gate's identity inputs: the gate kind from the
+// capability class (research.gate.evidence / research.gate.outline) and the
+// gate's input artifact — the latest artifact of the node's first declared
+// input type (research_evidence_pack for the evidence gate, research_outline
+// for the outline gate). Falls back to a synthetic reference for harness
+// plans without research artifacts.
+func (orchestrator *Orchestrator) gateBinding(node writingplan.PlanNode, artifacts []InputArtifact) (string, writingstore.ArtifactContentRef) {
+	gateKind := "evidence"
+	if strings.Contains(node.Capability, "gate.outline") {
+		gateKind = "outline"
+	}
+	inputType := writingplan.ArtifactType("")
+	if len(node.InputArtifactTypes) > 0 {
+		inputType = node.InputArtifactTypes[0]
+	}
+	latest := InputArtifact{}
+	found := false
+	for _, artifact := range artifacts {
+		if artifact.ArtifactType == inputType {
+			if !found || artifact.Version > latest.Version {
+				latest, found = artifact, true
+			}
+		}
+	}
+	if !found {
+		// A gate without a matching input artifact cannot bind a decision to
+		// content; the empty ref fails the store's pending-gate validation
+		// and surfaces as a commit failure rather than a silently empty gate.
+		return gateKind, writingstore.ArtifactContentRef{}
+	}
+	return gateKind, writingstore.ArtifactContentRef{ArtifactID: latest.ArtifactID,
+		Version: latest.Version, ContentHash: latest.ContentHash}
+}
+
+func (orchestrator *Orchestrator) saveCheckpoint(ctx context.Context, run writingstore.RuntimeRun, plan writingplan.ExecutablePlan, completed map[string]int, artifacts []InputArtifact, cost float64, duration int64, unsafe []string, delivery *QualityDelivery) error {
+	// M3: before-checkpoint observation (the BeforeQualityGate/BeforeCommit
+	// moments of the reference sequence — quality deliveries ride this save).
+	orchestrator.bus.emit(ctx, LifecycleCheckpointBefore, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, writingplan.PlanNode{}, 0, StateRunning, completed, cost, duration, nil))
 	copyCompleted := make(map[string]int, len(completed))
 	for key, value := range completed {
 		copyCompleted[key] = value
@@ -615,10 +762,16 @@ func (orchestrator *Orchestrator) saveCheckpoint(ctx context.Context, run writin
 		refs = append(refs, artifactIdentity(artifact.ArtifactID, artifact.Version))
 	}
 	now := orchestrator.Now()
-	return orchestrator.Checkpoints.Save(ctx, Checkpoint{CheckpointID: checkpointID(run.RunID, plan.PlanHash, completed, artifacts),
+	// append([]string(nil), empty...) yields nil; the checkpoint invariant
+	// requires non-nil slices (docs/20 §20.2 M1.0 wiring).
+	unsafeInFlight := append([]string(nil), unsafe...)
+	if unsafeInFlight == nil {
+		unsafeInFlight = []string{}
+	}
+	return orchestrator.Checkpoints.Save(ctx, Checkpoint{CheckpointID: checkpointID(run.RunID, plan.PlanHash, completed, artifacts, ""),
 		RunID: run.RunID, PlanID: plan.PlanID, PlanVersion: run.ActivePlanVersion, PlanHash: plan.PlanHash,
 		CompletedNodes: copyCompleted, ArtifactRefs: refs, SpentCostUSD: cost,
-		SpentDurationMS: duration, UnsafeInFlight: append([]string{}, unsafe...), CreatedAt: now})
+		SpentDurationMS: duration, UnsafeInFlight: unsafeInFlight, CreatedAt: now, Delivery: delivery})
 }
 
 func (orchestrator *Orchestrator) acquire(runID string) (*runControl, error) {
@@ -640,6 +793,17 @@ func (orchestrator *Orchestrator) release(runID string, control *runControl) {
 		delete(orchestrator.controls, runID)
 	}
 	orchestrator.mu.Unlock()
+}
+
+// NotifyPersistedControl wakes the local worker after a different instance has
+// committed pausing/cancelling. The database transition remains authoritative.
+func (orchestrator *Orchestrator) NotifyPersistedControl(runID, state string) {
+	if state == "pausing" {
+		orchestrator.signal(runID, "pause")
+	}
+	if state == "cancelling" {
+		orchestrator.signal(runID, "cancel")
+	}
 }
 func (orchestrator *Orchestrator) signal(runID, intent string) {
 	orchestrator.mu.Lock()

@@ -14,112 +14,93 @@ import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { useAuthStore } from "@/stores/auth-store";
+import { IS_COMMERCIAL } from "@/lib/edition";
 import { cn } from "@/lib/utils";
 
+/**
+ * 合并后的管理页入口（19 → 14 项）：
+ * - styles  = 风格管理 + 社区审核
+ * - mcp     = MCP 服务密钥 + MCP 沙箱
+ * - usage   = 用量统计 + 计费管理（计费仅商业版）
+ * - audit   = 审计日志 + 安全审计
+ * - Agent Cards 独立入口已移除，架构说明见「概览」页区块
+ */
 export type AdminPageKey =
   | "overview"
   | "styles"
-  | "pending-styles"
   | "traces"
   | "models"
-  | "keys"
+  | "mcp"
   | "cron"
   | "evaluation"
+  | "ar-review"
   | "feedback"
   | "usage"
   | "sensitive"
   | "kb"
   | "audit"
-  | "security"
   | "evolution"
-  | "rbac"
-  | "sandbox"
-  | "agent-cards"
-  | "billing";
-
-/**
- * 每个导航项对应的 RBAC 权限 key。
- * 用户必须拥有该权限（或拥有 "*" 通配符）才能看到此导航项。
- * null 表示所有有 admin 入口权限的用户均可见（概览页）。
- */
-const PAGE_PERMISSIONS: Record<AdminPageKey, string | null> = {
-  "overview":      null,
-  "styles":        "style.create",
-  "pending-styles": "style.review",
-  "traces":        "audit.view",
-  "models":        "model.manage",
-  "keys":          "apikey.manage",
-  "cron":          "cron.manage",
-  "evaluation":    "eval.view",
-  "feedback":      "audit.view",
-  "usage":         "audit.view",
-  "sensitive":     "sensitive.manage",
-  "kb":            "kb.view",
-  "audit":         "audit.view",
-  "security":      "security.view",
-  "evolution":     "evolution.manage",
-  "rbac":          "rbac.manage",
-  "sandbox":       "sandbox.manage",
-  "agent-cards":   "agent-cards.manage",
-  "billing":       "billing.view",
-};
+  | "rbac";
 
 interface NavItem {
   key: AdminPageKey;
   label: string;
   icon: LucideIcon;
-  /** RBAC permission key required to see this nav item (null = always visible to admin users) */
-  permission: string | null;
+  /** RBAC 权限列表，任一命中即可见；null = 对所有有 admin 入口权限的用户可见 */
+  permissions: string[] | null;
 }
 
 import {
   LayoutDashboard,
   PenLine,
-  SearchCheck,
   ListTree,
   Cpu,
-  KeyRound,
+  Server,
   Clock,
   ClipboardCheck,
+  FlaskConical,
   MessageSquareText,
   TrendingUp,
   Shield,
   BookOpen,
   ScrollText,
-  ShieldAlert,
   GitBranch,
   Users,
-  ShieldCheck,
-  Bot,
-  Wallet,
 } from "lucide-react";
+
 export const NAV_ITEMS: NavItem[] = [
-  { key: "overview", label: "概览", icon: LayoutDashboard, permission: null },
-  { key: "styles", label: "风格管理", icon: PenLine, permission: "style.create" },
-  { key: "pending-styles", label: "社区审核", icon: SearchCheck, permission: "style.review" },
-  { key: "traces", label: "Trace 历史", icon: ListTree, permission: "audit.view" },
-  { key: "models", label: "模型配置", icon: Cpu, permission: "model.manage" },
-  { key: "keys", label: "MCP 服务密钥", icon: KeyRound, permission: "apikey.manage" },
-  { key: "cron", label: "定时任务", icon: Clock, permission: "cron.manage" },
-  { key: "evaluation", label: "评测面板", icon: ClipboardCheck, permission: "eval.view" },
-  { key: "feedback", label: "反馈分析", icon: MessageSquareText, permission: "audit.view" },
-  { key: "usage", label: "用量统计", icon: TrendingUp, permission: "audit.view" },
-  { key: "billing", label: "计费管理", icon: Wallet, permission: "billing.view" },
-  { key: "sensitive", label: "敏感词库", icon: Shield, permission: "sensitive.manage" },
-  { key: "kb", label: "知识库", icon: BookOpen, permission: "kb.view" },
-  { key: "audit", label: "审计日志", icon: ScrollText, permission: "audit.view" },
-  { key: "security", label: "安全审计", icon: ShieldAlert, permission: "security.view" },
-  { key: "evolution", label: "自演进", icon: GitBranch, permission: "evolution.manage" },
-  { key: "rbac", label: "角色权限", icon: Users, permission: "rbac.manage" },
-  { key: "sandbox", label: "MCP 沙箱", icon: ShieldCheck, permission: "sandbox.manage" },
-  { key: "agent-cards", label: "Agent Cards", icon: Bot, permission: "agent-cards.manage" },
+  { key: "overview", label: "概览", icon: LayoutDashboard, permissions: null },
+  { key: "styles", label: "风格管理", icon: PenLine, permissions: ["style.create", "style.review"] },
+  { key: "traces", label: "Trace 历史", icon: ListTree, permissions: ["audit.view"] },
+  { key: "models", label: "模型配置", icon: Cpu, permissions: ["model.manage"] },
+  { key: "mcp", label: "MCP 管理", icon: Server, permissions: ["apikey.manage", "sandbox.manage"] },
+  { key: "cron", label: "定时任务", icon: Clock, permissions: ["cron.manage"] },
+  { key: "evaluation", label: "评测面板", icon: ClipboardCheck, permissions: ["eval.view"] },
+  { key: "ar-review", label: "AR-012 候选", icon: FlaskConical, permissions: ["eval.view"] },
+  { key: "feedback", label: "反馈分析", icon: MessageSquareText, permissions: ["audit.view"] },
+  {
+    key: "usage",
+    label: IS_COMMERCIAL ? "用量与计费" : "用量统计",
+    icon: TrendingUp,
+    permissions: IS_COMMERCIAL ? ["audit.view", "billing.view"] : ["audit.view"],
+  },
+  { key: "sensitive", label: "敏感词库", icon: Shield, permissions: ["sensitive.manage"] },
+  { key: "kb", label: "知识库", icon: BookOpen, permissions: ["kb.view"] },
+  { key: "audit", label: "审计中心", icon: ScrollText, permissions: ["audit.view", "security.view"] },
+  { key: "evolution", label: "自演进", icon: GitBranch, permissions: ["evolution.manage"] },
+  { key: "rbac", label: "角色权限", icon: Users, permissions: ["rbac.manage"] },
 ];
+
+/** 每个页面入口对应的 RBAC 权限（任一命中即可访问），直接取自 NAV_ITEMS，避免两处漂移 */
+const PAGE_PERMISSIONS = Object.fromEntries(
+  NAV_ITEMS.map((item) => [item.key, item.permissions]),
+) as Record<AdminPageKey, string[] | null>;
 
 /** 返回用户有权限访问的导航项列表 */
 export function getVisibleNavItems(hasPermission: (perm: string) => boolean): NavItem[] {
   return NAV_ITEMS.filter((item) => {
-    if (item.permission === null) return true;
-    return hasPermission(item.permission);
+    if (item.permissions === null) return true;
+    return item.permissions.some(hasPermission);
   });
 }
 
@@ -128,11 +109,11 @@ export function getPageLabel(key: AdminPageKey): string {
   return NAV_ITEMS.find((item) => item.key === key)?.label ?? key;
 }
 
-/** 检查用户是否有权限访问某个页面 */
+/** 检查用户是否有权限访问某个页面（任一权限命中即可） */
 export function hasPagePermission(hasPermission: (perm: string) => boolean, key: AdminPageKey): boolean {
-  const perm = PAGE_PERMISSIONS[key];
-  if (perm === null) return true;
-  return hasPermission(perm);
+  const perms = PAGE_PERMISSIONS[key];
+  if (perms === null) return true;
+  return perms.some(hasPermission);
 }
 
 interface AdminSidebarProps {

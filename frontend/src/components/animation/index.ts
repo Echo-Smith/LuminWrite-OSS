@@ -15,3 +15,4 @@ export { AnimatedCheck } from "./animated-check";
 export { PageTransition } from "./page-transition";
 export { ConfettiBurst } from "./confetti-burst";
 export { StreamText } from "./stream-text";
+export { RotatingText } from "./rotating-text";

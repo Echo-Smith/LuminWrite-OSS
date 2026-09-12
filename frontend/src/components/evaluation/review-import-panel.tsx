@@ -40,7 +40,7 @@ export function ReviewImportPanel({ onImported, disabled = false }: { onImported
   };
 
   return (
-    <section className="border-y border-[#161917]/20 bg-[#ebe9e1]/60 py-5 dark:border-border dark:bg-muted/20 sm:px-5">
+    <section className="border-y border-border/60 bg-muted/30 py-5 dark:border-border dark:bg-muted/20 sm:px-5">
       <div className="grid gap-5 xl:grid-cols-[1fr_auto] xl:items-end">
         <div>
           <div className="flex items-center gap-2"><FileSpreadsheet className="h-4 w-4" /><h4 className="text-sm font-semibold">导入中文 Excel 评审表</h4></div>
@@ -50,7 +50,7 @@ export function ReviewImportPanel({ onImported, disabled = false }: { onImported
         </div>
         <div className="flex flex-col gap-2 sm:flex-row xl:flex-col">
           <Button variant="outline" className="min-h-11 gap-2" onClick={() => void adminDownload("/api/v2/admin/evaluation/wabench/reviews/template.xlsx", "wabench-review-template-zh.xlsx")}><Download className="h-4 w-4" />下载中文模板</Button>
-          <Button className="min-h-11 gap-2 bg-[#161917] text-[#f4f3ee] hover:bg-[#161917]/85 dark:bg-foreground dark:text-background" onClick={upload} disabled={!file || uploading || disabled}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}{disabled ? "只读权限" : uploading ? "正在校验并导入…" : "校验并导入"}</Button>
+          <Button className="min-h-11 gap-2 bg-foreground text-[color:var(--desk-canvas)] hover:bg-foreground/85 dark:bg-foreground dark:text-background" onClick={upload} disabled={!file || uploading || disabled}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}{disabled ? "只读权限" : uploading ? "正在校验并导入…" : "校验并导入"}</Button>
         </div>
       </div>
       {message && <p className={`mt-4 text-sm ${errors.length > 0 ? "text-red-800 dark:text-red-300" : "text-emerald-800 dark:text-emerald-300"}`} role="status">{message}</p>}

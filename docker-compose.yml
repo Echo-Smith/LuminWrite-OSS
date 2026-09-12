@@ -94,6 +94,12 @@ services:
       PROVIDER_PREFLIGHT_ENABLED: ${PROVIDER_PREFLIGHT_ENABLED:-false}
       PROVIDER_PREFLIGHT_INTERVAL: ${PROVIDER_PREFLIGHT_INTERVAL:-30m}
       PROVIDER_PREFLIGHT_TIMEOUT: ${PROVIDER_PREFLIGHT_TIMEOUT:-8s}
+      # Research-review path (T09/R14, default off). Uncomment together with
+      # the scholar-worker profile below; RESEARCH_REVIEW_ENABLED=false keeps
+      # every legacy writing mode fully available.
+      # RESEARCH_REVIEW_ENABLED: "true"
+      # SCHOLAR_WORKER_URL: http://scholar-worker:8971
+      # SCHOLAR_WORKER_TOKEN: ${SCHOLAR_WORKER_TOKEN}
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     volumes:
@@ -124,6 +130,42 @@ services:
         limits:
           memory: 1G
     init: true
+    restart: unless-stopped
+
+  # ── Scholar Worker (research-review path, Python 3.12) ──
+  # Private-network only: no published host port; the Go backend is the sole
+  # caller (specs/research-review/contracts.md §3). Started only with the
+  # "research" profile:
+  #   docker compose --profile research up -d scholar-worker
+  scholar-worker:
+    build:
+      context: ./services/scholar-worker
+      dockerfile: Dockerfile
+    image: luminbuddy-v2-scholar-worker:latest
+    container_name: luminbuddy-v2-scholar-worker
+    profiles: ["research"]
+    # Non-root (Dockerfile USER scholar); the token is required — the worker
+    # refuses to start without it (fail closed).
+    environment:
+      SCHOLAR_WORKER_HOST: 0.0.0.0
+      SCHOLAR_WORKER_PORT: "8971"
+      # Interpolation runs even when the research profile is disabled.
+      # Enforce the required token in the worker entry point instead.
+      SCHOLAR_WORKER_TOKEN: ${SCHOLAR_WORKER_TOKEN:-}
+      # Model configuration for the rank/read LLM operations. Leave commented
+      # to run the fail-closed no-model deployment (rank/read answer with
+      # typed errors; never silently all-zero scores):
+      # SCHOLAR_LLM_BASE_URL: ""
+      # SCHOLAR_LLM_MODEL: ""
+      # SCHOLAR_LLM_API_KEY: ""
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8971/healthz', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
 
   # ── Frontend (React + Nginx) ──────────────────────────

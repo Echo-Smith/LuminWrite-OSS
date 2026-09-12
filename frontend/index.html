@@ -2,12 +2,13 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link id="app-favicon-svg" rel="icon" type="image/svg+xml" sizes="any" href="/favicon-lumi.svg" />
+    <link id="app-favicon-png" rel="icon" type="image/png" sizes="1024x1024" href="/app-icon.png" />
+    <link id="apple-touch-icon" rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0a0a0b" media="(prefers-color-scheme: dark)" />
-    <title>笔润智谈 V2</title>
+    <title>笔润智谈丨LuminWrite OSS</title>
     <script>
       // 防止主题闪烁 (FOUC) — 在 React 挂载前同步设置 dark class
       (function () {
@@ -16,6 +17,11 @@
           var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
           var isDark = stored === "dark" || (!stored && prefersDark);
           if (isDark) document.documentElement.classList.add("dark");
+          if (isDark) {
+            document.getElementById("app-favicon-svg").href = "/favicon-lumi-dark.svg";
+            document.getElementById("app-favicon-png").href = "/app-icon-dark.png";
+            document.getElementById("apple-touch-icon").href = "/apple-touch-icon-dark.png";
+          }
         } catch (e) {}
       })();
     </script>

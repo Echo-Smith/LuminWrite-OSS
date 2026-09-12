@@ -22,6 +22,7 @@ type RunRecord struct {
 	ContractVersion    int
 	ContractHash       string
 	BaseVersionID      string
+	StyleSlug          string
 	Status             string
 	ApprovalMode       writingkernel.ApprovalMode
 	RequestedAssurance writingkernel.AssuranceLevel
@@ -82,13 +83,13 @@ func (tx *Tx) CreateRun(ctx context.Context, record RunRecord) error {
 	result, err := tx.tx.ExecContext(ctx, `
 		INSERT INTO writing_runs (
 			run_id, document_id, contract_id, contract_version, contract_hash,
-			base_version_id, status, approval_mode, requested_assurance,
+			base_version_id, style_slug, status, approval_mode, requested_assurance,
 			budget, permissions, created_by_type, created_by_id, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
 		ON CONFLICT (run_id) DO NOTHING
 	`, record.RunID, record.DocumentID, record.ContractID, record.ContractVersion,
-		record.ContractHash, nullString(record.BaseVersionID), record.Status,
-		string(record.ApprovalMode), string(record.RequestedAssurance), budget, permissions,
+		record.ContractHash, nullString(record.BaseVersionID), nullString(record.StyleSlug),
+		record.Status, string(record.ApprovalMode), string(record.RequestedAssurance), budget, permissions,
 		string(record.Trace.Actor.Type), nullString(record.Trace.Actor.ID), createdAt)
 	if err != nil {
 		return fmt.Errorf("create writing run: %w", err)
@@ -296,12 +297,29 @@ var validRunEventTypes = map[string]bool{
 	"node.cancelled":        true,
 	"runtime.route_decided": true, "runtime.execution_observed": true,
 	"runtime.shadow_compared": true,
+	// Research-review family (migration 107): run-scoped ledger events — no
+	// node attempt identity, gate ids live in the payload and entity id.
+	"research.progress": true, "gate.pending": true, "gate.decided": true,
 }
 
 var validRunEventEntityKinds = map[string]bool{
 	"run": true, "node": true, "artifact": true,
 	"document_version": true, "quality_report": true, "snapshot": true,
-	"rollout_evidence": true,
+	"rollout_evidence": true, "research_gate": true,
+}
+
+// AppendRunEvent records one run-ledger event in its own transaction,
+// maintaining the run's last_event_sequence projection (the deferred
+// constraint trigger requires the projection to equal the ledger's max
+// sequence). Transition recording and other event writers go through here.
+func (s *Store) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, error) {
+	var result RunEvent
+	err := s.InTransaction(ctx, func(tx *Tx) error {
+		var err error
+		result, err = tx.AppendRunEvent(ctx, event)
+		return err
+	})
+	return result, err
 }
 
 func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, error) {

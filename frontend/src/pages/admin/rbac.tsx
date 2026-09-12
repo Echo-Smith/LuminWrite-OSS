@@ -51,7 +51,7 @@ const PERM_LABELS: Record<string, string> = {
   "billing.view": "计费 · 查看统计",
   "sandbox.manage": "MCP 沙箱 · 管理安全策略",
   "security.view": "安全审计 · 查看拦截统计",
-  "agent-cards.manage": "A2A Agent Cards · 管理",
+  "agent-cards.manage": "A2A Agent Cards · 查看",
   "rbac.manage": "RBAC · 管理角色权限",
 };
 
@@ -84,7 +84,7 @@ const PERM_DESCRIPTIONS: Record<string, string> = {
   "billing.view": "查看计费概览、收入和消费统计",
   "sandbox.manage": "管理 MCP 安全沙箱 — 策略、违规记录、测试",
   "security.view": "查看安全审计 — Prompt 注入拦截事件和统计",
-  "agent-cards.manage": "管理 A2A Agent Cards — 创建、更新、发布",
+  "agent-cards.manage": "查看 A2A Agent Cards — Agent 能力发现文档（只读）",
   "rbac.manage": "管理 RBAC — 角色、权限、用户角色分配",
 };
 

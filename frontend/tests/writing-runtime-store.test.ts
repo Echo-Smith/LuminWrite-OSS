@@ -13,7 +13,7 @@ import {
 
 test("governed writing controls expose stable enums", () => {
   assert.deepEqual(TASK_MODES, ["auto", "writing", "guided", "polish"]);
-  assert.deepEqual(ORCHESTRATION_MODES, ["auto", "fast", "outline_first", "sourced", "strict_research"]);
+  assert.deepEqual(ORCHESTRATION_MODES, ["auto", "fast", "outline_first", "sourced", "strict_research", "research_review"]);
   assert.deepEqual(ASSURANCE_LEVELS, ["flexible", "standard", "sourced", "strict"]);
   assert.deepEqual(APPROVAL_MODES, ["conditional", "always", "auto"]);
 });

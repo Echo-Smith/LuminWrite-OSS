@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin";
+import { AdminPageHeader, AdminAlertsCard, AgentArchitectureCard } from "@/components/admin";
 
 interface DashboardStats {
   today_writes: number;
@@ -57,9 +57,6 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STYLE_LABELS: Record<string, string> = {
-  yinyue: "预设评论风格",
-  shenlun: "申论",
-  xiaohongshu: "小红书",
   unknown: "未知",
 };
 
@@ -175,6 +172,9 @@ export function OverviewPage() {
           value={stats ? stats.eval_avg_score.toFixed(2) : "—"}
         />
       </div>
+
+      {/* Ops Patrol Alerts */}
+      <AdminAlertsCard />
 
       {/* Charts Row */}
       <div className="grid grid-cols-2 gap-4">
@@ -436,6 +436,9 @@ export function OverviewPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Agent Architecture (A2A capability discovery, read-only) */}
+      <AgentArchitectureCard />
     </div>
   );
 }
