@@ -13,7 +13,7 @@ creation. Instead of "one-click generation" magic, it breaks writing into an
 retrieval → outline confirmation → style-aware drafting → post-write review →
 memory sedimentation — the creator stays in control at every key decision point.
 
-![Writing workspace](docs/assets/luminbuddy-workspace.png)
+![Writing workspace](docs/assets/8f2bb20334781e43c0bb23498f2dc02d.png)
 
 ## What problem it solves
 
