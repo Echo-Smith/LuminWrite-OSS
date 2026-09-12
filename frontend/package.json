@@ -8,9 +8,9 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "node --import ./tests/register-alias.mjs --test tests/*.test.ts",
-    "test:wabench": "node --test tests/wabench-eval.test.ts",
-    "test:brand": "node --test tests/brand-icon-assets.test.ts"
+    "test": "node --import tsx --import ./tests/register-alias.mjs --test tests/*.test.ts",
+    "test:wabench": "node --import tsx --test tests/wabench-eval.test.ts",
+    "test:brand": "node --import tsx --test tests/brand-icon-assets.test.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.10.0",
