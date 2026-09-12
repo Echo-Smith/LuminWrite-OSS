@@ -2,6 +2,8 @@ package writingstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -91,4 +93,12 @@ func validateCanonicalContentRecord(record CanonicalContentRecord) error {
 		return fmt.Errorf("%w: canonical content hash does not match body", ErrInvalidRecord)
 	}
 	return nil
+}
+
+// hashShadowBody is the canonical body hash helper shared by the canonical
+// content store and the durable shadow content sink (sha256-hex, "sha256:"
+// prefixed to match the Artifact envelope convention).
+func hashShadowBody(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

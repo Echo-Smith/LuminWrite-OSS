@@ -17,6 +17,7 @@ func newOSSSearchCapabilityClient(tavilyKey, anySearchKey string) *SearchClient 
 		false, "", time.Second,
 		"", time.Second,
 		anySearchKey, "https://paid-search.invalid", time.Second,
+		"", time.Second, // SearXNG unconfigured: paid-source assertions stay valid
 	)
 }
 
