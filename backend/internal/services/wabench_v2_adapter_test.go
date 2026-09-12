@@ -38,14 +38,14 @@ func TestLuminbuddyV2AdapterExecutesRealHarness(t *testing.T) {
 
 	llm := tools.NewLLMClient(server.URL, "test-key", "test-model", 2048, 0.1, 5*time.Second)
 	resolver := recordingWABenchLLMResolver{client: llm, resolvedModel: &resolvedModel}
-	executor := NewHarnessWABenchExecutorWithResolver(resolver, nil, nil, profile.NewLoader(), nil, nil, nil)
+	executor := NewHarnessWABenchExecutorWithResolver(resolver, nil, nil, newTestProfileLoader(t, "fixture-style"), nil, nil, nil)
 	trace, err := executor.Execute(context.Background(), WABenchAgentRequest{
 		RunID: "run_contract",
 		Input: "请写一篇测试文章",
 		Case: database.WABenchCase{
 			CaseID: "case_contract", TaskType: "writing", SourceMode: "none",
 			InputHash:       "sha256:" + strings.Repeat("a", 64),
-			RuleProfileRefs: []string{"luminbuddy.builtin-style.yinyue"},
+			RuleProfileRefs: []string{"luminbuddy.builtin-style.fixture-style"},
 		},
 		Candidate: database.WABenchCandidate{
 			ModelManifest: map[string]interface{}{"model": "frozen-candidate-model"},
@@ -99,13 +99,13 @@ func TestLuminbuddyV2AdapterLabelsLocalKnowledgeProvider(t *testing.T) {
 	defer server.Close()
 
 	llm := tools.NewLLMClient(server.URL, "test-key", "test-model", 2048, 0.1, 5*time.Second)
-	executor := NewHarnessWABenchExecutor(llm, nil, fixtureWABenchKnowledgeSearcher{}, profile.NewLoader(), nil, nil, nil)
+	executor := NewHarnessWABenchExecutor(llm, nil, fixtureWABenchKnowledgeSearcher{}, newTestProfileLoader(t, "fixture-style"), nil, nil, nil)
 	trace, err := executor.Execute(context.Background(), WABenchAgentRequest{
 		RunID: "run_local_kb",
 		Input: "请参考内部知识库写作",
 		Case: database.WABenchCase{
 			CaseID: "case_local_kb", TaskType: "writing", SourceMode: "live",
-			InputHash: "sha256:" + strings.Repeat("b", 64), RuleProfileRefs: []string{"luminbuddy.builtin-style.yinyue"},
+			InputHash: "sha256:" + strings.Repeat("b", 64), RuleProfileRefs: []string{"luminbuddy.builtin-style.fixture-style"},
 		},
 		Candidate: database.WABenchCandidate{ModelManifest: map[string]interface{}{"model": "test-model"}},
 	})
@@ -115,6 +115,21 @@ func TestLuminbuddyV2AdapterLabelsLocalKnowledgeProvider(t *testing.T) {
 	if !trace.KnowledgeTriggered || len(trace.KnowledgeProviders) != 1 || trace.KnowledgeProviders[0] != "local-pg-kb" {
 		t.Fatalf("local KB routing label = triggered:%v providers:%v", trace.KnowledgeTriggered, trace.KnowledgeProviders)
 	}
+}
+
+// newTestProfileLoader returns a Loader seeded with one in-memory profile so
+// tests exercise the style-resolution path without depending on any preset
+// style content (LuminWrite OSS ships an empty built-in catalog).
+func newTestProfileLoader(t *testing.T, slug string) *profile.Loader {
+	t.Helper()
+	loader := profile.NewLoader()
+	if err := loader.CreateProfile(&profile.StyleProfile{
+		Slug: slug,
+		Name: "测试风格",
+	}); err != nil {
+		t.Fatalf("seed test profile: %v", err)
+	}
+	return loader
 }
 
 type recordingWABenchLLMResolver struct {
@@ -172,21 +187,19 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 	}
 }
 
-func TestWABenchPublicRuleProfilesResolveToFrozenBuiltinStyles(t *testing.T) {
+func TestWABenchPublicRuleProfilesFailClosedWithoutPresetStyles(t *testing.T) {
+	// LuminWrite OSS ships an empty built-in style catalog: the bundled
+	// public evaluation rules bind to preset slugs that a fresh deployment
+	// does not have, so resolution must fail closed with a clear error
+	// (deployments that recreate those slugs get the binding back).
 	executor := NewHarnessWABenchExecutor(nil, nil, nil, profile.NewLoader(), nil, nil, nil)
-	wants := map[string]string{
-		"wabench.public.general-writing": "yinyue",
-		"wabench.public.deep-commentary": "yinyue",
-		"wabench.public.policy-essay":    "shenlun",
-		"wabench.public.social-note":     "xiaohongshu",
-	}
-	for ref, want := range wants {
-		got, err := executor.resolveProfile(context.Background(), []string{ref})
-		if err != nil {
-			t.Fatalf("resolve %s: %v", ref, err)
+	for ref := range publicWABenchStyleRefs {
+		_, err := executor.resolveProfile(context.Background(), []string{ref})
+		if err == nil {
+			t.Fatalf("resolve %s: expected fail-closed error on an empty style catalog", ref)
 		}
-		if got.Slug != want {
-			t.Fatalf("resolve %s = %s, want %s", ref, got.Slug, want)
+		if !strings.Contains(err.Error(), "unavailable") {
+			t.Fatalf("resolve %s: error should name the missing profile, got %v", ref, err)
 		}
 	}
 }

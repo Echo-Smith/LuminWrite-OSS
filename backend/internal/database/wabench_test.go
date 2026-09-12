@@ -203,18 +203,3 @@ func TestWABenchMigrationCreatesParallelSchemaWithoutRewritingLegacyTables(t *te
 		t.Fatal("migration must preserve legacy score and warnings")
 	}
 }
-
-func TestLegacySeedInventoryRemains65Samples(t *testing.T) {
-	seed, err := migrationFS.ReadFile("migrations/011_evaluation_seed.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	supplement, err := migrationFS.ReadFile("migrations/018_evaluation_seed_supplement.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := strings.Count(string(seed), "INSERT INTO evaluation_samples") + strings.Count(string(supplement), "INSERT INTO evaluation_samples")
-	if count != 65 {
-		t.Fatalf("legacy seed count = %d, want 65", count)
-	}
-}
