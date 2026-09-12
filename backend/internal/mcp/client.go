@@ -120,7 +120,18 @@ func NewMCPClient(ctx context.Context, cfg MCPClientConfig) (*MCPClient, error) 
 		if cfg.Command == "" {
 			return nil, fmt.Errorf("stdio transport requires 'command'")
 		}
-		cmd := exec.Command(cfg.Command, cfg.Args...)
+		// stdio MCP servers are admin-configured executables. Resolve the
+		// command explicitly (PATH lookup or absolute path) and build the
+		// process from an argv slice — never through a shell — so config
+		// mistakes fail fast with a clear error and nothing is reinterpreted.
+		resolved, lookErr := exec.LookPath(cfg.Command)
+		if lookErr != nil {
+			return nil, fmt.Errorf("stdio transport command %q is not an executable: %w", cfg.Command, lookErr)
+		}
+		cmd := &exec.Cmd{
+			Path: resolved,
+			Args: append([]string{resolved}, cfg.Args...),
+		}
 		if len(cfg.Env) > 0 {
 			cmd.Env = cfg.Env
 		}

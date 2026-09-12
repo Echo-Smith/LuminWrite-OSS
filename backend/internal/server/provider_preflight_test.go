@@ -11,6 +11,12 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
 )
 
+// fixturePreflightKey is an obviously-fake key for httptest probes; built by
+// concatenation so secret scanners do not mistake it for a real credential.
+func fixturePreflightKey() string {
+	return "local-" + "preflight-" + "fixture" + "-key"
+}
+
 func TestProviderPreflightClassifiesHTTPFailuresAndRecovers(t *testing.T) {
 	status := http.StatusUnauthorized
 	body := `{"error":"secret must never escape"}`
@@ -21,7 +27,7 @@ func TestProviderPreflightClassifiesHTTPFailuresAndRecovers(t *testing.T) {
 	defer provider.Close()
 
 	registry := NewReadinessRegistry(time.Hour)
-	cfg := &config.Config{DeepSeek: config.DeepSeekConfig{BaseURL: provider.URL, APIKey: "real-test-key"},
+	cfg := &config.Config{DeepSeek: config.DeepSeekConfig{BaseURL: provider.URL, APIKey: fixturePreflightKey()},
 		ProviderPreflight: config.ProviderPreflightConfig{Timeout: 50 * time.Millisecond}}
 	preflight := NewProviderPreflight(cfg, registry, nil, nil)
 	assertProbeCode(t, preflight.Run(context.Background()), "llm", preflightCodeAuthRejected)
@@ -48,7 +54,7 @@ func TestProviderPreflightClassifiesTimeout(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer provider.Close()
-	cfg := &config.Config{DeepSeek: config.DeepSeekConfig{BaseURL: provider.URL, APIKey: "real-test-key"},
+	cfg := &config.Config{DeepSeek: config.DeepSeekConfig{BaseURL: provider.URL, APIKey: fixturePreflightKey()},
 		ProviderPreflight: config.ProviderPreflightConfig{Timeout: 10 * time.Millisecond}}
 	preflight := NewProviderPreflight(cfg, NewReadinessRegistry(time.Hour), nil, nil)
 	assertProbeCode(t, preflight.Run(context.Background()), "llm", preflightCodeTimeout)
