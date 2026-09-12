@@ -1,0 +1,52 @@
+# docker-compose.ar012.yml — AR-012 候选评估 sidecar（T10）。
+#
+# 可选 overlay，默认完全不启用：
+#   docker compose -f docker-compose.yml -f docker-compose.ar012.yml --profile ar012 up -d backend
+#
+# License 纪律（specs/research-review/ar012-sidecar.md）：sidecar 上游为
+# Proprietary，镜像由工作区本地 fork（../../review-sidecar，./build.sh
+# --image）构建，不随本仓库分发；镜像名固定为 lumin-review-sidecar:local。
+#
+# 交换卷：backend 与 review-sidecar 挂载同一卷——backend 写入
+#   <volume>/lb-<hash>/02_literature/REVIEW_CORPUS.json 与 REVIEW_SPEC.json，
+# sidecar 以 AUTORESEARCH_REVIEW_PROJECTS_DIR 直接读取并回写产物。
+services:
+  review-sidecar:
+    image: lumin-review-sidecar:${AR_REVIEW_SIDECAR_TAG:-local}
+    container_name: luminbuddy-v2-review-sidecar
+    restart: unless-stopped
+    profiles: ["ar012"]
+    environment:
+      AUTORESEARCH_REVIEW_PROJECTS_DIR: /data
+      AUTORESEARCH_REVIEW_DB_PATH: /data/var/scientific-review.sqlite3
+      # OpenAI 兼容模型配置；offline 时所有阶段显式失败（fail-closed）。
+      LLM_PROVIDER: ${AR_REVIEW_LLM_PROVIDER:-offline}
+      LLM_API_KEY: ${AR_REVIEW_LLM_API_KEY:-}
+      LLM_BASE_URL: ${AR_REVIEW_LLM_BASE_URL:-}
+      LLM_MODEL: ${AR_REVIEW_LLM_MODEL:-}
+      LLM_TIMEOUT_SECONDS: ${AR_REVIEW_LLM_TIMEOUT_SECONDS:-180}
+    volumes:
+      - review_exchange:/data:rw
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  backend:
+    environment:
+      AR012_CANDIDATE_ENABLED: "true"
+      AR_REVIEW_SIDECAR_URL: "http://review-sidecar:8020"
+      AR_REVIEW_SIDECAR_TIMEOUT_MS: "1500000"
+      AR_REVIEW_EXCHANGE_DIR: "/data/review-exchange"
+    volumes:
+      - review_exchange:/data/review-exchange:rw
+    depends_on:
+      review-sidecar:
+        condition: service_healthy
+
+volumes:
+  review_exchange:

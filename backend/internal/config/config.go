@@ -75,6 +75,25 @@ type WritingRuntimeConfig struct {
 	// compile/run creation with an explicit RESEARCH_UNAVAILABLE — never a
 	// silent degrade to a legacy template.
 	ResearchReviewEnabled bool
+	// ArReview gates the AR-012 candidate evaluation sidecar (T10, default
+	// off). The sidecar is Proprietary and deployed out-of-band; with the
+	// URL empty the service reports unavailable regardless of the flag.
+	ArReview ArReviewConfig
+}
+
+// ArReviewConfig configures the AR-012 post-run evaluation endpoint: one
+// frozen evidence pack + approved outline → sidecar candidate manuscript,
+// stored as isolated content-addressed blobs and never delivered into the
+// document path (A18).
+type ArReviewConfig struct {
+	Enabled    bool
+	SidecarURL string
+	// TimeoutMS bounds one synchronous sidecar run (five LLM calls worst
+	// case; must exceed the sidecar's own per-call LLM timeouts).
+	TimeoutMS int
+	// ExchangeDir is the shared-volume root both the backend and the sidecar
+	// mount (single-machine transport).
+	ExchangeDir string
 }
 
 type DatabaseConfig struct {
@@ -393,6 +412,12 @@ func Load() *Config {
 		WritingRuntime: WritingRuntimeConfig{
 			Mode:                  getEnv("WRITING_RUNTIME_MODE", "off"),
 			ResearchReviewEnabled: getEnvBool("RESEARCH_REVIEW_ENABLED", false),
+			ArReview: ArReviewConfig{
+				Enabled:     getEnvBool("AR012_CANDIDATE_ENABLED", false),
+				SidecarURL:  getEnv("AR_REVIEW_SIDECAR_URL", ""),
+				TimeoutMS:   getEnvInt("AR_REVIEW_SIDECAR_TIMEOUT_MS", 1500000),
+				ExchangeDir: getEnv("AR_REVIEW_EXCHANGE_DIR", "/data/review-exchange"),
+			},
 		},
 		SMTP: SMTPConfig{
 			Host:     getEnv("SMTP_HOST", "smtp.qiye.aliyun.com"),

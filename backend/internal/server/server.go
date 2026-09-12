@@ -105,6 +105,7 @@ type Server struct {
 	writingAPI      writingAPIService
 	governedRollout *governedRolloutDependencies
 	governedTrigger *governedRunTrigger
+	arReview        *arReviewService
 	kbSearch        tools.KnowledgeSearcher
 	editorialTools  *editorial.EditorialToolRegistry
 	editorialAgents *editorial.DynamicAgentRegistry
@@ -549,6 +550,12 @@ func New(cfg *config.Config) (*Server, error) {
 		// (default off — zero behavior change) and wire its controller into
 		// the writing API's control routes plus the post-approval trigger.
 		s.mountGovernedRuntime(governedStore)
+		// T10: AR-012 candidate evaluation sidecar (default off; nil = every
+		// endpoint reports AR_REVIEW_UNAVAILABLE).
+		s.arReview = newArReviewService(governedStore, cfg.WritingRuntime.ArReview)
+		if s.arReview != nil {
+			slog.Info("ar review sidecar enabled", "exchange", cfg.WritingRuntime.ArReview.ExchangeDir)
+		}
 	}
 	if llm != nil {
 		s.styleBuilder = services.NewStyleBuilderService(defaultLLM)
@@ -1289,6 +1296,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	if s.governedTrigger != nil { go s.governedTrigger.Serve(ctx) }
+
+	// AR-012 candidate evaluation worker (nil when the sidecar is disabled).
+	if s.arReview != nil { go s.arReview.Serve(ctx) }
 
 	// Start SSE topic push background task
 	go s.PushTopicsFromDB(ctx, 30*time.Second)

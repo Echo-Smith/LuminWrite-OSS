@@ -174,10 +174,28 @@
 
 **参考**：references/AutoResearch-ar012/src/autoresearch/{review_workflow_service,agent_review,storm_review}.py 与 packages/scientific-review-service/。
 
-- [ ] 参数化题目/章节/阈值，升级 corpus 以接 typed claims/locator；添加不同学科反例，禁止仅材料科学模板验收。
-- [ ] 输入内容 hash 进入幂等键和 checkpoint 失效规则；目录按输入隔离，补持久作业/取消/对账后再启用远端长生成。
-- [ ] 同一包和批准提纲跑现有 Writer 与候选，记录12案例盲评、成本/耗时，避免拿历史单次模拟 Writer 当当前基线。
-- [ ] 候选只能写隔离 Artifact。提升质量而不增加关键无支持主张、且成本可接受，才另开正式生成选项实施任务。
+**实施记录（2026-09-12，分支 feat/ar012-candidate）**：以**运行后评估端点 +
+持久作业**形态接入（用户决议），接口合同见 `specs/research-review/ar012-sidecar.md`。
+上游 Proprietary fork 部署于工作区 `review-sidecar/`（不入仓库/镜像）；
+Go 适配层 `backend/internal/arreview`；持久作业表 `writing_ar_review_jobs`
+（迁移 111）；端点 `POST/GET /runs/{runId}/research/ar012-candidate[/cancel|/artifacts/{kind}]`。
+
+- [x] 参数化题目/章节/阈值：fork 新增 `review_spec.py`（REVIEW_SPEC.json，
+      提纲标题即规定章节、coverage 词表随包、阈值按语料等比放低）+ Go 侧
+      `BuildSpecMapping`；跨学科反例见 fork `tests/test_gates_with_spec.py`
+      （教育经济学 fixture 过双门禁）。（typed claims/locator 升级未做——
+      上游 corpus 仅摘要级，属于 compare_only/深校验后续项。）
+- [x] 输入内容 hash 进幂等键（owner+contract+pack+outline+generator+mode，
+      design.md §8）；内容寻址 surrogate 目录隔离；持久作业
+      （writing_ar_review_jobs 租约栅栏）+ 诚实取消 + ListRuns 对账
+      （outcome_unknown 绝不盲重发）。
+- [x] 同一冻结包与批准提纲：主稿（full_draft）与候选（manuscript）的机械
+      对比指标落 `metrics`（review-metrics/1）；**12 案例人工盲评未执行**
+      （本轮只产出盲评材料与成本记录，属人工步骤）。
+- [x] 候选只能写隔离 Artifact：导入仅写内容寻址 blob + 作业行引用，
+      不写 writing_artifacts/attempt ledger/文档版本；A18 断言见
+      `writingstore/ar_review_jobs_test.go TestArReviewJobA18Isolation`。
+      「提升才开正式生成选项」另立任务，未启动。
 
 ## 验证命令与验收矩阵
 

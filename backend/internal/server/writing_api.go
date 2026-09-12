@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/arreview"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
@@ -742,6 +743,16 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusConflict, "GATE_APPROVAL_REQUIRED"
 	case errors.Is(err, errResearchUnavailable), errors.Is(err, errResearchReviewDisabled):
 		status, code = http.StatusServiceUnavailable, "RESEARCH_UNAVAILABLE"
+	case errors.Is(err, errArReviewDisabled):
+		status, code = http.StatusServiceUnavailable, "AR_REVIEW_UNAVAILABLE"
+	case errors.Is(err, errArReviewRunNotComplete):
+		status, code = http.StatusConflict, "AR_REVIEW_RUN_NOT_COMPLETE"
+	case errors.Is(err, errArReviewInputsMissing):
+		status, code = http.StatusUnprocessableEntity, "AR_REVIEW_INPUTS_MISSING"
+	case errors.Is(err, arreview.ErrInsufficientCorpus):
+		status, code = http.StatusUnprocessableEntity, "AR_REVIEW_INSUFFICIENT_CORPUS"
+	case errors.Is(err, arreview.ErrExchangeConflict):
+		status, code = http.StatusConflict, "AR_REVIEW_EXCHANGE_CONFLICT"
 	case errors.Is(err, errInsufficientEvidence), errors.Is(err, errEvidenceInvalid), errors.Is(err, errOutlineEvidenceMismatch):
 		status, code = http.StatusUnprocessableEntity, researchErrorCode(err)
 	case errors.Is(err, errInvalidResearchSpec):

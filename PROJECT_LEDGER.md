@@ -193,6 +193,13 @@
 - **理由**：把晋升从操作纪律变成 fail-closed 代码与数据库约束，同时保留审批、激活和部署为彼此独立的授权动作。
 - **重新评估**：只有在目标环境积累稳定的 allowlist evidence 并完成单独授权后，才讨论 percentage；本决策不自动授权生产。
 
+### D-010 | 2026-09-12 | AR-012 候选评估：运行后评估端点 + Proprietary sidecar 出仓部署
+
+- **背景**：T10 要求接入 AutoResearch AR-012 独立综述生成服务作为对比候选。上游包声明 Proprietary 且无 LICENSE 文件；sidecar 为同步 650 秒级调用，无取消/队列，幂等签名不含内容 hash。
+- **选择**：(1) License 纪律——上游 fork 只存在于工作区（`review-sidecar/`），不进任何发布仓库/镜像，本仓库仅含自有 Go 适配层；(2) 形态——运行后评估端点 + `writing_ar_review_jobs` 持久作业（迁移 111），不改模板/编译器/枚举，research_review 既有路径零回归；(3) 幂等——owner+contract+pack+outline+generator_version+mode 派生键（design.md §8），同输入重放原作业、超时只对账不重发；(4) 隔离——候选仅存内容寻址 blob + 作业行引用，永不写 run artifact/文档版本（A18 结构化保证）；(5) 参数化——REVIEW_SPEC.json 让批准提纲即体裁，阈值按语料等比放低，跨学科可验收。
+- **理由**：仓库既有文档（requirements L56 / design §8 / 评估文档）已锁定 license 与 shadow-first 边界；运行后端点以约 60% 的改动面满足 T10 的对照与隔离验收，且后续升级为模板内并行节点时 client/转换器/幂等派生可整体复用。
+- **重新评估**：12 案例人工盲评通过且成本可接受后，才立"候选成为用户可选生成器/模板内并行节点"任务；typed claims/locator corpus 升级与 compare_only 接入随之再议；跨机部署需先补受控 artifact 上传 API。
+
 ---
 
 ## 5. 版本变更日志

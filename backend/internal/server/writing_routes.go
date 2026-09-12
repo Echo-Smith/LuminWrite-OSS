@@ -26,6 +26,12 @@ func (s *Server) registerWritingRoutes(r chi.Router) {
 		r.Post("/runs/{runId}/gates/{gateId}/decisions", s.handleDecideWritingGate)
 		r.Post("/runs/{runId}/gates/{gateId}/outline-revisions", s.handleSaveWritingOutlineRevision)
 		r.Get("/runs/{runId}/artifacts/{artifactId}/content", s.handleReadWritingRunArtifact)
+		// AR-012 candidate evaluation (T10): isolated comparison candidates,
+		// never delivered into the document path (A18).
+		r.Post("/runs/{runId}/research/ar012-candidate", s.handleRequestArReviewCandidate)
+		r.Get("/runs/{runId}/research/ar012-candidate", s.handleGetArReviewCandidate)
+		r.Post("/runs/{runId}/research/ar012-candidate/cancel", s.handleCancelArReviewCandidate)
+		r.Get("/runs/{runId}/research/ar012-candidate/artifacts/{kind}", s.handleReadArReviewArtifact)
 		r.Get("/documents/{documentId}/quality", s.handleWritingQuality)
 		r.Get("/documents/{documentId}/audit-report", s.handleWritingAuditReport)
 	})
