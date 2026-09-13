@@ -113,6 +113,11 @@ func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, ex
 			}
 		}
 
+		// 证据升级链路（Layer-0 止血④b）：每次被再次观测/正反馈都推进
+		// 证据状态。此前 evidence_status 恒为 none，写作场景的严格证据门
+		// 会把所有 Tier2/3 静默全拦。
+		latest.EvidenceStatus = upgradedEvidenceStatus(latest.EvidenceStatus, grade, latest.QualitySource)
+
 		if err := r.store.Save(ctx, latest); err != nil {
 			return nil, err
 		}
@@ -210,4 +215,27 @@ func minFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// upgradedEvidenceStatus 证据升级链路（Layer-0 止血④b）。
+// 记忆每被再次观测（two-strike/ reinforcement）或获得更强的质量信号时，
+// 证据状态只升不降：
+//   - 人工显式确认（manual_approve / workbuddy 录用）→ verified
+//   - 正面反馈（好评）→ 至少 supported
+//   - 再次出现（第二次观测即 two-strike 晋升）→ none 升为 supported
+//   - 其余情况维持现状（conflicted 不因重复观测而洗白，需人工裁决）
+func upgradedEvidenceStatus(current EvidenceStatus, grade ArticleGrade, qs QualitySource) EvidenceStatus {
+	if qs == QualityManualApprove || qs == QualityWorkbuddy {
+		return EvidenceVerified
+	}
+	if grade == GradePositive {
+		if current == EvidenceVerified {
+			return EvidenceVerified
+		}
+		return EvidenceSupported
+	}
+	if current == "" || current == EvidenceNone {
+		return EvidenceSupported
+	}
+	return current
 }

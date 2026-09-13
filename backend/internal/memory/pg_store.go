@@ -81,11 +81,11 @@ func (s *PgStore) Get(ctx context.Context, id string) (*memory.Memory, error) {
 	var m memory.Memory
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id::text, user_id::text, tier, category, key, value,
-		       confidence, occurrences, source_trace_id,
-		       quality_source, quality_weight, status,
+		       confidence, occurrences, COALESCE(source_trace_id, ''),
+		       COALESCE(quality_source, ''), COALESCE(quality_weight, 0), status,
 		       COALESCE(superseded_by::text, ''),
 		       first_seen, last_seen, created_at, updated_at,
-		       evidence_status, source_count
+		       COALESCE(evidence_status, 'none'), COALESCE(source_count, 0)
 		FROM user_memories WHERE id = $1::uuid
 	`, id).Scan(
 		&m.ID, &m.UserID, &m.Tier, &m.Category, &m.Key, &m.Value,
@@ -109,11 +109,11 @@ func (s *PgStore) List(ctx context.Context, userID string, opts memory.ListOptio
 
 	query := `
 		SELECT id::text, user_id::text, tier, category, key, value,
-		       confidence, occurrences, source_trace_id,
-		       quality_source, quality_weight, status,
+		       confidence, occurrences, COALESCE(source_trace_id, ''),
+		       COALESCE(quality_source, ''), COALESCE(quality_weight, 0), status,
 		       COALESCE(superseded_by::text, ''),
 		       first_seen, last_seen, created_at, updated_at,
-		       evidence_status, source_count
+		       COALESCE(evidence_status, 'none'), COALESCE(source_count, 0)
 		FROM user_memories
 		WHERE user_id = $1::uuid
 	`
@@ -179,11 +179,11 @@ func (s *PgStore) Search(ctx context.Context, userID string, queryVector []float
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, user_id::text, tier, category, key, value,
-		       confidence, occurrences, source_trace_id,
-		       quality_source, quality_weight, status,
+		       confidence, occurrences, COALESCE(source_trace_id, ''),
+		       COALESCE(quality_source, ''), COALESCE(quality_weight, 0), status,
 		       COALESCE(superseded_by::text, ''),
 		       first_seen, last_seen, created_at, updated_at,
-		       evidence_status, source_count,
+		       COALESCE(evidence_status, 'none'), COALESCE(source_count, 0),
 		       1 - (embedding <=> $2::vector) AS similarity
 		FROM user_memories
 		WHERE user_id = $1::uuid
@@ -225,11 +225,11 @@ func (s *PgStore) FindByCategoryKey(ctx context.Context, userID, category, key s
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, user_id::text, tier, category, key, value,
-		       confidence, occurrences, source_trace_id,
-		       quality_source, quality_weight, status,
+		       confidence, occurrences, COALESCE(source_trace_id, ''),
+		       COALESCE(quality_source, ''), COALESCE(quality_weight, 0), status,
 		       COALESCE(superseded_by::text, ''),
 		       first_seen, last_seen, created_at, updated_at,
-		       evidence_status, source_count
+		       COALESCE(evidence_status, 'none'), COALESCE(source_count, 0)
 		FROM user_memories
 		WHERE user_id = $1::uuid AND category = $2 AND key = $3
 		  AND status IN ('active', 'candidate')

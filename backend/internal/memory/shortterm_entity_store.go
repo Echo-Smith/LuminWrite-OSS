@@ -64,6 +64,26 @@ func (s *PgShortTermStore) StoreMessage(ctx context.Context, msg *memory.Convers
 	return nil
 }
 
+// loadHistoryQuery 先按时间倒序取最近 limit 条，再在外层正序回排。
+// 历史 bug（Layer-0 止血）：原来直接 ORDER BY created_at ASC LIMIT n，
+// 会话超过 limit 条时拿到的是"最早 n 条"而非"最近 n 条"——会话越长
+// 模型越失忆。SQL 以常量承载，由 loadHistoryQuery 测试锁定排序语义。
+const loadHistoryQuery = `
+		SELECT id::text, conversation_id, COALESCE(user_id::text, ''), trace_id,
+		       role, content, content_type, intent,
+		       COALESCE(embedding::text, ''), token_count, created_at
+		FROM (
+			SELECT id, conversation_id, user_id, trace_id,
+			       role, content, content_type, intent,
+			       embedding, token_count, created_at
+			FROM conversation_messages
+			WHERE conversation_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2
+		) recent
+		ORDER BY recent.created_at ASC
+	`
+
 // LoadHistory 加载会话的对话历史（按时间正序），包含 embedding 向量
 func (s *PgShortTermStore) LoadHistory(ctx context.Context, conversationID string, limit int) ([]memory.ConversationMessage, error) {
 	if s.db == nil {
@@ -73,15 +93,7 @@ func (s *PgShortTermStore) LoadHistory(ctx context.Context, conversationID strin
 		limit = 50
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, conversation_id, COALESCE(user_id::text, ''), trace_id,
-		       role, content, content_type, intent,
-		       COALESCE(embedding::text, ''), token_count, created_at
-		FROM conversation_messages
-		WHERE conversation_id = $1
-		ORDER BY created_at ASC
-		LIMIT $2
-	`, conversationID, limit)
+	rows, err := s.db.QueryContext(ctx, loadHistoryQuery, conversationID, limit)
 	if err != nil {
 		return nil, err
 	}
