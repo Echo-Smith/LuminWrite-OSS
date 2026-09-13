@@ -9,7 +9,7 @@
 它不追求「一键生成」的魔法，而是把写作拆成**可观察、可干预、可迭代**的工程流程：
 素材检索 → 提纲确认 → 风格化成稿 → 写后自检 → 记忆沉淀，关键决策始终由创作者掌控。
 
-![写作工作台](docs/assets/luminbuddy-workspace.png)
+![写作工作台](docs/assets/8f2bb20334781e43c0bb23498f2dc02d.png)
 
 [English](README.en.md)
 
