@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
@@ -243,19 +244,13 @@ func (pb *PromptBuilder) AddUserMaterials(materials []string) *PromptBuilder {
 func (pb *PromptBuilder) AddMemory(execCtx *engine.ExecutionContext) *PromptBuilder {
 	var b strings.Builder
 
-	// User memory preferences
-	if execCtx.MemoryContext != nil {
-		if memCtx, ok := execCtx.MemoryContext.(*memory.MemoryContext); ok {
-			if memStr := FormatMemoryForPrompt(memCtx); memStr != "" {
-				b.WriteString(memStr)
-			}
+	// User memory preferences + entity profile via the memoryport bundle
+	if bundle, ok := execCtx.MemoryContext.(*memoryport.Bundle); ok {
+		if memStr := memoryport.RenderWriteDirectives(bundle); memStr != "" {
+			b.WriteString(memStr)
 		}
-	}
-
-	// Entity memory network context
-	if execCtx.EntityContext != nil {
-		if entityCtx, ok := execCtx.EntityContext.(*memory.EntityGraphResult); ok {
-			b.WriteString(entityCtx.FormattedContext)
+		if bundle.EntityProfile != "" {
+			b.WriteString(bundle.EntityProfile)
 		}
 	}
 

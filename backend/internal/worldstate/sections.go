@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 )
 
@@ -328,6 +329,54 @@ func (s *SecuritySection) RenderDiff(previous interface{}) *ContextFragment {
 	return &ContextFragment{
 		Role: "system",
 		Body: engine.PromptInjectionDefenseDirective,
+	}
+}
+
+// ── MemorySection: 用户记忆偏好（memoryport Bundle）──
+
+// MemorySection 将门控后的用户写作偏好渲染进 system prompt（P1-1）。
+// 记忆在一次请求内是静态的（启动时检索一次），diff 机制保证只在
+// 内容变化时推送一次，与其余 section 相同的 token 节省逻辑。
+type MemorySection struct {
+	bundle *memoryport.Bundle
+}
+
+func NewMemorySection(bundle *memoryport.Bundle) *MemorySection {
+	return &MemorySection{bundle: bundle}
+}
+
+func (s *MemorySection) ID() string { return "memory" }
+
+// Snapshot 用指令 ID 列表做指纹，bundle 更换时触发重推。
+func (s *MemorySection) Snapshot() interface{} {
+	if s == nil || s.bundle == nil {
+		return ""
+	}
+	ids := make([]string, 0, len(s.bundle.WriteDirectives)+len(s.bundle.ReviewGuard))
+	for _, d := range s.bundle.WriteDirectives {
+		ids = append(ids, d.ID)
+	}
+	for _, d := range s.bundle.ReviewGuard {
+		ids = append(ids, d.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func (s *MemorySection) RenderDiff(previous interface{}) *ContextFragment {
+	body := memoryport.RenderWriteDirectives(s.bundle)
+	if body == "" {
+		return nil
+	}
+	// 记忆静态时（指纹与基线一致）不重推
+	if prev, ok := previous.(string); ok && prev != "" && prev == s.Snapshot() {
+		return nil
+	}
+	// 去掉渲染函数为 user prompt 场景准备的前导空行，
+	// system prompt section 自带边界。
+	body = strings.TrimPrefix(body, "\n\n")
+	return &ContextFragment{
+		Role: "system",
+		Body: body,
 	}
 }
 

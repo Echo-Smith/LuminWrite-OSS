@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
@@ -41,6 +43,10 @@ type Harness struct {
 	// 计费回调：工具执行成功后按名称扣费（商业版注入，nil = 不扣费）
 	toolSettleFunc ToolSettleFunc
 
+	// memoryPort 记忆消费契约（P1）：retrieve_context/remember 工具后端
+	// + 会话收尾自动提取。nil = 记忆功能关闭。
+	memoryPort memoryport.Port
+
 	// WorldState 管理（借鉴 Codex ContextManager + WorldState）
 	// 跨轮保留 section 基线，实现增量 diff 推送
 	worldState     *worldstate.WorldState
@@ -71,6 +77,11 @@ func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, kb tools.Knowl
 // 必须在 Run 之前调用。
 func (h *Harness) SetToolSettleFunc(fn ToolSettleFunc) {
 	h.toolSettleFunc = fn
+}
+
+// SetMemoryPort 注入记忆消费契约（P1）。nil = 关闭记忆功能。
+func (h *Harness) SetMemoryPort(p memoryport.Port) {
+	h.memoryPort = p
 }
 
 // settleFuncFor 把扣费限制在持久交互路径。governed Core（persistent=false）
@@ -176,6 +187,7 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		Emitter:    emitter,
 		Profile:    h.profile,
 		LLM:        h.llm,
+		MemoryPort: h.memoryPort,
 		MaxCalls:   defaultMaxCalls(intent),
 		SettleFunc: h.settleFuncFor(persistent),
 	}
@@ -431,6 +443,43 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		session.StoreMessage(ctx, h.sessionStore, "assistant", articleBody, contentType)
 	}
 
+	// P1-4: 会话收尾记忆提取（异步非阻塞，与 Pipeline 的 MemoryExtractStep
+	// 对齐）。浓信号通道：BeforeRevision 取首个历史版本（多轮修订时有
+	// diff 价值），Transcript 携带近期对话。chat 意图不提取（与 Pipeline 一致）。
+	if h.memoryPort != nil && persistent && articleIntent &&
+		session.UserID != "" && session.UserID != "anonymous" &&
+		h.memoryPort.EnabledForUser(session.UserID) {
+		outcome := memoryport.Outcome{
+			Kind:      memoryport.OutcomeWrite,
+			UserID:    session.UserID,
+			TraceID:   execCtx.TraceID,
+			Article:   articleBody,
+			StyleSlug: session.StyleSlug,
+			Mode:      string(intent),
+		}
+		if len(session.ArticleVersions) > 1 {
+			outcome.BeforeRevision = session.ArticleVersions[0]
+		}
+		tail := len(session.Messages) - 10
+		if tail < 0 {
+			tail = 0
+		}
+		for _, m := range session.Messages[tail:] {
+			content := m.Content
+			if len([]rune(content)) > 1000 {
+				content = string([]rune(content)[:1000])
+			}
+			outcome.Transcript = append(outcome.Transcript, memoryport.Message{Role: string(m.Role), Content: content})
+		}
+		go func(out memoryport.Outcome) {
+			extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := h.memoryPort.SubmitOutcome(extractCtx, out); err != nil {
+				slog.Warn("harness: memory submit outcome failed", "error", err, "trace_id", out.TraceID)
+			}
+		}(outcome)
+	}
+
 	// 发送 completed 事件
 	if emitter != nil {
 		var review interface{}
@@ -552,26 +601,27 @@ func (h *Harness) retrieveMemory(ctx context.Context, execCtx *engine.ExecutionC
 		intent = execCtx.TaskIntent.TaskMode
 	}
 
-	req := memory.RetrieveRequest{
-		UserID:    session.UserID,
-		UserInput: execCtx.UserInput,
-		Intent:    intent,
-		Explicit:  explicit,
-		SessionID: execCtx.SessionID,
+	req := memoryport.Request{
+		UserID:         session.UserID,
+		Query:          execCtx.UserInput,
+		Intent:         intent,
+		Explicit:       explicit,
+		SessionID:      execCtx.SessionID,
+		ConversationID: session.ConversationID,
 	}
 
-	memCtx, err := retriever.Retrieve(ctx, req)
+	bundle, err := retriever.Retrieve(ctx, req)
 	if err != nil {
 		slog.Warn("harness: memory retrieve failed", "error", err, "trace_id", execCtx.TraceID)
 		return
 	}
-	if memCtx != nil {
-		session.MemoryContext = memCtx
-		execCtx.MemoryContext = memCtx
+	if bundle != nil {
+		session.MemoryContext = bundle
+		execCtx.MemoryContext = bundle
 		slog.Info("harness: memory retrieved",
 			"trace_id", execCtx.TraceID,
-			"injected", len(memCtx.Injected),
-			"review_guard", len(memCtx.ReviewGuard),
+			"injected", len(bundle.WriteDirectives),
+			"review_guard", len(bundle.ReviewGuard),
 		)
 	}
 }
@@ -613,6 +663,10 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 	h.worldState.Register(worldstate.NewRulesSectionWithDetails(h.profile, intentStr, isGuided, 0))
 	h.worldState.Register(worldstate.NewTaskInstructionsSection(intentStr, isGuided))
 	h.worldState.Register(worldstate.NewSecuritySection())
+	// P1-1: 用户记忆偏好进 system prompt（此前只靠 LLM 主动拉取）
+	if bundle, ok := session.MemoryContext.(*memoryport.Bundle); ok {
+		h.worldState.Register(worldstate.NewMemorySection(bundle))
+	}
 
 	// 增量推送：只返回变化的 section
 	fragments := h.worldState.UpdateWorldState()

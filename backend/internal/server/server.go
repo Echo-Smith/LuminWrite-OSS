@@ -662,7 +662,7 @@ func New(cfg *config.Config) (*Server, error) {
 			services.NewKbSearchAdapter(s.kbMgr),
 			s.profiles,
 			s.userStyleStore,
-			&harnessSessionStore{svc: s.memorySvc},
+			newHarnessSessionStore(s.memorySvc),
 			s.traces,
 		)
 		s.wabenchSvc = services.NewWABenchEvaluationService(
@@ -2065,11 +2065,13 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 		h := agent.NewHarness(
 			llmClient, s.search, kbSearcher, styleProfile,
-			&harnessSessionStore{svc: s.memorySvc},
+			newHarnessSessionStore(s.memorySvc),
 			emitter,
 		)
 		// 注入工具扣费回调（商业版）
 		h.SetToolSettleFunc(s.SettleToolPoints)
+		// P1: 记忆消费契约（MemorySection/QueryOnDemand/remember/收尾提取）
+		h.SetMemoryPort(s.memoryPort())
 		agentRunner = &harnessRunner{harness: h, session: writingSession}
 		slog.Info("using harness agent (单层持续会话)", "trace_id", traceID, "conversation_id", execCtx.ConversationID, "kb_enabled", kbEnabled)
 	} else if agentMode == "pipeline" {
@@ -2099,7 +2101,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 			memoryBranch := []engine.Step{
-				steps.NewMemoryGateStepWithEntityGraph(s.memorySvc, &embedderAdapter{svc: s.memorySvc}),
+				steps.NewMemoryGateStepWithEntityGraph(s.memoryPortWithGraph()),
 			}
 			engineSteps = append(engineSteps, engine.NewParallelGroup(
 				"parallel_pre_write",
@@ -2134,7 +2136,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 		// Memory extract: extract patterns after article completion (async)
 		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-			engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memorySvc))
+			engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memoryPort()))
 			engineSteps = append(engineSteps, steps.NewShortTermStoreStep(
 				s.memorySvc,
 				&embedderAdapter{svc: s.memorySvc},
@@ -2160,11 +2162,13 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 
 		h := agent.NewHarness(
 			llmClient, s.search, kbSearcher, styleProfile,
-			&harnessSessionStore{svc: s.memorySvc},
+			newHarnessSessionStore(s.memorySvc),
 			emitter,
 		)
 		// 注入工具扣费回调（商业版）
 		h.SetToolSettleFunc(s.SettleToolPoints)
+		// P1: 记忆消费契约（MemorySection/QueryOnDemand/remember/收尾提取）
+		h.SetMemoryPort(s.memoryPort())
 		agentRunner = &harnessRunner{harness: h, session: writingSession}
 		slog.Info("using harness agent (default fallback)", "trace_id", traceID, "kb_enabled", kbEnabled)
 	}
@@ -2513,11 +2517,13 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 
 				h := agent.NewHarness(
 					llmClient, s.search, resumeKBSearcher, styleProfile,
-					&harnessSessionStore{svc: s.memorySvc},
+					newHarnessSessionStore(s.memorySvc),
 					emitter,
 				)
 				// 注入工具扣费回调（商业版）
 				h.SetToolSettleFunc(s.SettleToolPoints)
+				// P1: 记忆消费契约（MemorySection/QueryOnDemand/remember/收尾提取）
+				h.SetMemoryPort(s.memoryPort())
 				agentRunner = &harnessRunner{harness: h, session: writingSession}
 			} else {
 				var engineSteps []engine.Step
@@ -2539,7 +2545,7 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 				}
 				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 					memoryBranch := []engine.Step{
-						steps.NewMemoryGateStepWithEntityGraph(s.memorySvc, &embedderAdapter{svc: s.memorySvc}),
+						steps.NewMemoryGateStepWithEntityGraph(s.memoryPortWithGraph()),
 					}
 					engineSteps = append(engineSteps, engine.NewParallelGroup(
 						"parallel_pre_write",
@@ -2566,7 +2572,7 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 					s.newPostReviewStepWithLLM(llmClient, styleProfile),
 				)
 				if s.memorySvc != nil && s.memorySvc.IsAvailable() {
-					engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memorySvc))
+					engineSteps = append(engineSteps, steps.NewMemoryExtractStep(s.memoryPort()))
 					engineSteps = append(engineSteps, steps.NewShortTermStoreStep(
 						s.memorySvc,
 						&embedderAdapter{svc: s.memorySvc},
@@ -2979,7 +2985,7 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 		registry.RegisterWithDescriptor(
 			engine.NewStepTool(
-				steps.NewMemoryGateStep(s.memorySvc),
+				steps.NewMemoryGateStep(s.memoryPort()),
 				"记忆门控：检索用户写作偏好记忆，注入到执行上下文",
 				false,
 			),
@@ -3129,7 +3135,7 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 	if s.memorySvc != nil && s.memorySvc.IsAvailable() {
 		registry.RegisterWithDescriptor(
 			engine.NewStepTool(
-				steps.NewMemoryExtractStep(s.memorySvc),
+				steps.NewMemoryExtractStep(s.memoryPort()),
 				"记忆提取：从文章和反馈中异步提取写作偏好模式",
 				false,
 			),

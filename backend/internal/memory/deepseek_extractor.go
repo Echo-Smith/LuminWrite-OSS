@@ -54,6 +54,51 @@ func (e *DeepSeekExtractor) ExtractFromArticle(ctx context.Context, article, sty
 	return parseExtractedMemories(resp, "llm"), nil
 }
 
+// ExtractFromRevision diff 对比提取通道（P2-1 RevisionExtractor）。
+// 从"改前稿 → 改后稿"的差异中提取偏好：用户的主动修改是最强的
+// 显式偏好信号，强于终稿风格归纳。
+func (e *DeepSeekExtractor) ExtractFromRevision(ctx context.Context, before, after, styleSlug string) ([]memory.ExtractedMemory, error) {
+	if e.llm == nil || len(before) < 100 || len(after) < 100 {
+		// 退化：任一稿缺失时回退终稿归纳
+		return e.ExtractFromArticle(ctx, after, styleSlug)
+	}
+
+	prompt := fmt.Sprintf(`对比用户的改前稿与改后稿，从修改行为中提取写作偏好。
+用户的主动修改（删了什么、加了什么、怎么重写的）直接反映其偏好，优先级高于终稿风格归纳。
+
+风格：%s
+
+改前稿：
+%s
+
+改后稿：
+%s
+
+请分析修改模式，输出 JSON 数组（不需要的维度可省略）：
+[
+  {"category": "tone", "key": "revision_tone_preference", "value": "修改反映的语气偏好", "source": "llm"},
+  {"category": "structure", "key": "revision_structure_preference", "value": "修改反映的结构偏好（如删减冗余段、补过渡）", "source": "llm"},
+  {"category": "title", "key": "revision_title_preference", "value": "标题修改反映的偏好", "source": "llm"},
+  {"category": "sentence", "key": "revision_sentence_preference", "value": "句子层面的修改倾向（如拆长句、去感叹号）", "source": "llm"}
+]
+
+注意：
+- 只从实际发生的修改中归纳，不要臆测未修改部分的偏好
+- 若两稿几乎无差异，输出空数组 []
+- 只输出 JSON 数组，不要其他文字。`,
+		styleSlug, truncate(before, 1500), truncate(after, 1500))
+
+	resp, _, err := e.llm.Chat(ctx, []tools.LLMMessage{
+		{Role: "system", Content: "你是写作修改分析师，只输出 JSON 格式结果。"},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("LLM revision extraction failed: %w", err)
+	}
+
+	return parseExtractedMemories(resp, "llm"), nil
+}
+
 // ExtractFromFeedback 从反馈评论中提取改进信号
 func (e *DeepSeekExtractor) ExtractFromFeedback(ctx context.Context, feedback []memory.FeedbackInfo) ([]memory.ExtractedMemory, error) {
 	if e.llm == nil || len(feedback) == 0 {

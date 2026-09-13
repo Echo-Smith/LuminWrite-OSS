@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -1381,11 +1382,9 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 	}
 
 	// Inject user feedback memories (Tier 3) as additional review criteria
-	if execCtx.MemoryContext != nil {
-		if memCtx, ok := execCtx.MemoryContext.(*memory.MemoryContext); ok {
-			if guardStr := FormatReviewGuardForPrompt(memCtx); guardStr != "" {
-				profileRules.WriteString(guardStr)
-			}
+	if bundle, ok := execCtx.MemoryContext.(*memoryport.Bundle); ok {
+		if guardStr := memoryport.RenderReviewGuard(bundle); guardStr != "" {
+			profileRules.WriteString(guardStr)
 		}
 	}
 

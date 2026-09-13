@@ -8,6 +8,7 @@ import (
 
 	worldstate "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/worldstate"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
@@ -70,18 +71,12 @@ func (s *ChatStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext
 	}
 
 	// Add memory context if available (for personalized chat)
-	if execCtx.MemoryContext != nil {
-		if memCtx, ok := execCtx.MemoryContext.(*memory.MemoryContext); ok {
-			if memStr := FormatMemoryForPrompt(memCtx); memStr != "" {
-				promptBuilder.WriteString(memStr)
-			}
+	if bundle, ok := execCtx.MemoryContext.(*memoryport.Bundle); ok {
+		if memStr := memoryport.RenderWriteDirectives(bundle); memStr != "" {
+			promptBuilder.WriteString(memStr)
 		}
-	}
-
-	// Add entity context if available
-	if execCtx.EntityContext != nil {
-		if entityCtx, ok := execCtx.EntityContext.(*memory.EntityGraphResult); ok {
-			promptBuilder.WriteString(entityCtx.FormattedContext)
+		if bundle.EntityProfile != "" {
+			promptBuilder.WriteString(bundle.EntityProfile)
 		}
 	}
 

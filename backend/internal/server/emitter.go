@@ -4,8 +4,8 @@ import (
 	"log/slog"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 // WSEmitter implements engine.EventEmitter by sending events via WebSocket.
@@ -203,12 +203,17 @@ func (e *WSEmitter) Compaction(originalMessages, savedTokens int, summaryPreview
 // EmitMemoryUsed pushes the memory.used event to the client,
 // showing which memories were injected for this writing session.
 // Includes observability dimensions: user_id, session_id, recall counts, quality signals.
-func (e *WSEmitter) EmitMemoryUsed(traceID string, memCtx *memory.MemoryContext) {
+// Payload 结构与旧 *memory.MemoryContext 版本保持 JSON 兼容
+// （memoryport.Directive 的字段名与 MemoryEntry 对齐）。
+func (e *WSEmitter) EmitMemoryUsed(traceID string, bundle *memoryport.Bundle) {
+	if bundle == nil {
+		return
+	}
 	// Calculate observability metrics
-	totalRecall := len(memCtx.Injected) + len(memCtx.ReviewGuard)
+	totalRecall := len(bundle.WriteDirectives) + len(bundle.ReviewGuard)
 	hasHighQuality := false
 	var maxConfidence float64
-	for _, m := range memCtx.Injected {
+	for _, m := range bundle.WriteDirectives {
 		if m.Confidence > maxConfidence {
 			maxConfidence = m.Confidence
 		}
@@ -216,7 +221,7 @@ func (e *WSEmitter) EmitMemoryUsed(traceID string, memCtx *memory.MemoryContext)
 			hasHighQuality = true
 		}
 	}
-	for _, m := range memCtx.ReviewGuard {
+	for _, m := range bundle.ReviewGuard {
 		if m.Confidence > maxConfidence {
 			maxConfidence = m.Confidence
 		}
@@ -226,15 +231,15 @@ func (e *WSEmitter) EmitMemoryUsed(traceID string, memCtx *memory.MemoryContext)
 		Type: websocket.MsgMemoryUsed,
 		Payload: map[string]interface{}{
 			"trace_id":          traceID,
-			"injected":          memCtx.Injected,
-			"review_guard":      memCtx.ReviewGuard,
-			"dismissed":         memCtx.Dismissed,
+			"injected":          bundle.WriteDirectives,
+			"review_guard":      bundle.ReviewGuard,
+			"dismissed":         bundle.Dismissed,
 
 			// Observability dimensions
 			"recall_count":      totalRecall,
-			"injected_count":    len(memCtx.Injected),
-			"review_guard_count": len(memCtx.ReviewGuard),
-			"dismissed_count":   len(memCtx.Dismissed),
+			"injected_count":    len(bundle.WriteDirectives),
+			"review_guard_count": len(bundle.ReviewGuard),
+			"dismissed_count":   len(bundle.Dismissed),
 			"max_confidence":    maxConfidence,
 			"has_high_quality":  hasHighQuality,
 		},

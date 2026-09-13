@@ -57,7 +57,17 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 	var llmExtracted []ExtractedMemory
 	if grade != GradeNegative && len(session.Article) > 100 {
 		var err error
-		llmExtracted, err = s.extractor.ExtractFromArticle(ctx, session.Article, session.StyleSlug)
+		// P2-1 浓信号：携带改前稿时优先走 diff 对比通道——
+		// "用户改了什么"比"终稿长什么样"偏好信号更强。
+		if session.BeforeRevision != "" {
+			if rev, ok := s.extractor.(RevisionExtractor); ok {
+				llmExtracted, err = rev.ExtractFromRevision(ctx, session.BeforeRevision, session.Article, session.StyleSlug)
+			} else {
+				llmExtracted, err = s.extractor.ExtractFromArticle(ctx, session.Article, session.StyleSlug)
+			}
+		} else {
+			llmExtracted, err = s.extractor.ExtractFromArticle(ctx, session.Article, session.StyleSlug)
+		}
 		if err != nil {
 			slog.Warn("memory: LLM extraction failed", "error", err)
 		}
@@ -125,10 +135,12 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 		}
 	}
 
-	// 7. 为新记忆生成 embedding（异步）
-	// 这里简单同步处理，实际可以改为队列
+	// 7. 为新记忆生成 embedding（P2-3：同步补齐）
+	// Extract 本身已在 Service 层异步执行（不阻塞写作流程），
+	// 此处同步跑完可将"新记忆语义盲区"窗口从"异步批量扫描未知时长"
+	// 收敛为单次 embedding 调用；缺 embedding 兜底由 Gate union 召回承担。
 	if s.embedder != nil {
-		go s.generateEmbeddings(context.Background(), session.UserID)
+		s.generateEmbeddings(ctx, session.UserID)
 	}
 
 	s.emitter.EmitMemoryExtracted(session.TraceID, totalSaved)
@@ -166,6 +178,14 @@ func (s *SDK) Get(ctx context.Context, memoryID string) (*Memory, error) {
 
 // Create 创建 Tier 1 硬偏好
 func (s *SDK) Create(ctx context.Context, userID, category, key, value string) (*Memory, error) {
+	// P1-3（审计 L8）：显式路径此前是裸写入——Tier1 置信 1.0、无候选门、
+	// 每轮必注入，必须与提取链一样过 PII 检查。
+	if cleaned, skip := s.checkAndCleanMemoryValue(ctx, value, category); skip {
+		return nil, fmt.Errorf("memory rejected: sensitive content detected")
+	} else if cleaned != "" {
+		value = cleaned
+	}
+
 	mem := &Memory{
 		UserID:     userID,
 		Tier:       TierHard,
@@ -192,17 +212,19 @@ func (s *SDK) Create(ctx context.Context, userID, category, key, value string) (
 		return nil, fmt.Errorf("failed to create memory: %w", err)
 	}
 
-	// 生成 embedding
+	// 生成 embedding（P2-3：同步执行。Tier1 置信 1.0、每轮必注入，
+	// 不允许停留在语义盲区；embedding 失败不阻塞保存——Gate 的
+	// union 召回会把缺 embedding 的近期记忆并入候选池兜底）
 	if s.embedder != nil {
-		go func() {
-			vec, err := s.embedder.Embed(context.Background(), value)
-			if err != nil {
-				slog.Warn("memory: embed failed for new memory", "error", err)
-				return
-			}
+		vec, err := s.embedder.Embed(ctx, value)
+		if err != nil {
+			slog.Warn("memory: embed failed for new memory", "error", err)
+		} else if len(vec) > 0 {
 			mem.Embedding = vec
-			_ = s.store.Save(ctx, mem)
-		}()
+			if err := s.store.Save(ctx, mem); err != nil {
+				slog.Warn("memory: embedding persist failed", "error", err)
+			}
+		}
 	}
 
 	return mem, nil

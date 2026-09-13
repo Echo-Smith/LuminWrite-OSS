@@ -8,7 +8,7 @@ import (
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 )
 
 // ─── LoggingEmitter: Append-only Event Log Wrapper ──────
@@ -279,15 +279,18 @@ func (e *LoggingEmitter) SetPointsUsed(points float64) {
 // EmitMemoryUsed delegates to WSEmitter's memory event.
 // This is not part of the EventEmitter interface but is called directly
 // by the server. We pass it through to the inner emitter if it supports it.
-func (e *LoggingEmitter) EmitMemoryUsed(traceID string, memCtx *memory.MemoryContext) {
+func (e *LoggingEmitter) EmitMemoryUsed(traceID string, bundle *memoryport.Bundle) {
 	if ws, ok := e.inner.(*WSEmitter); ok {
-		ws.EmitMemoryUsed(traceID, memCtx)
+		ws.EmitMemoryUsed(traceID, bundle)
+	}
+	if bundle == nil {
+		return
 	}
 	e.enqueue(EventMemoryUsed, "", map[string]interface{}{
 		"trace_id":           traceID,
-		"injected_count":     len(memCtx.Injected),
-		"review_guard_count": len(memCtx.ReviewGuard),
-		"dismissed_count":    len(memCtx.Dismissed),
+		"injected_count":     len(bundle.WriteDirectives),
+		"review_guard_count": len(bundle.ReviewGuard),
+		"dismissed_count":    len(bundle.Dismissed),
 	})
 }
 

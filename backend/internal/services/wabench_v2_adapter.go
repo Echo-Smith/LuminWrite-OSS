@@ -15,6 +15,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	pkgmemory "github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -360,7 +361,7 @@ func (s readOnlyWABenchSessionStore) IsEnabledForUser(userID string) bool {
 	return s.inner != nil && s.inner.IsEnabledForUser(userID)
 }
 
-func (s readOnlyWABenchSessionStore) Retrieve(ctx context.Context, req pkgmemory.RetrieveRequest) (*pkgmemory.MemoryContext, error) {
+func (s readOnlyWABenchSessionStore) Retrieve(ctx context.Context, req memoryport.Request) (*memoryport.Bundle, error) {
 	if retriever, ok := s.inner.(agent.MemoryRetriever); ok {
 		return retriever.Retrieve(ctx, req)
 	}

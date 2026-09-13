@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -369,7 +370,63 @@ func ReviseToolDefs(hasKnowledge bool) []tools.ToolDef {
 			},
 		},
 	})
+	defs = append(defs, memoryContextToolDefs()...)
 	return defs
+}
+
+// memoryContextToolDefs 记忆相关工具（P1-2/3：全意图可用——修订与对话
+// 轮次此前没有任何记忆入口，是 Harness 消费断链的主因之一）。
+func memoryContextToolDefs() []tools.ToolDef {
+	return []tools.ToolDef{retrieveContextToolDef(), rememberToolDef()}
+}
+
+func retrieveContextToolDef() tools.ToolDef {
+	return tools.ToolDef{
+		Type: "function",
+		Function: tools.ToolDefFunction{
+			Name:        "retrieve_context",
+			Description: "按需检索会话上下文。当你需要某段具体信息但当前 prompt 中没有提供时使用。支持检索：当前文章的特定段落、用户记忆偏好、历史对话中的关键决策、已收集的搜索素材等。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "你想查询的内容描述。例如：'用户喜欢的修辞风格'、'文章第三段的内容'、'关于AI的搜索素材'、'用户之前的修改意见'",
+					},
+					"source": map[string]any{
+						"type":        "string",
+						"description": "检索来源：article(当前文章全文)、memory(用户写作偏好和历史记忆)、history(本轮对话历史)、search(已收集的搜索素材)、profile(当前风格配置)",
+						"enum":        []string{"article", "memory", "history", "search", "profile"},
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "返回结果的最大条数/段落数，默认3",
+					},
+				},
+				"required": []string{"query", "source"},
+			},
+		},
+	}
+}
+
+func rememberToolDef() tools.ToolDef {
+	return tools.ToolDef{
+		Type: "function",
+		Function: tools.ToolDefFunction{
+			Name:        "remember",
+			Description: "将用户明确要求记住的长期偏好写入记忆。仅在用户明确表达'记住/以后都/以后请'等持久偏好时使用；一次只记一条具体偏好。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"content": map[string]any{
+						"type":        "string",
+						"description": "要记住的具体偏好，一句话描述。例如：'标题不超过12个字'、'避免使用感叹号'",
+					},
+				},
+				"required": []string{"content"},
+			},
+		},
+	}
 }
 
 // ToolsForIntent 按意图返回工具集。
@@ -395,7 +452,8 @@ func ToolsForIntent(intent Intent, hasSearch bool, flags ...bool) []tools.ToolDe
 			}
 			return true
 		})
-		return all
+		// 写作工具集已含 retrieve_context，补 remember（P1-3）
+		return append(all, rememberToolDef())
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
 		defs := ReviseToolDefs(hasKB)
 		if !hasSearch {
@@ -405,10 +463,9 @@ func ToolsForIntent(intent Intent, hasSearch bool, flags ...bool) []tools.ToolDe
 		}
 		return defs
 	case IntentChat:
-		if hasSearch || hasKB {
-			return ChatToolDefs(hasKB)
-		}
-		return nil
+		// P1-2: 无搜索/知识库时也要有记忆工具，否则 chat 轮次完全没有
+		// 记忆入口（旧行为返回 nil）
+		return append(ChatToolDefs(hasKB), memoryContextToolDefs()...)
 	default:
 		return nil
 	}
@@ -453,6 +510,10 @@ type ToolExecutorConfig struct {
 	// 计费回调：工具执行成功后按名称扣费
 	// 由 Server 创建 Harness 时注入，nil = 不扣费（开源版无此回调）
 	SettleFunc ToolSettleFunc
+
+	// MemoryPort 记忆消费契约（P1）：retrieve_context 的 memory source
+	// 走真检索+门控；remember 工具走显式写回。nil = 退化为查本轮副本。
+	MemoryPort memoryport.Port
 }
 
 // BuildToolExecutor 构建一个 ToolExecutor，用于在 ChatWithTools 中执行 LLM 的工具调用。
@@ -558,6 +619,8 @@ func executeToolByName(name string, cfg ToolExecutorConfig, arguments string) (s
 		return executeFactCheck(cfg, arguments)
 	case "retrieve_context":
 		return executeRetrieveContext(cfg, arguments)
+	case "remember":
+		return executeRemember(cfg, arguments)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -1185,19 +1248,46 @@ func retrieveFromArticle(cfg ToolExecutorConfig, query string, limit int) string
 }
 
 // retrieveFromMemory 从用户记忆中检索相关信息。
+// P1-2: 优先走 Port.QueryOnDemand（真检索+真门控，结果按本轮已注入的
+// bundle ID 去重）；Port 不可用时退化为查本轮 bundle 副本（旧行为）。
 func retrieveFromMemory(cfg ToolExecutorConfig, query string, limit int) string {
+	if cfg.MemoryPort != nil && cfg.ExecCtx != nil &&
+		cfg.ExecCtx.UserID != "" && cfg.ExecCtx.UserID != "anonymous" {
+		var exclude []string
+		if bundle, ok := cfg.Session.MemoryContext.(*memoryport.Bundle); ok && bundle != nil {
+			for _, d := range bundle.WriteDirectives {
+				exclude = append(exclude, d.ID)
+			}
+			for _, d := range bundle.ReviewGuard {
+				exclude = append(exclude, d.ID)
+			}
+		}
+		directives, err := cfg.MemoryPort.QueryOnDemand(context.Background(), memoryport.QueryRequest{
+			UserID:     cfg.ExecCtx.UserID,
+			Query:      query,
+			Intent:     "writing",
+			SessionID:  cfg.ExecCtx.SessionID,
+			ExcludeIDs: exclude,
+		})
+		if err != nil {
+			return "记忆检索暂时不可用，请稍后重试。"
+		}
+		if len(directives) == 0 {
+			return "没有找到与查询相关的新记忆（本轮已注入的偏好不重复返回）。"
+		}
+		return renderMemoryDirectives(fmt.Sprintf("找到 %d 条相关记忆（已排除本轮已注入内容）：", len(directives)), directives, limit)
+	}
+
 	if cfg.Session == nil || cfg.Session.MemoryContext == nil {
 		return "暂无用户记忆。系统将自动从对话中提取偏好。"
 	}
 
-	memCtx, ok := cfg.Session.MemoryContext.(*memory.MemoryContext)
-	if !ok || memCtx == nil {
+	bundle, ok := cfg.Session.MemoryContext.(*memoryport.Bundle)
+	if !ok || bundle == nil {
 		return "记忆服务暂不可用。"
 	}
 
-	var allEntries []memory.MemoryEntry
-	allEntries = append(allEntries, memCtx.Injected...)
-	allEntries = append(allEntries, memCtx.ReviewGuard...)
+	allEntries := append(append([]memoryport.Directive{}, bundle.WriteDirectives...), bundle.ReviewGuard...)
 
 	if len(allEntries) == 0 {
 		return "暂无用户写作偏好记录。"
@@ -1205,7 +1295,7 @@ func retrieveFromMemory(cfg ToolExecutorConfig, query string, limit int) string 
 
 	// 关键词匹配
 	keywords := extractKeywords(query)
-	var matches []memory.MemoryEntry
+	var matches []memoryport.Directive
 	for _, entry := range allEntries {
 		if matchScore(entry.Value, keywords) > 0 || matchScore(entry.Category, keywords) > 0 {
 			matches = append(matches, entry)
@@ -1213,27 +1303,67 @@ func retrieveFromMemory(cfg ToolExecutorConfig, query string, limit int) string 
 	}
 
 	if len(matches) == 0 {
-		// 返回所有记忆作为概览
-		var sb strings.Builder
-		sb.WriteString("未找到精确匹配的记忆。以下是用户的所有写作偏好：\n\n")
-		for i, entry := range allEntries {
-			if i >= limit {
-				break
-			}
-			sb.WriteString(fmt.Sprintf("- [%s] %s\n", entry.Category, entry.Value))
-		}
-		return sb.String()
+		return renderMemoryDirectives("未找到精确匹配的记忆。以下是用户的所有写作偏好：", allEntries, limit)
 	}
+	return renderMemoryDirectives(fmt.Sprintf("找到 %d 条相关记忆：", len(matches)), matches, limit)
+}
 
+// renderMemoryDirectives 统一渲染 memory 检索结果列表（限 limit 条）。
+func renderMemoryDirectives(header string, directives []memoryport.Directive, limit int) string {
+	if len(directives) == 0 {
+		return "暂无用户写作偏好记录。"
+	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("找到 %d 条相关记忆：\n\n", len(matches)))
-	for i, entry := range matches {
+	sb.WriteString(header + "\n\n")
+	for i, d := range directives {
 		if i >= limit {
 			break
 		}
-		sb.WriteString(fmt.Sprintf("- [%s] %s\n", entry.Category, entry.Value))
+		sb.WriteString(fmt.Sprintf("- [%s] %s\n", d.Category, d.Value))
 	}
 	return sb.String()
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// executeRemember 将用户显式要求记住的内容写入长期记忆（Tier1 硬偏好）。
+// P1-3: 经 Port.SubmitOutcome 的显式通道，SDK 侧含 PII 检查。
+func executeRemember(cfg ToolExecutorConfig, arguments string) (string, error) {
+	var args struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	content := strings.TrimSpace(args.Content)
+	if content == "" {
+		return "错误：要记住的内容不能为空", nil
+	}
+	if cfg.MemoryPort == nil || cfg.ExecCtx == nil {
+		return "记忆功能当前不可用。", nil
+	}
+	if cfg.ExecCtx.UserID == "" || cfg.ExecCtx.UserID == "anonymous" {
+		return "访客模式不支持记忆功能。", nil
+	}
+	// 显式写入带超时：SDK.Create 内含同步 embedding（P2-3），
+	// 工具路径无请求 ctx，裸 Background 调用可能无限挂起。
+	rememberCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := cfg.MemoryPort.SubmitOutcome(rememberCtx, memoryport.Outcome{
+		Kind:          memoryport.OutcomeExplicit,
+		UserID:        cfg.ExecCtx.UserID,
+		TraceID:       cfg.ExecCtx.TraceID,
+		ExplicitValue: content,
+	})
+	if err != nil {
+		return "记忆保存失败：" + err.Error(), nil
+	}
+	return "好的，我已记住：" + content, nil
 }
 
 // retrieveFromHistory 从对话历史中检索相关信息。
@@ -1824,6 +1954,7 @@ func defaultMaxCalls(intent Intent) map[string]int {
 			"rewrite_title":    1,
 			"fact_check":       1,
 			"retrieve_context": 5,
+			"remember":         3, // P1-3: 显式写入限频，防 LLM 循环刷写
 		}
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:
 		// 修改意图：搜索 2 次、上下文检索 3 次
@@ -1831,6 +1962,7 @@ func defaultMaxCalls(intent Intent) map[string]int {
 			"search_web":       2,
 			"search_knowledge": 2,
 			"retrieve_context": 3,
+			"remember":         2,
 		}
 	case IntentChat:
 		// 对话意图：搜索 2 次、上下文检索 2 次
@@ -1838,6 +1970,7 @@ func defaultMaxCalls(intent Intent) map[string]int {
 			"search_web":       2,
 			"search_knowledge": 2,
 			"retrieve_context": 2,
+			"remember":         3,
 		}
 	default:
 		return nil

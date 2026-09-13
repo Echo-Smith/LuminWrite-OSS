@@ -1,6 +1,10 @@
 package memory
 
-import "time"
+import (
+	"context"
+	"math"
+	"time"
+)
 
 // ─── 核心类型 ──────────────────────────────────────────────
 
@@ -106,17 +110,10 @@ func (m *Memory) EffectiveConfidence(halfLifeDays int) float64 {
 	if halfLifeDays <= 0 {
 		return m.Confidence
 	}
+	// 闭式指数衰减（P2）：conf * 0.5^(days/halfLife)，
+	// 取代原逐日近似循环（O(days) 且半衰期短时误差放大）。
 	days := time.Since(m.LastSeen).Hours() / 24
-	decay := 0.5
-	if days < float64(halfLifeDays) {
-		// exponential decay: confidence * 0.5^(days/halfLife)
-		decay = 1.0
-		for i := 0; i < int(days); i++ {
-			decay *= (1.0 - 0.6931471805599453/float64(halfLifeDays))
-		}
-	} else {
-		decay = 0.5
-	}
+	decay := math.Pow(0.5, days/float64(halfLifeDays))
 	// quality weight boost
 	effective := m.Confidence * decay
 	if m.QualityWeight > 0 {
@@ -171,6 +168,16 @@ type ExtractSession struct {
 	Feedback     []FeedbackInfo  `json:"feedback"`
 	Signals      []QualitySignal `json:"signals"`
 	Grade        ArticleGrade    `json:"grade"`
+	// BeforeRevision 改前稿（P2-1 浓信号，加性演进字段）。
+	// 非空且提取器支持 diff 通道时，优先从"用户改了什么"提取偏好。
+	BeforeRevision string `json:"before_revision,omitempty"`
+}
+
+// RevisionExtractor 可选的 diff 对比提取通道（P2-1）。
+// LLMExtractor 实现方可额外实现此接口以支持改前/改后对比提取；
+// SDK 在 ExtractSession.BeforeRevision 非空时优先调用。
+type RevisionExtractor interface {
+	ExtractFromRevision(ctx context.Context, before, after, styleSlug string) ([]ExtractedMemory, error)
 }
 
 // FeedbackInfo 用户反馈信息
@@ -225,10 +232,16 @@ func DefaultSafetyConfig() SafetyConfig {
 	return SafetyConfig{
 		Enabled:               true,
 		EnableRefusal:         true,
-		RequireVerifiedForWriting: true,
+		// Layer-0 止血：历史默认 true，但全库没有任何链路写入
+		// verified/supported，导致 Tier2/3 在写作/润色场景被静默全拦
+		// （evidence_status 恒为 none）。降级为"非 conflicted/unknown
+		// 即注入"，与 chat 对齐。conflict.go 的证据升级链路（two-strike
+		// → supported，人工录用 → verified）+ 回填迁移就位后，可通过
+		// 配置重新拧紧到 verified 严格门。
+		RequireVerifiedForWriting: false,
 		RequireVerifiedForChat:    false,
-		PIIFilterEnabled:     true,
-		MaxInjectedPerIntent: 0,
+		PIIFilterEnabled:          true,
+		MaxInjectedPerIntent:      0,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
@@ -28,12 +29,12 @@ type SessionStore interface {
 	IsEnabledForUser(userID string) bool
 }
 
-// MemoryRetriever 是可选的记忆检索接口。
-// 由 memory.Service 实现，用于主动检索用户写作偏好和反馈记忆。
+// MemoryRetriever 是可选的记忆检索接口（memoryport 契约的预取动词）。
+// 由 memoryport 适配器实现，用于主动检索用户写作偏好和反馈记忆。
 // Harness 在构建 system prompt 前调用此接口。
 // 如果 SessionStore 不实现此接口，Harness 静默跳过记忆注入。
 type MemoryRetriever interface {
-	Retrieve(ctx context.Context, req memory.RetrieveRequest) (*memory.MemoryContext, error)
+	Retrieve(ctx context.Context, req memoryport.Request) (*memoryport.Bundle, error)
 }
 
 // WritingSession 持有同一对话内的累积状态。

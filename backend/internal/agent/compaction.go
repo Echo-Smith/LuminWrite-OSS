@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
+
+// WorkingSummarySaver 可选接口：compaction 摘要落库（P1-5）。
+// 由 memory.Service（短期记忆层）实现；SessionStore 未实现时静默跳过。
+type WorkingSummarySaver interface {
+	SaveWorkingSummary(ctx context.Context, ws *memory.WorkingSummary) error
+}
 
 // ─── Compaction: 对话历史压缩 ──────────────────────────────
 //
@@ -139,6 +146,27 @@ func (h *Harness) maybeCompact(
 	})
 	compactedMsgs = append(compactedMsgs, session.Messages[len(session.Messages)-compactionKeepRecent:]...)
 	session.Messages = compactedMsgs
+
+	// ── P1-5: 压缩摘要落库（working_summaries）──
+	// 旧实现只改内存 session，重启后摘要即失；Pipeline 同名能力已落库。
+	if saver, ok := h.sessionStore.(WorkingSummarySaver); ok && session.ConversationID != "" {
+		ws := &memory.WorkingSummary{
+			ConversationID:    session.ConversationID,
+			TraceID:           execCtx.TraceID,
+			CompressedSummary: summary,
+			StepSummaries:     []memory.StepSummary{},
+			SummarizedSteps:   map[string]bool{},
+			TokenCount:        len(summary) / 2,
+			LastUpdatedAt:     time.Now(),
+		}
+		go func(ws *memory.WorkingSummary) {
+			saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := saver.SaveWorkingSummary(saveCtx, ws); err != nil {
+				slog.Warn("harness: working summary save failed", "error", err, "conversation_id", ws.ConversationID)
+			}
+		}(ws)
+	}
 
 	// ── 重置 WorldState 基线（v3.0 新增）──
 	// 压缩后，下一轮 system prompt 需要全量推送（因为上下文已变化）
