@@ -74,6 +74,9 @@ type Request struct {
 	Intent         string
 	Explicit       map[string]any
 	SessionID      string
+	// TraceID / Source（P3 遥测，加性字段）：pipeline | harness | tool。
+	TraceID string
+	Source  string
 	// WithEntityGraph 请求同时检索实体画像（仅当 Capabilities.EntityGraph 时生效）。
 	WithEntityGraph bool
 }
@@ -84,6 +87,9 @@ type QueryRequest struct {
 	Query     string
 	Intent    string
 	SessionID string
+	// TraceID / Source（P3 遥测，加性字段）。
+	TraceID string
+	Source  string
 	// ExcludeIDs 是本轮已注入的 Directive ID，结果会去重避免与 prompt 打架。
 	ExcludeIDs []string
 }

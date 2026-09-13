@@ -1267,6 +1267,8 @@ func retrieveFromMemory(cfg ToolExecutorConfig, query string, limit int) string 
 			Query:      query,
 			Intent:     "writing",
 			SessionID:  cfg.ExecCtx.SessionID,
+			TraceID:    cfg.ExecCtx.TraceID,
+			Source:     "tool",
 			ExcludeIDs: exclude,
 		})
 		if err != nil {

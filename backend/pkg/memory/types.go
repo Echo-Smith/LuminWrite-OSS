@@ -134,6 +134,10 @@ type RetrieveRequest struct {
 	Intent    string         `json:"intent"`           // writing | polish | chat
 	Explicit  map[string]any `json:"explicit"`         // 用户显式指定的维度
 	SessionID string         `json:"session_id"`       // 当前会话 ID（用于 dismiss 追踪）
+	// TraceID / Source（P3 遥测，加性字段）：调用方运行时标识与来源
+	// （pipeline | harness | tool），只进遥测不参与门控决策。
+	TraceID string `json:"trace_id,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 // MemoryEntry 是注入到 prompt 中的记忆条目

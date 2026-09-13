@@ -55,6 +55,7 @@ type Service struct {
 	entityExtractor *LLMEntityExtractor
 	fileStore       *memory.FileStore  // 文件记忆层
 	fileSyncer      *memory.FileMemorySyncer
+	telemetry       *TelemetryStore // 注入遥测（P3），nil = 关闭
 }
 
 // NewService 创建记忆服务
@@ -108,7 +109,13 @@ func NewService(db *database.DB, llm *tools.LLMClient, embedding *tools.Embeddin
 		entityExtractor: entityExtractor,
 		fileStore:       fileStore,
 		fileSyncer:      fileSyncer,
+		telemetry:       NewTelemetryStore(db),
 	}
+}
+
+// Telemetry 暴露遥测存储（admin 汇总端点用）；nil = 不可用。
+func (s *Service) Telemetry() *TelemetryStore {
+	return s.telemetry
 }
 
 // IsAvailable 检查记忆服务是否可用
@@ -129,12 +136,50 @@ func (s *Service) SetConfig(cfg memory.Config) {
 	s.cfg = cfg
 }
 
-// Retrieve 写作前检索记忆
+// Retrieve 写作前检索记忆（含注入遥测埋点，P3）
 func (s *Service) Retrieve(ctx context.Context, req memory.RetrieveRequest) (*memory.MemoryContext, error) {
 	if !s.IsAvailable() {
 		return &memory.MemoryContext{}, nil
 	}
-	return s.sdk.Retrieve(ctx, req)
+	t0 := time.Now()
+	memCtx, err := s.sdk.Retrieve(ctx, req)
+	if s.telemetry != nil {
+		event := TelemetryEntry{
+			UserID:         req.UserID,
+			TraceID:        req.TraceID,
+			ConversationID: req.SessionID,
+			Intent:         req.Intent,
+			Source:         req.Source,
+			LatencyMS:      time.Since(t0).Milliseconds(),
+		}
+		if err != nil {
+			event.Event = "gate_refusal"
+			event.RefusalReason = "retrieve_error"
+		} else if memCtx == nil {
+			event.Event = "gate_refusal"
+			event.RefusalReason = "no_result"
+		} else if memCtx.RefusalReason != "" || (len(memCtx.Injected) == 0 && len(memCtx.ReviewGuard) == 0) {
+			event.Event = "gate_refusal"
+			event.RefusalReason = memCtx.RefusalReason
+			if event.RefusalReason == "" {
+				event.RefusalReason = "empty"
+			}
+		} else {
+			event.Event = "gate_inject"
+			event.InjectedCount = len(memCtx.Injected)
+			event.ReviewGuardCount = len(memCtx.ReviewGuard)
+			for _, e := range memCtx.Injected {
+				event.InjectedIDs = append(event.InjectedIDs, e.ID)
+				event.Tiers = append(event.Tiers, string(e.Tier))
+			}
+			for _, e := range memCtx.ReviewGuard {
+				event.InjectedIDs = append(event.InjectedIDs, e.ID)
+				event.Tiers = append(event.Tiers, string(e.Tier))
+			}
+		}
+		s.telemetry.Record(event)
+	}
+	return memCtx, err
 }
 
 // Extract 写作完成后提取记忆（异步）
@@ -142,6 +187,14 @@ func (s *Service) Retrieve(ctx context.Context, req memory.RetrieveRequest) (*me
 func (s *Service) Extract(ctx context.Context, session memory.ExtractSession) {
 	if !s.IsAvailable() {
 		return
+	}
+	if s.telemetry != nil {
+		s.telemetry.Record(TelemetryEntry{
+			UserID:  session.UserID,
+			TraceID: session.TraceID,
+			Event:   "session_extract",
+			Meta:    map[string]any{"article_len": len(session.Article), "mode": session.Mode},
+		})
 	}
 	go func() {
 		// 1. 原有模式记忆提取
@@ -168,7 +221,17 @@ func (s *Service) Create(ctx context.Context, userID, category, key, value strin
 	if !s.IsAvailable() {
 		return nil, ErrServiceUnavailable
 	}
-	return s.sdk.Create(ctx, userID, category, key, value)
+	mem, err := s.sdk.Create(ctx, userID, category, key, value)
+	if err == nil && s.telemetry != nil && mem != nil {
+		s.telemetry.Record(TelemetryEntry{
+			UserID:    userID,
+			Source:    "api",
+			Event:     "explicit_capture",
+			InjectedIDs: []string{mem.ID},
+			Meta:      map[string]any{"category": category, "key": key},
+		})
+	}
+	return mem, err
 }
 
 // Delete 删除记忆
@@ -183,6 +246,14 @@ func (s *Service) Delete(ctx context.Context, memoryID string) error {
 func (s *Service) Dismiss(ctx context.Context, memoryID, sessionID string) error {
 	if !s.IsAvailable() {
 		return ErrServiceUnavailable
+	}
+	if s.telemetry != nil {
+		s.telemetry.Record(TelemetryEntry{
+			ConversationID: sessionID,
+			Source:         "api",
+			Event:          "dismiss",
+			InjectedIDs:    []string{memoryID},
+		})
 	}
 	return s.sdk.Dismiss(ctx, memoryID, sessionID)
 }

@@ -60,6 +60,8 @@ func (a *ServiceAdapter) PrepareInjection(ctx context.Context, req memoryport.Re
 		Intent:    req.Intent,
 		Explicit:  req.Explicit,
 		SessionID: req.SessionID,
+		TraceID:   req.TraceID,
+		Source:    req.Source,
 	})
 	if err != nil {
 		return nil, err
@@ -108,6 +110,8 @@ func (a *ServiceAdapter) QueryOnDemand(ctx context.Context, req memoryport.Query
 		UserInput: req.Query,
 		Intent:    req.Intent,
 		SessionID: req.SessionID,
+		TraceID:   req.TraceID,
+		Source:    req.Source,
 	})
 	if err != nil || memCtx == nil {
 		return nil, err

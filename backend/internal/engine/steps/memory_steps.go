@@ -87,6 +87,8 @@ func (s *MemoryGateStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		Intent:          intent,
 		Explicit:        explicit,
 		SessionID:       execCtx.SessionID,
+		TraceID:         execCtx.TraceID,
+		Source:          "pipeline",
 		WithEntityGraph: s.withEntityGraph,
 	})
 	if err != nil {

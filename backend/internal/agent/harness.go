@@ -608,6 +608,8 @@ func (h *Harness) retrieveMemory(ctx context.Context, execCtx *engine.ExecutionC
 		Explicit:       explicit,
 		SessionID:      execCtx.SessionID,
 		ConversationID: session.ConversationID,
+		TraceID:        execCtx.TraceID,
+		Source:         "harness",
 	}
 
 	bundle, err := retriever.Retrieve(ctx, req)

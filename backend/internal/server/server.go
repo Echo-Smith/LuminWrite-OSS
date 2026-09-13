@@ -1094,6 +1094,7 @@ func (s *Server) Router() http.Handler {
 				r.Put("/models/{id}", s.handleAdminUpdateModelConfig)
 				r.Delete("/models/{id}", s.handleAdminDeleteModelConfig)
 				r.Post("/models/batch", s.handleAdminBatchModels)
+				r.Get("/memory/telemetry", s.handleAdminMemoryTelemetry)
 			})
 
 			// API Keys (apikey.manage)
