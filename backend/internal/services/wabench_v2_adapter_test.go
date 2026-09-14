@@ -156,7 +156,7 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 		t.Fatal(err)
 	}
 	loader := profile.NewLoader()
-	builtin, ok := loader.Get("yinyue")
+	builtin, ok := loader.Get("default")
 	if !ok {
 		t.Fatal("builtin profile missing")
 	}
@@ -187,19 +187,26 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 	}
 }
 
-func TestWABenchPublicRuleProfilesFailClosedWithoutPresetStyles(t *testing.T) {
-	// LuminWrite OSS ships an empty built-in style catalog: the bundled
-	// public evaluation rules bind to preset slugs that a fresh deployment
-	// does not have, so resolution must fail closed with a clear error
-	// (deployments that recreate those slugs get the binding back).
+func TestWABenchPublicRuleProfilesBindToBuiltinDefault(t *testing.T) {
+	// After the yinyue→default migration (migration 114), the bundled public
+	// evaluation rules bind to the built-in "default" style, so a fresh OSS
+	// deployment resolves them out of the box. Resolution must still fail
+	// closed when the profile loader itself is missing.
 	executor := NewHarnessWABenchExecutor(nil, nil, nil, profile.NewLoader(), nil, nil, nil)
 	for ref := range publicWABenchStyleRefs {
-		_, err := executor.resolveProfile(context.Background(), []string{ref})
-		if err == nil {
-			t.Fatalf("resolve %s: expected fail-closed error on an empty style catalog", ref)
+		resolved, err := executor.resolveProfile(context.Background(), []string{ref})
+		if err != nil {
+			t.Fatalf("resolve %s: %v", ref, err)
 		}
-		if !strings.Contains(err.Error(), "unavailable") {
-			t.Fatalf("resolve %s: error should name the missing profile, got %v", ref, err)
+		if resolved.Slug != "default" {
+			t.Fatalf("resolve %s: slug = %s, want default", ref, resolved.Slug)
+		}
+	}
+	noLoader := NewHarnessWABenchExecutor(nil, nil, nil, nil, nil, nil, nil)
+	for ref := range publicWABenchStyleRefs {
+		_, err := noLoader.resolveProfile(context.Background(), []string{ref})
+		if err == nil || !strings.Contains(err.Error(), "unavailable") {
+			t.Fatalf("resolve %s without loader: expected fail-closed error, got %v", ref, err)
 		}
 	}
 }

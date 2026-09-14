@@ -135,12 +135,21 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
   fail-closed end to end (off by default);
 - **AR-012 candidate evaluation** (experimental): external review sidecar produces
   isolated candidate drafts and mechanical comparison metrics (sidecar is a private
-  component, not distributed here);
+  component, not distributed here); an optional **different-vendor claim verifier**
+  (`AR_REVIEW_VERIFY_*`) re-checks every cited sentence of the candidate against the
+  frozen abstracts in bounded chunks, report-only, persisted as the `claim-check/1`
+  job artifact;
+- **Passkey sign-in**: WebAuthn (Face ID / Touch ID / security keys). Registration
+  records the authenticator's backup capability — iCloud/Google-password-manager
+  passkeys sync across devices automatically; the personal center shows the
+  "synced · cross-device" state and supports revocation;
 - **Style system**: hot-swappable profiles + style builder (upload samples, extract
   automatically) + grayscale release; the repo ships **zero style content** by design
   ("engine open, content yours", [docs/04](docs/04-style-profile.md));
-- **Admin console**: model config hot-reload (encrypted keys), MCP management,
-  audit center, RBAC, injection telemetry ([docs/08](docs/08-admin-dashboard.md));
+- **Admin console**: model config hot-reload (encrypted keys), models bound by
+  purpose (generation / verification / embedding — where the different-vendor
+  verifier is attached), MCP management, audit center, RBAC, injection telemetry
+  ([docs/08](docs/08-admin-dashboard.md));
 - **Evaluation center**: WABench datasets/candidates/blind eval/release + red-team
   suites ([docs/14](docs/14-wabench-v2-evaluation.md)).
 
@@ -173,6 +182,8 @@ Full annotated list: [.env.docker.example](.env.docker.example).
 | `SEARXNG_BASE_URL` | empty | The only out-of-the-box search source — strongly recommended |
 | `WRITING_RUNTIME_MODE` | off | Governed runtime: off / shadow / allowlist |
 | `RESEARCH_REVIEW_ENABLED` | false | Research-review path (needs `--profile research`) |
+| `AR012_CANDIDATE_ENABLED` | false | AR-012 candidate evaluation endpoint (needs sidecar) |
+| `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | empty | Different-vendor claim verifier: enabled once all three are set; **must be a different provider than the generation model** (report-only second line of defense) |
 | `DASHSCOPE_API_KEY` | empty | Embedding (optional, degrades gracefully) |
 
 > Day-to-day key changes go through the admin console (encrypted at rest, takes

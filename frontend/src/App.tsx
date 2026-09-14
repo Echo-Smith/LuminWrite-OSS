@@ -13,7 +13,8 @@ import { TopicCenter } from "@/pages/topic-center";
 import { MaterialsCenter } from "@/pages/materials-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PersonalCenter } from "@/pages/personal-center";
-import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 工作台页面组件（内部保留 EditorialBoard 命名）
+import { WritingProjectsPage } from "@/pages/writing-projects"; // 新的轻量级写作项目管理器
+// import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 已废弃，保留用于迁移参考
 import { MyStylesPage } from "@/pages/my-styles";
 import PricingPage from "@/pages/pricing";
 import BillingResultPage from "@/pages/billing-result";
@@ -122,7 +123,7 @@ export function App() {
             element={
               <ProtectedRoute>
                 <PageTransition>
-                  <EditorialBoard />
+                  <WritingProjectsPage />
                 </PageTransition>
               </ProtectedRoute>
             }

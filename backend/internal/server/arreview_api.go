@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/arreview"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/arreview/claimverify"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
@@ -40,12 +41,16 @@ type arReviewService struct {
 	store    *writingstore.Store
 	client   *arreview.Client
 	exchange *arreview.Exchange
+	verifier *claimverify.Verifier
 	cfg      config.ArReviewConfig
 	now      func() time.Time
 }
 
 // newArReviewService builds the sidecar service, or nil when disabled. A
 // broken exchange root disables the service too — fail closed, never half.
+// When AR_REVIEW_VERIFY_* is fully configured a host-side different-source
+// claim verifier is attached as well (report-only; it must point at a
+// different vendor than the generation model — see gate-inventory.md §5).
 func newArReviewService(store *writingstore.Store, cfg config.ArReviewConfig) *arReviewService {
 	if store == nil || !cfg.Enabled || cfg.SidecarURL == "" {
 		return nil
@@ -60,7 +65,21 @@ func newArReviewService(store *writingstore.Store, cfg config.ArReviewConfig) *a
 		slog.Error("ar review sidecar disabled: exchange root", "error", err)
 		return nil
 	}
-	return &arReviewService{store: store, client: client, exchange: exchange, cfg: cfg, now: time.Now}
+	service := &arReviewService{store: store, client: client, exchange: exchange, cfg: cfg, now: time.Now}
+	if cfg.Verify.BaseURL != "" && cfg.Verify.APIKey != "" && cfg.Verify.Model != "" {
+		verifier, verifyErr := claimverify.New(claimverify.Config{
+			BaseURL: cfg.Verify.BaseURL, APIKey: cfg.Verify.APIKey,
+			Model: cfg.Verify.Model, TimeoutMS: cfg.Verify.TimeoutMS,
+		})
+		if verifyErr != nil {
+			slog.Error("ar review claim verifier disabled: bad config", "error", verifyErr)
+		} else {
+			service.verifier = verifier
+			slog.Info("ar review claim verifier enabled (report-only, different vendor required)",
+				"model", cfg.Verify.Model)
+		}
+	}
+	return service
 }
 
 // frozenInputs bundles everything a job needs, re-derivable at execution time
@@ -91,7 +110,10 @@ func (s *arReviewService) RequestCandidate(ctx context.Context, ownerUserID, run
 	headings := outlineHeadings(inputs.outline)
 	// Validate the derived spec at request time so a malformed outline fails
 	// the POST, not a silently doomed worker run.
-	if _, err := arreview.BuildSpecMapping(inputs.centralQuestion, headings, inputs.pack.Coverage.Topics, len(corpus.Sources)); err != nil {
+	if _, err := arreview.BuildSpecMapping(inputs.centralQuestion, headings, inputs.pack.Coverage.Topics, len(corpus.Sources), arreview.CorpusAbstractRunes(corpus)); err != nil {
+		return writingstore.ArReviewJob{}, false, err
+	}
+	if err := arreview.CheckCorpusBudget(corpus, s.cfg.MinSources, s.cfg.MinAbstractRunes); err != nil {
 		return writingstore.ArReviewJob{}, false, err
 	}
 	identity := arreview.IdempotencyInput{
@@ -293,13 +315,18 @@ func (s *arReviewService) execute(ctx context.Context, job writingstore.ArReview
 			"insufficient_corpus", err.Error(), nil, nil, warnings, "")
 		return
 	}
+	if err := arreview.CheckCorpusBudget(corpus, s.cfg.MinSources, s.cfg.MinAbstractRunes); err != nil {
+		_ = s.store.FinishArReviewJob(ctx, job.ID, writingstore.ArReviewJobFailed,
+			"insufficient_corpus", err.Error(), nil, nil, warnings, "")
+		return
+	}
 	corpusJSON, err := json.Marshal(corpus)
 	if err != nil {
 		_ = s.store.FinishArReviewJob(ctx, job.ID, writingstore.ArReviewJobFailed,
 			"marshal_corpus", err.Error(), nil, nil, warnings, "")
 		return
 	}
-	specMapping, err := arreview.BuildSpecMapping(inputs.centralQuestion, outlineHeadings(inputs.outline), inputs.pack.Coverage.Topics, len(corpus.Sources))
+	specMapping, err := arreview.BuildSpecMapping(inputs.centralQuestion, outlineHeadings(inputs.outline), inputs.pack.Coverage.Topics, len(corpus.Sources), arreview.CorpusAbstractRunes(corpus))
 	if err != nil {
 		_ = s.store.FinishArReviewJob(ctx, job.ID, writingstore.ArReviewJobFailed,
 			"invalid_spec", err.Error(), nil, nil, warnings, "")
@@ -467,6 +494,28 @@ func (s *arReviewService) importCompleted(ctx context.Context, job writingstore.
 	}
 	refs = append(refs, writingstore.ArReviewArtifactRef{Kind: "metrics", ContentHash: arreview.HashContent(metricsJSON),
 		MediaType: "application/json", Size: len(metricsJSON), SidecarPath: "host://metrics"})
+	// Different-source claim verification (report-only): when configured, an
+	// independent vendor model re-reads the numbered manuscript and judges
+	// every cited sentence against the frozen abstracts. A verifier failure
+	// never fails the job — the report is a bonus artifact, not a gate.
+	if s.verifier != nil {
+		sources := make([]claimverify.SourceRef, 0, len(corpus.Sources))
+		for index, src := range corpus.Sources {
+			sources = append(sources, claimverify.SourceRef{Index: index + 1, Title: src.Title, Abstract: src.Abstract})
+		}
+		verifyCtx, cancelVerify := context.WithTimeout(ctx, time.Duration(s.cfg.Verify.TimeoutMS)*time.Millisecond)
+		report, verifyErr := s.verifier.Check(verifyCtx, string(imported["manuscript"]), arreview.GeneratorVersion, sources)
+		cancelVerify()
+		if verifyErr != nil {
+			slog.Warn("ar review claim verify failed (report-only)", "job", job.ID, "error", verifyErr)
+		} else if body, marshalErr := json.Marshal(report); marshalErr == nil {
+			checkHash := arreview.HashContent(body)
+			if putErr := s.store.PutArtifactContent(ctx, checkHash, "application/json", body); putErr == nil {
+				refs = append(refs, writingstore.ArReviewArtifactRef{Kind: "claim_check",
+					ContentHash: checkHash, MediaType: "application/json", Size: len(body), SidecarPath: "host://claim-check"})
+			}
+		}
+	}
 	_ = s.store.FinishArReviewJob(ctx, job.ID, writingstore.ArReviewJobCompleted,
 		"", "", refs, usageFromReceipt(imported["receipt"]), warnings, "")
 }

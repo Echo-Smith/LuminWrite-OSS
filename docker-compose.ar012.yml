@@ -24,7 +24,7 @@ services:
       LLM_API_KEY: ${AR_REVIEW_LLM_API_KEY:-}
       LLM_BASE_URL: ${AR_REVIEW_LLM_BASE_URL:-}
       LLM_MODEL: ${AR_REVIEW_LLM_MODEL:-}
-      LLM_TIMEOUT_SECONDS: ${AR_REVIEW_LLM_TIMEOUT_SECONDS:-180}
+      LLM_TIMEOUT_SECONDS: ${AR_REVIEW_LLM_TIMEOUT_SECONDS:-900}
     volumes:
       - review_exchange:/data:rw
     networks:

@@ -76,7 +76,7 @@ func (s *Server) handleToolGraph(w http.ResponseWriter, r *http.Request) {
 	// Load default style profile (needed for WriteStep and PostReviewStep)
 	var styleProfile *profile.StyleProfile
 	if s.profiles != nil {
-		if sp, ok := s.profiles.Get("yinyue"); ok {
+		if sp, ok := s.profiles.Get("default"); ok {
 			styleProfile = sp
 		}
 	}

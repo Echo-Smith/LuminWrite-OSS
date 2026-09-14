@@ -675,7 +675,7 @@ func TestT09ResearchReviewDisabledRefusesExplicitly(t *testing.T) {
 		t02APIIdempotencyKey("t09-disabled-run"),
 		map[string]any{"document_id": researchFixture.documentID, "contract_id": researchFixture.contractID,
 			"contract_version": 2, "contract_hash": researchFixture.contract.ContractHash,
-			"base_version_id": researchFixture.baseVersion.VersionID, "style_slug": "yinyue",
+			"base_version_id": researchFixture.baseVersion.VersionID, "style_slug": "default",
 			"plan": envelope, "budget": h.researchRunBudget(), "permissions": permissions})
 	if code != http.StatusServiceUnavailable || errorCodeOf(t, payload) != "RESEARCH_UNAVAILABLE" {
 		t.Fatalf("disabled run creation -> %d: %s, want 503 RESEARCH_UNAVAILABLE", code, payload)

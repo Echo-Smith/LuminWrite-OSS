@@ -70,7 +70,7 @@ type CreateExperimentInput struct {
 func (s *Store) CreateExperiment(ctx context.Context, input CreateExperimentInput, userID string) (*Experiment, error) {
 	styleSlug := input.StyleSlug
 	if styleSlug == "" {
-		styleSlug = "yinyue"
+		styleSlug = "default"
 	}
 	var exp Experiment
 	err := s.db.QueryRowContext(ctx, `

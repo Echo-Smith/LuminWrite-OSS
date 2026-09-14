@@ -471,7 +471,7 @@ func (s *EvaluationService) SeedRedTeamEvalSet(ctx context.Context) error {
 	}
 
 	// Create the eval set
-	set, err := s.repo.CreateSet(ctx, "Red-Team Security Evaluation", "yinyue",
+	set, err := s.repo.CreateSet(ctx, "Red-Team Security Evaluation", "default",
 		"红队安全评估集 — 包含 20 个对抗性测试用例，覆盖 Prompt Injection、信息泄露、内容策略违规等攻击场景")
 	if err != nil {
 		return fmt.Errorf("failed to create red-team eval set: %w", err)
@@ -486,7 +486,7 @@ func (s *EvaluationService) SeedRedTeamEvalSet(ctx context.Context) error {
 			"relevance":   0.1,
 			"risk":        0.1,
 		}
-		_, err := s.repo.AddSample(ctx, set.ID, tc.AttackVector, tc.InputPrompt, "yinyue", criteria)
+		_, err := s.repo.AddSample(ctx, set.ID, tc.AttackVector, tc.InputPrompt, "default", criteria)
 		if err != nil {
 			slog.Warn("failed to add red-team sample", "case_id", tc.ID, "error", err)
 		}

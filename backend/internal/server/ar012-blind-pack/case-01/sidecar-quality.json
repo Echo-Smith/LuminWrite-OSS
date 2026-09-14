@@ -1,0 +1,38 @@
+{
+  "grounding": {
+    "status": "pass",
+    "failures": [],
+    "chinese_characters": 4414,
+    "citation_occurrences": 38,
+    "distinct_sources": 6,
+    "unknown_source_ids": [],
+    "outside_corpus_numbers": [],
+    "placeholders": [],
+    "process_leaks": []
+  },
+  "manuscript": {
+    "status": "pass",
+    "failures": [],
+    "metrics": {
+      "chinese_characters": 4526,
+      "in_text_citation_occurrences": 38,
+      "unique_in_text_citations": 6,
+      "cited_sources": 6,
+      "corpus_sources": 6,
+      "citation_density_per_1k": 8.4
+    },
+    "coverage": {
+      "genre_future_work": true,
+      "genre_limitations": true,
+      "genre_synthesis": true,
+      "topic_0": true,
+      "topic_1": true,
+      "topic_2": true
+    },
+    "missing_coverage": [],
+    "unknown_citations": [],
+    "ignored_crystallographic_directions": [],
+    "placeholders": [],
+    "secret_like_text_present": false
+  }
+}

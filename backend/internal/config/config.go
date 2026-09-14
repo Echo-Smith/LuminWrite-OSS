@@ -105,6 +105,30 @@ type ArReviewConfig struct {
 	// ExchangeDir is the shared-volume root both the backend and the sidecar
 	// mount (single-machine transport).
 	ExchangeDir string
+	// MinSources is the post-conversion source-count floor for candidate
+	// generation (BuildCorpus's structural floor is 5; values below 5 do not
+	// lower it). Env AR_REVIEW_MIN_SOURCES.
+	MinSources int
+	// MinAbstractRunes is the total-corpus information budget (sum of source
+	// abstract code points) below which candidate generation is refused: the
+	// 24-case blind evaluation showed ~3600-rune corpora force padding
+	// (fabrication peak) while ≥6000 is the tested safe zone. Env
+	// AR_REVIEW_MIN_ABSTRACT_RUNES; 0 disables the budget check.
+	MinAbstractRunes int
+	// Verify configures the host-side different-source claim verifier (T07
+	// precursor, report-only). Enabled when all three endpoint fields are
+	// set; the model must be a different vendor than the sidecar's
+	// generation model (AR_REVIEW_LLM_*) — 异源是本防线的全部意义.
+	Verify ArReviewVerifyConfig
+}
+
+// ArReviewVerifyConfig points the host-side claim verifier at an
+// OpenAI-compatible endpoint that is NOT the generation vendor.
+type ArReviewVerifyConfig struct {
+	BaseURL   string
+	APIKey    string
+	Model     string
+	TimeoutMS int
 }
 
 type DatabaseConfig struct {
@@ -438,7 +462,15 @@ func Load() *Config {
 				Enabled:     getEnvBool("AR012_CANDIDATE_ENABLED", false),
 				SidecarURL:  getEnv("AR_REVIEW_SIDECAR_URL", ""),
 				TimeoutMS:   getEnvInt("AR_REVIEW_SIDECAR_TIMEOUT_MS", 1500000),
-				ExchangeDir: getEnv("AR_REVIEW_EXCHANGE_DIR", "/data/review-exchange"),
+				ExchangeDir:      getEnv("AR_REVIEW_EXCHANGE_DIR", "/data/review-exchange"),
+				MinSources:       getEnvInt("AR_REVIEW_MIN_SOURCES", 5),
+				MinAbstractRunes: getEnvInt("AR_REVIEW_MIN_ABSTRACT_RUNES", 6000),
+				Verify: ArReviewVerifyConfig{
+					BaseURL:   getEnv("AR_REVIEW_VERIFY_BASE_URL", ""),
+					APIKey:    getEnv("AR_REVIEW_VERIFY_API_KEY", ""),
+					Model:     getEnv("AR_REVIEW_VERIFY_MODEL", ""),
+					TimeoutMS: getEnvInt("AR_REVIEW_VERIFY_TIMEOUT_MS", 120000),
+				},
 			},
 		},
 		SMTP: SMTPConfig{

@@ -129,11 +129,17 @@ cd frontend && npm ci && npm test && npm run build
 - **研究综述路径**（实验性）：学术检索（OpenAlex/CrossRef/Semantic Scholar）→
   证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
-  （sidecar 为私有组件，不随本仓库分发）；
+  （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
+  `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿逐句判定
+  引用支撑性（分块调用 + 失败分块降级，report-only 落作业产物 `claim-check/1`）；
+- **Passkey 无密码登录**：WebAuthn（Face ID / Touch ID / 安全密钥）；注册时识别
+  认证器备份能力——iCloud/Google 钥匙串类 Passkey 自动跨设备同步，个人中心
+  展示「已同步 · 可跨设备」状态并支持吊销；
 - **风格系统**：Profile 热插拔 + 风格构建器（上传范文自动提炼）+ 灰度发布；
   遵循「引擎开源、内容自有」——仓库不内置任何风格内容（[docs/04](docs/04-style-profile.md)）；
-- **Admin 后台**：模型配置热更新（Key 加密入库）、MCP 管理、审计中心、RBAC、
-  注入遥测汇总（[docs/08](docs/08-admin-dashboard.md)）；
+- **Admin 后台**：模型配置热更新（Key 加密入库）、按用途配置模型
+  （内容生成 / 事实核查 / 向量检索，异源验证即在此绑定）、MCP 管理、审计中心、
+  RBAC、注入遥测汇总（[docs/08](docs/08-admin-dashboard.md)）；
 - **评测中心**：WABench 数据集/候选/盲评/发布 + 红队评估集（[docs/14](docs/14-wabench-v2-evaluation.md)）。
 
 ## 🔧 技术栈
@@ -165,6 +171,8 @@ cd frontend && npm ci && npm test && npm run build
 | `SEARXNG_BASE_URL` | 空 | 唯一开箱可用的搜索源，强烈建议配置 |
 | `WRITING_RUNTIME_MODE` | off | 治理运行时：off / shadow / allowlist |
 | `RESEARCH_REVIEW_ENABLED` | false | 研究综述路径（需 `--profile research`） |
+| `AR012_CANDIDATE_ENABLED` | false | AR-012 候选评估端点（需 sidecar） |
+| `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | 空 | 异源 Claim 复核：三项齐备即启用，**必须与生成模型不同供应商**（report-only 二道防线） |
 | `DASHSCOPE_API_KEY` | 空 | Embedding（可选，未配置自动降级） |
 
 > 日常换 Key 走 Admin 后台「模型配置」热更新（加密入库，优先于环境变量）。

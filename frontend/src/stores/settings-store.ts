@@ -50,7 +50,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentMode: "harness",
   enableEditorial: false,
   enableResearchReview: false,
-  lastStyle: "yinyue",
+  lastStyle: "default",
   loaded: false,
 
   setAgentMode: (mode) => {

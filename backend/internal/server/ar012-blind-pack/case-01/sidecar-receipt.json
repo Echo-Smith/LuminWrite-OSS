@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "status": "completed",
+  "started_at": "2026-09-13T06:30:34.372022+00:00",
+  "completed_at": "2026-09-13T06:31:31.610536+00:00",
+  "duration_seconds": 57.239,
+  "workflow": "internal_writer_scientific_review",
+  "checkpoint_provenance": "Each stage receipt records whether a governed checkpoint was reused. Raw prompts and raw model responses are not persisted by this workflow.",
+  "llm": {
+    "provider": "openai",
+    "model": "deepseek-chat",
+    "managed_profile": true,
+    "raw_prompt_persisted": false,
+    "raw_response_persisted": false,
+    "stages": [
+      {
+        "stage": "plan",
+        "provider": "openai",
+        "model": "deepseek-chat",
+        "calls": [
+          {
+            "id": "b4507864-d966-46d8-879a-5590a123c470",
+            "usage": {
+              "prompt_tokens": 2096,
+              "completion_tokens": 1910,
+              "total_tokens": 4006,
+              "prompt_tokens_details": {
+                "cached_tokens": 1920
+              },
+              "prompt_cache_hit_tokens": 1920,
+              "prompt_cache_miss_tokens": 176
+            },
+            "finish_reason": "stop",
+            "content_characters": 5286,
+            "reasoning_characters": 0
+          }
+        ]
+      },
+      {
+        "stage": "draft",
+        "provider": "openai",
+        "model": "deepseek-chat",
+        "calls": [
+          {
+            "id": "c049e492-6c9d-4f2a-9755-aea80229c82d",
+            "usage": {
+              "prompt_tokens": 4041,
+              "completion_tokens": 3381,
+              "total_tokens": 7422,
+              "prompt_tokens_details": {
+                "cached_tokens": 1152
+              },
+              "prompt_cache_hit_tokens": 1152,
+              "prompt_cache_miss_tokens": 2889
+            },
+            "finish_reason": "stop",
+            "content_characters": 6515,
+            "reasoning_characters": 0
+          }
+        ]
+      },
+      {
+        "stage": "whole_document_revision",
+        "provider": "openai",
+        "model": "deepseek-chat",
+        "calls": [
+          {
+            "id": "0acf50a7-0ae7-4c2f-9987-9b38b3a5b60f",
+            "usage": {
+              "prompt_tokens": 5489,
+              "completion_tokens": 3502,
+              "total_tokens": 8991,
+              "prompt_tokens_details": {
+                "cached_tokens": 1920
+              },
+              "prompt_cache_hit_tokens": 1920,
+              "prompt_cache_miss_tokens": 3569
+            },
+            "finish_reason": "stop",
+            "content_characters": 6911,
+            "reasoning_characters": 0
+          }
+        ]
+      },
+      {
+        "stage": "claim_audit",
+        "provider": "openai",
+        "model": "deepseek-chat",
+        "calls": [
+          {
+            "id": "0f8524dd-c7b4-4cf3-b724-d2f686327c8f",
+            "usage": {
+              "prompt_tokens": 5475,
+              "completion_tokens": 3203,
+              "total_tokens": 8678,
+              "prompt_tokens_details": {
+                "cached_tokens": 1920
+              },
+              "prompt_cache_hit_tokens": 1920,
+              "prompt_cache_miss_tokens": 3555
+            },
+            "finish_reason": "stop",
+            "content_characters": 6316,
+            "reasoning_characters": 0
+          }
+        ],
+        "edits_flagged": 30,
+        "edits_applied": 30
+      }
+    ]
+  },
+  "skill": {
+    "name": "autoresearch-scientific-review",
+    "version": "1.0.0",
+    "sha256": "843f1544a309631922c79adbefc7494207ba2715a1f8d96df2385bc1ab135a9a",
+    "available": true
+  },
+  "retrieval": {
+    "type": "governed_local_public_abstract_corpus",
+    "source_count": 6,
+    "corpus_sha256": "86f7d6106938dcf56b9f7e6ecd9305fc040be5d77e0956f2e7323cda2de8579b",
+    "baseline_available_during_generation": false
+  },
+  "quality": {
+    "grounding": {
+      "status": "pass",
+      "failures": [],
+      "chinese_characters": 4414,
+      "citation_occurrences": 38,
+      "distinct_sources": 6,
+      "unknown_source_ids": [],
+      "outside_corpus_numbers": [],
+      "placeholders": [],
+      "process_leaks": []
+    },
+    "manuscript": {
+      "status": "pass",
+      "failures": [],
+      "metrics": {
+        "chinese_characters": 4526,
+        "in_text_citation_occurrences": 38,
+        "unique_in_text_citations": 6,
+        "cited_sources": 6,
+        "corpus_sources": 6,
+        "citation_density_per_1k": 8.4
+      },
+      "coverage": {
+        "genre_future_work": true,
+        "genre_limitations": true,
+        "genre_synthesis": true,
+        "topic_0": true,
+        "topic_1": true,
+        "topic_2": true
+      },
+      "missing_coverage": [],
+      "unknown_citations": [],
+      "ignored_crystallographic_directions": [],
+      "placeholders": [],
+      "secret_like_text_present": false
+    }
+  },
+  "artifacts": {
+    "corpus_sha256": "86f7d6106938dcf56b9f7e6ecd9305fc040be5d77e0956f2e7323cda2de8579b",
+    "manuscript_sha256": "bd4355c174c8e23fd37ca9862c97d16d3b08fb9163e273dfc9d1969fc5858dcc"
+  }
+}

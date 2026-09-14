@@ -1532,7 +1532,7 @@ function CreateTaskDialog({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [criteria, setCriteria] = useState("");
-  const [style, setStyle] = useState("yinyue");
+  const [style, setStyle] = useState("default");
   const [loading, setLoading] = useState(false);
 
   return (
@@ -1555,7 +1555,7 @@ function CreateTaskDialog({
         </div>
         <div className="space-y-2">
           <Label>写作风格</Label>
-          <Input value={style} onChange={(e) => setStyle(e.target.value)} placeholder="yinyue / shenlun / xiaohongshu" />
+          <Input value={style} onChange={(e) => setStyle(e.target.value)} placeholder="default / custom-style" />
         </div>
       </div>
       <div className="flex justify-end gap-2">

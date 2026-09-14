@@ -5,6 +5,8 @@
 `68888a75719776eab58c5e01a3ad320a37c20abc`。关联：`requirements.md` §R13/L56、
 `design.md` §8、`docs/plans/2026-09-07-research-review-integration.md` T10、
 `output/autoresearch-ar012-analysis/AutoResearch_AR012_接入评估与实施路线_2026-09-07.md`。
+门槛与规则的完整清单（硬门槛/软信号/部署旋钮/冲突矩阵）见
+`gate-inventory.md`。
 
 ## 0. License 纪律（硬约束）
 

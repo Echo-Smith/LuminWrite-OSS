@@ -1824,7 +1824,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		if p.Style != "" {
 			return p.Style
 		}
-		return "yinyue"
+		return "default"
 	}())
 
 	// Register client with trace ID
@@ -1842,7 +1842,7 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 	execCtx := engine.NewExecutionContext(traceID, userID, p.Message)
 	execCtx.StyleSlug = p.Style
 	if execCtx.StyleSlug == "" {
-		execCtx.StyleSlug = "yinyue"
+		execCtx.StyleSlug = "default"
 	}
 	execCtx.Mode = p.Mode
 	if execCtx.Mode == "" {
@@ -1924,15 +1924,15 @@ func (s *Server) handleAgentStart(client *websocket.Client, payload json.RawMess
 		rawSlug := strings.TrimPrefix(execCtx.StyleSlug, "my_")
 		userProfile, err := s.userStyleStore.GetProfileBySlugAndOwner(context.Background(), rawSlug, userID)
 		if err != nil {
-			slog.Warn("failed to load user custom style, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err, "user_id", userID)
+			slog.Warn("failed to load user custom style, falling back to default", "slug", execCtx.StyleSlug, "error", err, "user_id", userID)
 		} else if userProfile.CurrentVersion > 0 {
 			version, err := s.userStyleStore.GetLatestVersion(context.Background(), userProfile.ID)
 			if err != nil {
-				slog.Warn("failed to load user style version, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+				slog.Warn("failed to load user style version, falling back to default", "slug", execCtx.StyleSlug, "error", err)
 			} else {
 				var sp profile.StyleProfile
 				if err := json.Unmarshal([]byte(version.Config), &sp); err != nil {
-					slog.Warn("failed to unmarshal user style config, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+					slog.Warn("failed to unmarshal user style config, falling back to default", "slug", execCtx.StyleSlug, "error", err)
 				} else {
 					styleProfile = &sp
 					slog.Info("loaded user custom style profile", "slug", execCtx.StyleSlug, "name", sp.Name, "version", sp.Version)
@@ -2451,15 +2451,15 @@ func (s *Server) handleAgentControl(client *websocket.Client, payload json.RawMe
 				rawSlug := strings.TrimPrefix(execCtx.StyleSlug, "my_")
 				userProfile, err := s.userStyleStore.GetProfileBySlugAndOwner(context.Background(), rawSlug, execCtx.UserID)
 				if err != nil {
-					slog.Warn("failed to load user custom style on resume, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+					slog.Warn("failed to load user custom style on resume, falling back to default", "slug", execCtx.StyleSlug, "error", err)
 				} else if userProfile.CurrentVersion > 0 {
 					version, err := s.userStyleStore.GetLatestVersion(context.Background(), userProfile.ID)
 					if err != nil {
-						slog.Warn("failed to load user style version on resume, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+						slog.Warn("failed to load user style version on resume, falling back to default", "slug", execCtx.StyleSlug, "error", err)
 					} else {
 						var sp profile.StyleProfile
 						if err := json.Unmarshal([]byte(version.Config), &sp); err != nil {
-							slog.Warn("failed to unmarshal user style config on resume, falling back to yinyue", "slug", execCtx.StyleSlug, "error", err)
+							slog.Warn("failed to unmarshal user style config on resume, falling back to default", "slug", execCtx.StyleSlug, "error", err)
 						} else {
 							styleProfile = &sp
 							slog.Info("loaded user custom style profile on resume", "slug", execCtx.StyleSlug, "name", sp.Name)

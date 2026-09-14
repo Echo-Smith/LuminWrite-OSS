@@ -70,7 +70,7 @@ export function FeedbackAnalysisPage() {
 
   const handleAggregate = async () => {
     setLoading(true);
-    const styles = ["yinyue", "shenlun", "xiaohongshu"];
+    const styles = ["default"];
     for (const style of styles) {
       await adminMutate("/api/v2/feedback/aggregate", {
         method: "POST",

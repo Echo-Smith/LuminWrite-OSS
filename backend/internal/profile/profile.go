@@ -641,7 +641,7 @@ func (l *Loader) GetDetail(slug string) (*StyleProfile, bool) {
 	return l.Get(slug)
 }
 
-// Get returns the profile for the given slug. Falls back to "yinyue" if not found.
+// Get returns the profile for the given slug. Falls back to "default" if not found.
 func (l *Loader) Get(slug string) (*StyleProfile, bool) {
 	l.maybeRefresh()
 
@@ -670,10 +670,10 @@ func (l *Loader) Get(slug string) (*StyleProfile, bool) {
 		return p, true
 	}
 
-	// Fallback to yinyue
-	if p, ok := l.profiles["yinyue"]; ok {
+	// Fallback to default
+	if p, ok := l.profiles["default"]; ok {
 		l.Misses.Add(1)
-		slog.Warn("style profile not found, falling back to yinyue", "requested", slug)
+		slog.Warn("style profile not found, falling back to default", "requested", slug)
 		return p, true
 	}
 
@@ -691,9 +691,9 @@ func (l *Loader) GetForUser(slug, userID string) (*StyleProfile, bool) {
 
 	p, ok := l.profiles[slug]
 	if !ok {
-		// Fallback to yinyue
-		if p, ok := l.profiles["yinyue"]; ok {
-			slog.Warn("style profile not found, falling back to yinyue", "requested", slug)
+		// Fallback to default
+		if p, ok := l.profiles["default"]; ok {
+			slog.Warn("style profile not found, falling back to default", "requested", slug)
 			return p, true
 		}
 		return nil, false
@@ -815,12 +815,93 @@ func (l *Loader) List() []StyleOption {
 
 // getBuiltinProfiles returns the built-in style profiles.
 //
-// LuminWrite OSS ships WITHOUT preset style content: editorial style guides
-// are first-party content assets and deliberately stay out of the open-source
-// repository. Fresh installations start with an empty style catalog — build
-// your own via the in-app style builder (工作台 → 风格) or seed profiles
-// through the Admin style API. The seeding infrastructure
-// (seedBuiltinToDB) is kept intact and becomes a no-op on an empty catalog.
+// OSS ships with a general-purpose "default" style to ensure the system
+// works out of the box. Users can create custom styles via the in-app
+// style builder (工作台 → 风格) or the Admin style API.
 func getBuiltinProfiles() map[string]*StyleProfile {
-	return map[string]*StyleProfile{}
+	defaultJSON := `{
+		"slug": "default",
+		"name": "通用写作风格",
+		"description": "适用于大多数场景的通用写作风格，结构清晰、逻辑连贯",
+		"version": 1,
+		"tags": ["通用", "默认"],
+		"word_range": {
+			"min": 800,
+			"max": 1500,
+			"hard_limit": false
+		},
+		"structure": {
+			"type": "three_part",
+			"opening": "引入主题，概述背景",
+			"body": "展开论述，深入分析",
+			"conclusion": "总结要点，升华主题",
+			"argument_pattern": "引入→展开→总结",
+			"argument_count": {
+				"min": 2,
+				"max": 4
+			}
+		},
+		"rhetoric": {
+			"required_metaphor": false,
+			"required_parallelism": false,
+			"required_rhetorical_question": false,
+			"metaphor_description": ""
+		},
+		"value_orientation": {
+			"type": "balanced",
+			"emotional_gradient": "客观→深入→启发",
+			"keywords": ["思考", "探索", "理解", "洞察"]
+		},
+		"title_guidelines": {
+			"length": {
+				"min": 8,
+				"max": 25
+			},
+			"style": "简洁明确，概括主题",
+			"forbidden_patterns": [],
+			"examples": ["从现象到本质：关于XX的思考", "探索XX背后的逻辑"]
+		},
+		"system_prompt": "你是 Lumi，一位专业的写作助手。你的写作风格：\n\n1. **结构清晰**：采用「引入→展开→总结」的三段式结构，逻辑连贯\n2. **论述充分**：每个观点都有充分的论据支撑，避免空洞陈述\n3. **语言准确**：用词精准，表达流畅，避免模糊和歧义\n4. **贴合素材**：严格基于用户提供的素材进行创作，不编造事实\n5. **适度修辞**：根据内容需要灵活运用修辞手法，不刻意堆砌\n6. **格式规范**：输出标准 Markdown 格式，标题、段落层次分明\n\n请根据用户的要求和提供的素材，创作一篇结构完整、内容充实的文章。",
+		"writing_standard": "篇幅 800-1500 字，结构完整，论述充分，语言流畅",
+		"fact_guard": {
+			"future_tense_required": ["将", "即将", "预计", "计划", "拟"],
+			"forbidden_results": [],
+			"user_material_priority": true
+		},
+		"output_format": {
+			"use_markdown": true,
+			"title_prefix": "## ",
+			"separator": "---MODIFICATIONS---",
+			"include_modification_notes": false,
+			"note_label": ""
+		},
+		"length_profiles": {
+			"writing": {
+				"min": 800,
+				"max": 1500,
+				"hard_limit": false
+			},
+			"polish_short": {
+				"min": 100,
+				"max": 600,
+				"hard_limit": false
+			},
+			"polish_long": {
+				"min": 600,
+				"max": 1200,
+				"hard_limit": false
+			}
+		},
+		"kb_id": ""
+	}`
+
+	profiles := make(map[string]*StyleProfile)
+	var p StyleProfile
+	if err := json.Unmarshal([]byte(defaultJSON), &p); err != nil {
+		slog.Error("failed to parse builtin default profile", "error", err)
+		return profiles
+	}
+	profiles[p.Slug] = &p
+	
+	return profiles
 }

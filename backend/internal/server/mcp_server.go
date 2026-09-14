@@ -82,7 +82,7 @@ func (s *Server) initMCPServer(cfg *config.Config) {
 	if s.profiles != nil {
 		registry.Register(mcp.NewLocalTool(
 			"list_styles",
-			"List all available writing style profiles (e.g. yinyue, shenlun, xiaohongshu).",
+			"List all available writing style profiles.",
 			map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -103,10 +103,10 @@ func (s *Server) initMCPServer(cfg *config.Config) {
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"slug": map[string]any{
-						"type":        "string",
-						"description": "Style slug (e.g. yinyue, shenlun, xiaohongshu)",
-					},
+						"slug": map[string]any{
+							"type":        "string",
+							"description": "Style slug (e.g. default)",
+						},
 				},
 				"required": []string{"slug"},
 			},

@@ -179,6 +179,15 @@
 上游 Proprietary fork 部署于工作区 `review-sidecar/`（不入仓库/镜像）；
 Go 适配层 `backend/internal/arreview`；持久作业表 `writing_ar_review_jobs`
 （迁移 111）；端点 `POST/GET /runs/{runId}/research/ar012-candidate[/cancel|/artifacts/{kind}]`。
+同日完成真实模型端到端与镜像构建实测（验收记录 §H/I）：`deepseek-chat` 下
+POST→202→completed→5 类 artifact hash 复核导出→幂等重放全链通过，
+usage 实测入账；过程中修复 coverage 计数后缀、裸 Rxx 数字误判、小语料长度门、
+coverage_repair 词表缺失、Dockerfile 依赖共 5 项集成缺陷，
+`GeneratorVersion` 旋转至 `lumin.4`。盲评批次 `TestAr012BlindEvalBatch` 以
+**真实 OpenAlex 文献语料**产出 12/12 材料并已完成人工盲评与揭盲计分
+（2026-09-13，`output/ar012-blind-eval-20260912/计分对照报告.md`）：管线工程
+全部通过；候选生成器**引用支持 3.33 / 校准 3.50 / 无支持主张 7.2 处/篇**，
+按 §8 判定**暂不晋升**为用户可选生成器，需校准改造后按同协议重评。
 
 - [x] 参数化题目/章节/阈值：fork 新增 `review_spec.py`（REVIEW_SPEC.json，
       提纲标题即规定章节、coverage 词表随包、阈值按语料等比放低）+ Go 侧

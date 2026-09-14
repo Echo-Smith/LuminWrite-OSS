@@ -340,7 +340,7 @@ func (s *Server) handleCreateEvalRun(w http.ResponseWriter, r *http.Request) {
 		req.TriggerType = "manual"
 	}
 	if req.ProfileSlug == "" {
-		req.ProfileSlug = "yinyue"
+		req.ProfileSlug = "default"
 	}
 	if req.ProfileVersion == 0 {
 		req.ProfileVersion = 1
