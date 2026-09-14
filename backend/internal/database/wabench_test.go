@@ -116,8 +116,10 @@ func TestMapLegacyEvaluationSampleKeepsScoreDiagnosticAndInputByReference(t *tes
 	if weightTotal != 100 || len(draft.RubricWeights) != 5 {
 		t.Fatalf("invalid canonical weights: %+v", draft.RubricWeights)
 	}
-	if len(draft.RuleProfileRefs) != 1 || draft.RuleProfileRefs[0] != "luminbuddy.builtin-style.shenlun" {
-		t.Fatalf("builtin style was not mapped to its rule profile: %+v", draft.RuleProfileRefs)
+	// After the yinyue→default migration, only "default" is a built-in style;
+	// legacy editorial slugs map to their legacy-style rule profile.
+	if len(draft.RuleProfileRefs) != 1 || draft.RuleProfileRefs[0] != "luminbuddy.legacy-style.shenlun" {
+		t.Fatalf("legacy style was not mapped to its rule profile: %+v", draft.RuleProfileRefs)
 	}
 	if draft.LegacyScore["factuality"] != 0.3 {
 		t.Fatalf("legacy score was not preserved: %+v", draft.LegacyScore)

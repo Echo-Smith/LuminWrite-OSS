@@ -61,9 +61,6 @@ export function WorkflowCanvasPIP() {
   const dragStartRef = useRef({ x: 0, y: 0, posX: 0, posY: 0 });
   const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0 });
 
-  // 不可见时不渲染
-  if (!visible) return null;
-
   // 计算节点执行进度
   const nodeCount = Array.from(nodeStates.values()).length;
   const completedCount = Array.from(nodeStates.values()).filter(
@@ -242,6 +239,9 @@ export function WorkflowCanvasPIP() {
             height: size.height,
             zIndex: 1000,
           };
+
+  // 不可见时不渲染（放在所有 hook 之后，保证 hooks 调用顺序稳定）
+  if (!visible) return null;
 
   return (
     <>

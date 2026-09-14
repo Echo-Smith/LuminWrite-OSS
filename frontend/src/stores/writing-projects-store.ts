@@ -259,7 +259,7 @@ export const useWritingProjectsStore = create<WritingProjectsState>((set, get) =
       console.error("createProject error:", error);
       const errorMsg = error instanceof Error ? error.message : "创建项目失败";
       set({ error: errorMsg, loading: false });
-      throw new Error(errorMsg);
+      throw new Error(errorMsg, { cause: error });
     }
   },
 
