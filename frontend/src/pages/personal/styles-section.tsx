@@ -19,7 +19,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 import { SimpleModal, SimpleModalFooter, formatDate } from "./shared";
 
-const BUILTIN_STYLE_SLUGS = new Set(["yinyue", "shenlun", "xiaohongshu"]);
+const BUILTIN_STYLE_SLUGS = new Set<string>([]);
 
 interface UserStyle {
   id: string;

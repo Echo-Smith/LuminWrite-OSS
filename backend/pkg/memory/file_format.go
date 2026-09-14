@@ -28,7 +28,7 @@ import (
 //     - confidence: 1.00 | occurrences: 5 | status: active
 //
 //   ### style
-//   - **selected_style**: yinyue
+//   - **selected_style**: default
 //     - confidence: 1.00 | occurrences: 3 | status: active
 //
 //   ## 行为模式 (Tier 2)

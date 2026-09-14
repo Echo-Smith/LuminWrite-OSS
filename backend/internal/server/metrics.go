@@ -630,7 +630,7 @@ func (w *statusCaptureWriter) Push(target string, opts *http.PushOptions) error 
 }
 
 // normalizePath collapses path parameters for cardinality control.
-// e.g. /api/v2/styles/yinyue → /api/v2/styles/{slug}
+// e.g. /api/v2/styles/default → /api/v2/styles/{slug}
 func normalizePath(path string) string {
 	// Replace UUID-like segments
 	segments := strings.Split(path, "/")

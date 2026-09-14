@@ -35,8 +35,8 @@ func TestLegacyImportOptionsKeepProductDataPrivate(t *testing.T) {
 	}
 }
 
-func TestRuleProfileRefsSupportThreeBuiltinsAndVersionedUserStyles(t *testing.T) {
-	for _, slug := range []string{"yinyue", "shenlun", "xiaohongshu"} {
+func TestRuleProfileRefsSupportBuiltinsAndVersionedUserStyles(t *testing.T) {
+	for _, slug := range []string{"default"} {
 		ref, err := BuiltinWABenchRuleProfileRef(slug)
 		if err != nil {
 			t.Fatalf("builtin style %s rejected: %v", slug, err)
@@ -46,7 +46,7 @@ func TestRuleProfileRefsSupportThreeBuiltinsAndVersionedUserStyles(t *testing.T)
 		}
 	}
 	if _, err := BuiltinWABenchRuleProfileRef("user_custom"); err == nil {
-		t.Fatal("custom style must not be misclassified as one of the three builtins")
+		t.Fatal("custom style must not be misclassified as a builtin")
 	}
 	ref, err := UserWABenchRuleProfileRef("123e4567-e89b-12d3-a456-426614174000", 3)
 	if err != nil {
@@ -63,13 +63,13 @@ func TestRuleProfileRefsSupportThreeBuiltinsAndVersionedUserStyles(t *testing.T)
 func TestMapLegacyEvaluationSetPreservesIdentityAsMigrationCandidate(t *testing.T) {
 	legacy := EvaluationSet{
 		ID: "11111111-2222-3333-4444-555555555555", Name: "旧风格评测集",
-		StyleSlug: "yinyue", Description: "legacy", SampleCount: 25,
+		StyleSlug: "default", Description: "legacy", SampleCount: 25,
 	}
 	draft, err := MapLegacyEvaluationSet(legacy, LegacyImportOptions{Partition: "development"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if draft.SuiteID != "luminbuddy.migration.yinyue.111111112222" {
+	if draft.SuiteID != "luminbuddy.migration.default.111111112222" {
 		t.Fatalf("suite id = %s", draft.SuiteID)
 	}
 	if draft.Status != "migration_candidate" || draft.LegacySetID != legacy.ID {

@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS editorial_experiments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    style_slug TEXT NOT NULL DEFAULT 'yinyue',
+    style_slug TEXT NOT NULL DEFAULT 'default',
     status TEXT NOT NULL DEFAULT 'pending', -- pending | running | completed | failed
     -- 三组结果（JSON）
     pipeline_result JSONB DEFAULT '{}',

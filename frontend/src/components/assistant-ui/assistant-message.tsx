@@ -577,7 +577,7 @@ function useStyleWordRange(slug: string): [number, number] {
 function WordCountProgress({ text }: { text: string }) {
   const sessionStyle = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.style ?? "yinyue";
+    return session?.style ?? "default";
   });
 
   const [targetMin, targetMax] = useStyleWordRange(sessionStyle);

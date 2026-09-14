@@ -176,7 +176,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       traceId: null,
       conversationId: null,
       status: "idle",
-      style: useSettingsStore.getState().lastStyle || "yinyue",
+      style: useSettingsStore.getState().lastStyle || "default",
       mode: "auto",
       createdAt: Date.now(),
       awaitInputAt: null,
@@ -256,7 +256,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         status: (t.status === "completed" ? "completed" :
                 t.status === "failed" ? "error" :
                 t.status === "running" ? "running" : "idle") as WritingSession["status"],
-        style: t.style_slug || "yinyue",
+        style: t.style_slug || "default",
         mode: t.mode || "auto",
         createdAt: new Date(t.created_at).getTime(),
         awaitInputAt: null,
@@ -881,7 +881,7 @@ case "agent.paused": {
             traceId: editorialTraceId,
             conversationId: editorialTraceId,
             status: "completed",
-            style: useSettingsStore.getState().lastStyle || "yinyue",
+            style: useSettingsStore.getState().lastStyle || "default",
             mode: "editorial",
             createdAt: Date.now(),
             awaitInputAt: null,

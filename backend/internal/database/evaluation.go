@@ -179,7 +179,7 @@ func (r *EvaluationRepo) AddSamples(ctx context.Context, setID string, samples [
 			continue
 		}
 		if styleSlug == "" {
-			styleSlug = "yinyue"
+			styleSlug = "default"
 		}
 
 		criteria, _ := sample["scoring_criteria"].(map[string]interface{})

@@ -162,8 +162,8 @@ func TestEvaluatePatrolRules(t *testing.T) {
 		snap := healthySnapshot(now)
 		snap.CanaryOK = true
 		snap.CanaryRollbacks = []patrolCanaryRollback{
-			{CandidateID: "11111111-1111-1111-1111-111111111111", StyleSlug: "yinyue", ErrorRate: 0.2, CapturedAt: now},
-			{CandidateID: "22222222-2222-2222-2222-222222222222", StyleSlug: "shenlun", ErrorRate: 0.3, CapturedAt: now},
+			{CandidateID: "11111111-1111-1111-1111-111111111111", StyleSlug: "default", ErrorRate: 0.2, CapturedAt: now},
+			{CandidateID: "22222222-2222-2222-2222-222222222222", StyleSlug: "default", ErrorRate: 0.3, CapturedAt: now},
 		}
 		findings := evaluatePatrolRules(snap, defaults)
 		if len(findings) != 2 {

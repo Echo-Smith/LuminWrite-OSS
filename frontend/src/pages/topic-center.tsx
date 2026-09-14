@@ -134,7 +134,7 @@ export function TopicCenter() {
     setTimeout(() => {
       startWriting({
         message,
-        style: angleStyle || "yinyue",
+        style: angleStyle || "default",
         mode: "writing",
         user_materials: userMaterials.length > 0 ? userMaterials : undefined,
         word_limit: wordLimit && wordLimit > 0 ? wordLimit : undefined,

@@ -27,9 +27,7 @@ var wabenchPartitions = map[string]struct{}{
 }
 
 var builtinStyleSlugs = map[string]struct{}{
-	"yinyue":      {},
-	"shenlun":     {},
-	"xiaohongshu": {},
+	"default": {},
 }
 
 var nonIDChars = regexp.MustCompile(`[^a-z0-9_-]+`)

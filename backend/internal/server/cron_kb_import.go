@@ -20,7 +20,7 @@ import (
 //
 // Task config:
 //   - url:         column page URL (default: https://www.hangzhou.com.cn/pinglun/node_152931.htm)
-//   - kb_id:       target knowledge base ID (default: "yinyue")
+//   - kb_id:       target knowledge base ID (default: "default")
 //   - max_pages:   max pages to scrape (default: 1 — only first page for daily new articles)
 //   - source_type: "url" (use URLImporter) or "text" (fetch + import text)
 
@@ -34,7 +34,7 @@ func (s *Server) cronKbAutoImport(ctx context.Context, job *database.CronJob) er
 	// Parse config
 	cfg := job.TaskConfig
 	colURL := "https://www.hangzhou.com.cn/pinglun/node_152931.htm"
-	kbID := "yinyue"
+	kbID := "default"
 	maxPages := 5
 
 	if v, ok := cfg["url"].(string); ok && v != "" {

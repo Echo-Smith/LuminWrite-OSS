@@ -2,6 +2,7 @@ package arreview
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -155,7 +156,7 @@ func TestBuildCorpusInsufficientPackFails(t *testing.T) {
 
 func TestBuildSpecMappingScalesAndDerives(t *testing.T) {
 	headings := []string{"引言", "机制比较", "边界条件", "文献争议与研究空白", "结语"}
-	mapping, err := BuildSpecMapping("课后服务政策效果", headings, []string{"机制比较", "边界条件"}, 6)
+	mapping, err := BuildSpecMapping("课后服务政策效果", headings, []string{"机制比较", "边界条件"}, 6, 9000)
 	if err != nil {
 		t.Fatalf("BuildSpecMapping: %v", err)
 	}
@@ -170,6 +171,23 @@ func TestBuildSpecMappingScalesAndDerives(t *testing.T) {
 	if _, ok := coverage["topic_0"]; !ok {
 		t.Fatalf("pack topics missing from coverage: %v", coverage)
 	}
+	if got := fmt.Sprint(coverage["topic_0"]); got != "[机制比较]" {
+		t.Fatalf("coverage topic_0 wrong: %v", got)
+	}
+	// Research-chain topics carry a provenance frequency count ("x (6)"); the
+	// gate matches terms as manuscript substrings, so the count is stripped
+	// and a count-only topic contributes nothing.
+	suffixed, err := BuildSpecMapping("课后服务政策效果", headings, []string{"自动选择 (6)", " (3)"}, 6, 9000)
+	if err != nil {
+		t.Fatalf("BuildSpecMapping suffixed: %v", err)
+	}
+	suffixCoverage := suffixed["coverage_terms"].(map[string]any)
+	if got := fmt.Sprint(suffixCoverage["topic_0"]); got != "[自动选择]" {
+		t.Fatalf("provenance count not stripped: %v", got)
+	}
+	if _, ok := suffixCoverage["topic_1"]; ok {
+		t.Fatalf("count-only topic must be dropped: %v", suffixCoverage["topic_1"])
+	}
 	if _, ok := coverage["genre_limitations"]; !ok {
 		t.Fatalf("genre coverage entries missing: %v", coverage)
 	}
@@ -182,7 +200,7 @@ func TestBuildSpecMappingScalesAndDerives(t *testing.T) {
 	}
 
 	// Large corpora keep upstream's preset thresholds.
-	full, err := BuildSpecMapping("课后服务政策效果", headings, nil, 30)
+	full, err := BuildSpecMapping("课后服务政策效果", headings, nil, 30, 9000)
 	if err != nil {
 		t.Fatalf("BuildSpecMapping large: %v", err)
 	}
@@ -190,16 +208,30 @@ func TestBuildSpecMappingScalesAndDerives(t *testing.T) {
 		full["min_in_text_citations"] != 18 {
 		t.Fatalf("preset thresholds wrong: %v", full)
 	}
+	if full["min_cjk_characters"] != 4500 || full["draft_min_chars"] != 7000 || full["draft_max_chars"] != 11000 {
+		t.Fatalf("preset length thresholds wrong: %v", full)
+	}
+
+	// Thin corpora scale the length floor down instead of forcing the model
+	// to pad (padding is where the blind evaluation counted fabrication):
+	// floor = clamp(abstractRunes/2, 1800, 4500), draft targets follow.
+	thin, err := BuildSpecMapping("课后服务政策效果", headings, nil, 6, 3600)
+	if err != nil {
+		t.Fatalf("BuildSpecMapping thin: %v", err)
+	}
+	if thin["min_cjk_characters"] != 1800 || thin["draft_min_chars"] != 4300 || thin["draft_max_chars"] != 8300 {
+		t.Fatalf("thin-corpus length scaling wrong: %v", thin)
+	}
 }
 
 func TestBuildSpecMappingValidatesHeadings(t *testing.T) {
-	if _, err := BuildSpecMapping("问题", []string{"引言", "结语"}, nil, 6); err == nil {
+	if _, err := BuildSpecMapping("问题", []string{"引言", "结语"}, nil, 6, 9000); err == nil {
 		t.Fatal("two headings must be rejected")
 	}
-	if _, err := BuildSpecMapping("问题", []string{"甲", "甲", "乙"}, nil, 6); err == nil {
+	if _, err := BuildSpecMapping("问题", []string{"甲", "甲", "乙"}, nil, 6, 9000); err == nil {
 		t.Fatal("duplicate headings must be rejected")
 	}
-	if _, err := BuildSpecMapping("  ", []string{"甲", "乙", "丙"}, nil, 6); err == nil {
+	if _, err := BuildSpecMapping("  ", []string{"甲", "乙", "丙"}, nil, 6, 9000); err == nil {
 		t.Fatal("empty central question must be rejected")
 	}
 }
@@ -207,5 +239,33 @@ func TestBuildSpecMappingValidatesHeadings(t *testing.T) {
 func TestCountCJK(t *testing.T) {
 	if got := CountCJK("中文abc123English"); got != 2 {
 		t.Fatalf("CountCJK = %d, want 2", got)
+	}
+}
+
+func TestCheckCorpusBudget(t *testing.T) {
+	corpus := &Corpus{Sources: make([]CorpusSource, 5)}
+	for i := range corpus.Sources {
+		corpus.Sources[i].Abstract = strings.Repeat("摘要", 300) // 600 runes each, 3000 total
+	}
+	// Defaults: structural 5-source floor holds, budget check disabled at 0.
+	if err := CheckCorpusBudget(corpus, 0, 0); err != nil {
+		t.Fatalf("default floors must pass a 5×600 corpus: %v", err)
+	}
+	// The tested unsafe zone: 5 sources × 600 runes fails a 6000-rune budget.
+	err := CheckCorpusBudget(corpus, 5, 6000)
+	if err == nil || !errors.Is(err, ErrInsufficientCorpus) {
+		t.Fatalf("thin budget must be refused with ErrInsufficientCorpus, got %v", err)
+	}
+	// A 6-source floor rejects a 5-source corpus regardless of budget.
+	if err := CheckCorpusBudget(corpus, 6, 0); err == nil || !errors.Is(err, ErrInsufficientCorpus) {
+		t.Fatalf("source floor must be refused with ErrInsufficientCorpus, got %v", err)
+	}
+	// A richer corpus passes the same 6000-rune budget.
+	rich := &Corpus{Sources: make([]CorpusSource, 6)}
+	for i := range rich.Sources {
+		rich.Sources[i].Abstract = strings.Repeat("摘要", 600) // 1200 runes each, 7200 total
+	}
+	if err := CheckCorpusBudget(rich, 5, 6000); err != nil {
+		t.Fatalf("rich corpus must pass: %v", err)
 	}
 }

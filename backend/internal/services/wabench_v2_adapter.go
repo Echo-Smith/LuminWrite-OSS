@@ -30,10 +30,10 @@ var (
 )
 
 var publicWABenchStyleRefs = map[string]string{
-	"wabench.public.general-writing": "yinyue",
-	"wabench.public.deep-commentary": "yinyue",
-	"wabench.public.policy-essay":    "shenlun",
-	"wabench.public.social-note":     "xiaohongshu",
+	"wabench.public.general-writing": "default",
+	"wabench.public.deep-commentary": "default",
+	"wabench.public.policy-essay":    "default",
+	"wabench.public.social-note":     "default",
 }
 
 type WABenchAgentRequest struct {

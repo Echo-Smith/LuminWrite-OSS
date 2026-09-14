@@ -3,6 +3,7 @@ package arreview
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -208,7 +209,15 @@ func NormalizeDOI(value string) string {
 // while coverage vocabulary is anchored to the pack's own topics plus three
 // genre-generic entries. The approved outline's section titles become the
 // required headings — the outline the human gate approved *is* the genre.
-func BuildSpecMapping(centralQuestion string, headings, packTopics []string, corpusSize int) (map[string]any, error) {
+//
+// abstractRunes is the total evidence-corpus size in code points (the sum of
+// every source's verified abstract). The mechanical floor scales with it: a
+// thin corpus cannot substantiate the preset 4500-character floor, and a
+// model forced to pad manufactures claims — the 12-case blind evaluation
+// measured 15 unsupported claims on the thinnest cell vs 3 on the richest
+// (2026-09-13 计分对照报告). Scaling is transport-side calibration of the
+// genre floor, not a relaxation of per-claim grounding.
+func BuildSpecMapping(centralQuestion string, headings, packTopics []string, corpusSize, abstractRunes int) (map[string]any, error) {
 	trimmedHeadings := make([]string, 0, len(headings))
 	seen := make(map[string]bool)
 	for _, heading := range headings {
@@ -241,7 +250,7 @@ func BuildSpecMapping(centralQuestion string, headings, packTopics []string, cor
 
 	coverage := make(map[string]any, len(packTopics)+3)
 	for index, topicName := range packTopics {
-		name := strings.TrimSpace(topicName)
+		name := coverageTerm(topicName)
 		if name == "" {
 			continue
 		}
@@ -250,6 +259,14 @@ func BuildSpecMapping(centralQuestion string, headings, packTopics []string, cor
 	coverage["genre_limitations"] = []string{"局限", "证据边界"}
 	coverage["genre_future_work"] = []string{"研究方向", "研究空白", "未来"}
 	coverage["genre_synthesis"] = []string{"综合判断", "综合来看", "文献共识"}
+
+	// Length floor tracks the corpus the candidate can honestly cite (see
+	// BuildSpecMapping doc): 4500 for rich corpora, floored at 1800 for thin
+	// ones. Draft targets scale with the floor, preserving the preset's
+	// 7000/11000 shape at the 4500 cap.
+	minCJK := min(4500, max(1800, abstractRunes/2))
+	draftMin := minCJK + 2500
+	draftMax := draftMin + 4000
 
 	return map[string]any{
 		"schema_version":           SpecSchemaVersion,
@@ -262,16 +279,64 @@ func BuildSpecMapping(centralQuestion string, headings, packTopics []string, cor
 		"boundary_writer":          GeneratorBoundaryWriter,
 		"boundary_marker":          "公开题录与公开摘要",
 		"terminology_hint":         "",
-		"min_cjk_characters":       4500,
+		"min_cjk_characters":       minCJK,
 		"min_distinct_sources":     minDistinct,
 		"min_citation_occurrences": minOccurrences,
 		"min_cited_sources":        minCited,
 		"min_in_text_citations":    minInText,
-		"draft_min_chars":          7000,
-		"draft_max_chars":          11000,
+		"draft_min_chars":          draftMin,
+		"draft_max_chars":          draftMax,
 		"allowed_evidence_scopes":  []string{"public_abstract", "full_text"},
 		"repair_excerpt_headings":  repairExcerptHeadings(trimmedHeadings),
 	}, nil
+}
+
+// coverageTerm normalizes one pack topic into a manuscript-matchable term.
+// The research chain's coverage.topics are frequency projections of the shape
+// "token (count)" (research_pack.coverageTopics); the fork's coverage gate
+// matches terms as substrings of the manuscript, and no prose ever contains
+// the provenance count. Stripping it is transport normalization, not gate
+// weakening: what the candidate must discuss is the token itself.
+var topicCountSuffix = regexp.MustCompile(`\s*\(\d+\)$`)
+
+func coverageTerm(topic string) string {
+	return strings.TrimSpace(topicCountSuffix.ReplaceAllString(topic, ""))
+}
+
+// CorpusAbstractRunes sums the code points of every source's abstract — the
+// information budget the candidate may honestly cite.
+func CorpusAbstractRunes(corpus *Corpus) int {
+	total := 0
+	for _, src := range corpus.Sources {
+		total += len([]rune(src.Abstract))
+	}
+	return total
+}
+
+// CheckCorpusBudget enforces the deployment's candidate-generation floors on
+// top of BuildCorpus's structural minimum: a source-count floor and a total
+// abstract information budget. minRunes <= 0 disables the budget check;
+// minSources below the structural floor has no effect. Both rejections wrap
+// ErrInsufficientCorpus so the API layer maps them to 422
+// AR_REVIEW_INSUFFICIENT_CORPUS. Thresholds are deployment-tunable
+// (AR_REVIEW_MIN_SOURCES / AR_REVIEW_MIN_ABSTRACT_RUNES); the defaults
+// derive from the 24-case blind evaluation (2026-09-13 计分对照报告：预算
+// ~3600 字符的薄语料是无支持论断峰值区).
+func CheckCorpusBudget(corpus *Corpus, minSources, minRunes int) error {
+	if minSources < MinCorpusSources {
+		minSources = MinCorpusSources
+	}
+	if len(corpus.Sources) < minSources {
+		return fmt.Errorf("%w: %d usable sources below the %d-source floor",
+			ErrInsufficientCorpus, len(corpus.Sources), minSources)
+	}
+	if minRunes > 0 {
+		if total := CorpusAbstractRunes(corpus); total < minRunes {
+			return fmt.Errorf("%w: corpus information budget %d runes below the %d-rune floor (thin corpora force unsupported padding)",
+				ErrInsufficientCorpus, total, minRunes)
+		}
+	}
+	return nil
 }
 
 // repairExcerptHeadings mirrors the fork's heuristic: gap/controversy/outlook

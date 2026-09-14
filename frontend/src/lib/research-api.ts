@@ -908,7 +908,7 @@ interface ResearchPlanPreviewView {
 const RESEARCH_RUN_BUDGET = { max_cost_usd: 100, max_duration_ms: 7200000, max_concurrency: 1, max_nodes: 12, max_items: 20 };
 
 /** 运行记录的 style_slug（与后端 e2e 约定一致；服务端不校验该值）。 */
-const RESEARCH_STYLE_SLUG = "yinyue";
+const RESEARCH_STYLE_SLUG = "default";
 
 /**
  * 构造 lcp/1.1 研究合同草稿与确认版本（客户端封存哈希：服务端 PutContract/

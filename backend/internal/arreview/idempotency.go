@@ -11,7 +11,7 @@ import (
 // GeneratorVersion identifies the exact sidecar build a key was derived for.
 // Bumping it rotates keys, so an upgraded sidecar never silently replays a
 // cached run produced by different prompts or code (design.md §8).
-const GeneratorVersion = "ar012-review@68888a7-lumin.1"
+const GeneratorVersion = "ar012-review@68888a7-lumin.7"
 
 var (
 	hashPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

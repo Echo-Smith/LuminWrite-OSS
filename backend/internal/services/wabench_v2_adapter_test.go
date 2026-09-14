@@ -156,7 +156,7 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 		t.Fatal(err)
 	}
 	loader := profile.NewLoader()
-	builtin, ok := loader.Get("yinyue")
+	builtin, ok := loader.Get("default")
 	if !ok {
 		t.Fatal("builtin profile missing")
 	}

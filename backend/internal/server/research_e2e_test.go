@@ -58,6 +58,31 @@ type t06FakeWorker struct {
 	// closed (the T09 A13 cancel test parks the first read mid-flight so the
 	// cancel lands while the run is actively executing).
 	holdReads chan struct{}
+	// corpusEligible upgrades the fake discover/fetch/read outputs so the
+	// frozen pack survives arreview.BuildCorpus's honest exclusion rules
+	// (DOI + year + a verified quote over 120 characters): the AR-012 live
+	// sidecar acceptance (T10) drives the real research chain but needs a
+	// review corpus instead of a 5-source rejection. Default-off keeps every
+	// existing T05–T09 assertion byte-identical.
+	corpusEligible bool
+	// Blind-eval batch knobs (only meaningful with corpusEligible). Zero
+	// values reproduce the single live-acceptance case exactly.
+	// subjectTerms diversifies claim text (hence coverage vocabulary) and
+	// the full-text sentence across cases; quoteCodepoints bounds the reader
+	// quote; fullTextSentences scales the fetched body; caseSalt is prefixed
+	// to the body so a retry over identical axes produces a genuinely new
+	// pack hash (the sidecar's project identity is content-addressed).
+	subjectTerms    []string
+	quoteCodepoints int
+	fullTextSentences int
+	caseSalt        string
+	// realPapers, when set, replaces the synthetic candidates with genuine
+	// open-access works (real title/authors/year/venue/DOI/abstract from
+	// OpenAlex) so the frozen pack carries substantive evidence a blind
+	// evaluator can actually check claims against. The chain machinery
+	// (discover→read→outline→gates) is unchanged; FetchFullText serves the
+	// real abstract as the document body and the reader quotes its prefix.
+	realPapers []ar012RealPaper
 }
 
 func newT06FakeWorker(papers int) *t06FakeWorker {
@@ -69,15 +94,45 @@ func (fake *t06FakeWorker) Discover(_ context.Context, _ string, _ []string, _ i
 	fake.discover++
 	fake.mu.Unlock()
 	papers := make([]scholar.PaperCandidate, 0, fake.papers)
+	if len(fake.realPapers) > 0 {
+		for index, paper := range fake.realPapers {
+			paperID := fmt.Sprintf("t06-paper-%02d", index)
+			title, abstract := paper.Title, paper.Abstract
+			candidate := scholar.PaperCandidate{PaperID: paperID,
+				Title: &title, Authors: paper.Authors, Aliases: []string{paperID}, Abstract: &abstract}
+			if fake.withFullText {
+				oaURL := "https://oa.example.org/" + paperID + ".txt"
+				candidate.OAURL = &oaURL
+			}
+			doi, venue, year := paper.DOI, paper.Venue, paper.Year
+			candidate.DOI, candidate.Venue, candidate.Year = &doi, &venue, &year
+			papers = append(papers, candidate)
+		}
+		return &scholar.DiscoverOutputs{Papers: papers,
+				ProviderResults: []scholar.ProviderResult{{Provider: "openalex", Status: "ok"}}},
+			&scholar.OperationResponse{Usage: scholar.Usage{Measured: false}}, nil
+	}
 	for index := 0; index < fake.papers; index++ {
 		paperID := fmt.Sprintf("t06-paper-%02d", index)
 		title := "研究综述论文 " + paperID
+		if fake.corpusEligible {
+			// Digits in a title would become required headings and leak into
+			// the candidate's grounding scan (the fork checks every data
+			// number against the corpus); keep titles pure CJK.
+			title = "研究综述论文·" + ar012CorpusCNIndex(index)
+		}
 		abstract := "背景与结论：" + paperID + " 的确定性摘要内容，用于引用验证。"
 		candidate := scholar.PaperCandidate{PaperID: paperID,
 			Title: &title, Authors: []string{"作者"}, Aliases: []string{paperID}, Abstract: &abstract}
 		if fake.withFullText {
 			oaURL := "https://oa.example.org/" + paperID + ".txt"
 			candidate.OAURL = &oaURL
+		}
+		if fake.corpusEligible {
+			doi := fmt.Sprintf("10.7777/ar012live.%02d", index)
+			venue := "Journal of Governed Writing"
+			year := int64(2021 + index%5)
+			candidate.DOI, candidate.Venue, candidate.Year = &doi, &venue, &year
 		}
 		papers = append(papers, candidate)
 	}
@@ -102,6 +157,26 @@ func (fake *t06FakeWorker) FetchFullText(_ context.Context, paperID, _ string, _
 	fake.fetches[paperID]++
 	fake.mu.Unlock()
 	content := []byte("全文正文（" + paperID + "）：\n\n这是用于验证引用的确定性正文段落，包含核心结论与数据。")
+	if len(fake.realPapers) > 0 {
+		abstract := ""
+		for index := range fake.realPapers {
+			if fmt.Sprintf("t06-paper-%02d", index) == paperID {
+				abstract = fake.realPapers[index].Abstract
+			}
+		}
+		content = []byte("全文正文（" + paperID + "）：" + fake.caseSalt + abstract)
+	} else if fake.corpusEligible {
+		sentence := "确定性正文包含核心结论、样本规模与边界条件，用于引用验证与证据范围标注。"
+		if len(fake.subjectTerms) >= 2 {
+			sentence = fmt.Sprintf("确定性正文围绕%s与%s给出样本规模、机制解释和边界条件结论，用于引用验证与证据范围标注。",
+				fake.subjectTerms[0], fake.subjectTerms[1])
+		}
+		count := fake.fullTextSentences
+		if count <= 0 {
+			count = 8
+		}
+		content = []byte("全文正文（" + paperID + "）：" + fake.caseSalt + strings.Repeat(sentence, count))
+	}
 	return &scholar.FetchFullTextOutputs{PaperID: paperID, AcquisitionStatus: "full_text_available",
 			ContentHash: t06sha256(content), SizeBytes: int64(len(content)), MediaType: "text/plain",
 			ContentBase64: base64.StdEncoding.EncodeToString(content)},
@@ -143,11 +218,27 @@ func (fake *t06FakeWorker) ReadPaper(_ context.Context, _, paperID string, block
 	}
 	block := blocks[0]
 	quote := []rune(block.Text)
-	if len(quote) > 20 {
-		quote = quote[:20]
+	limit := 20
+	claimText := paperID + " 的确定性结论"
+	if fake.corpusEligible {
+		limit = fake.quoteCodepoints
+		if limit <= 0 {
+			limit = 150 // above the sidecar's 120-char floor
+		}
+		// Claim tokens feed the pack's coverage.topics, which the AR-012 spec
+		// turns into the candidate's required discussion vocabulary. Keep them
+		// natural Chinese phrases a governance review really contains (the
+		// paper-id token would turn "paper" into a mandatory topic term).
+		claimText = "确定性结论，自动选择，用户控制"
+		if len(fake.subjectTerms) >= 3 {
+			claimText = strings.Join(fake.subjectTerms, "，")
+		}
+	}
+	if len(quote) > limit {
+		quote = quote[:limit]
 	}
 	return &writingruntime.ReadOutputs{PaperID: paperID,
-			Claims: []writingruntime.ReaderClaimOutput{{ClaimID: "c1", Text: paperID + " 的确定性结论",
+			Claims: []writingruntime.ReaderClaimOutput{{ClaimID: "c1", Text: claimText,
 				Kind: "source_assertion", EvidenceIDs: []string{"e1"}, Limitations: []string{}}},
 			Evidence: []writingruntime.ReaderEvidence{{EvidenceID: "e1", BlockID: block.BlockID,
 				BlockHash: block.BlockHash, Quote: string(quote), StartChar: 0, EndChar: len(quote),
@@ -193,6 +284,16 @@ func (fake *t06FakeWorker) callCounts() (discover, ranks, fetches, reads int) {
 func t06sha256(content []byte) string {
 	sum := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// ar012CorpusCNIndex numbers corpus fixture papers with CJK ordinals so no
+// digit-bearing identifier can reach the sidecar's required headings.
+func ar012CorpusCNIndex(index int) string {
+	digits := []rune("一二三四五六七八九十甲乙丙丁戊己庚辛壬癸")
+	if index < len(digits) {
+		return string(digits[index])
+	}
+	return "多"
 }
 
 // ── Deterministic draft generator (the mock-friendly seam) ─────────────────
@@ -632,7 +733,7 @@ func (h *t06Harness) createResearchRun(t *testing.T, fixture *t00Fixture, envelo
 	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": fixture.documentID, "contract_id": fixture.contractID, "contract_version": 2,
 		"contract_hash": fixture.contract.ContractHash, "base_version_id": fixture.baseVersion.VersionID,
-		"style_slug": "yinyue", "plan": envelope, "budget": h.researchRunBudget(), "permissions": permissions,
+		"style_slug": "default", "plan": envelope, "budget": h.researchRunBudget(), "permissions": permissions,
 	})
 	runID := e2eJSONField(t, run, "run_id")
 	if e2eJSONField(t, run, "status") == "awaiting_approval" {

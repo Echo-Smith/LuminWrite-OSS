@@ -48,6 +48,7 @@ import {
 import type { DocumentNode } from "@/lib/writing-runtime-types";
 import type { RevisionSet } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
+import { WorkflowCanvasPIP } from "@/components/workflow/workflow-pip";
 
 function currentDeviceId(): string {
   const key = "lumin-writing-device-id";
@@ -312,6 +313,7 @@ export function WritingWorkspace() {
   const setDetailPanel = useWorkspaceLayoutStore((state) => state.setDetailPanel);
   const setComposerWidth = useWorkspaceLayoutStore((state) => state.setComposerWidth);
   const setLayoutScope = useWorkspaceLayoutStore((state) => state.setScope);
+  const setDagPipVisible = useWorkspaceLayoutStore((state) => state.setDagPipVisible);
 
   const citationSurfaceContext = useCitationSurfaceContext();
 
@@ -443,6 +445,14 @@ export function WritingWorkspace() {
       documentId,
     });
   }, [documentId, setLayoutScope, user?.userId]);
+
+  // DAG 画中画自动触发逻辑：当 editorial 模式接收到 plan 时自动展示
+  const wfPlan = useWorkflowStore((state) => state.plan);
+  useEffect(() => {
+    if (agentMode === "editorial" && wfPlan && wfPlan.workflow.nodes.length > 0) {
+      setDagPipVisible(true);
+    }
+  }, [agentMode, wfPlan, setDagPipVisible]);
 
   useKeyboardShortcuts({
     onToggleSidebar: () => setSidebarOpen((value) => !value),
@@ -580,6 +590,9 @@ export function WritingWorkspace() {
           onToggleWidth={() => setComposerWidth(composerWidth === "wide" ? "compact" : "wide")}
         />
       </div>
+
+      {/* DAG 工作流画中画窗口 */}
+      <WorkflowCanvasPIP />
     </div>
   );
 }

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS editorial_source_credibility (
 CREATE TABLE IF NOT EXISTS editorial_column_preferences (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     column_tag      VARCHAR(64) NOT NULL,              -- 栏目标签（如 "科技" "财经" "时评"）
-    style_slug      VARCHAR(64) NOT NULL DEFAULT 'yinyue', -- 关联的风格 Profile
+    style_slug      VARCHAR(64) NOT NULL DEFAULT 'default', -- 关联的风格 Profile
     preferred_length_min INTEGER NOT NULL DEFAULT 500,  -- 偏好字数下限
     preferred_length_max INTEGER NOT NULL DEFAULT 2000, -- 偏好字数上限
     tone            VARCHAR(32) NOT NULL DEFAULT '',    -- 偏好语气

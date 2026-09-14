@@ -8,11 +8,18 @@ export type DetailPanelState = "expanded" | "collapsed" | "drawer";
  */
 export type DetailTab = "outline" | "materials" | "run";
 export type ComposerWidthState = "wide" | "compact";
+export type DagPipDockState = "none" | "right" | "bottom";
 
 export interface WorkspaceLayoutPreference {
   detailPanel: DetailPanelState;
   detailTab: DetailTab;
   composerWidth: ComposerWidthState;
+  // DAG 画中画状态
+  dagPipVisible: boolean;
+  dagPipPosition: { x: number; y: number };
+  dagPipSize: { width: number; height: number };
+  dagPipMinimized: boolean;
+  dagPipDocked: DagPipDockState;
 }
 
 export interface WorkspaceLayoutScope {
@@ -31,11 +38,18 @@ export const defaultWorkspaceLayout: WorkspaceLayoutPreference = {
   detailPanel: "expanded",
   detailTab: "outline",
   composerWidth: "wide",
+  // DAG 画中画默认值
+  dagPipVisible: false,
+  dagPipPosition: { x: 100, y: 100 },
+  dagPipSize: { width: 800, height: 600 },
+  dagPipMinimized: false,
+  dagPipDocked: "none",
 };
 
 const DETAIL_STATES = new Set(["expanded", "collapsed", "drawer"]);
 const DETAIL_TABS = new Set(["outline", "materials", "run"]);
 const COMPOSER_WIDTHS = new Set(["wide", "compact"]);
+const DAG_PIP_DOCKED = new Set(["none", "right", "bottom"]);
 
 /** 历史五 tab → 合并三 tab 的迁移（quality 并入 run，versions 并入 outline）。 */
 const DETAIL_TAB_MIGRATION: Record<string, DetailTab> = { quality: "run", versions: "outline" };
@@ -57,6 +71,16 @@ function normalizeLayout(value: Partial<WorkspaceLayoutPreference> | null | unde
     detailPanel: DETAIL_STATES.has(value?.detailPanel ?? "") ? value!.detailPanel! : defaultWorkspaceLayout.detailPanel,
     detailTab: normalizeDetailTab(value?.detailTab),
     composerWidth: COMPOSER_WIDTHS.has(value?.composerWidth ?? "") ? value!.composerWidth! : defaultWorkspaceLayout.composerWidth,
+    // DAG 画中画状态规范化
+    dagPipVisible: typeof value?.dagPipVisible === "boolean" ? value.dagPipVisible : defaultWorkspaceLayout.dagPipVisible,
+    dagPipPosition: value?.dagPipPosition && typeof value.dagPipPosition.x === "number" && typeof value.dagPipPosition.y === "number"
+      ? value.dagPipPosition
+      : defaultWorkspaceLayout.dagPipPosition,
+    dagPipSize: value?.dagPipSize && typeof value.dagPipSize.width === "number" && typeof value.dagPipSize.height === "number"
+      ? value.dagPipSize
+      : defaultWorkspaceLayout.dagPipSize,
+    dagPipMinimized: typeof value?.dagPipMinimized === "boolean" ? value.dagPipMinimized : defaultWorkspaceLayout.dagPipMinimized,
+    dagPipDocked: DAG_PIP_DOCKED.has(value?.dagPipDocked ?? "") ? value!.dagPipDocked! : defaultWorkspaceLayout.dagPipDocked,
   };
 }
 
@@ -85,6 +109,12 @@ interface WorkspaceLayoutActions {
   setDetailPanel: (value: DetailPanelState) => void;
   setDetailTab: (value: DetailTab) => void;
   setComposerWidth: (value: ComposerWidthState) => void;
+  // DAG 画中画操作
+  setDagPipVisible: (visible: boolean) => void;
+  setDagPipPosition: (position: { x: number; y: number }) => void;
+  setDagPipSize: (size: { width: number; height: number }) => void;
+  setDagPipMinimized: (minimized: boolean) => void;
+  setDagPipDocked: (docked: DagPipDockState) => void;
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutPreference & WorkspaceLayoutActions>((set, get) => {
@@ -100,5 +130,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutPreference & Worksp
     setDetailPanel: (detailPanel) => persist({ detailPanel }),
     setDetailTab: (detailTab) => persist({ detailTab }),
     setComposerWidth: (composerWidth) => persist({ composerWidth }),
+    // DAG 画中画操作实现
+    setDagPipVisible: (dagPipVisible) => persist({ dagPipVisible }),
+    setDagPipPosition: (dagPipPosition) => persist({ dagPipPosition }),
+    setDagPipSize: (dagPipSize) => persist({ dagPipSize }),
+    setDagPipMinimized: (dagPipMinimized) => persist({ dagPipMinimized }),
+    setDagPipDocked: (dagPipDocked) => persist({ dagPipDocked }),
   };
 });

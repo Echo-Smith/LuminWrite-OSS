@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS editorial_tasks (
     token_used      INTEGER NOT NULL DEFAULT 0,
     priority        SMALLINT NOT NULL DEFAULT 3,
     tags            TEXT[] DEFAULT '{}',
-    style_slug      VARCHAR(64) NOT NULL DEFAULT 'yinyue',
+    style_slug      VARCHAR(64) NOT NULL DEFAULT 'default',
     conversation_id VARCHAR(64),
     created_by      UUID REFERENCES users(id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

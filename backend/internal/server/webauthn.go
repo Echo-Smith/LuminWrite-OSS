@@ -252,6 +252,14 @@ func (w *WebAuthnService) VerifyRegistrationResponse(resp *RegistrationResponse,
 	// Check user verified flag (optional but preferred)
 	userVerified := flags&0x04 != 0
 
+	// Backup flags (WebAuthn L1 §6.1/§6.2): BE bit 3 (0x08) means the
+	// authenticator can back the credential up to a cloud password
+	// manager (iCloud Keychain / Google Password Manager / 1Password),
+	// i.e. a syncable passkey usable across devices. BS bit 4 (0x10) is
+	// the current backup state and is only meaningful when BE is set.
+	backupEligible := flags&0x08 != 0
+	backedUp := backupEligible && flags&0x10 != 0
+
 	// Parse counter
 	counter := binary.BigEndian.Uint32(counterBytes)
 
@@ -278,6 +286,8 @@ func (w *WebAuthnService) VerifyRegistrationResponse(resp *RegistrationResponse,
 		SignCount:       int64(counter),
 		AAGUID:          aaguid,
 		UserVerified:    userVerified,
+		BackupEligible:  backupEligible,
+		BackedUp:        backedUp,
 		Transports:      resp.Transports,
 		AttestationType: "none",
 	}, nil
@@ -290,6 +300,8 @@ type VerifiedCredential struct {
 	SignCount       int64
 	AAGUID          string
 	UserVerified    bool
+	BackupEligible  bool // authenticator can back up the credential (syncable passkey)
+	BackedUp        bool // credential is currently backed up to a cloud service
 	Transports      []string
 	AttestationType string
 }
@@ -381,6 +393,15 @@ func (w *WebAuthnService) isOriginAllowed(origin string) bool {
 		return true
 	}
 	return false
+}
+
+// originForLog reports the RP identity used during registration challenges.
+// Browsers silently reject navigator.credentials.create() when the page
+// origin's domain does not match rp.id, so this makes the configured pair
+// visible in the backend logs for diagnosing "registration never arrives"
+// symptoms.
+func (w *WebAuthnService) originForLog() string {
+	return w.rpOrigin + " (rp_id=" + w.rpID + ")"
 }
 
 // ─── CBOR/COSE Parsing (minimal implementation) ─────────
@@ -969,6 +990,7 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		DisplayName: displayName,
 	}, "registration")
 
+	slog.Info("passkey registration begun", "user_id", req.UserID, "user_name", req.UserName, "display_name", displayName, "origin", s.webauthn.originForLog())
 	response.OK(w, challenge)
 }
 
@@ -1015,10 +1037,12 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 			// Try in-memory fallback
 			sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
 			if !ok {
+				slog.Warn("passkey register complete: challenge not found", "user_id_hint", clientData.Challenge[:16]+"...", "db_err", err)
 				response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
 				return
 			}
 			if sc.purpose != "registration" {
+				slog.Warn("passkey register complete: challenge purpose mismatch")
 				response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
 				return
 			}
@@ -1043,10 +1067,12 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 	} else {
 		sc, ok := s.passkeyChallenges.Consume(clientData.Challenge)
 		if !ok {
+			slog.Warn("passkey register complete: challenge not found (memory store)")
 			response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge not found or expired")
 			return
 		}
 		if sc.purpose != "registration" {
+			slog.Warn("passkey register complete: challenge purpose mismatch")
 			response.Err(w, http.StatusBadRequest, "invalid_challenge", "challenge purpose mismatch")
 			return
 		}
@@ -1081,17 +1107,32 @@ func (s *Server) handlePasskeyRegisterComplete(w http.ResponseWriter, r *http.Re
 		if regUserInfo != nil && regUserInfo.DisplayName != "" {
 			displayName = regUserInfo.DisplayName
 		}
+		// Registration-as-sync: record the authenticator's real backup state.
+		// A backup-eligible credential (iCloud/Google/1Password passkey) is
+		// 'syncable' — usable across devices signed into the same account.
+		deviceType := "single_device"
+		if cred.BackupEligible {
+			deviceType = "syncable"
+		}
 		_, err := s.adminRepo.DB().ExecContext(r.Context(), `
 			INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, device_type, backed_up, name, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'single_device', false, $8, NOW())
-			ON CONFLICT (credential_id) DO NOTHING
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+			ON CONFLICT (credential_id) DO UPDATE SET
+				user_id = EXCLUDED.user_id,
+				public_key = EXCLUDED.public_key,
+				transports = EXCLUDED.transports,
+				device_type = EXCLUDED.device_type,
+				backed_up = EXCLUDED.backed_up,
+				name = EXCLUDED.name
 		`, regUserID, cred.CredentialID, cred.PublicKey, cred.AttestationType, cred.AAGUID,
-			cred.SignCount, transports, displayName)
+			cred.SignCount, transports, deviceType, cred.BackedUp, displayName)
 		if err != nil {
 			slog.Error("failed to store passkey credential", "error", err)
 			response.Err(w, http.StatusInternalServerError, "internal_error", "failed to store credential")
 			return
 		}
+		slog.Info("passkey credential stored", "user_id", regUserID, "credential_id", cred.CredentialID[:16]+"...",
+			"device_type", deviceType, "backed_up", cred.BackedUp, "transports", transports, "aaguid", cred.AAGUID)
 	} else {
 		slog.Error("passkey register complete: database not available")
 		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
@@ -1345,12 +1386,13 @@ func (s *Server) handlePasskeyList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.adminRepo.DB().QueryContext(r.Context(), `
-		SELECT id::text, credential_id, name, created_at, last_used_at, transports
+		SELECT id::text, credential_id, name, created_at, last_used_at, transports, device_type, backed_up
 		FROM passkey_credentials
 		WHERE user_id = $1
 		ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
+		slog.Warn("passkey list: query failed", "user_id", userID, "error", err)
 		response.OK(w, map[string]interface{}{"passkeys": []interface{}{}})
 		return
 	}
@@ -1365,8 +1407,10 @@ func (s *Server) handlePasskeyList(w http.ResponseWriter, r *http.Request) {
 			createdAt   time.Time
 			lastUsedAt  *time.Time
 			transports  []string
+			deviceType  string
+			backedUp    bool
 		)
-		if err := rows.Scan(&id, &credID, &name, &createdAt, &lastUsedAt, &transports); err != nil {
+		if err := rows.Scan(&id, &credID, &name, &createdAt, &lastUsedAt, &transports, &deviceType, &backedUp); err != nil {
 			continue
 		}
 		entry := map[string]interface{}{
@@ -1375,6 +1419,8 @@ func (s *Server) handlePasskeyList(w http.ResponseWriter, r *http.Request) {
 			"name":          "",
 			"created_at":    createdAt,
 			"transports":    transports,
+			"device_type":   deviceType,
+			"backed_up":     backedUp,
 		}
 		if name != nil {
 			entry["name"] = *name
@@ -1389,6 +1435,7 @@ func (s *Server) handlePasskeyList(w http.ResponseWriter, r *http.Request) {
 		passkeys = []map[string]interface{}{}
 	}
 
+	slog.Info("passkey list served", "user_id", userID, "count", len(passkeys))
 	response.OK(w, map[string]interface{}{"passkeys": passkeys})
 }
 

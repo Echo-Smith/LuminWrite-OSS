@@ -474,7 +474,7 @@ func (h *t00Harness) createRun(t *testing.T, fixture *t00Fixture, envelope writi
 	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": fixture.documentID, "contract_id": fixture.contractID, "contract_version": 2,
 		"contract_hash": fixture.contract.ContractHash, "base_version_id": fixture.baseVersion.VersionID,
-		"style_slug": "yinyue", "plan": envelope, "budget": h.runBudget(), "permissions": permissions,
+		"style_slug": "default", "plan": envelope, "budget": h.runBudget(), "permissions": permissions,
 	})
 	return e2eJSONField(t, run, "run_id")
 }
@@ -491,7 +491,7 @@ func (h *t00Harness) createRunDirect(t *testing.T, fixture *t00Fixture, envelope
 	runID := writingstore.StableID("run_", h.userID, "t00restart", fmt.Sprint(time.Now().UTC().UnixNano()))
 	run := writingstore.RunRecord{RunID: runID, DocumentID: fixture.documentID, ContractID: fixture.contractID,
 		ContractVersion: 2, ContractHash: fixture.contract.ContractHash, BaseVersionID: fixture.baseVersion.VersionID,
-		StyleSlug: "yinyue", Status: "planned", ApprovalMode: fixture.contract.Collaboration.ApprovalMode,
+		StyleSlug: "default", Status: "planned", ApprovalMode: fixture.contract.Collaboration.ApprovalMode,
 		RequestedAssurance: fixture.contract.Collaboration.AssuranceLevel, Budget: h.runBudget(),
 		Permissions: permissions, Trace: trace}
 	plan := writingstore.PlanRecord{RunID: runID, PlanVersion: 1, Envelope: envelope, Budget: h.runBudget(),

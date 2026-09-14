@@ -35,7 +35,7 @@ func (s *Store) DB() *sql.DB {
 func (s *Store) CreateTask(ctx context.Context, input CreateTaskInput, userID string) (*Task, error) {
 	styleSlug := input.StyleSlug
 	if styleSlug == "" {
-		styleSlug = "yinyue"
+		styleSlug = "default"
 	}
 	budget := input.TokenBudget
 	if budget == 0 {

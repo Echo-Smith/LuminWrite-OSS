@@ -80,7 +80,7 @@ func (s *Server) generateWritingAngles(ctx context.Context, topic map[string]int
 
 请以 JSON 数组格式返回，每个角度包含以下字段：
 - angle: 写作角度名称（简洁有力）
-- style: 推荐写作风格（yinyue/shenlun/xiaohongshu 之一）
+- style: 推荐写作风格（如 default）
 - word_count: 推荐字数
 - rationale: 为什么从这个角度写的理由（1-2句话）
 

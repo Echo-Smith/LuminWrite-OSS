@@ -41,7 +41,7 @@ func (resolver stubStyleResolver) ResolveProfile(string, string) (*profile.Style
 }
 
 func researchStyleName(name string) *profile.StyleProfile {
-	return &profile.StyleProfile{Slug: "yinyue", Name: name, Description: "温和叙事", SystemPrompt: "以讲故事的方式组织段落。"}
+	return &profile.StyleProfile{Slug: "default", Name: name, Description: "温和叙事", SystemPrompt: "以讲故事的方式组织段落。"}
 }
 
 // The style instructions must carry the profile fields and must rank facts,
@@ -102,14 +102,14 @@ func TestResearchDraftStyleOptInResolution(t *testing.T) {
 	request := fixture.requestFor(t, fixture.draftNode(), []InputArtifact{fixture.contractInput(t), packInput, approvalInput, approvedInput})
 
 	// 1) Non-empty slug + resolving resolver → profile flows into the input.
-	request.StyleSlug = "yinyue"
+	request.StyleSlug = "default"
 	if _, err := executor.Execute(ctx, request); err != nil {
 		t.Fatalf("draft execute with style: %v", err)
 	}
 	if capturing.input.StyleProfile == nil || capturing.input.StyleProfile.Name != "预设评论风格" {
 		t.Fatalf("expected resolved style profile, got %+v", capturing.input.StyleProfile)
 	}
-	if capturing.input.StyleSlug != "yinyue" {
+	if capturing.input.StyleSlug != "default" {
 		t.Fatalf("expected style slug passthrough, got %q", capturing.input.StyleSlug)
 	}
 
@@ -128,7 +128,7 @@ func TestResearchDraftStyleOptInResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.StyleSlug = "yinyue"
+	request.StyleSlug = "default"
 	if _, err := failingExecutor.Execute(ctx, request); err != nil {
 		t.Fatalf("resolver failure must degrade, not fail the node: %v", err)
 	}

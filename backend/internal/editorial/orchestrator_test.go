@@ -36,7 +36,7 @@ func setupTaskAtStatus(t *testing.T, store *Store, userID string, status TaskSta
 	task, err := store.CreateTask(context.Background(), CreateTaskInput{
 		Title:       "Test Task",
 		Description: "Test description",
-		StyleSlug:   "yinyue",
+		StyleSlug:   "default",
 		TokenBudget: 100000,
 	}, userID)
 	if err != nil {

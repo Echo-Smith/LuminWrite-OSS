@@ -125,7 +125,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   });
   const sessionStyle = useAgentStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.style ?? "yinyue";
+    return session?.style ?? "default";
   });
   const [mode, setMode] = useState<WriteMode>(sessionMode);
   const [style, setStyle] = useState(sessionStyle);
