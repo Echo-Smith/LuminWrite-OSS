@@ -583,8 +583,8 @@ func (tx *Tx) ensureAndCompleteAttempt(ctx context.Context, attempt NodeAttempt,
 // under node_initial preserves the same FK and RunLedger guarantees as every
 // executor-produced artifact.
 func (s *Store) CommitInitialArtifacts(ctx context.Context, attempt NodeAttempt, artifacts []ArtifactRecord, trace TraceContext) error {
-	if s == nil || attempt.NodeID != "initial" || len(artifacts) == 0 {
-		return fmt.Errorf("%w: initial artifact commit requires initial node and artifacts", ErrInvalidRecord)
+	if s == nil || len(artifacts) == 0 {
+		return fmt.Errorf("%w: initial artifact commit requires at least one artifact", ErrInvalidRecord)
 	}
 	return s.InTransaction(ctx, func(tx *Tx) error {
 		// This bookkeeping attempt has no external worker lease. It begins
