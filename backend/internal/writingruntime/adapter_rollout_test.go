@@ -192,7 +192,7 @@ func TestEngineStepAdapterRunsOnNilOrGovernedEmitterOnly(t *testing.T) {
 		emitter engine.EventEmitter
 	}{
 		{"nil emitter defaults to governed observer", nil},
-		{"governed observer emitter", NewGovernedStepEmitter()},
+		{"governed observer emitter", NewGovernedStepEmitter(nil, "", 0)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := EngineStepRunner{StepFactory: func(StepEnv) (engine.Step, error) { return &emittingEngineStep{}, nil }, Emitter: tt.emitter, Usage: usage}
