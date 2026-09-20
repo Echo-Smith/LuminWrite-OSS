@@ -3,7 +3,7 @@
  *
  * 对话框宽度自适应内容，最大不超过 75% 对话区宽度。
  */
-import type { ChatMessage } from "@/stores/agent-store";
+import type { ChatMessage } from "@/lib/writing-runtime-types";
 
 export function UserMessage({ message }: { message: ChatMessage }) {
   const text = message.parts

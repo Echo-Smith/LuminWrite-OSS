@@ -11,10 +11,10 @@ import { useEffect, useState } from "react";
 import { Copy, RefreshCw, ChevronRight, Brain, Download, FileText, FilePlus, Maximize2, Layers, Pencil, ChevronDown, FileType, Save, Loader2 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, CompactionPart } from "@/stores/agent-store";
+import type { ChatMessage, ToolCallPart, TextPart, DataPart, ReasoningPart, CompactionPart } from "@/lib/writing-runtime-types";
 import type { WriteMode } from "@/lib/types";
 import { exportMarkdown, exportWord, exportPDF } from "@/lib/export-utils";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { Lumi, type LumiState } from "@/components/lumi/lumi";
 import { MarkdownContent } from "./markdown-content";
 import { OutlineTool } from "@/components/tools/outline-tool";
@@ -343,7 +343,7 @@ const [saving, setSaving] = useState(false);
 
   const handleRegenerate = () => {
     // Trigger regeneration by re-sending the last user message
-    const store = useAgentStore.getState();
+    const store = useWritingRuntimeStore.getState();
     const session = store.sessions.find((s) => s.id === store.activeSessionId);
     if (!session) return;
     const lastUserMsg = [...session.messages].reverse().find((m) => m.role === "user");
@@ -356,7 +356,7 @@ const [saving, setSaving] = useState(false);
   };
 
   const handleContinue = () => {
-    const store = useAgentStore.getState();
+    const store = useWritingRuntimeStore.getState();
     const session = store.sessions.find((s) => s.id === store.activeSessionId);
     if (!session) return;
     // 续写：基于当前文章内容继续延伸
@@ -366,7 +366,7 @@ const [saving, setSaving] = useState(false);
   };
 
   const handleExpand = () => {
-    const store = useAgentStore.getState();
+    const store = useWritingRuntimeStore.getState();
     const session = store.sessions.find((s) => s.id === store.activeSessionId);
     if (!session) return;
     // 扩写：选取最后一段进行展开
@@ -504,7 +504,7 @@ const [saving, setSaving] = useState(false);
               <button
                 onClick={async () => {
                   setSaving(true);
-                  const ok = await useAgentStore.getState().saveArticleEdit(traceId, editedText, title);
+                  const ok = await useWritingRuntimeStore.getState().saveArticleEdit(traceId, editedText, title);
                   setSaving(false);
                   if (ok) {
                     setSaved(true);
@@ -575,9 +575,9 @@ function useStyleWordRange(slug: string): [number, number] {
 }
 
 function WordCountProgress({ text }: { text: string }) {
-  const sessionStyle = useAgentStore((s) => {
+  const sessionStyle = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.style ?? "default";
+    return session?.style ?? "yinyue";
   });
 
   const [targetMin, targetMax] = useStyleWordRange(sessionStyle);

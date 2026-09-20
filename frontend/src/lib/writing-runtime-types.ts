@@ -220,7 +220,9 @@ export interface WritingArtifactEventPayload {
 export type WritingEventType =
   | "writing.run.status" | "writing.document.delta" | "writing.document.committed"
   | "writing.node.status" | "writing.artifact.created" | "writing.quality.updated"
-  | "writing.ledger.event";
+  | "writing.ledger.event"
+  | "writing.content.delta" | "writing.content.done"
+  | "writing.reasoning.delta" | "writing.node.progress";
 
 export interface WritingEvent<TPayload = Record<string, unknown>> {
   protocol: "lumin-writing.v2";
@@ -255,3 +257,138 @@ export const QUALITY_STATE_COPY: Record<QualityState, { label: string; descripti
   accepted_draft: { label: "已接受稿", description: "已满足当前编辑要求，可继续完善。" },
   verified_deliverable: { label: "已验证成稿", description: "已通过所需验证并形成完整快照。" },
 };
+
+// ─── Message Part Types (migrated from agent-store) ──────────────
+
+import type { AgentStepName, AgentStepStatus } from "./types.ts";
+
+export type MessagePartType = "text" | "tool-call" | "data" | "reasoning" | "compaction";
+
+export interface ToolCallPart {
+  type: "tool-call";
+  toolName: AgentStepName;
+  status: AgentStepStatus;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface TextPart {
+  type: "text";
+  text: string;
+  streaming?: boolean;
+}
+
+export interface DataPart {
+  type: "data";
+  dataType: "outline" | "review" | "search_results" | "feedback";
+  data: unknown;
+  attempt?: number;
+  maxAttempts?: number;
+}
+
+export interface ReasoningPart {
+  type: "reasoning";
+  text: string;
+  completed?: boolean;
+}
+
+export interface CompactionPart {
+  type: "compaction";
+  originalMessages: number;
+  compactedMessages: number;
+  savedTokens: number;
+  summaryPreview?: string;
+  historyVersion?: number;
+  triggerReason?: string;
+}
+
+export type MessagePart = ToolCallPart | TextPart | DataPart | ReasoningPart | CompactionPart;
+
+export type MessageRole = "user" | "assistant" | "system";
+
+export interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  parts: MessagePart[];
+  createdAt: number;
+  status?: "running" | "complete" | "error";
+  articleTitle?: string;
+  pointsUsed?: number;
+}
+
+export interface WritingArtifact {
+  id: string;
+  type: string;
+  title: string;
+  content?: string;
+  url?: string;
+  created_at?: string;
+}
+
+export interface WritingSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  traceId: string | null;
+  conversationId: string | null;
+  status: "idle" | "running" | "paused" | "completed" | "error";
+  style: string;
+  mode: string;
+  createdAt: number;
+  updatedAt?: number;
+  folderId: string | null;
+  archived: boolean;
+  intent?: string | null;
+  awaitInputAt: number | null;
+  injectedMaterials?: string[];
+  articleTitle?: string | null;
+  customTitle?: string | null;
+  artifacts?: WritingArtifact[];
+  kbEnabled: boolean;
+}
+
+export interface SessionFolder {
+  id: string;
+  user_id: string;
+  name: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentStartPayload {
+  message: string;
+  style?: string;
+  mode?: string;
+  model?: string;
+  agent_mode?: string;
+  session_id?: string;
+  user_materials?: string[];
+  material_refs?: Array<{ material_id: string; source_ref?: string; title?: string }>;
+  topic_url?: string;
+  kb_enabled?: boolean;
+  orchestration_mode?: string;
+  assurance_level?: string;
+  approval_mode?: string;
+}
+
+export interface OutlineData {
+  title: string;
+  outline: OutlineItem[];
+}
+
+export interface OutlineItem {
+  point: string;
+  type: "argument" | "opening" | "conclusion";
+}
+
+export interface AgentResult {
+  article?: string;
+  review?: unknown;
+  token_usage?: unknown;
+  points_used?: number;
+}

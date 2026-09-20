@@ -17,6 +17,12 @@ const (
 	MsgWritingArtifactCreated   = "writing.artifact.created"
 	MsgWritingQualityUpdated    = "writing.quality.updated"
 	MsgWritingLedgerEvent       = "writing.ledger.event"
+
+	// Streaming content events: real-time text/reasoning deltas from engine steps.
+	MsgWritingContentDelta   = "writing.content.delta"
+	MsgWritingContentDone    = "writing.content.done"
+	MsgWritingReasoningDelta = "writing.reasoning.delta"
+	MsgWritingNodeProgress   = "writing.node.progress"
 )
 
 // WritingEvent is the governed event envelope shared by WebSocket and SSE.
@@ -79,6 +85,36 @@ type WritingLedgerPayload struct {
 	Data       map[string]any `json:"data"`
 }
 
+// WritingContentDeltaPayload carries a streaming text delta from an engine step.
+type WritingContentDeltaPayload struct {
+	NodeID      string `json:"node_id"`
+	Attempt     int    `json:"attempt"`
+	Delta       string `json:"delta"`
+	Accumulated string `json:"accumulated,omitempty"`
+}
+
+// WritingContentDonePayload signals that streaming content is complete.
+type WritingContentDonePayload struct {
+	NodeID    string `json:"node_id"`
+	Attempt   int    `json:"attempt"`
+	FinalText string `json:"final_text"`
+}
+
+// WritingReasoningDeltaPayload carries a reasoning chain delta.
+type WritingReasoningDeltaPayload struct {
+	NodeID  string `json:"node_id"`
+	Attempt int    `json:"attempt"`
+	Delta   string `json:"delta"`
+}
+
+// WritingNodeProgressPayload reports step start/complete within a node.
+type WritingNodeProgressPayload struct {
+	NodeID   string `json:"node_id"`
+	Attempt  int    `json:"attempt"`
+	StepName string `json:"step_name"`
+	Status   string `json:"status"`
+}
+
 func (event WritingEvent) Validate() error {
 	if event.Protocol != WritingProtocolV2 || !strings.HasPrefix(event.RunID, "run_") || event.Sequence < 1 || event.Timestamp.IsZero() || strings.TrimSpace(event.Status) == "" || event.Payload == nil {
 		return errors.New("invalid governed writing event envelope")
@@ -111,6 +147,22 @@ func (event WritingEvent) Validate() error {
 	case WritingLedgerPayload:
 		if event.Type != MsgWritingLedgerEvent || payload.EventType == "" || payload.EntityKind == "" || payload.EntityID == "" || payload.Data == nil {
 			return errors.New("invalid ledger event")
+		}
+	case WritingContentDeltaPayload:
+		if event.Type != MsgWritingContentDelta || payload.NodeID == "" || payload.Attempt < 1 || payload.Delta == "" {
+			return errors.New("invalid content delta event")
+		}
+	case WritingContentDonePayload:
+		if event.Type != MsgWritingContentDone || payload.NodeID == "" || payload.Attempt < 1 {
+			return errors.New("invalid content done event")
+		}
+	case WritingReasoningDeltaPayload:
+		if event.Type != MsgWritingReasoningDelta || payload.NodeID == "" || payload.Attempt < 1 || payload.Delta == "" {
+			return errors.New("invalid reasoning delta event")
+		}
+	case WritingNodeProgressPayload:
+		if event.Type != MsgWritingNodeProgress || payload.NodeID == "" || payload.Attempt < 1 || payload.StepName == "" || payload.Status == "" {
+			return errors.New("invalid node progress event")
 		}
 	default:
 		return errors.New("unsupported governed writing event payload")

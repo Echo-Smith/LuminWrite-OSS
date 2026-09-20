@@ -9,6 +9,10 @@
  * - enableEditorial: boolean — 是否在侧栏显示工作台入口（实验功能）
  * - enableResearchReview: boolean — 是否开启研究综述写作路径（实验功能，
  *   用户在实验室功能勾选后 composer 出现「研究综述」mode）
+ * - enablePaperMode: boolean — 稿纸模式（A4 纸面视觉）。默认关闭：
+ *   暂停该特性，正文以普通流式文档呈现；用户可在实验室功能重新打开。
+ *   加载时对遗留的 enable_paper_mode=true 做一次性重置（以
+ *   paper_mode_pause_reset 标记防止覆盖用户之后的主动开启）
  * - lastStyle: string — 上次写作使用的风格 slug（新建会话时作为默认值）
  *
  * 注意：本 store 不 import auth-store，避免循环依赖。
@@ -36,11 +40,13 @@ interface SettingsState {
   agentMode: AgentMode;
   enableEditorial: boolean;  // 是否显示工作台入口（实验功能）
   enableResearchReview: boolean;  // 是否开启研究综述路径（实验功能）
+  enablePaperMode: boolean;  // 稿纸模式（A4 纸面视觉），默认关闭
   lastStyle: string;        // 上次写作使用的风格 slug
   loaded: boolean;          // 是否已从后端加载
   setAgentMode: (mode: AgentMode) => void;
   setEnableEditorial: (enabled: boolean) => void;
   setEnableResearchReview: (enabled: boolean) => void;
+  setEnablePaperMode: (enabled: boolean) => void;
   setLastStyle: (style: string) => void;
   loadFromServer: () => Promise<void>;
   syncToServer: (prefs: Record<string, unknown>) => Promise<void>;
@@ -50,7 +56,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentMode: "harness",
   enableEditorial: false,
   enableResearchReview: false,
-  lastStyle: "default",
+  enablePaperMode: false,
+  lastStyle: "yinyue",
   loaded: false,
 
   setAgentMode: (mode) => {
@@ -67,6 +74,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setEnableResearchReview: (enabled) => {
     set({ enableResearchReview: enabled });
     get().syncToServer({ enable_research_review: enabled });
+  },
+
+  setEnablePaperMode: (enabled) => {
+    set({ enablePaperMode: enabled });
+    get().syncToServer({ enable_paper_mode: enabled });
   },
 
   setLastStyle: (style) => {
@@ -94,6 +106,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const enableResearchReview = json.data.enable_research_review;
         if (typeof enableResearchReview === "boolean") {
           set({ enableResearchReview });
+        }
+        const enablePaperMode = json.data.enable_paper_mode;
+        // 稿纸模式已暂停并改为默认关闭：账号里遗留的开启值只重置一次（打标记），
+        // 之后用户在实验室功能的重新开启照常云端持久化。
+        if (enablePaperMode === true && json.data.paper_mode_pause_reset !== true) {
+          set({ enablePaperMode: false });
+          void get().syncToServer({ enable_paper_mode: false, paper_mode_pause_reset: true });
+        } else if (typeof enablePaperMode === "boolean") {
+          set({ enablePaperMode: enablePaperMode });
         }
         const lastStyle = json.data.last_style;
         if (typeof lastStyle === "string" && lastStyle) {

@@ -14,7 +14,7 @@ import { Star, ThumbsUp, ThumbsDown, Send, CheckCircle2, ChevronDown, ChevronUp,
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import type { FeedbackType, FeedbackSegment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -136,8 +136,8 @@ function StarRating({
 // ─── 主组件 ────────────────────────────────────────────────
 
 export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps) {
-  const sendWS = useAgentStore((s) => s.sendWS);
-  const markFeedbackSubmitted = useAgentStore((s) => s.markFeedbackSubmitted);
+  const sendWS = useWritingRuntimeStore((s) => s.sendWS);
+  const markFeedbackSubmitted = useWritingRuntimeStore((s) => s.markFeedbackSubmitted);
 
   const { title, paragraphs } = useMemo(() => parseArticleSegments(article), [article]);
 

@@ -14,15 +14,15 @@ import { useRef, useEffect, useCallback, useMemo, useState } from "react";
 import { Lightbulb, Sparkles, ArrowDown, Flame, Loader2 } from "lucide-react";
 import { UserMessage } from "./user-message";
 import { AssistantMessage } from "./assistant-message";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { Lumi } from "@/components/lumi/lumi";
 import { FadeIn, StaggerItem } from "@/components/animation";
 import type { Topic, AgentStartPayload } from "@/lib/types";
 
 export function Thread({ variant = "full" }: { variant?: "full" | "dock" | "flow" }) {
-  const sessions = useAgentStore((s) => s.sessions);
-  const activeSessionId = useAgentStore((s) => s.activeSessionId);
-  const streamingText = useAgentStore((s) => s.streamingText);
+  const sessions = useWritingRuntimeStore((s) => s.sessions);
+  const activeSessionId = useWritingRuntimeStore((s) => s.activeSessionId);
+  const streamingText = useWritingRuntimeStore((s) => s.streamingText);
 
   const session = sessions.find((s) => s.id === activeSessionId);
   const messages = useMemo(() => session?.messages ?? [], [session?.messages]);
@@ -178,7 +178,7 @@ function SuggestionButton({
   payload?: AgentStartPayload;
   isHot?: boolean;
 }) {
-  const startWriting = useAgentStore((s) => s.startWriting);
+  const startWriting = useWritingRuntimeStore((s) => s.startWriting);
 
   return (
     <button

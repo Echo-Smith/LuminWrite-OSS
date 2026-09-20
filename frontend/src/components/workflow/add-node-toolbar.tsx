@@ -7,7 +7,7 @@
  * - 保存按钮
  */
 import { useWorkflowStore, validateDAG } from "@/stores/workflow-store";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
 import { Plus, Save, X, Loader2 } from "lucide-react";
 import { useState, useCallback } from "react";

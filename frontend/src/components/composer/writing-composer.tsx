@@ -15,14 +15,13 @@ import { Square, Plus, X, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
-import { StyleAssistantDialog } from "./style-assistant-dialog";
 import { Lumi } from "@/components/lumi/lumi";
 import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
 import { KnowledgeMaterialDialog } from "./knowledge-material-dialog";
 import { ResearchSettings } from "@/components/writing/research-settings";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
@@ -71,7 +70,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   const [kbMaterialsLoading, setKbMaterialsLoading] = useState(false);
   // 自动检索开关状态（从 session 读取，默认 true）
   // 开启后 LLM 写作时自动从知识库检索相关内容；关闭则仅使用手动选择的素材
-  const sessionKbEnabled = useAgentStore((s) => {
+  const sessionKbEnabled = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.kbEnabled;
   });
@@ -82,7 +81,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   }, [sessionKbEnabled]);
   const handleToggleKB = useCallback((checked: boolean) => {
     setPendingKbEnabled(checked);
-    useAgentStore.setState((s) => ({
+    useWritingRuntimeStore.setState((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === s.activeSessionId ? { ...sess, kbEnabled: checked } : sess
       ),
@@ -112,32 +111,37 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
 
   // 选题注入的素材现在统一在右侧详情面板的「素材」Tab 中管理，输入框上方不再单独展示
 
-  const startWriting = useAgentStore((s) => s.startWriting);
-  const cancelWriting = useAgentStore((s) => s.cancelWriting);
-  const sendWS = useAgentStore((s) => s.sendWS);
+  const startWriting = useWritingRuntimeStore((s) => s.startWriting);
+  const cancelWriting = useWritingRuntimeStore((s) => s.cancelWriting);
+  const sendWS = useWritingRuntimeStore((s) => s.sendWS);
   const agentMode = useSettingsStore((s) => s.agentMode);
 
   // Sync mode & style from active session so external callers (e.g. topic center)
   // can set them via startWriting() and the composer reflects the change.
-  const sessionMode = useAgentStore((s) => {
+  const sessionMode = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return (session?.mode as WriteMode) ?? "auto";
   });
-  const sessionStyle = useAgentStore((s) => {
+  const sessionStyle = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.style ?? "default";
+    return session?.style ?? "yinyue";
   });
   const [mode, setMode] = useState<WriteMode>(sessionMode);
   const [style, setStyle] = useState(sessionStyle);
-  // 研究综述的联网开关是真实状态：关闭时走用户材料路径（F5），无挂载材料
-  // 会被服务端以 RESEARCH_MATERIALS_REQUIRED 明确拒绝（启动前前端也拦截）。
-  const [researchExternalResearch, setResearchExternalResearch] = useState(true);
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("auto");
   const [assuranceLevel, setAssuranceLevel] = useState<AssuranceLevel>("standard");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("conditional");
   const [researchSettingsOpen, setResearchSettingsOpen] = useState(false);
 
   const handleResearchReviewSelect = useCallback(() => setResearchSettingsOpen(true), []);
+
+  // 切换编排模式：离开研究综述时收起悬浮配置面板（配置已持久化，重开即回填）
+  const handleOrchestrationChange = useCallback((value: OrchestrationMode) => {
+    setOrchestrationMode((prev) => {
+      if (prev === "research_review" && value !== "research_review") setResearchSettingsOpen(false);
+      return value;
+    });
+  }, []);
 
   // Update local state when session changes (e.g. new session from topic center)
   useEffect(() => { setMode(sessionMode); }, [sessionMode]);
@@ -146,7 +150,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   // Propagate local changes back to session
   const handleModeChange = useCallback((m: WriteMode) => {
     setMode(m);
-    useAgentStore.setState((s) => ({
+    useWritingRuntimeStore.setState((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === s.activeSessionId ? { ...sess, mode: m } : sess
       ),
@@ -154,7 +158,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   }, []);
   const handleStyleChange = useCallback((st: string) => {
     setStyle(st);
-    useAgentStore.setState((s) => ({
+    useWritingRuntimeStore.setState((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === s.activeSessionId ? { ...sess, style: st } : sess
       ),
@@ -163,7 +167,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
     useSettingsStore.getState().setLastStyle(st);
   }, []);
 
-  const sessionStatus = useAgentStore((s) => {
+  const sessionStatus = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.status ?? "idle";
   });
@@ -171,7 +175,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   // Check if the session is waiting for user input (e.g. outline confirmation).
   // In this state, we don't show pause/play buttons — the user needs to interact
   // with the input widget (e.g. confirm/edit the outline), not control the agent.
-  const isAwaitingInput = useAgentStore((s) => {
+  const isAwaitingInput = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.awaitInputAt != null;
   });
@@ -355,6 +359,30 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
 
   return (
     <div className="relative">
+      {/* 研究综述悬浮配置面板：浮现在输入区上方，不挤压 composer；
+          配置持久化在 research-review-store，重开自动回填 */}
+      {researchSettingsOpen && orchestrationMode === "research_review" && (
+        <div className="composer-research-float anim-fade-in">
+          <ResearchSettings
+            centralQuestion={message.trim()}
+            styleSlug={style}
+            styleName={style}
+            // 素材引用透传（F1）：带服务端标识的挂载素材随文档 metadata.material_refs
+            // 交给运行时在运行开始时快照；粘贴文本无服务端标识，不冒充引用。
+            materialRefs={materials
+              .filter((material) => material.sourceId)
+              .map((material) => ({ material_id: material.sourceId as string, title: material.title }))}
+            onClose={() => setResearchSettingsOpen(false)}
+            onStarted={(runId) => {
+              setResearchSettingsOpen(false);
+              // 真实与 mock 运行统一处理：把工作台切到该运行。
+              window.history.replaceState(null, "", `?run=${encodeURIComponent(runId)}`);
+              const runtime = useWritingRuntimeStore.getState();
+              void runtime.loadRun(runId);
+            }}
+          />
+        </div>
+      )}
       {/* 顶部渐变遮罩 — 从透明过渡到背景色，实现悬浮效果 */}
       {!floating && <div className="pointer-events-none absolute -top-8 left-0 right-0 h-8 bg-gradient-to-t from-surface to-transparent z-10" />}
       <div className={cn("writing-composer-frame relative z-20 pb-4 pt-2", compact ? "px-3" : "px-4")}>
@@ -403,34 +431,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
           </section>
         )}
 
-        {/* 研究综述设置表单：选择 research_review 模式后展开 */}
-        {researchSettingsOpen && orchestrationMode === "research_review" && (
-          <section className="composer-research-settings anim-fade-in">
-            <ResearchSettings
-              centralQuestion={message.trim()}
-              audience=""
-              language="中文"
-              lengthMin=""
-              lengthMax=""
-              allowExternalResearch={researchExternalResearch}
-              onAllowExternalResearchChange={setResearchExternalResearch}
-              styleSlug={style}
-              // 素材引用透传（F1）：带服务端标识的挂载素材随文档 metadata.material_refs
-              // 交给运行时在运行开始时快照；粘贴文本无服务端标识，不冒充引用。
-              materialRefs={materials
-                .filter((material) => material.sourceId)
-                .map((material) => ({ material_id: material.sourceId as string, title: material.title }))}
-              onClose={() => setResearchSettingsOpen(false)}
-              onStarted={(runId) => {
-                setResearchSettingsOpen(false);
-                // 真实与 mock 运行统一处理：把工作台切到该运行。
-                window.history.replaceState(null, "", `?run=${encodeURIComponent(runId)}`);
-                const runtime = useWritingRuntimeStore.getState();
-                void runtime.loadRun(runId);
-              }}
-            />
-          </section>
-        )}
+        {/* 研究综述悬浮配置面板：独立于 composer 容器（见下方 float），
+            选择 research_review 模式后浮现在输入区上方 */}
 
         {/* 主输入区 — Tiptap 富文本编辑器 */}
         <TiptapEditor
@@ -523,7 +525,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
             compact={compact}
             onChange={handleModeChange}
             orchestrationValue={orchestrationMode}
-            onOrchestrationChange={setOrchestrationMode}
+            onOrchestrationChange={handleOrchestrationChange}
             assuranceValue={assuranceLevel}
             onAssuranceChange={setAssuranceLevel}
             approvalValue={approvalMode}
@@ -610,7 +612,6 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
         attachedMaterialIds={attachedMaterialIds}
         onAddMaterials={handlePickMaterials}
       />
-      <StyleAssistantDialog />
     </div>
   );
 });

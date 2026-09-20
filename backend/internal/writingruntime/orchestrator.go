@@ -407,6 +407,12 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		if prepErr != nil {
 			return orchestrator.failNode(ctx, run, plan, node, completed, artifacts, spentCost, spentDuration, prepErr)
 		}
+		// Wire the streaming event sink: if the store implements RunEventLedger,
+		// create a sink so engine steps can emit real-time content/reasoning
+		// deltas for SSE delivery to the frontend.
+		if ledger, ok := orchestrator.Store.(RunEventLedger); ok {
+			request.EventSink = NewRunEventSink(ledger, runID, runtimeTrace(node.Capability))
+		}
 		// M3: before-capability observation (docs/27).
 		orchestrator.bus.emit(ctx, LifecycleBeforeCapability, lifecycleSnapshot(run, plan.PlanID, planRecord.PlanVersion, node, attemptNumber, StateRunning, completed, spentCost, spentDuration, nil))
 		saved, dispatch, err := orchestrator.Store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID, PlanID: plan.PlanID,

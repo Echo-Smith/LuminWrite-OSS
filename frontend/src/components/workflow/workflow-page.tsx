@@ -9,7 +9,7 @@ import { useCallback, useEffect } from "react";
 import { WorkflowCanvas } from "./canvas";
 import { WorkflowInput } from "./workflow-input";
 import { useWorkflowStore } from "@/stores/workflow-store";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 
 export function WorkflowPage() {
   const plan = useWorkflowStore((s) => s.plan);
@@ -20,9 +20,9 @@ export function WorkflowPage() {
   const reset = useWorkflowStore((s) => s.reset);
 
   // 确保 WebSocket 连接已建立
-  const connectWS = useAgentStore((s) => s.connectWS);
-  const sendWS = useAgentStore((s) => s.sendWS);
-  const wsConnected = useAgentStore((s) => s.wsConnected);
+  const connectWS = useWritingRuntimeStore((s) => s.connectWS);
+  const sendWS = useWritingRuntimeStore((s) => s.sendWS);
+  const wsConnected = useWritingRuntimeStore((s) => s.wsConnected);
 
   useEffect(() => {
     // 页面加载时连接 WebSocket

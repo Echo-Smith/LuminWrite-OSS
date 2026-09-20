@@ -25,7 +25,7 @@ import {
   listFolders, createFolder, updateFolder, deleteFolder, moveMaterial,
 } from "@/lib/material-api";
 import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
 
 const SOURCE_ICONS: Record<string, typeof FileText> = {
@@ -56,8 +56,8 @@ function formatTime(ts: string): string {
 
 export function MaterialsTab() {
   const navigate = useNavigate();
-  const createSession = useAgentStore((s) => s.createSession);
-  const startWriting = useAgentStore((s) => s.startWriting);
+  const createSession = useWritingRuntimeStore((s) => s.createSession);
+  const startWriting = useWritingRuntimeStore((s) => s.startWriting);
 
   const [materials, setMaterials] = useState<UserMaterial[]>([]);
   const [total, setTotal] = useState(0);

@@ -4,6 +4,7 @@
  * 研究综述（research_review）的面板在运行激活时出现在文档区域上方。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { BookOpenText, ChevronDown, Menu, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
@@ -15,16 +16,15 @@ import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { PulseIndicator } from "@/components/animation";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWritingBg } from "@/hooks/use-writing-bg";
 import { useWorkflowStore } from "@/stores/workflow-store";
-import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { pendingGate, researchSliceActive, type ResearchSlice } from "@/stores/research-slice";
-import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { useWorkspaceLayoutStore, COMPOSER_WIDTH_MIN, COMPOSER_WIDTH_MAX } from "@/stores/workspace-layout-store";
 import { Lumi, type LumiState } from "@/components/lumi/lumi";
-import { useAgentWebSocket } from "@/hooks/use-agent-websocket";
+import { useRunEventsSSE } from "@/hooks/use-run-events-sse";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { ResearchProgress, researchPhaseLabel } from "@/components/writing/research-progress";
 import { ResearchGatePanel } from "@/components/writing/research-gate-panel";
@@ -48,7 +48,6 @@ import {
 import type { DocumentNode } from "@/lib/writing-runtime-types";
 import type { RevisionSet } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
-import { WorkflowCanvasPIP } from "@/components/workflow/workflow-pip";
 
 function currentDeviceId(): string {
   const key = "lumin-writing-device-id";
@@ -64,12 +63,21 @@ const DETAIL_WIDTH_MAX = 520;
 const DETAIL_RESIZE_VIEWPORT_MIN = 1180;
 const DOCUMENT_SAFE_WIDTH = 560;
 type WorkspaceStyle = CSSProperties & { "--workspace-detail-width": string };
+type ComposerLayerStyle = CSSProperties & { left?: string };
 
 function clampDetailWidth(width: number, sidebarOpen: boolean): number {
   if (typeof window === "undefined" || window.innerWidth < DETAIL_RESIZE_VIEWPORT_MIN) return width;
   const navigationWidth = sidebarOpen ? 224 : 0;
   const safeMaximum = Math.max(DETAIL_WIDTH_MIN, Math.min(DETAIL_WIDTH_MAX, window.innerWidth - navigationWidth - DOCUMENT_SAFE_WIDTH));
   return Math.min(Math.max(width, DETAIL_WIDTH_MIN), safeMaximum);
+}
+
+/** 输入区拖拽宽度收敛：不越过全局侧栏，左右各留 16px 边距 */
+function clampComposerWidth(width: number, sidebarOpen: boolean): number {
+  if (typeof window === "undefined") return width;
+  const navigationWidth = sidebarOpen ? 224 : 0;
+  const safeMaximum = Math.max(COMPOSER_WIDTH_MIN, Math.min(COMPOSER_WIDTH_MAX, window.innerWidth - navigationWidth - 32));
+  return Math.min(Math.max(width, COMPOSER_WIDTH_MIN), safeMaximum);
 }
 
 /** 从正式文档版本树收集纯文本，用于扫描 [@ev_xxx] 引用标记。 */
@@ -280,16 +288,73 @@ function useCitationSurfaceContext(): CitationRenderContextValue | null {
 
 export function WritingWorkspace() {
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
-  const [detailWidth, setDetailWidth] = useState(360);
   const [pendingRevision, setPendingRevision] = useState<RevisionSet | null>(null);
   const composerRef = useRef<WritingComposerHandle | null>(null);
   const composerLayerRef = useRef<HTMLDivElement | null>(null);
-  const { connected } = useAgentWebSocket();
+  // SSE connection for governed run events
+  const runId = useWritingRuntimeStore((state) => state.run?.run_id ?? null);
+  useRunEventsSSE(runId);
+  const connected = useWritingRuntimeStore((state) => state.wsConnected);
 
-  const sessions = useAgentStore((state) => state.sessions);
-  const activeSessionId = useAgentStore((state) => state.activeSessionId);
-  const loadSessions = useAgentStore((state) => state.loadSessions);
-  const connectWS = useAgentStore((state) => state.connectWS);
+  const sessions = useWritingRuntimeStore((state) => state.sessions);
+  const activeSessionId = useWritingRuntimeStore((state) => state.activeSessionId);
+  const loadSessions = useWritingRuntimeStore((state) => state.loadSessions);
+  const connectWS = useWritingRuntimeStore((state) => state.connectWS);
+  const switchSession = useWritingRuntimeStore((state) => state.switchSession);
+  const createSession = useWritingRuntimeStore((state) => state.createSession);
+  const sessionsLoaded = useWritingRuntimeStore((state) => state.sessionsLoaded);
+
+  // ── 会话路由：/write/:sessionId（仅登录用户生效，ProtectedRoute 包裹）──
+  const { sessionId: sessionIdParam } = useParams<{ sessionId?: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  // 未知/已删除的 URL 会话只自动新建一次，避免抖动循环
+  const autoCreatedForRef = useRef<string | null>(null);
+  // 已处理过的 URL 参数（见 URL → 会话 effect 的防打架说明）
+  const lastUrlSessionRef = useRef<string | null>(null);
+
+  // URL → 会话：深链打开与刷新恢复（DB 会话 id=trace_id，与 conversationId 一致）。
+  // 只响应"新的" URL 参数（深链/刷新/浏览器前进后退）：记录已处理过的参数，
+  // 避免与下面的"会话 → URL"effect 打架——否则点击左侧另一会话时，地址栏
+  // 还停在旧 trace，本 effect 会立刻把活跃会话切回去（表现为切换无效、
+  // URL 永远不变、侧栏状态点闪烁）。
+  useEffect(() => {
+    if (!sessionIdParam || !sessionsLoaded) return;
+    const active = sessions.find((s) => s.id === activeSessionId);
+    const activeTarget = active ? active.conversationId ?? active.traceId ?? active.id : null;
+    if (sessionIdParam === activeTarget) {
+      lastUrlSessionRef.current = sessionIdParam;
+      return;
+    }
+    // 同一个 URL 参数已经处理过（会话切换由"会话 → URL"负责回写地址栏）
+    if (lastUrlSessionRef.current === sessionIdParam) return;
+    const match = sessions.find(
+      (s) => s.id === sessionIdParam || s.conversationId === sessionIdParam || s.traceId === sessionIdParam,
+    );
+    if (match) {
+      lastUrlSessionRef.current = sessionIdParam;
+      if (match.id !== activeSessionId) switchSession(match.id);
+      return;
+    }
+    if (autoCreatedForRef.current !== sessionIdParam) {
+      autoCreatedForRef.current = sessionIdParam;
+      createSession();
+    }
+  }, [sessionIdParam, sessionsLoaded, sessions, activeSessionId, switchSession, createSession]);
+
+  // 会话 → URL：稳定键优先 conversationId（首轮 trace），新会话落 trace 后自动替换。
+  // 只在 /write 路由内同步——个人中心（/profile）等工作台承载页也渲染本组件，
+  // 不能把用户弹走（否则个人中心一闪而过）。
+  // 必须等会话列表就绪（sessionsLoaded）：否则首帧 activeSessionId=null 会把
+  // 深链 /write/trace_xxx 立刻弹回 /write，刷新恢复与深链自动建会话全部失效。
+  useEffect(() => {
+    if (!location.pathname.startsWith("/write")) return;
+    if (!sessionsLoaded) return;
+    const active = sessions.find((s) => s.id === activeSessionId);
+    const target = active ? active.conversationId ?? active.traceId ?? active.id : null;
+    const expected = target ? `/write/${target}` : "/write";
+    if (location.pathname !== expected) navigate(expected, { replace: true });
+  }, [activeSessionId, sessions, sessionsLoaded, location.pathname, navigate]);
   const session = sessions.find((item) => item.id === activeSessionId);
   const token = useAuthStore((state) => state.token);
   const user = useAuthStore((state) => state.user);
@@ -310,10 +375,51 @@ export function WritingWorkspace() {
 
   const detailPanel = useWorkspaceLayoutStore((state) => state.detailPanel);
   const composerWidth = useWorkspaceLayoutStore((state) => state.composerWidth);
+  const composerCustomWidth = useWorkspaceLayoutStore((state) => state.composerCustomWidth);
   const setDetailPanel = useWorkspaceLayoutStore((state) => state.setDetailPanel);
   const setComposerWidth = useWorkspaceLayoutStore((state) => state.setComposerWidth);
+  const setComposerCustomWidth = useWorkspaceLayoutStore((state) => state.setComposerCustomWidth);
   const setLayoutScope = useWorkspaceLayoutStore((state) => state.setScope);
-  const setDagPipVisible = useWorkspaceLayoutStore((state) => state.setDagPipVisible);
+  // 面板宽度持久化在工作区布局偏好中；保留函数式更新签名以兼容拖拽/键盘调整逻辑
+  const detailWidth = useWorkspaceLayoutStore((state) => state.detailWidth);
+  const setDetailWidth = useCallback((value: number | ((prev: number) => number)) => {
+    const current = useWorkspaceLayoutStore.getState().detailWidth;
+    const next = typeof value === "function" ? value(current) : value;
+    useWorkspaceLayoutStore.getState().setDetailWidth(next);
+  }, []);
+
+  // ── 输入区拖拽调宽（与详情面板同款交互）──
+  const [composerResizing, setComposerResizing] = useState(false);
+  // 收窄判定：compact 预设，或用户拖出了自定义宽度（放大按钮负责恢复最大）
+  const composerNarrow = composerWidth === "compact" || composerCustomWidth != null;
+  const resizeComposerFromPointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    setComposerCustomWidth(clampComposerWidth(window.innerWidth - event.clientX - 16, sidebarOpen));
+  };
+  const resizeComposerFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    // 把手在左缘：向左拖/按 = 变宽，向右 = 变窄
+    const increments: Record<string, number> = { ArrowLeft: 16, ArrowRight: -16 };
+    if (event.key === "Home") { event.preventDefault(); setComposerCustomWidth(clampComposerWidth(COMPOSER_WIDTH_MIN, sidebarOpen)); return; }
+    if (event.key === "End") { event.preventDefault(); setComposerCustomWidth(clampComposerWidth(COMPOSER_WIDTH_MAX, sidebarOpen)); return; }
+    if (!(event.key in increments)) return;
+    event.preventDefault();
+    const current = composerCustomWidth
+      ?? (composerWidth === "compact" ? COMPOSER_WIDTH_MIN : clampComposerWidth(COMPOSER_WIDTH_MAX, sidebarOpen));
+    setComposerCustomWidth(clampComposerWidth(current + increments[event.key], sidebarOpen));
+  };
+  // 放大/收窄按钮：从收窄或自定义宽度一键恢复最大宽度；已是最大则收窄到 compact 预设
+  const handleToggleComposerWidth = useCallback(() => {
+    if (composerWidth === "wide" && composerCustomWidth == null) {
+      setComposerWidth("compact");
+    } else {
+      setComposerWidth("wide");
+      setComposerCustomWidth(null);
+    }
+  }, [composerWidth, composerCustomWidth, setComposerWidth, setComposerCustomWidth]);
+  // 自定义宽度时覆盖预设 left（right 恒为 16px）：left = 视口宽 - 手动宽度 - 右边距
+  const composerLayerStyle: ComposerLayerStyle | undefined = composerCustomWidth != null
+    ? { left: `max(calc(var(--workspace-sidebar-width) + 16px), calc(100% - ${composerCustomWidth + 16}px))` }
+    : undefined;
 
   const citationSurfaceContext = useCitationSurfaceContext();
 
@@ -354,15 +460,35 @@ export function WritingWorkspace() {
 
   const legacyDraft = useMemo(() => {
     if (finalArticle?.content) return finalArticle.content;
+    // chat 模式的回复会进 article/消息流，但它是对话不是草稿——
+    // 不再渲染为"兼容预览"，避免开场白冒充文档
+    if (session?.intent === "chat") return "";
     const assistant = session?.messages.slice().reverse().find((message) => message.role === "assistant");
     return assistant?.parts
       .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
       .map((part) => part.text)
       .join("\n") ?? "";
-  }, [finalArticle?.content, session?.messages]);
+  }, [finalArticle?.content, session?.intent, session?.messages]);
 
-  const documentId = runtimeDocument?.document_id ?? session?.id ?? "new";
-  const title = runtimeDocument?.title ?? finalArticle?.title ?? session?.title ?? "未命名文档";
+  // 标题优先级：用户命名（custom_title）> 运行时文档标题 > 文章标题 > 会话标题
+  const title = session?.customTitle ?? runtimeDocument?.title ?? finalArticle?.title ?? session?.title ?? "未命名文档";
+
+  // title-bar 点击重命名（仅当前会话已有 trace 时可改）
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const renameSession = useWritingRuntimeStore((s) => s.renameSession);
+  const canRename = Boolean(session?.traceId);
+  const startRename = () => {
+    if (!canRename) return;
+    setTitleDraft(title);
+    setEditingTitle(true);
+  };
+  const commitRename = async () => {
+    const next = titleDraft.trim();
+    setEditingTitle(false);
+    if (!next || !session?.traceId || next === title) return;
+    await renameSession(session.traceId, next);
+  };
 
   const feedbackContext = useMemo(() => {
     if (!session?.traceId) return null;
@@ -442,17 +568,8 @@ export function WritingWorkspace() {
       userId: user?.userId ?? "guest",
       deviceId: currentDeviceId(),
       workspaceId: "writing-desk",
-      documentId,
     });
-  }, [documentId, setLayoutScope, user?.userId]);
-
-  // DAG 画中画自动触发逻辑：当 editorial 模式接收到 plan 时自动展示
-  const wfPlan = useWorkflowStore((state) => state.plan);
-  useEffect(() => {
-    if (agentMode === "editorial" && wfPlan && wfPlan.workflow.nodes.length > 0) {
-      setDagPipVisible(true);
-    }
-  }, [agentMode, wfPlan, setDagPipVisible]);
+  }, [setLayoutScope, user?.userId]);
 
   useKeyboardShortcuts({
     onToggleSidebar: () => setSidebarOpen((value) => !value),
@@ -479,7 +596,7 @@ export function WritingWorkspace() {
   };
   const workspaceStyle: WorkspaceStyle = { "--workspace-detail-width": `${detailWidth}px` };
   return (
-    <div className="governed-workspace" style={workspaceStyle} data-sidebar-open={sidebarOpen} data-detail-state={detailPanel} data-composer-width={composerWidth} data-writing-bg={writingBg}>
+    <div className="governed-workspace" style={workspaceStyle} data-sidebar-open={sidebarOpen} data-detail-state={detailPanel} data-composer-width={composerNarrow ? "compact" : "wide"} data-writing-bg={writingBg}>
       {sidebarOpen && <button className="workspace-scrim lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
       <div className={cn("workspace-global-sidebar", sidebarOpen && "workspace-global-sidebar-open")}>
         <Sidebar
@@ -501,7 +618,31 @@ export function WritingWorkspace() {
               </button>
             )}
             {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="workspace-icon-button" aria-label="打开全局导航"><Menu className="h-4 w-4" /></button>}
-            <div className="min-w-0"><h2>{title}</h2></div>
+            <div className="min-w-0">
+              {editingTitle ? (
+                <input
+                  autoFocus
+                  value={titleDraft}
+                  maxLength={128}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onBlur={() => void commitRename()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+                    if (e.key === "Escape") { setEditingTitle(false); }
+                  }}
+                  aria-label="重命名会话"
+                  className="h-7 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-ring/40"
+                />
+              ) : (
+                <h2
+                  onClick={startRename}
+                  title={canRename ? "点击修改标题" : undefined}
+                  className={cn(canRename && "cursor-text hover:bg-accent/60 rounded-md px-1 -mx-1 transition-ui")}
+                >
+                  {title}
+                </h2>
+              )}
+            </div>
             {/* Lumi 运行指示：思考（含等提纲确认）/书写/出错；完成后闪一次星星 */}
             {lumiToolbarState !== "idle" && (
               <span key={`lumi-${lumiToolbarState}`} className="anim-fade-scale flex items-center" title={lumiToolbarTitle}>
@@ -582,17 +723,44 @@ export function WritingWorkspace() {
         </div>
       </aside>
 
-      <div ref={composerLayerRef} className={cn("workspace-composer-layer", composerWidth === "compact" && "workspace-composer-layer-compact")} aria-label="写作输入">
+      <div
+        ref={composerLayerRef}
+        className={cn(
+          "workspace-composer-layer",
+          composerWidth === "compact" && composerCustomWidth == null && "workspace-composer-layer-compact",
+        )}
+        style={composerLayerStyle}
+        data-resizing={composerResizing || undefined}
+        aria-label="写作输入"
+      >
+        {/* 左缘拖拽把手：与详情面板同款的宽度调整交互（桌面端显示） */}
+        <button
+          className="workspace-composer-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整输入区宽度"
+          aria-valuemin={COMPOSER_WIDTH_MIN}
+          aria-valuemax={COMPOSER_WIDTH_MAX}
+          aria-valuenow={composerCustomWidth ?? (composerNarrow ? COMPOSER_WIDTH_MIN : COMPOSER_WIDTH_MAX)}
+          title="拖动调整输入区宽度"
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setComposerResizing(true);
+          }}
+          onPointerMove={resizeComposerFromPointer}
+          onPointerUp={(event) => {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+            setComposerResizing(false);
+          }}
+          onKeyDown={resizeComposerFromKeyboard}
+        />
         <WritingComposer
           ref={composerRef}
-          compact={composerWidth === "compact"}
+          compact={composerNarrow}
           floating
-          onToggleWidth={() => setComposerWidth(composerWidth === "wide" ? "compact" : "wide")}
+          onToggleWidth={handleToggleComposerWidth}
         />
       </div>
-
-      {/* DAG 工作流画中画窗口 */}
-      <WorkflowCanvasPIP />
     </div>
   );
 }

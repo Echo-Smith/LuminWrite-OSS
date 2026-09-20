@@ -13,8 +13,8 @@
  * 风格 tab。
  */
 import { PanelRightClose } from "lucide-react";
-import type { ToolCallPart } from "@/stores/agent-store";
-import { useAgentStore } from "@/stores/agent-store";
+import type { ToolCallPart } from "@/lib/writing-runtime-types";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { RunDetailTabs } from "@/components/runtime/run-detail-tabs";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
@@ -37,7 +37,7 @@ export function DetailPanel({ onClose }: DetailPanelProps) {
 
   // WS 会话回退数据：governed 数据（run/events/artifacts/versions）全空时，
   // 面板用当前会话的步骤与版本历史填充（普通快写路径）。
-  const session = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
+  const session = useWritingRuntimeStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
   const messages = session?.messages ?? [];
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const steps = (lastAssistant?.parts.filter((p): p is ToolCallPart => p.type === "tool-call") ?? []);

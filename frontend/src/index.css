@@ -179,6 +179,16 @@
 }
 .document-paper::before { grid-area: 1 / 1; width: 100%; padding-top: 141.4286%; content: ""; pointer-events: none; }
 .document-paper-content { grid-area: 1 / 1; min-width: 0; }
+/* 流式回退样式：无 A4 固定比例、无纸张阴影 */
+.document-plain {
+  width: min(100%, 794px); margin: 0 auto; color: var(--desk-ink);
+}
+.document-plain .document-masthead { position: relative; margin: 0; padding: 26px 0 18px; }
+.document-plain .document-masthead::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: hsl(var(--border)); }
+.document-plain .document-masthead h1 { margin-top: 12px; font-family: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", sans-serif; font-size: clamp(1.5rem, 3vw, 2.1rem); font-weight: 700; line-height: 1.25; letter-spacing: -.02em; }
+.document-plain .document-body { margin: 0; padding: 22px 0 48px; font-family: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", sans-serif; font-size: 1rem; line-height: 1.85; }
+.document-plain .provisional-layer { margin: 0 0 34px; }
+.document-plain .document-feedback { width: 100%; }
 .document-masthead { margin: 0 50px; padding: 38px 36px 26px; }
 .document-masthead h1 {
   margin-top: 18px; font-family: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", STSong, serif;
@@ -256,6 +266,22 @@
 .workspace-composer-layer-compact { left: max(calc(var(--workspace-sidebar-width) + 16px), calc(100% - 376px)); }
 .workspace-composer-layer .writing-composer-frame { padding-right: 0; padding-left: 0; }
 .workspace-composer-layer .tiptap-content { padding-right: 52px; }
+/* 输入区左缘拖拽把手：与详情面板 resizer 同款交互语言（桌面 + 精确指针才显示） */
+.workspace-composer-resizer { display: none; }
+@media (min-width: 1180px) and (pointer: fine) {
+  .workspace-composer-resizer {
+    /* 把手中心对准 composer-shell 左边框：悬浮层内 frame 内边距为 0，边框即 layer 左缘 */
+    position: absolute; top: 8px; bottom: 16px; left: -6px; z-index: 30; display: block; width: 12px;
+    cursor: col-resize; touch-action: none;
+  }
+  .workspace-composer-resizer::after {
+    position: absolute; top: 50%; left: 5px; width: 2px; height: 44px; border-radius: 2px;
+    background: hsl(var(--muted-foreground) / .2); content: ""; opacity: 0; transform: translateY(-50%);
+    transition: opacity 120ms cubic-bezier(.25, 1, .5, 1), background-color 120ms cubic-bezier(.25, 1, .5, 1);
+  }
+  .workspace-composer-resizer:hover::after, .workspace-composer-resizer:focus-visible::after,
+  .workspace-composer-layer[data-resizing] .workspace-composer-resizer::after { background: var(--desk-brass); opacity: .8; }
+}
 /* 底部过渡遮罩：盖住输入区下缘与浏览器底边之间缝隙里穿过的文字，
    颜色取写作区底色变量（个人中心-自定义），与自定义背景天然一致；
    输入区收窄（compact）时自动隐藏；层级始终低于 input-area */

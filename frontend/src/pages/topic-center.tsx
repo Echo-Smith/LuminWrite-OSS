@@ -27,7 +27,7 @@ import { TopicCard } from "@/components/topic/topic-card";
 import { TopicEditDialog } from "@/components/topic/topic-edit-dialog";
 import { TopicDetailDialog } from "@/components/topic/topic-detail-dialog";
 import { MaterialsTab } from "@/components/topic/materials-tab";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { buildWritingMessage } from "@/stores/topic-draft-store";
 import { listTopicMaterials, searchMaterials } from "@/lib/material-api";
 import { toast } from "@/stores/toast-store";
@@ -36,8 +36,8 @@ import { cn } from "@/lib/utils";
 
 export function TopicCenter() {
   const navigate = useNavigate();
-  const createSession = useAgentStore((s) => s.createSession);
-  const startWriting = useAgentStore((s) => s.startWriting);
+  const createSession = useWritingRuntimeStore((s) => s.createSession);
+  const startWriting = useWritingRuntimeStore((s) => s.startWriting);
   const [hotExpanded, setHotExpanded] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editTopic, setEditTopic] = useState<Topic | null>(null);
@@ -134,7 +134,7 @@ export function TopicCenter() {
     setTimeout(() => {
       startWriting({
         message,
-        style: angleStyle || "default",
+        style: angleStyle || "yinyue",
         mode: "writing",
         user_materials: userMaterials.length > 0 ? userMaterials : undefined,
         word_limit: wordLimit && wordLimit > 0 ? wordLimit : undefined,

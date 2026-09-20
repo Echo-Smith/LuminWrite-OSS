@@ -87,12 +87,31 @@ test("the document uses one continuous A4-backed sheet without guide rules", () 
   assert.doesNotMatch(styles, /document-paper::before \{[^}]*background:/);
 });
 
+test("paper mode is paused by default and falls back to a plain flowing document", () => {
+  const document = source("../src/components/document/document-surface.tsx");
+  const settings = source("../src/stores/settings-store.ts");
+  const styles = source("../src/index.css");
+  // 稿纸模式由 settings-store 开关控制，默认关闭
+  assert.match(document, /paperMode = useSettingsStore/);
+  assert.match(document, /paperMode \? "document-paper" : "document-plain"/);
+  assert.match(settings, /enablePaperMode: false/);
+  assert.match(settings, /enable_paper_mode/);
+  // 服务端遗留的开启值做一次性重置（打标记防止覆盖用户之后的主动开启）
+  assert.match(settings, /paper_mode_pause_reset/);
+  // 流式回退样式：无 A4 固定比例、无纸张阴影
+  assert.match(styles, /\.document-plain \{[^}]*width: min\(100%, 794px\)/);
+  assert.doesNotMatch(styles, /\.document-plain \{[^}]*padding-top/);
+  assert.doesNotMatch(styles, /\.document-plain \{[^}]*box-shadow/);
+});
+
 test("the empty workspace is a welcome surface and paper starts with the first draft", () => {
   const page = source("../src/pages/writing-workspace.tsx");
   const document = source("../src/components/document/document-surface.tsx");
   const styles = source("../src/index.css");
+  // 稿纸模式只是形式上的展现：关闭后兼容预览照常渲染，仅切换纸面/流式视觉
   assert.match(document, /const hasDraft = Boolean\(version \|\| legacyDraft\?\.trim\(\)\)/);
-  assert.match(document, /hasDraft \? <article className="document-paper">/);
+  assert.doesNotMatch(document, /visibleLegacyDraft = paperMode \? legacyDraft : ""/);
+  assert.match(document, /hasDraft \? <article className=\{paperMode \? "document-paper" : "document-plain"\}>/);
   assert.match(document, /<section className="document-welcome"/);
   assert.ok(document.indexOf("document-welcome") > document.indexOf("</article>"));
   // 欢迎区仅中文，且用户发出第一条消息后立即让位
@@ -113,7 +132,7 @@ test("agent process flows before the manuscript paper while the composer floats 
   const threadPosition = page.indexOf("<Thread variant=\"flow\"");
   const composerPosition = page.indexOf("        <WritingComposer\n");
   const flowPosition = document.indexOf("document-conversation-flow");
-  const paperPosition = document.indexOf("<article className=\"document-paper\"");
+  const paperPosition = document.indexOf('paperMode ? "document-paper"');
   assert.ok(threadPosition > 0);
   assert.ok(composerPosition > threadPosition);
   assert.ok(flowPosition > 0);
@@ -173,7 +192,10 @@ test("composer width control lives inside the composer and only reveals on inter
   assert.match(composer, /composer-width-toggle/);
   assert.match(composer, /收窄输入框/);
   assert.match(composer, /展开输入框/);
-  assert.doesNotMatch(page, /workspace-composer-resize/);
+  // 输入区左缘拖拽调宽（与详情面板同款交互）；放大按钮一键恢复最大宽度
+  assert.match(page, /workspace-composer-resizer/);
+  assert.match(page, /setComposerCustomWidth\(null\)/);
+  assert.match(styles, /\.workspace-composer-resizer \{[^}]*cursor: col-resize/);
   assert.match(styles, /\.composer-shell:hover \.composer-width-toggle/);
   assert.match(styles, /\.composer-width-toggle:focus-visible/);
   assert.match(styles, /\.composer-width-toggle \{[^}]*opacity: 0;[^}]*pointer-events: none/);

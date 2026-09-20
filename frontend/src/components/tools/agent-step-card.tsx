@@ -29,7 +29,7 @@ import {
   AlertTriangle,
   type LucideIcon,
 } from "lucide-react";
-import type { ToolCallPart } from "@/stores/agent-store";
+import type { ToolCallPart } from "@/lib/writing-runtime-types";
 import { STEP_LABELS, STEP_DESCRIPTIONS, STEP_ICONS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";

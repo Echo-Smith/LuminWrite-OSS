@@ -456,7 +456,7 @@ func Load() *Config {
 			PausedSessionTTL:     getEnvDuration("AGENT_PAUSED_SESSION_TTL", 2*time.Minute),
 		},
 		WritingRuntime: WritingRuntimeConfig{
-			Mode:                  getEnv("WRITING_RUNTIME_MODE", "off"),
+			Mode:                  getEnv("WRITING_RUNTIME_MODE", "shadow"),
 			ResearchReviewEnabled: getEnvBool("RESEARCH_REVIEW_ENABLED", false),
 			ArReview: ArReviewConfig{
 				Enabled:     getEnvBool("AR012_CANDIDATE_ENABLED", false),

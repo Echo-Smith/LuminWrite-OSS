@@ -7,6 +7,7 @@ import { QUALITY_STATE_COPY } from "@/lib/writing-runtime-types";
 import { CitationAwareText, CitationRenderContext, InlineCitationText, type CitationRenderContextValue } from "@/components/writing/research-citation-popover";
 import { SelectionLumi } from "@/components/lumi/selection-lumi";
 import { RotatingText } from "@/components/animation";
+import { useSettingsStore } from "@/stores/settings-store";
 
 /** 欢迎页轮换词：产品最有深度的产出类型（长度相近，轮换更整齐） */
 const WELCOME_SUBJECTS = ["一篇万字长文", "一份溯源综述", "一套品牌文案", "一封正式邮件", "一个走心故事"];
@@ -45,6 +46,9 @@ export function DocumentSurface({
   citationContext = null,
 }: DocumentSurfaceProps) {
   const deltas = Object.entries(provisionalDeltas).filter(([, value]) => value.trim());
+  // 稿纸模式（默认关闭）只是形式上的展现：仅切换 A4 纸面 / 普通流式两种视觉，
+  // 不影响内容本身——兼容预览（未提交为正式版本的旧草稿）在两种模式下都渲染。
+  const paperMode = useSettingsStore((s) => s.enablePaperMode);
   const hasDraft = Boolean(version || legacyDraft?.trim());
   const documentBodyRef = useRef<HTMLDivElement | null>(null);
   const handleRevision = (revision: Revision) => {
@@ -55,7 +59,7 @@ export function DocumentSurface({
   return (
     <main className="document-stage" aria-label="文档正文">
       {beforePaper && <div className="document-conversation-flow">{beforePaper}</div>}
-      {hasDraft ? <article className="document-paper">
+      {hasDraft ? <article className={paperMode ? "document-paper" : "document-plain"}>
         <div className="document-paper-content">
           <header className="document-masthead">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
@@ -72,7 +76,7 @@ export function DocumentSurface({
             <CitationRenderContext.Provider value={citationContext}>
               {version ? (
                 <DocumentBlock node={version.root} onRevision={onRevisionSet ? handleRevision : undefined} />
-              ) : legacyDraft ? (
+              ) : legacyDraft?.trim() ? (
                 <div className="legacy-draft" data-lifecycle="provisional">
                   <div className="legacy-draft-label"><FilePenLine className="h-3.5 w-3.5" />兼容预览 · 尚未提交为文档版本</div>
                   <div className="whitespace-pre-wrap">

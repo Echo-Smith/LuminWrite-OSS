@@ -263,14 +263,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 必须断开后重连才能让新 token 生效。
     if (prev.token && prev.token !== token) {
       // 延迟导入避免循环依赖
-      import("@/stores/agent-store").then((m) => {
-        const agentState = m.useAgentStore.getState();
-        const oldWs = agentState.ws;
+      import("@/stores/writing-runtime-store").then((m) => {
+        const rtState = m.useWritingRuntimeStore.getState();
+        const oldWs = rtState.ws;
         if (oldWs) {
           // 主动关闭旧连接，触发 onclose → wsConnected=false
-          // useAgentWebSocket hook 会监听到并自动用新 token 重连
           try { oldWs.close(); } catch { /* ignore */ }
-          m.useAgentStore.setState({ ws: null, wsConnected: false });
+          m.useWritingRuntimeStore.setState({ ws: null, wsConnected: false });
         }
       });
     }
@@ -480,23 +479,25 @@ function scheduleAutoRefresh(expiresAt: number, refreshFn: () => void) {
 
 // ─── fetch 拦截器：自动附加 Auth Header ────────────────────
 
-const originalFetch = window.fetch;
-window.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers);
+if (typeof window !== "undefined") {
+  const originalFetch = window.fetch;
+  window.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const headers = new Headers(init?.headers);
 
-  // 如果没有手动设置 Authorization，且有 token，则自动附加
-  if (!headers.has("Authorization")) {
-    const authHeaders = authStore.getAuthHeaders();
-    if (authHeaders.Authorization) {
-      headers.set("Authorization", authHeaders.Authorization);
+    // 如果没有手动设置 Authorization，且有 token，则自动附加
+    if (!headers.has("Authorization")) {
+      const authHeaders = authStore.getAuthHeaders();
+      if (authHeaders.Authorization) {
+        headers.set("Authorization", authHeaders.Authorization);
+      }
     }
-  }
 
-  // admin token fallback
-  const adminToken = localStorage.getItem("admin_token");
-  if (!headers.has("Authorization") && adminToken) {
-    headers.set("Authorization", `Bearer ${adminToken}`);
-  }
+    // admin token fallback
+    const adminToken = localStorage.getItem("admin_token");
+    if (!headers.has("Authorization") && adminToken) {
+      headers.set("Authorization", `Bearer ${adminToken}`);
+    }
 
-  return originalFetch.call(this, input, { ...init, headers });
-};
+    return originalFetch.call(this, input, { ...init, headers });
+  };
+}

@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { BookOpenText, Boxes, Clock3, FileClock, Files, ListTree, ShieldCheck } from "lucide-react";
 import type { DetailTab } from "@/stores/workspace-layout-store";
 import type { DocumentVersion, RuntimeRun, StoredDocumentVersion, UserQualitySummary, WritingArtifactEventPayload, WritingEvent } from "@/lib/writing-runtime-types";
-import type { ToolCallPart } from "@/stores/agent-store";
-import { useAgentStore } from "@/stores/agent-store";
+import type { ToolCallPart } from "@/lib/writing-runtime-types";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { QualityStatus } from "@/components/quality/quality-status";
 import { QualityFinding } from "@/components/quality/quality-finding";
 import { CompactStepTimeline } from "@/components/tools/compact-step-timeline";
@@ -165,7 +165,7 @@ export function SessionVersionHistory({ traceId }: { traceId: string }) {
 
   const handleRestore = async (versionId: string) => {
     setLoadingVersion(versionId);
-    const ok = await useAgentStore.getState().loadArticleVersion(traceId, versionId);
+    const ok = await useWritingRuntimeStore.getState().loadArticleVersion(traceId, versionId);
     setLoadingVersion(null);
     if (ok) toast.info("已切换版本", "文章内容已更新为该版本");
     else toast.error("加载失败", "无法获取该版本内容");

@@ -265,17 +265,49 @@ func sortedPayloadTypes(payloads map[writingplan.ArtifactType][][]byte) []writin
 // GovernedStepEmitter is the only emitter engine steps may receive under the
 // governed runtime. It is observer-only by construction: no session writes,
 // no persistence, no terminal events. Legacy emitters are rejected outright.
-type GovernedStepEmitter struct{}
+//
+// When an EventSink is configured, streaming events (StreamDelta,
+// ReasoningDelta, StepStart, StepComplete, StreamDone) are forwarded to the
+// sink for SSE delivery to the frontend.
+type GovernedStepEmitter struct {
+	sink    EventSink
+	nodeID  string
+	attempt int
+}
 
-func NewGovernedStepEmitter() *GovernedStepEmitter { return &GovernedStepEmitter{} }
+// NewGovernedStepEmitter creates a governed emitter. When sink is non-nil,
+// streaming events are forwarded for real-time SSE delivery.
+func NewGovernedStepEmitter(sink EventSink, nodeID string, attempt int) *GovernedStepEmitter {
+	if sink == nil {
+		sink = NoopEventSink{}
+	}
+	return &GovernedStepEmitter{sink: sink, nodeID: nodeID, attempt: attempt}
+}
 
-func (*GovernedStepEmitter) StepStart(engine.StepName, int)                              {}
-func (*GovernedStepEmitter) StepComplete(engine.StepName, interface{}, int64)            {}
-func (*GovernedStepEmitter) StreamDelta(string)                                          {}
-func (*GovernedStepEmitter) StreamReset()                                                {}
-func (*GovernedStepEmitter) ReasoningDelta(string)                                       {}
-func (*GovernedStepEmitter) ArticleTitle(string)                                         {}
-func (*GovernedStepEmitter) StreamDone(string)                                           {}
+func (e *GovernedStepEmitter) StepStart(step engine.StepName, _ int) {
+	e.sink.EmitNodeProgress(e.nodeID, e.attempt, string(step), "started")
+}
+
+func (e *GovernedStepEmitter) StepComplete(step engine.StepName, _ interface{}, _ int64) {
+	e.sink.EmitNodeProgress(e.nodeID, e.attempt, string(step), "completed")
+}
+
+func (e *GovernedStepEmitter) StreamDelta(delta string) {
+	e.sink.EmitContentDelta(e.nodeID, e.attempt, delta)
+}
+
+func (*GovernedStepEmitter) StreamReset() {}
+
+func (e *GovernedStepEmitter) ReasoningDelta(delta string) {
+	e.sink.EmitReasoningDelta(e.nodeID, e.attempt, delta)
+}
+
+func (*GovernedStepEmitter) ArticleTitle(string) {}
+
+func (e *GovernedStepEmitter) StreamDone(fullText string) {
+	e.sink.EmitContentDone(e.nodeID, e.attempt, fullText)
+}
+
 func (*GovernedStepEmitter) AwaitInput(engine.StepName, interface{}, []string, int, int) {}
 func (*GovernedStepEmitter) Paused(engine.StepName, interface{})                         {}
 func (*GovernedStepEmitter) PausedWithReason(engine.StepName, interface{}, string)       {}
@@ -289,7 +321,10 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 	if runner.StepFactory == nil {
 		return nil, LegacyUsage{}, ErrRuntimeNotReady
 	}
-	var emitter engine.EventEmitter = NewGovernedStepEmitter()
+	// Create the governed emitter with the request's EventSink for streaming
+	// event delivery. The sink is nil-safe (NewGovernedStepEmitter defaults to
+	// NoopEventSink when nil).
+	emitter := NewGovernedStepEmitter(input.Request.EventSink, input.Request.NodeID, input.Request.Attempt)
 	if runner.Emitter != nil {
 		governed, ok := runner.Emitter.(*GovernedStepEmitter)
 		if !ok {

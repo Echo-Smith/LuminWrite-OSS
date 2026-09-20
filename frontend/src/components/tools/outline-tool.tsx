@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import type { OutlineData, OutlineItem } from "@/lib/types";
-import { useAgentStore } from "@/stores/agent-store";
+import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { cn } from "@/lib/utils";
 
 interface OutlineToolProps {
@@ -19,9 +19,9 @@ interface OutlineToolProps {
 
 export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }: OutlineToolProps) {
   const [data, setData] = useState<OutlineData>(initialData);
-  const confirmOutline = useAgentStore((s) => s.confirmOutline);
-  const regenerateOutline = useAgentStore((s) => s.regenerateOutline);
-  const sessionStatus = useAgentStore((s) => {
+  const confirmOutline = useWritingRuntimeStore((s) => s.confirmOutline);
+  const regenerateOutline = useWritingRuntimeStore((s) => s.regenerateOutline);
+  const sessionStatus = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.status ?? "idle";
   });
@@ -38,7 +38,7 @@ export function OutlineTool({ data: initialData, attempt = 1, maxAttempts = 5 }:
   const isLastAttempt = remainingAttempts <= 0;
 
   // WebSocket 保持提醒（不再倒计时，避免给用户压力）
-  const awaitInputAt = useAgentStore((s) => {
+  const awaitInputAt = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.awaitInputAt ?? null;
   });

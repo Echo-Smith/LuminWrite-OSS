@@ -177,6 +177,9 @@ type ExecutionRequest struct {
 	StyleSlug string
 	// UserID scopes user-owned style resolution ("my_" slugs).
 	UserID string
+	// EventSink receives real-time streaming events from engine steps.
+	// Nil means no streaming events are emitted (NoopEventSink behavior).
+	EventSink EventSink
 }
 
 func (request ExecutionRequest) Validate() error {

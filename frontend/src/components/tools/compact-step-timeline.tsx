@@ -8,7 +8,7 @@ import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import type { ToolCallPart } from "@/stores/agent-store";
+import type { ToolCallPart } from "@/lib/writing-runtime-types";
 import { STEP_LABELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { PulseIndicator } from "@/components/animation";

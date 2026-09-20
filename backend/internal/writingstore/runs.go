@@ -300,6 +300,11 @@ var validRunEventTypes = map[string]bool{
 	// Research-review family (migration 107): run-scoped ledger events — no
 	// node attempt identity, gate ids live in the payload and entity id.
 	"research.progress": true, "gate.pending": true, "gate.decided": true,
+	// Streaming content events: real-time text/reasoning deltas from engine steps.
+	// These are streaming-scoped — they carry node attempt identity but skip
+	// dedup because many events of the same type exist per node attempt.
+	"writing.content.delta": true, "writing.content.done": true,
+	"writing.reasoning.delta": true, "writing.node.progress": true,
 }
 
 var validRunEventEntityKinds = map[string]bool{
@@ -335,6 +340,7 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 	}
 	nodeScoped := event.EventType == "node.started" || event.EventType == "node.completed" || event.EventType == "node.failed" || event.EventType == "node.paused" || event.EventType == "node.cancelled" || event.EventType == "artifact.created" || event.EventType == "runtime.route_decided" || event.EventType == "runtime.execution_observed" || event.EventType == "runtime.shadow_compared"
 	transitionScoped := event.EventType == "run.transitioned" || event.EventType == "run.transition_rejected"
+	streamingScoped := event.EventType == "writing.content.delta" || event.EventType == "writing.content.done" || event.EventType == "writing.reasoning.delta" || event.EventType == "writing.node.progress"
 	if nodeScoped {
 		expected, err := NodeAttemptKey(event.RunID, event.NodeID, event.Attempt)
 		if err != nil {
@@ -346,6 +352,12 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 	} else if transitionScoped {
 		if event.NodeID != "" || event.Attempt != 0 || strings.TrimSpace(event.IdempotencyKey) == "" {
 			return RunEvent{}, fmt.Errorf("%w: transition event requires command idempotency only", ErrInvalidRecord)
+		}
+	} else if streamingScoped {
+		// Streaming events carry node attempt identity but skip dedup — many
+		// events of the same type exist per node attempt (deltas, progress).
+		if strings.TrimSpace(event.NodeID) == "" || event.Attempt < 1 {
+			return RunEvent{}, fmt.Errorf("%w: streaming event requires node_id and attempt", ErrInvalidRecord)
 		}
 	} else if event.NodeID != "" || event.Attempt != 0 || event.IdempotencyKey != "" {
 		return RunEvent{}, fmt.Errorf("%w: run-scoped event cannot carry node attempt identity", ErrInvalidRecord)
