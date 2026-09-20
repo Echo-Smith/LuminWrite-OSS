@@ -82,7 +82,7 @@ export function useRunEventsSSE(runId: string | null) {
         });
       }
 
-      es.onerror = () {
+      es.onerror = () => {
         // EventSource auto-reconnects on transient errors.
         // On permanent failure (e.g. 204 No Content), the browser
         // closes the connection and does not reopen it.
