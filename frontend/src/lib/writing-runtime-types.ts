@@ -1,5 +1,3 @@
-import type { AgentStartPayload } from "./types.ts";
-
 export const TASK_MODES = ["auto", "writing", "guided", "polish"] as const;
 export const ORCHESTRATION_MODES = ["auto", "fast", "outline_first", "sourced", "strict_research", "research_review"] as const;
 export const ASSURANCE_LEVELS = ["flexible", "standard", "sourced", "strict"] as const;
@@ -260,7 +258,9 @@ export const QUALITY_STATE_COPY: Record<QualityState, { label: string; descripti
 
 // ─── Message Part Types (migrated from agent-store) ──────────────
 
-import type { AgentStepName, AgentStepStatus } from "./types.ts";
+import type { AgentStepName as _AgentStepName, AgentStepStatus as _AgentStepStatus } from "./types.ts";
+export type AgentStepName = _AgentStepName;
+export type AgentStepStatus = _AgentStepStatus;
 
 export type MessagePartType = "text" | "tool-call" | "data" | "reasoning" | "compaction";
 
@@ -374,6 +374,7 @@ export interface AgentStartPayload {
   orchestration_mode?: string;
   assurance_level?: string;
   approval_mode?: string;
+  word_limit?: number;
 }
 
 export interface OutlineData {

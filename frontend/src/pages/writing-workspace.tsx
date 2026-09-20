@@ -568,6 +568,7 @@ export function WritingWorkspace() {
       userId: user?.userId ?? "guest",
       deviceId: currentDeviceId(),
       workspaceId: "writing-desk",
+      documentId: "new",
     });
   }, [setLayoutScope, user?.userId]);
 

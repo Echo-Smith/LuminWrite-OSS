@@ -16,7 +16,6 @@ import { PanelRightClose } from "lucide-react";
 import type { ToolCallPart } from "@/lib/writing-runtime-types";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { RunDetailTabs } from "@/components/runtime/run-detail-tabs";
-import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 
 interface DetailPanelProps {

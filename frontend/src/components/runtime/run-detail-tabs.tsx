@@ -196,6 +196,7 @@ function eventLabel(type: WritingEvent["type"]) {
   const labels: Record<WritingEvent["type"], string> = {
     "writing.run.status": "运行状态变化", "writing.document.delta": "正文正在形成", "writing.document.committed": "文档版本已提交",
     "writing.node.status": "写作步骤变化", "writing.artifact.created": "产物已登记", "writing.quality.updated": "质量状态更新", "writing.ledger.event": "治理事件记录",
+    "writing.content.delta": "流式内容", "writing.content.done": "内容完成", "writing.reasoning.delta": "推理过程", "writing.node.progress": "步骤进度",
   };
   return labels[type];
 }

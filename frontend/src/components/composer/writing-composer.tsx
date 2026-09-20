@@ -24,7 +24,6 @@ import { Switch } from "@/components/ui/switch";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
-import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
@@ -365,6 +364,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
         <div className="composer-research-float anim-fade-in">
           <ResearchSettings
             centralQuestion={message.trim()}
+            audience=""
+            language="zh"
+            lengthMin=""
+            lengthMax=""
+            allowExternalResearch={false}
             styleSlug={style}
             styleName={style}
             // 素材引用透传（F1）：带服务端标识的挂载素材随文档 metadata.material_refs

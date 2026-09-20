@@ -10,10 +10,18 @@ export type DetailTab = "outline" | "materials" | "run";
 export type ComposerWidthState = "wide" | "compact";
 export type DagPipDockState = "none" | "right" | "bottom";
 
+/** 输入区拖拽宽度限制（像素） */
+export const COMPOSER_WIDTH_MIN = 360;
+export const COMPOSER_WIDTH_MAX = 720;
+
 export interface WorkspaceLayoutPreference {
   detailPanel: DetailPanelState;
   detailTab: DetailTab;
   composerWidth: ComposerWidthState;
+  /** 用户拖拽设定的输入区自定义宽度（null 表示使用预设宽度） */
+  composerCustomWidth: number | null;
+  /** 详情面板宽度（像素） */
+  detailWidth: number;
   // DAG 画中画状态
   dagPipVisible: boolean;
   dagPipPosition: { x: number; y: number };
@@ -38,6 +46,8 @@ export const defaultWorkspaceLayout: WorkspaceLayoutPreference = {
   detailPanel: "expanded",
   detailTab: "outline",
   composerWidth: "wide",
+  composerCustomWidth: null,
+  detailWidth: 360,
   // DAG 画中画默认值
   dagPipVisible: false,
   dagPipPosition: { x: 100, y: 100 },
@@ -71,6 +81,8 @@ function normalizeLayout(value: Partial<WorkspaceLayoutPreference> | null | unde
     detailPanel: DETAIL_STATES.has(value?.detailPanel ?? "") ? value!.detailPanel! : defaultWorkspaceLayout.detailPanel,
     detailTab: normalizeDetailTab(value?.detailTab),
     composerWidth: COMPOSER_WIDTHS.has(value?.composerWidth ?? "") ? value!.composerWidth! : defaultWorkspaceLayout.composerWidth,
+    composerCustomWidth: typeof value?.composerCustomWidth === "number" ? value.composerCustomWidth : defaultWorkspaceLayout.composerCustomWidth,
+    detailWidth: typeof value?.detailWidth === "number" ? value.detailWidth : defaultWorkspaceLayout.detailWidth,
     // DAG 画中画状态规范化
     dagPipVisible: typeof value?.dagPipVisible === "boolean" ? value.dagPipVisible : defaultWorkspaceLayout.dagPipVisible,
     dagPipPosition: value?.dagPipPosition && typeof value.dagPipPosition.x === "number" && typeof value.dagPipPosition.y === "number"
@@ -109,6 +121,8 @@ interface WorkspaceLayoutActions {
   setDetailPanel: (value: DetailPanelState) => void;
   setDetailTab: (value: DetailTab) => void;
   setComposerWidth: (value: ComposerWidthState) => void;
+  setComposerCustomWidth: (value: number | null) => void;
+  setDetailWidth: (value: number) => void;
   // DAG 画中画操作
   setDagPipVisible: (visible: boolean) => void;
   setDagPipPosition: (position: { x: number; y: number }) => void;
@@ -130,6 +144,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutPreference & Worksp
     setDetailPanel: (detailPanel) => persist({ detailPanel }),
     setDetailTab: (detailTab) => persist({ detailTab }),
     setComposerWidth: (composerWidth) => persist({ composerWidth }),
+    setComposerCustomWidth: (composerCustomWidth) => persist({ composerCustomWidth }),
+    setDetailWidth: (detailWidth) => persist({ detailWidth }),
     // DAG 画中画操作实现
     setDagPipVisible: (dagPipVisible) => persist({ dagPipVisible }),
     setDagPipPosition: (dagPipPosition) => persist({ dagPipPosition }),
