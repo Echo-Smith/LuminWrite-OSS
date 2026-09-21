@@ -26,7 +26,7 @@
 | | |
 |---|---|
 | 🧠 **分层记忆，且注入可见** | 硬偏好 / 行为模式 / 反馈三层长期记忆 + 实体网络；两击晋升、证据边界、置信衰减全部内置；每次注入都落**注入遥测**——「记忆到底生效没有」第一次成为可查询的事实 |
-| ⚙️ **三套执行引擎，一个底座** | Harness 单层持续会话（默认）、Pipeline 步骤流水线、编辑部多 Agent DAG 并存；外加实验性的治理型运行时（Contract → Plan → Artifact → 质量门，fail-closed） |
+| ⚙️ **治理写作运行时是主干** | WritingContract → ExecutablePlan → typed Artifact → 质量门（Candidate/Accepted/Verified），fail-closed；REST 命令 + SSE 运行事件，断线可续传；off/shadow/allowlist 灰度与检查点恢复。Harness 执行核与编辑部角色作为受治理 Executor 接入，不构成平行事实源 |
 | 📚 **自托管 RAG，零外部向量库** | PostgreSQL 单库内完成 BM25（ParadeDB）+ 向量（pgvector）+ RRF 融合 + GraphRAG；上传素材永远是你的最高优先级（P0），检索结果不得覆盖用户原始表达 |
 | 🧪 **评测是一等公民** | WABench 契约驱动的盲评/发布流水线 + 红队评估集；分段反馈回流记忆，好坏都有去处 |
 | 🔌 **模型无关** | OpenAI 兼容协议（DeepSeek / SenseNova 已验证）；Admin 后台热切换模型与密钥（加密入库），换 Key 不改文件 |
@@ -36,18 +36,18 @@
 ```mermaid
 flowchart LR
     U([创作者]) --> FE[React 工作台<br/>Tiptap · Tailwind]
-    FE -->|WebSocket 流式| API[Go API<br/>chi · JWT · RBAC]
-    subgraph RUN[三套执行引擎]
-        H["Harness 持续会话（默认）"]
-        P[Pipeline 步骤流水线]
-        D["编辑部 DAG<br/>研究 · 写作 · 审校"]
+    FE -->|REST 命令 + SSE 事件| API[Go API<br/>chi · JWT · RBAC]
+    subgraph RUN[治理写作运行时]
+        O["Orchestrator<br/>计划图 · 检查点 · 恢复"]
+        E["ExecutorAdapter<br/>Engine Step / Harness Core / Editorial Role"]
+        O --> E
     end
     API --> RUN
     subgraph CAP[共享能力层]
         S[多源检索<br/>SearXNG / Tavily / …]
         K[本地 RAG<br/>BM25 + 向量 + GraphRAG]
         M[分层记忆<br/>门控 · 晋升 · 遥测]
-        E[评测中心<br/>WABench · 红队]
+        V[评测中心<br/>WABench · 红队]
     end
     RUN --> CAP
     CAP --> DB[(PostgreSQL 17<br/>pgvector · ParadeDB)]
@@ -121,11 +121,12 @@ cd frontend && npm ci && npm test && npm run build
 
 ## 🧩 功能全景
 
-- **多模式写作执行**：Harness / Pipeline / 编辑部 DAG 三套并存（研究→写作→审校以
-  Artifact 接力，上下文按角色分槽）；
-- **治理型写作运行时**（实验性）：WritingContract → ExecutablePlan → Artifact →
-  质量门（Candidate/Accepted/Verified）的版本化交付协议，off/shadow/allowlist
-  灰度与断点恢复（[docs/19](docs/19-governed-writing-runtime.md)）；
+- **多模式写作执行**：治理运行时统一调度；编辑部 DAG 的研究→写作→审校以受治理
+  Executor 接力（上下文按角色分槽），WebSocket 已退出主架构；
+- **治理型写作运行时**：WritingContract → ExecutablePlan → typed Artifact →
+  质量门（Candidate/Accepted/Verified）的版本化交付协议，默认 `shadow`
+  （baseline 权威 + candidate 影子观测），off/shadow/allowlist
+  灰度与检查点恢复（[docs/19](docs/19-governed-writing-runtime.md)）；
 - **研究综述路径**（实验性）：学术检索（OpenAlex/CrossRef/Semantic Scholar）→
   证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
@@ -146,7 +147,7 @@ cd frontend && npm ci && npm test && npm run build
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Go 1.25 · chi · coder/websocket · pgx/v5 · go-redis（依赖面刻意克制） |
+| 后端 | Go 1.25 · chi · SSE（net/http）· pgx/v5 · go-redis（依赖面刻意克制） |
 | 数据库 | PostgreSQL 17（ParadeDB 镜像：pgvector + pg_bm25）· Redis 7 |
 | 文档解析 | docreader sidecar（markitdown，TCP 协议，~150MB） |
 | 模型 | OpenAI 兼容 `/chat/completions`（DeepSeek / SenseNova 已验证，[切换指南](docs/provider-configuration.md)） |
@@ -169,7 +170,7 @@ cd frontend && npm ci && npm test && npm run build
 |---|---|---|
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_DEFAULT_MODEL` | — | LLM 后端（OpenAI 兼容） |
 | `SEARXNG_BASE_URL` | 空 | 唯一开箱可用的搜索源，强烈建议配置 |
-| `WRITING_RUNTIME_MODE` | off | 治理运行时：off / shadow / allowlist |
+| `WRITING_RUNTIME_MODE` | shadow | 治理运行时：off / shadow / allowlist（shadow = baseline 权威 + candidate 影子观测） |
 | `RESEARCH_REVIEW_ENABLED` | false | 研究综述路径（需 `--profile research`） |
 | `AR012_CANDIDATE_ENABLED` | false | AR-012 候选评估端点（需 sidecar） |
 | `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | 空 | 异源 Claim 复核：三项齐备即启用，**必须与生成模型不同供应商**（report-only 二道防线） |
@@ -181,8 +182,11 @@ cd frontend && npm ci && npm test && npm run build
 ## 🗺 Roadmap
 
 - [x] 记忆注入遥测（已上线：`/admin/memory/telemetry`）
-- [ ] 记忆黄金集 CI 门 + 策略影子对比
-- [ ] 编辑部 DAG 接入统一记忆契约（按角色分槽注入）
+- [x] WebSocket 退出主架构（REST 命令 + SSE 运行事件，断线续传）
+- [x] 治理运行时成为主干（默认 shadow；Harness 执行核 / 编辑部角色受治理接入）
+- [x] 历史 SoT 迁移（governed documents/runs 为主，`agent_traces` 只读）
+- [ ] allowlist 晋升资格链线上验证（policy → evidence → approval → gate）
+- [ ] 编辑部 DAG 生命周期进一步接入统一记忆契约（按角色分槽注入）
 - [ ] 搜索源适配器社区共建（Tavily 等完整实现）
 
 ## 📚 文档

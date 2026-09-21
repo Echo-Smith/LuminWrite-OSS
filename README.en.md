@@ -27,7 +27,7 @@ memory, with the creator in control at every decision point.
 | | |
 |---|---|
 | 🧠 **Layered memory — and visible injection** | Three long-term tiers (hard preferences / behavior patterns / feedback) + an entity network; two-strike promotion, evidence-bounded recall and confidence decay built in; every injection lands in **injection telemetry** — "did the memory actually take effect" becomes a queryable fact |
-| ⚙️ **Three execution engines, one substrate** | Harness single-layer persistent session (default), classic Pipeline steps, and an editorial multi-agent DAG; plus an experimental governed runtime (Contract → Plan → Artifact → quality gates, fail-closed) |
+| ⚙️ **Governed writing runtime as the backbone** | WritingContract → ExecutablePlan → typed Artifact → quality gates (Candidate/Accepted/Verified), fail-closed; REST commands + SSE runtime events with resumable streams; off/shadow/allowlist rollout with checkpoint recovery. The Harness core and editorial roles run as governed Executors — never a second source of truth |
 | 📚 **Self-hosted RAG, zero external vector DB** | BM25 (ParadeDB) + vectors (pgvector) + RRF fusion + GraphRAG, all inside PostgreSQL; user materials always outrank retrieved content (P0) |
 | 🧪 **Evaluation as a first-class citizen** | WABench contract-driven blind-eval/release pipeline + red-team suites; segmented feedback flows back into memory |
 | 🔌 **Model-agnostic** | OpenAI-compatible `/chat/completions` (DeepSeek / SenseNova verified); hot-swap models and keys from the admin console (encrypted at rest) |
@@ -37,11 +37,11 @@ memory, with the creator in control at every decision point.
 ```mermaid
 flowchart LR
     U([Creator]) --> FE[React workspace<br/>Tiptap · Tailwind]
-    FE -->|WebSocket streaming| API[Go API<br/>chi · JWT · RBAC]
-    subgraph RUN[Three execution engines]
-        H["Harness session (default)"]
-        P[Pipeline steps]
-        D["Editorial DAG<br/>research · write · review"]
+    FE -->|REST commands + SSE events| API[Go API<br/>chi · JWT · RBAC]
+    subgraph RUN[Governed writing runtime]
+        O["Orchestrator<br/>plan graph · checkpoints · recovery"]
+        E["ExecutorAdapter<br/>Engine Step / Harness Core / Editorial Role"]
+        O --> E
     end
     API --> RUN
     subgraph CAP[Shared capability layer]
@@ -157,7 +157,7 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
 
 | Layer | Technology |
 |---|---|
-| Backend | Go 1.25 · chi · coder/websocket · pgx/v5 · go-redis (deliberately lean deps) |
+| Backend | Go 1.25 · chi · SSE (net/http) · pgx/v5 · go-redis (deliberately lean deps) |
 | Database | PostgreSQL 17 (ParadeDB image: pgvector + pg_bm25) · Redis 7 |
 | Doc parsing | docreader sidecar (markitdown, TCP, ~150MB) |
 | Models | OpenAI-compatible `/chat/completions` (DeepSeek / SenseNova verified, [guide](docs/provider-configuration.md)) |
@@ -180,7 +180,7 @@ Full annotated list: [.env.docker.example](.env.docker.example).
 |---|---|---|
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_DEFAULT_MODEL` | — | LLM backend (OpenAI-compatible) |
 | `SEARXNG_BASE_URL` | empty | The only out-of-the-box search source — strongly recommended |
-| `WRITING_RUNTIME_MODE` | off | Governed runtime: off / shadow / allowlist |
+| `WRITING_RUNTIME_MODE` | shadow | Governed runtime: off / shadow / allowlist (shadow = baseline authoritative + candidate shadow observation) |
 | `RESEARCH_REVIEW_ENABLED` | false | Research-review path (needs `--profile research`) |
 | `AR012_CANDIDATE_ENABLED` | false | AR-012 candidate evaluation endpoint (needs sidecar) |
 | `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | empty | Different-vendor claim verifier: enabled once all three are set; **must be a different provider than the generation model** (report-only second line of defense) |
@@ -192,7 +192,10 @@ Full annotated list: [.env.docker.example](.env.docker.example).
 ## 🗺 Roadmap
 
 - [x] Memory injection telemetry (live: `/admin/memory/telemetry`)
-- [ ] Memory golden-set CI gate + strategy shadow comparison
+- [x] WebSocket retired from the main architecture (REST commands + SSE runtime events, resumable)
+- [x] Governed runtime as the backbone (default shadow; Harness core / editorial roles governed)
+- [x] History source-of-truth migration (governed documents/runs primary, `agent_traces` read-only)
+- [ ] Allowlist promotion qualification verified end to end (policy → evidence → approval → gate)
 - [ ] Editorial DAG on the unified memory contract (role-slotted injection)
 - [ ] Community search adapters (full Tavily etc.)
 
