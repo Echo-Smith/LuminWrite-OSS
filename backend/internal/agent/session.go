@@ -1,66 +1,45 @@
 package agent
 
-import (
-	"context"
-	"log/slog"
-	"time"
+// ─── WritingSession: 单次执行核运行的状态容器 ──────────────
+//
+// WritingSession 只在一次 RunCore 内存活（⑥D 后）：
+//   - 当前文章（支持修订）
+//   - 已有素材（避免重复搜索）
+//   - 最近评审结果
+//   - 记忆上下文（工具循环内的检索结果）
+//
+// 对话历史加载/持久化（SessionStore）随 Legacy 交互路径移除：
+// 执行核的 session 是调用方创建的隔离容器，无 DB 通道。
 
+import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
-// ─── WritingSession: 会话级状态 ────────────────────────────
-//
-// WritingSession 跨越单次 agent.start 请求，在同对话框内累积状态：
-//   - 当前文章（支持多轮修改）
-//   - 已有素材（避免重复搜索）
-//   - 用户素材引用
-//   - 最近评审结果
-//
-// 对话历史从 DB 加载（复用现有 conversation_messages 表），
-// 这里只持有内存中的产出物。
-
-// SessionStore 是 WritingSession 的持久化接口。
-// 由 memory.Service 实现（复用短期记忆存储）。
-type SessionStore interface {
-	LoadHistory(ctx context.Context, conversationID string, limit int) ([]memory.ConversationMessage, error)
-	StoreMessage(ctx context.Context, msg *memory.ConversationMessage) error
-	IsEnabledForUser(userID string) bool
-}
-
-// MemoryRetriever 是可选的记忆检索接口（memoryport 契约的预取动词）。
-// 由 memoryport 适配器实现，用于主动检索用户写作偏好和反馈记忆。
-// Harness 在构建 system prompt 前调用此接口。
-// 如果 SessionStore 不实现此接口，Harness 静默跳过记忆注入。
-type MemoryRetriever interface {
-	Retrieve(ctx context.Context, req memoryport.Request) (*memoryport.Bundle, error)
-}
-
-// WritingSession 持有同一对话内的累积状态。
+// WritingSession 持有单次执行核运行的累积状态。
 type WritingSession struct {
 	ConversationID string
 	UserID         string
 	StyleSlug      string
 
-	// 跨轮保留的产出物
-	CurrentArticle   string
-	ArticleTitle     string
-	ArticleVersions  []string          // 所有版本的文章（用于版本回溯）
-	SearchResults    []engine.SearchResult
-	ReviewResult     *engine.ReviewResult
-	UserMaterials    []string
-	Outline          *engine.OutlineData // Guided 模式下的用户确认提纲
-	Reviewed         bool                // review_article 是否已执行
+	// 本次运行内保留的产出物
+	CurrentArticle  string
+	ArticleTitle    string
+	ArticleVersions []string // 本次运行内的文章版本（修订回溯）
+	SearchResults   []engine.SearchResult
+	ReviewResult    *engine.ReviewResult
+	UserMaterials   []string
+	Outline         *engine.OutlineData // Guided 模式下的用户确认提纲
+	Reviewed        bool                // review_article 是否已执行
 
-	// 对话历史（从 DB 加载）
-	Messages []memory.ConversationMessage
-
-	// 记忆上下文
+	// 记忆上下文（工具检索结果，仅内存）
 	MemoryContext interface{}
+
+	// 调用方预置的对话历史（仅内存；执行核不加载也不持久化）
+	Messages []memory.ConversationMessage
 }
 
-// NewWritingSession 创建一个新的写作会话。
+// NewWritingSession 创建一个新的执行状态容器。
 func NewWritingSession(conversationID, userID, styleSlug string) *WritingSession {
 	return &WritingSession{
 		ConversationID: conversationID,
@@ -69,59 +48,7 @@ func NewWritingSession(conversationID, userID, styleSlug string) *WritingSession
 	}
 }
 
-// LoadHistory 从 DB 加载对话历史。
-// 如果记忆服务不可用或用户未启用，静默跳过。
-func (s *WritingSession) LoadHistory(ctx context.Context, store SessionStore, limit int) {
-	if store == nil || !store.IsEnabledForUser(s.UserID) {
-		return
-	}
-	if s.ConversationID == "" {
-		return
-	}
-
-	history, err := store.LoadHistory(ctx, s.ConversationID, limit)
-	if err != nil {
-		slog.Warn("writing session: load history failed",
-			"error", err,
-			"conversation_id", s.ConversationID,
-		)
-		return
-	}
-
-	s.Messages = history
-	slog.Info("writing session: history loaded",
-		"conversation_id", s.ConversationID,
-		"messages", len(s.Messages),
-	)
-}
-
-// StoreMessage 存储一条对话消息到 DB。
-func (s *WritingSession) StoreMessage(ctx context.Context, store SessionStore, role, content, contentType string) {
-	if store == nil || !store.IsEnabledForUser(s.UserID) {
-		return
-	}
-	if s.ConversationID == "" {
-		return
-	}
-
-	msg := &memory.ConversationMessage{
-		ConversationID: s.ConversationID,
-		UserID:         s.UserID,
-		Role:           memory.ConversationRole(role),
-		Content:        content,
-		ContentType:    memory.ContentType(contentType),
-		CreatedAt:      time.Now(),
-	}
-
-	if err := store.StoreMessage(ctx, msg); err != nil {
-		slog.Warn("writing session: store message failed",
-			"error", err,
-			"conversation_id", s.ConversationID,
-		)
-	}
-}
-
-// RecentMessages 返回最近 N 条对话消息，格式化为 LLM 消息。
+// RecentMessages 返回最近 N 条对话消息（本次运行内由调用方预置的历史）。
 func (s *WritingSession) RecentMessages(n int) []memory.ConversationMessage {
 	if len(s.Messages) <= n {
 		return s.Messages

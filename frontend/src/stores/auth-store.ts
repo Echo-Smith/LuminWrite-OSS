@@ -258,21 +258,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 从云端加载用户偏好设置
     void useSettingsStore.getState().loadFromServer();
 
-    // ── Token 变更时（如游客注册升级），断开旧 WebSocket 连接 ──
-    // 旧连接携带的是 guest token，后端仍识别为 guest 角色，
-    // 必须断开后重连才能让新 token 生效。
-    if (prev.token && prev.token !== token) {
-      // 延迟导入避免循环依赖
-      import("@/stores/writing-runtime-store").then((m) => {
-        const rtState = m.useWritingRuntimeStore.getState();
-        const oldWs = rtState.ws;
-        if (oldWs) {
-          // 主动关闭旧连接，触发 onclose → wsConnected=false
-          try { oldWs.close(); } catch { /* ignore */ }
-          m.useWritingRuntimeStore.setState({ ws: null, wsConnected: false });
-        }
-      });
-    }
+    // (token 变更时的 WebSocket 重连逻辑已随 WS 移除 — 全部为 REST+SSE)
   },
 
   logout: () => {

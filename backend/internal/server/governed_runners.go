@@ -29,7 +29,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
@@ -468,7 +468,7 @@ func (provider governedInitialProvider) InitialArtifacts(ctx context.Context, ru
 		if err != nil {
 			return nil, err
 		}
-		var refs []websocket.MaterialReference
+		var refs []writingtransport.MaterialReference
 		if err = json.Unmarshal(payload, &refs); err != nil {
 			return nil, err
 		}

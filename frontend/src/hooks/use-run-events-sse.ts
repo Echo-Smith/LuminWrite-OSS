@@ -1,41 +1,50 @@
 /**
- * useRunEventsSSE — SSE hook for governed writing runtime events
+ * useRunEventsSSE — fetch-based SSE hook for governed writing runtime events
  *
- * Connects to GET /api/v2/runs/{runId}/events via EventSource API.
- * Supports Last-Event-ID for resumption, exponential backoff on reconnect,
- * and dispatches events to the writing-runtime-store.
+ * Connects to GET /api/v2/runs/{runId}/events with `Authorization: Bearer` via
+ * fetch + ReadableStream instead of native EventSource, because EventSource
+ * cannot set custom headers and the run-events endpoint is JWT-protected.
+ *
+ * Resumption: the backend emits `id: <sequence>` per event and accepts
+ * `?after=<sequence>` (and Last-Event-ID). We track the last sequence and
+ * re-establish with `?after=` on reconnect — durable ledger, no event loss.
  */
 import { useEffect, useRef } from "react";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
+import { useAuthStore } from "@/stores/auth-store";
 
 const MAX_RECONNECT_DELAY = 30_000; // 30s cap
 const BASE_RECONNECT_DELAY = 1_000; // 1s start
 
 /**
- * SSE event types the governed backend emits on the writing event stream.
- * Each type maps to a named EventSource event (not the default "message").
+ * Minimal SSE parser: splits the byte stream into events on blank-line
+ * separators and extracts id/event/data fields. Handles \n\n and \r\n\r\n.
  */
-const GOVERNED_EVENT_TYPES = [
-  "writing.run.status",
-  "writing.node.status",
-  "writing.content.delta",
-  "writing.content.done",
-  "writing.reasoning.delta",
-  "writing.node.progress",
-  "writing.artifact.created",
-  "writing.document.committed",
-  "writing.quality.updated",
-  // Document delta events (provisional streaming)
-  "writing.document.delta",
-  // Ledger events (research progress, gates)
-  "writing.ledger.event",
-] as const;
+function parseSSEBlock(block: string): { id: string; event: string; data: string } | null {
+  let id = "";
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    const field = line.replace(/\r$/, "");
+    if (field.startsWith("id:")) {
+      id = field.slice(3).trim();
+    } else if (field.startsWith("event:")) {
+      event = field.slice(6).trim();
+    } else if (field.startsWith("data:")) {
+      dataLines.push(field.slice(5).trimStart());
+    }
+    // comments (":" prefix) and unknown fields ignored
+  }
+  if (dataLines.length === 0) return null;
+  return { id, event, data: dataLines.join("\n") };
+}
 
 export function useRunEventsSSE(runId: string | null) {
-  const esRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const reconnectAttempt = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const lastSequence = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -45,79 +54,88 @@ export function useRunEventsSSE(runId: string | null) {
   useEffect(() => {
     if (!runId) return;
 
-    const applyEvent = useWritingRuntimeStore.getState().applyEvent;
-    const url = `/api/v2/runs/${runId}/events`;
+    lastSequence.current = 0;
+    reconnectAttempt.current = 0;
 
-    function connect() {
-      if (!mountedRef.current) return;
-
-      // EventSource automatically sends Accept: text/event-stream
-      // and handles Last-Event-ID for resumption on reconnect.
-      const es = new EventSource(url);
-      esRef.current = es;
-
-      es.onopen = () => {
-        reconnectAttempt.current = 0;
-      };
-
-      // Default message handler (events without a specific type)
-      es.onmessage = (e) => {
+    async function connect() {
+      while (mountedRef.current) {
+        const controller = new AbortController();
+        abortRef.current = controller;
         try {
-          const event = JSON.parse(e.data);
-          applyEvent(event);
-        } catch {
-          // Malformed event data — ignore
-        }
-      };
-
-      // Listen for specific named event types
-      for (const type of GOVERNED_EVENT_TYPES) {
-        es.addEventListener(type, (e: MessageEvent) => {
-          try {
-            const event = JSON.parse(e.data);
-            applyEvent(event);
-          } catch {
-            // Malformed event data — ignore
+          const token = useAuthStore.getState().token;
+          const after = lastSequence.current > 0 ? `?after=${lastSequence.current}` : "";
+          const response = await fetch(`/api/v2/runs/${runId}/events${after}`, {
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              Accept: "text/event-stream",
+            },
+            signal: controller.signal,
+          });
+          if (!response.ok || !response.body) {
+            throw new Error(`SSE connect failed: ${response.status}`);
           }
-        });
+
+          reconnectAttempt.current = 0;
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          // Read until the stream ends (server close / abort) or unmount.
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            let sep: number;
+            while ((sep = buffer.search(/\n\n|\r\n\r\n/)) >= 0) {
+              const block = buffer.slice(0, sep);
+              buffer = buffer.slice(sep).replace(/^\r?\n\r?\n/, "");
+              const parsed = parseSSEBlock(block);
+              if (!parsed) continue;
+              if (parsed.id) {
+                const seq = Number(parsed.id);
+                if (Number.isFinite(seq) && seq > lastSequence.current) {
+                  lastSequence.current = seq;
+                }
+              }
+              try {
+                const event = JSON.parse(parsed.data);
+                useWritingRuntimeStore.getState().applyEvent(event);
+              } catch {
+                // Malformed event data — ignore
+              }
+            }
+          }
+          // Stream ended normally (server closed) — fall through to reconnect.
+        } catch (error) {
+          if (!mountedRef.current || (error instanceof DOMException && error.name === "AbortError")) {
+            return; // unmounted or superseded — do not reconnect
+          }
+          // Connection error — exponential backoff and retry with ?after=
+          const delay = Math.min(
+            BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempt.current),
+            MAX_RECONNECT_DELAY,
+          );
+          reconnectAttempt.current++;
+          await new Promise((resolve) => {
+            reconnectTimer.current = setTimeout(resolve, delay);
+          });
+          reconnectTimer.current = null;
+        }
       }
-
-      es.onerror = () => {
-        // EventSource auto-reconnects on transient errors.
-        // On permanent failure (e.g. 204 No Content), the browser
-        // closes the connection and does not reopen it.
-        if (es.readyState === EventSource.CLOSED) {
-          esRef.current = null;
-          // Exponential backoff reconnect
-          if (mountedRef.current) {
-            const delay = Math.min(
-              BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempt.current),
-              MAX_RECONNECT_DELAY,
-            );
-            reconnectAttempt.current++;
-            reconnectTimer.current = setTimeout(() => {
-              reconnectTimer.current = null;
-              if (mountedRef.current) connect();
-            }, delay);
-          }
-        }
-      };
     }
 
-    connect();
+    void connect();
 
     return () => {
-      // Cleanup on unmount or runId change
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
       }
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
-      }
+      abortRef.current?.abort();
+      abortRef.current = null;
     };
   }, [runId]);
 
-  return esRef;
+  return abortRef;
 }

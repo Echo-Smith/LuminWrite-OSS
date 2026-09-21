@@ -2,14 +2,14 @@
  * WorkflowPage — 工作台模式 DAG 工作流页面
  *
  * 整合输入面板、节点图画布和节点执行状态面板。
- * 通过 agent-store 的 WebSocket 连接与后端交互。
- * agent-store 的 handleServerMessage 会自动转发 workflow 和 node 消息到 workflow-store。
+ * Editorial Transport Migration：命令走 REST（lib/workflow-api.ts），
+ * 执行进度经全局 SSE（hooks/use-workflow-sse.ts）驱动 workflow-store。
  */
 import { useCallback, useEffect } from "react";
 import { WorkflowCanvas } from "./canvas";
 import { WorkflowInput } from "./workflow-input";
 import { useWorkflowStore } from "@/stores/workflow-store";
-import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
+import { createWorkflow, createdViewToPlan, executeWorkflow, WorkflowApiError } from "@/lib/workflow-api";
 
 export function WorkflowPage() {
   const plan = useWorkflowStore((s) => s.plan);
@@ -17,38 +17,45 @@ export function WorkflowPage() {
   const taskId = useWorkflowStore((s) => s.taskId);
   const setUserInput = useWorkflowStore((s) => s.setUserInput);
   const setRunStatus = useWorkflowStore((s) => s.setRunStatus);
+  const setPlan = useWorkflowStore((s) => s.setPlan);
+  const setTaskId = useWorkflowStore((s) => s.setTaskId);
+  const setWorkflowFailed = useWorkflowStore((s) => s.setWorkflowFailed);
   const reset = useWorkflowStore((s) => s.reset);
 
-  // 确保 WebSocket 连接已建立
-  const connectWS = useWritingRuntimeStore((s) => s.connectWS);
-  const sendWS = useWritingRuntimeStore((s) => s.sendWS);
-  const wsConnected = useWritingRuntimeStore((s) => s.wsConnected);
-
   useEffect(() => {
-    // 页面加载时连接 WebSocket
-    connectWS();
     // 页面卸载时重置工作流状态
     return () => {
       reset();
     };
-  }, [connectWS, reset]);
+  }, [reset]);
 
-  // 触发 Planner — 发送 workflow.start 消息（带 user_input）
+  // 触发 Planner — POST /api/v2/workflows（进度与结果即时返回）
   const handlePlan = useCallback(
-    (input: string) => {
+    async (input: string) => {
       setUserInput(input);
       setRunStatus("planning");
-      sendWS("workflow.start", { user_input: input });
+      try {
+        const view = await createWorkflow({ user_input: input });
+        setPlan(createdViewToPlan(view));
+        setTaskId(view.task_id);
+      } catch (err) {
+        setWorkflowFailed(
+          err instanceof WorkflowApiError ? `规划失败：${err.message}` : "规划失败，请稍后重试",
+        );
+      }
     },
-    [setUserInput, setRunStatus, sendWS]
+    [setUserInput, setRunStatus, setPlan, setTaskId, setWorkflowFailed],
   );
 
-  // 启动 DAG 执行 — 发送 workflow.start 消息（带 task_id）
+  // 启动 DAG 执行 — POST /api/v2/workflows/{id}/execute（进度经 SSE 推送）
   const handleRun = useCallback(() => {
-    if (taskId) {
-      sendWS("workflow.start", { task_id: taskId });
-    }
-  }, [sendWS, taskId]);
+    if (!taskId) return;
+    executeWorkflow(taskId).catch((err) => {
+      setWorkflowFailed(
+        err instanceof WorkflowApiError ? `启动失败：${err.message}` : "启动失败，请稍后重试",
+      );
+    });
+  }, [taskId, setWorkflowFailed]);
 
   return (
     <div className="flex h-full flex-col">
@@ -66,9 +73,7 @@ export function WorkflowPage() {
               <p className="text-sm">
                 {runStatus === "planning"
                   ? "正在分析写作意图，生成 Agent 集群..."
-                  : !wsConnected
-                    ? "正在连接服务器..."
-                    : '输入写作意图后点击"规划"开始'}
+                  : '输入写作意图后点击"规划"开始'}
               </p>
             </div>
           </div>

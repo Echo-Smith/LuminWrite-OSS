@@ -36,7 +36,7 @@
 |---|---|
 | `GET /health` | 后端健康状态（LLM/DB/Search/Embedding 配置检查） |
 | `GET /metrics` | Prometheus 指标导出 |
-| `GET /api/v2/ws/agent` | WebSocket Agent 通信 |
+| `GET /api/v2/runs/{id}/events` | SSE 写作运行事件（governed runtime） |
 | `GET /api/v2/sse/topics` | SSE 热点话题推送 |
 | `GET /api/v2/admin/stats` | 管理后台统计（需 Admin Token） |
 

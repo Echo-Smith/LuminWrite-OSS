@@ -33,100 +33,14 @@ func NewTraceRepo(db *DB) *TraceRepo {
 	return &TraceRepo{db: db}
 }
 
-// CreateTrace inserts a new trace record.
-func (r *TraceRepo) CreateTrace(ctx context.Context, execCtx *engine.ExecutionContext) error {
-	if r.db == nil {
-		return nil
-	}
-
-	// Only set user_id for authenticated users with valid UUID (not "anonymous", etc.)
-	var userIDArg interface{}
-	if execCtx.UserID != "" && execCtx.UserID != "anonymous" && isLikelyUUID(execCtx.UserID) {
-		userIDArg = execCtx.UserID
-	}
-
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO agent_traces (trace_id, user_id, user_input, style_slug, mode, status, current_step, step_history, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-		ON CONFLICT (trace_id) DO NOTHING
-	`,
-		execCtx.TraceID,
-		userIDArg,
-		execCtx.UserInput,
-		execCtx.StyleSlug,
-		execCtx.Mode,
-		string(execCtx.Status),
-		string(execCtx.CurrentStep),
-		"[]",
-	)
-	if err != nil {
-		slog.Warn("failed to create trace", "error", err, "trace_id", execCtx.TraceID)
-	}
-	return err
-}
-
-// UpdateTraceStep updates the trace with the current step and step history.
-func (r *TraceRepo) UpdateTraceStep(ctx context.Context, execCtx *engine.ExecutionContext) error {
-	if r.db == nil {
-		return nil
-	}
-
-	stepHistoryJSON, err := json.Marshal(execCtx.StepHistory)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.db.ExecContext(ctx, `
-		UPDATE agent_traces
-		SET status = $1, current_step = $2, step_history = $3
-		WHERE trace_id = $4
-	`,
-		string(execCtx.Status),
-		string(execCtx.CurrentStep),
-		stepHistoryJSON,
-		execCtx.TraceID,
-	)
-	return err
-}
-
-// PauseTrace persists the paused state to the database so the session
-// can be resumed after a client disconnect. Unlike CompleteTrace, it
-// does not set completed_at — the trace remains "in progress".
-func (r *TraceRepo) PauseTrace(ctx context.Context, execCtx *engine.ExecutionContext) error {
-	if r.db == nil {
-		return nil
-	}
-
-	stepHistoryJSON, err := json.Marshal(execCtx.StepHistory)
-	if err != nil {
-		return err
-	}
-
-	tokenJSON, _ := json.Marshal(map[string]int{
-		"total_tokens": execCtx.TotalTokens,
-	})
-
-	_, err = r.db.ExecContext(ctx, `
-		UPDATE agent_traces
-		SET status = $1, current_step = $2, step_history = $3,
-		    article = $4, article_title = $5, token_usage = $6,
-		    reasoning_content = $7
-		WHERE trace_id = $8
-	`,
-		string(execCtx.Status),
-		string(execCtx.CurrentStep),
-		stepHistoryJSON,
-		execCtx.Article,
-		execCtx.ArticleTitle,
-		tokenJSON,
-		execCtx.ReasoningContent,
-		execCtx.TraceID,
-	)
-	if err != nil {
-		slog.Warn("failed to persist paused trace", "error", err, "trace_id", execCtx.TraceID)
-	}
-	return err
-}
+// ─── Writing-lifecycle writes removed ─────────────────────
+//
+// CreateTrace / UpdateTraceStep / PauseTrace / UpdateTaskName /
+// FailTrace / LinkEditorialTask were deleted with the legacy WebSocket
+// writing path and the WABench RunCore migration (agent_traces is now a
+// read-only history projection: the governed runtime owns run state in
+// writingstore, and user-surface maintenance goes through the methods
+// below — UpdateTraceTitle, CancelTrace, SoftDeleteTrace, …).
 
 // CompleteTrace finalizes the trace with article, review, and token usage.
 func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.ExecutionContext) error {
@@ -191,53 +105,10 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 	return err
 }
 
-// UpdateTaskName sets the task_name column for a trace.
-// task_name is a short title extracted from the user's input by an LLM,
-// used as the display title in the session list (priority: article_title > task_name > user_input truncated).
-func (r *TraceRepo) UpdateTaskName(ctx context.Context, traceID, taskName string) error {
-	if r.db == nil {
-		return nil
-	}
-	// Truncate to 128 chars (column width) to avoid DB error
-	if len([]rune(taskName)) > 128 {
-		taskName = string([]rune(taskName)[:128])
-	}
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE agent_traces SET task_name = $1 WHERE trace_id = $2
-	`, taskName, traceID)
-	if err != nil {
-		slog.Warn("failed to update task_name", "error", err, "trace_id", traceID)
-	}
-	return err
-}
-
-// LinkEditorialTask is now a no-op — after the two-table merge (087),
-// task.ID is the trace_id, so there's no separate link to maintain.
-func (r *TraceRepo) LinkEditorialTask(ctx context.Context, traceID, taskID string) error {
-	return nil
-}
-
 // GetEditorialTaskID retrieves the editorial task ID associated with a trace.
 // After the two-table merge (087), task.ID is the trace_id, so just return it.
 func (r *TraceRepo) GetEditorialTaskID(ctx context.Context, traceID string) (string, error) {
 	return traceID, nil
-}
-
-// FailTrace marks a trace as failed with an error message.
-func (r *TraceRepo) FailTrace(ctx context.Context, traceID, errMsg string) error {
-	if r.db == nil {
-		return nil
-	}
-
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE agent_traces
-		SET status = 'failed', error = $1, completed_at = NOW()
-		WHERE trace_id = $2
-	`,
-		errMsg,
-		traceID,
-	)
-	return err
 }
 
 // GetTrace retrieves a trace by ID.

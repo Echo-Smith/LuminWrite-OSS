@@ -198,6 +198,23 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status TaskStat
 	return nil
 }
 
+// MarkTaskFailed 将执行失败/被取消的 DAG 任务拉回 draft，并同步把 trace
+// 标记为 failed 终态。若不写终态，看板会永远停在"写作中"，
+// 写作历史里该会话也一直显示进行中。
+func (s *Store) MarkTaskFailed(ctx context.Context, id string, errMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agent_traces
+		SET editorial_status = $2, assignee_type = $3,
+		    status = 'failed', error = $4,
+		    completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+		WHERE trace_id = $1
+	`, id, StatusDraft, AssigneeHuman, errMsg)
+	if err != nil {
+		return fmt.Errorf("mark task failed: %w", err)
+	}
+	return nil
+}
+
 // AddTokenUsage 增加任务 Token 用量（更新 agent_traces.token_usage JSONB）
 func (s *Store) AddTokenUsage(ctx context.Context, taskID string, tokens int) error {
 	_, err := s.db.ExecContext(ctx, `

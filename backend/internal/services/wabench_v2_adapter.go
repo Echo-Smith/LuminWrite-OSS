@@ -15,10 +15,8 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
-	pkgmemory "github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
 const LuminbuddyV2AdapterID = "luminbuddy-v2"
@@ -85,14 +83,17 @@ func (r staticWABenchLLMResolver) GetClient(context.Context, string) *tools.LLMC
 	return r.client
 }
 
+// HarnessWABenchExecutor runs WABench candidates through the harness
+// execution CORE (RunCore): frozen inputs, frozen config, one isolated
+// session per case, provisional output only. It owns no session
+// persistence and no legacy trace lifecycle (⑥B) — run identity, timing
+// and evaluation evidence belong to WABench itself.
 type HarnessWABenchExecutor struct {
-	llmResolver  WABenchLLMResolver
-	search       *tools.SearchClient
-	kb           tools.KnowledgeSearcher
-	profiles     *profile.Loader
-	userStyles   *database.UserStyleStore
-	sessionStore agent.SessionStore
-	traces       *database.TraceRepo
+	llmResolver WABenchLLMResolver
+	search      *tools.SearchClient
+	kb          tools.KnowledgeSearcher
+	profiles    *profile.Loader
+	userStyles  *database.UserStyleStore
 }
 
 func NewHarnessWABenchExecutor(
@@ -101,12 +102,9 @@ func NewHarnessWABenchExecutor(
 	kb tools.KnowledgeSearcher,
 	profiles *profile.Loader,
 	userStyles *database.UserStyleStore,
-	sessionStore agent.SessionStore,
-	traces *database.TraceRepo,
 ) *HarnessWABenchExecutor {
 	return NewHarnessWABenchExecutorWithResolver(
-		staticWABenchLLMResolver{client: llm}, search, kb, profiles,
-		userStyles, sessionStore, traces,
+		staticWABenchLLMResolver{client: llm}, search, kb, profiles, userStyles,
 	)
 }
 
@@ -116,12 +114,10 @@ func NewHarnessWABenchExecutorWithResolver(
 	kb tools.KnowledgeSearcher,
 	profiles *profile.Loader,
 	userStyles *database.UserStyleStore,
-	sessionStore agent.SessionStore,
-	traces *database.TraceRepo,
 ) *HarnessWABenchExecutor {
 	return &HarnessWABenchExecutor{
 		llmResolver: llmResolver, search: search, kb: kb, profiles: profiles,
-		userStyles: userStyles, sessionStore: sessionStore, traces: traces,
+		userStyles: userStyles,
 	}
 }
 
@@ -262,10 +258,11 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		})
 	}
 
-	var sessionStore agent.SessionStore
-	if memoryEnabled {
-		sessionStore = readOnlyWABenchSessionStore{inner: e.sessionStore}
-	}
+	// memoryEnabled keeps its validation contract (a candidate that opts in
+	// must name a frozen memory user) but no longer wires a session store:
+	// RunCore owns no session persistence, and WABench evaluations must not
+	// read or write a user's conversation history (⑥B).
+	_ = memoryEnabled
 	search := e.search
 	kb := e.kb
 	if request.Case.SourceMode == "frozen" {
@@ -275,29 +272,26 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		search = nil
 	}
 	emitter := newWABenchCaptureEmitter()
-	harness := agent.NewHarness(llm, search, kb, styleProfile, sessionStore, emitter)
+	// RunCore (not Harness.Run): the evaluation executor owns its run
+	// identity, frozen sources, candidate config, timing and output — it
+	// must not drive session persistence, memory writes, or the legacy
+	// agent_traces lifecycle. RunCore produces provisional output only;
+	// every authoritative commit stays with WABench itself (⑥B).
+	harness := agent.NewHarness(llm, search, kb, styleProfile)
 
-	if e.traces != nil {
-		persisted := engine.NewCompatibilityExecutionContext(engine.CompatibilityInput{
-			TraceID: execCtx.TraceID, UserID: execCtx.UserID,
-			UserInput: "[WABench private input " + request.Case.InputHash + "]",
-			StyleSlug: execCtx.StyleSlug, Mode: execCtx.Mode,
-		})
-		persisted.Status, persisted.CurrentStep = execCtx.Status, execCtx.CurrentStep
-		if err := e.traces.CreateTrace(ctx, persisted); err != nil {
-			return nil, fmt.Errorf("create WABench agent trace: %w", err)
-		}
-		execCtx.Status = engine.StatusIdle
-	}
 	started := time.Now()
-	err = harness.Run(ctx, execCtx, writingSession)
+	coreOutput, runErr := harness.RunCore(ctx, execCtx, writingSession)
 	latency := time.Since(started).Milliseconds()
-	if e.traces != nil {
-		_ = e.traces.UpdateTraceStep(ctx, execCtx)
-		_ = e.traces.CompleteTrace(ctx, execCtx)
-		if err != nil {
-			_ = e.traces.FailTrace(ctx, traceID, err.Error())
-		}
+	err = runErr
+	// RunCore never touches execCtx.Status terminally; map the provisional
+	// output onto the trace WABench persists itself.
+	if err == nil {
+		execCtx.Article, execCtx.ArticleTitle = coreOutput.Article, coreOutput.ArticleTitle
+		execCtx.TotalTokens = coreOutput.TotalTokens
+		writingSession.SearchResults = coreOutput.SearchResults
+		execCtx.Status = engine.StatusCompleted
+	} else {
+		execCtx.Status = engine.StatusFailed
 	}
 
 	events, emitterErrors := emitter.snapshot()
@@ -305,12 +299,18 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		TraceID: traceID, Article: execCtx.Article, ArticleTitle: execCtx.ArticleTitle,
 		Status: execCtx.Status, TotalTokens: execCtx.TotalTokens, LatencyMs: latency,
 		ToolEvents: events, SearchResults: append([]engine.SearchResult(nil), writingSession.SearchResults...),
-		StepHistory:    append([]engine.StepRecord(nil), execCtx.StepHistory...),
-		TracePersisted: e.traces != nil,
+		StepHistory: append([]engine.StepRecord(nil), execCtx.StepHistory...),
+		// The executor no longer writes the legacy agent_traces lifecycle
+		// (⑥B); WABench persists its own run/evidence records.
+		TracePersisted: false,
 	}
 	if execCtx.TaskIntent != nil {
 		trace.TaskIntent = execCtx.TaskIntent.TaskMode
 	}
+	// Tool-level observability without the harness emitter: RunCore never
+	// emits events (⑥B — the governed core produces provisional output
+	// only), so retrieval signals are inferred from the captured search
+	// results instead of emitter ToolEvents.
 	providers := map[string]bool{}
 	for _, event := range events {
 		switch event.Step {
@@ -321,6 +321,9 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		}
 	}
 	for _, result := range trace.SearchResults {
+		if strings.HasPrefix(result.Source, "local_kb") {
+			trace.KnowledgeTriggered = true
+		}
 		if strings.HasPrefix(result.Source, "local_kb") || strings.HasPrefix(result.Source, "frozen_fixture:") {
 			provider := strings.TrimPrefix(result.Source, "frozen_fixture:")
 			if provider == "local_kb" || provider == "" {
@@ -337,35 +340,6 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		err = fmt.Errorf("agent emitted error: %s", strings.Join(emitterErrors, "; "))
 	}
 	return trace, err
-}
-
-// readOnlyWABenchSessionStore allows an explicitly opted-in candidate to read
-// its frozen user's memory without writing evaluation messages back into the
-// user's conversation or changing subsequent benchmark cases.
-type readOnlyWABenchSessionStore struct {
-	inner agent.SessionStore
-}
-
-func (s readOnlyWABenchSessionStore) LoadHistory(ctx context.Context, conversationID string, limit int) ([]pkgmemory.ConversationMessage, error) {
-	if s.inner == nil {
-		return nil, nil
-	}
-	return s.inner.LoadHistory(ctx, conversationID, limit)
-}
-
-func (s readOnlyWABenchSessionStore) StoreMessage(context.Context, *pkgmemory.ConversationMessage) error {
-	return nil
-}
-
-func (s readOnlyWABenchSessionStore) IsEnabledForUser(userID string) bool {
-	return s.inner != nil && s.inner.IsEnabledForUser(userID)
-}
-
-func (s readOnlyWABenchSessionStore) Retrieve(ctx context.Context, req memoryport.Request) (*memoryport.Bundle, error) {
-	if retriever, ok := s.inner.(agent.MemoryRetriever); ok {
-		return retriever.Retrieve(ctx, req)
-	}
-	return nil, nil
 }
 
 type wabenchCaptureEmitter struct {

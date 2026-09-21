@@ -16,16 +16,6 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
-// harnessAgentRunner 适配 Harness 到 agent runner 接口。
-type harnessAgentRunner struct {
-	harness *agent.Harness
-	session *agent.WritingSession
-}
-
-func (r *harnessAgentRunner) Run(ctx context.Context, execCtx *engine.ExecutionContext) error {
-	return r.harness.Run(ctx, execCtx, r.session)
-}
-
 // ExperimentRunner 对照实验运行器
 type ExperimentRunner struct {
 	store        *Store
@@ -342,7 +332,13 @@ func (r *ExperimentRunner) runPipelineMode(ctx context.Context, topic, styleSlug
 	return metrics
 }
 
-// runHarnessMode 运行 Harness 模式（架构 C）
+// runHarnessMode 运行 Harness 执行核模式（⑥C：RunCore，非完整生命周期）
+//
+// The experiment's harness arm runs the execution CORE only: RunCore
+// produces provisional output (article, tokens, search results, review)
+// without session persistence, memory writes, or terminal/UI events —
+// the same contract the governed runtime and WABench use. Experiment
+// identity, timing, and metrics stay owned by the runner.
 func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug string, frozen []engine.SearchResult) ExperimentMetrics {
 	start := time.Now()
 	defer func() {
@@ -363,8 +359,6 @@ func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug 
 		execCtx.FrozenSearchResults = true
 	}
 
-	emitter := &noopEmitter{}
-
 	var styleProfile *profile.StyleProfile
 	if r.profiles != nil {
 		styleProfile, _ = r.profiles.Get(styleSlug)
@@ -377,21 +371,23 @@ func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug 
 		}
 	}
 
-	harness := agent.NewHarness(r.llmResolver.GetClient(ctx, ""), r.search, nil, styleProfile, nil, emitter)
-	harnessRunner := &harnessAgentRunner{harness: harness, session: session}
-
+	harness := agent.NewHarness(r.llmResolver.GetClient(ctx, ""), r.search, nil, styleProfile)
 	execCtx.ConfirmTimeout = 1 * time.Second
 
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	if err := harnessRunner.Run(runCtx, execCtx); err != nil {
+	output, err := harness.RunCore(runCtx, execCtx, session)
+	if err != nil {
 		return ExperimentMetrics{
 			Mode:      "harness",
 			DurationMs: time.Since(start).Milliseconds(),
 			Error:     err.Error(),
 		}
 	}
+	execCtx.Article, execCtx.ArticleTitle = output.Article, output.ArticleTitle
+	execCtx.TotalTokens = output.TotalTokens
+	review := output.ReviewResult
 
 	wordCount := len([]rune(execCtx.Article))
 	excerpt := execCtx.Article
@@ -399,21 +395,21 @@ func (r *ExperimentRunner) runHarnessMode(ctx context.Context, topic, styleSlug 
 		excerpt = string([]rune(excerpt)[:200])
 	}
 
-	// 从 session.ReviewResult 采集审校结果（Harness 的 review_article 工具会设置）
+	// 从 RunCore 输出采集审校结果（harness 的 review_article 工具会设置）
 	metrics := ExperimentMetrics{
 		Mode:           "harness",
 		TokenCost:      execCtx.TotalTokens,
 		DurationMs:     time.Since(start).Milliseconds(),
 		WordCount:      wordCount,
-		SourceCount:    len(session.SearchResults),
+		SourceCount:    len(output.SearchResults),
 		ArticleTitle:   execCtx.ArticleTitle,
 		ArticleExcerpt: excerpt,
 		FullArticle:    execCtx.Article,
 	}
-	if session.ReviewResult != nil {
-		metrics.ReviewPassed = session.ReviewResult.Passed
-		metrics.IssueCount = len(session.ReviewResult.Issues)
-		if session.ReviewResult.Passed {
+	if review != nil {
+		metrics.ReviewPassed = review.Passed
+		metrics.IssueCount = len(review.Issues)
+		if review.Passed {
 			metrics.QualityScore = 0.8
 		} else {
 			metrics.QualityScore = 0.5

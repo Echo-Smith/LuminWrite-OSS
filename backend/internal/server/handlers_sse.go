@@ -84,8 +84,10 @@ func (h *SSEHub) Broadcast(event *SSEEvent) {
 	defer h.mu.RUnlock()
 
 	for _, client := range h.clients {
-		// User-scoped delivery: skip clients that don't match
-		if event.UserID != "" && client.userID != "" && client.userID != event.UserID {
+		// User-scoped delivery: only the target user's authenticated clients
+		// receive the event. Anonymous clients (userID == "") never match a
+		// user-scoped event — otherwise they would leak user data.
+		if event.UserID != "" && client.userID != event.UserID {
 			continue
 		}
 		select {

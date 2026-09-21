@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
@@ -527,7 +527,7 @@ func TestT09SSEReconnectMergesBySequence(t *testing.T) {
 	}
 }
 
-func eventsOf(t *testing.T, payload map[string]any) []websocket.WritingEvent {
+func eventsOf(t *testing.T, payload map[string]any) []writingtransport.WritingEvent {
 	t.Helper()
 	data, ok := dataOf(t, payload)["events"].([]any)
 	if !ok {
@@ -537,7 +537,7 @@ func eventsOf(t *testing.T, payload map[string]any) []websocket.WritingEvent {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var events []websocket.WritingEvent
+	var events []writingtransport.WritingEvent
 	if err := json.Unmarshal(encoded, &events); err != nil {
 		t.Fatal(err)
 	}

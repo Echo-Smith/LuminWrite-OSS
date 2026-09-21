@@ -38,7 +38,7 @@ func TestLuminbuddyV2AdapterExecutesRealHarness(t *testing.T) {
 
 	llm := tools.NewLLMClient(server.URL, "test-key", "test-model", 2048, 0.1, 5*time.Second)
 	resolver := recordingWABenchLLMResolver{client: llm, resolvedModel: &resolvedModel}
-	executor := NewHarnessWABenchExecutorWithResolver(resolver, nil, nil, newTestProfileLoader(t, "fixture-style"), nil, nil, nil)
+	executor := NewHarnessWABenchExecutorWithResolver(resolver, nil, nil, newTestProfileLoader(t, "fixture-style"), nil)
 	trace, err := executor.Execute(context.Background(), WABenchAgentRequest{
 		RunID: "run_contract",
 		Input: "请写一篇测试文章",
@@ -99,7 +99,7 @@ func TestLuminbuddyV2AdapterLabelsLocalKnowledgeProvider(t *testing.T) {
 	defer server.Close()
 
 	llm := tools.NewLLMClient(server.URL, "test-key", "test-model", 2048, 0.1, 5*time.Second)
-	executor := NewHarnessWABenchExecutor(llm, nil, fixtureWABenchKnowledgeSearcher{}, newTestProfileLoader(t, "fixture-style"), nil, nil, nil)
+	executor := NewHarnessWABenchExecutor(llm, nil, fixtureWABenchKnowledgeSearcher{}, newTestProfileLoader(t, "fixture-style"), nil)
 	trace, err := executor.Execute(context.Background(), WABenchAgentRequest{
 		RunID: "run_local_kb",
 		Input: "请参考内部知识库写作",
@@ -177,7 +177,7 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := NewHarnessWABenchExecutor(nil, nil, nil, loader, store, nil, nil)
+	executor := NewHarnessWABenchExecutor(nil, nil, nil, loader, store)
 	resolved, err := executor.resolveProfile(context.Background(), []string{ref})
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestWABenchPublicRuleProfilesBindToBuiltinDefault(t *testing.T) {
 	// evaluation rules bind to the built-in "default" style, so a fresh OSS
 	// deployment resolves them out of the box. Resolution must still fail
 	// closed when the profile loader itself is missing.
-	executor := NewHarnessWABenchExecutor(nil, nil, nil, profile.NewLoader(), nil, nil, nil)
+	executor := NewHarnessWABenchExecutor(nil, nil, nil, profile.NewLoader(), nil)
 	for ref := range publicWABenchStyleRefs {
 		resolved, err := executor.resolveProfile(context.Background(), []string{ref})
 		if err != nil {
@@ -202,7 +202,7 @@ func TestWABenchPublicRuleProfilesBindToBuiltinDefault(t *testing.T) {
 			t.Fatalf("resolve %s: slug = %s, want default", ref, resolved.Slug)
 		}
 	}
-	noLoader := NewHarnessWABenchExecutor(nil, nil, nil, nil, nil, nil, nil)
+	noLoader := NewHarnessWABenchExecutor(nil, nil, nil, nil, nil)
 	for ref := range publicWABenchStyleRefs {
 		_, err := noLoader.resolveProfile(context.Background(), []string{ref})
 		if err == nil || !strings.Contains(err.Error(), "unavailable") {

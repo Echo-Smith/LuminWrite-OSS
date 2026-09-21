@@ -29,7 +29,7 @@
 // Response 200
 {
   "trace_id": "trace_xxx",
-  "ws_url": "/api/v2/ws/agent?trace_id=trace_xxx",
+  "ws_url": "/api/v2/ws/agent?trace_id=trace_xxx",  // 已移除：见「WebSocket API（已移除）」
   "style": "yinyue",
   "mode": "guided"
 }
@@ -317,12 +317,17 @@ POST   /api/v2/admin/styles/:slug/rollout/preview  // 预览灰度命中情况
 
 ---
 
-## WebSocket API
+## WebSocket API（已移除）
+
+> **v3.0 架构迁移**：Legacy WebSocket 写作通道（`/api/v2/ws/agent`）已删除。
+> 写作命令走 REST（`/api/v2/documents → /contracts → /plans → /runs`），
+> 运行时事件走 SSE（`GET /api/v2/runs/{runId}/events`，支持 `Last-Event-ID`/`?after=` 断线续传）。
+> 以下旧协议文档仅作历史参考。
 
 ### 连接
 
 ```
-WS /api/v2/ws/agent?trace_id=trace_xxx&token=<JWT>
+WS /api/v2/ws/agent?trace_id=trace_xxx&token=<JWT>   （已移除）
 ```
 
 使用 `coder/websocket` 库，支持双向通信。

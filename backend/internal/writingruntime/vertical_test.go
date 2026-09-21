@@ -657,23 +657,19 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 			t.Fatalf("canonical artifact polluted by shadow lane: %#v", artifact)
 		}
 	}
+	// Deterministic shadow-evidence sync: the shadow lane is fully detached
+	// from Execute (two supervised goroutines), so its terminal state is the
+	// run ledger — every node's complete evidence set:
+	//   route_decision + execution(baseline) + execution(shadow) + shadow_comparison
+	// Wait for exactly that per node. The 60s cap is a failure detector for
+	// genuinely missing evidence, not a timing assumption about CI load.
 	expectedComparisons := 4 * len(nodes)
-	evidenceWait := 2 * time.Second
-	if nodeTimeout > evidenceWait {
-		evidenceWait = nodeTimeout + 5*time.Second
+	nodeIDs := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		nodeIDs = append(nodeIDs, "node_"+node.name)
 	}
-	deadline := time.Now().Add(evidenceWait)
-	for time.Now().Before(deadline) {
-		if len(result.evidenceRecords(t)) >= expectedComparisons {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	records := result.evidenceRecords(t)
+	records := waitForNodeEvidence(t, result.evidenceRecords, nodeIDs, 60*time.Second)
 	if len(records) < expectedComparisons {
-		for _, record := range records {
-			t.Logf("record kind=%s lane=%s status=%s node=%s", record.Kind, record.Lane, record.Status, record.Identity.NodeID)
-		}
 		t.Fatalf("evidence records=%d want >= %d", len(records), expectedComparisons)
 	}
 	for _, key := range result.shadowKeys(t) {
@@ -693,6 +689,63 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 		}
 	}
 	return result
+}
+
+// waitForNodeEvidence polls the run ledger until every node carries its
+// complete shadow-lane evidence set, then returns the full record slice.
+// The per-node condition is the deterministic terminal state of the
+// detached shadow finalization; the timeout only fires when evidence is
+// genuinely missing (and dumps the per-node distribution for diagnosis).
+func waitForNodeEvidence(t *testing.T, fetch func(*testing.T) []RuntimeEvidence, nodeIDs []string, timeout time.Duration) []RuntimeEvidence {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var records []RuntimeEvidence
+	for time.Now().Before(deadline) {
+		records = fetch(t)
+		if nodeEvidenceComplete(records, nodeIDs) {
+			return records
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	records = fetch(t)
+	distributions := map[string][]string{}
+	for _, record := range records {
+		key := record.Identity.NodeID
+		distributions[key] = append(distributions[key], fmt.Sprintf("%s/%s", record.Kind, record.Lane))
+	}
+	for _, nodeID := range nodeIDs {
+		t.Logf("node %s evidence: %v", nodeID, distributions[nodeID])
+	}
+	return records
+}
+
+// nodeEvidenceComplete reports whether every node has all four evidence
+// records the shadow rollout emits per attempt.
+func nodeEvidenceComplete(records []RuntimeEvidence, nodeIDs []string) bool {
+	seen := map[string]map[string]bool{}
+	for _, record := range records {
+		node := record.Identity.NodeID
+		if seen[node] == nil {
+			seen[node] = map[string]bool{}
+		}
+		seen[node][record.Kind+"/"+string(record.Lane)] = true
+	}
+	for _, nodeID := range nodeIDs {
+		node := seen[nodeID]
+		if node == nil {
+			return false
+		}
+		if !node["route_decision/"+string(LaneBaseline)] && !node["route_decision/"+string(LaneShadow)] {
+			return false
+		}
+		if !node["execution/"+string(LaneBaseline)] || !node["execution/"+string(LaneShadow)] {
+			return false
+		}
+		if !node["shadow_comparison/"+string(LaneShadow)] && !node["shadow_comparison/"+string(LaneBaseline)] {
+			return false
+		}
+	}
+	return true
 }
 
 func verticalEngineRunner(step engine.Step) func(t *testing.T, documentID string) LegacyNodeRunner {

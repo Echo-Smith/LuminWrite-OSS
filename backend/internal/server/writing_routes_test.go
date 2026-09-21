@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingquality"
@@ -20,14 +20,18 @@ import (
 )
 
 type fakeWritingAPI struct {
-	compileErr   error
-	createRunErr error
-	lastAccess   writingAccess
-	lastControl  controlWritingRunCommand
-	lastApproval approveWritingRunCommand
-	events       writingEventPage
-	quality      writingquality.UserQualitySummary
-	audit        writingquality.AuditQualityReport
+	compileErr      error
+	createRunErr    error
+	lastAccess      writingAccess
+	lastControl     controlWritingRunCommand
+	lastApproval    approveWritingRunCommand
+	lastListLimit   int
+	lastListOffset  int
+	runList         []writingRunListItemView
+	runListTotal    int
+	events          writingEventPage
+	quality         writingquality.UserQualitySummary
+	audit           writingquality.AuditQualityReport
 }
 
 func (fake *fakeWritingAPI) remember(access writingAccess) { fake.lastAccess = access }
@@ -63,6 +67,11 @@ func (fake *fakeWritingAPI) CreateRun(_ context.Context, access writingAccess, _
 func (fake *fakeWritingAPI) GetRun(_ context.Context, access writingAccess, _ string) (writingstore.RuntimeRun, error) {
 	fake.remember(access)
 	return testRuntimeRun(), nil
+}
+func (fake *fakeWritingAPI) ListRuns(_ context.Context, access writingAccess, limit, offset int) ([]writingRunListItemView, int, error) {
+	fake.remember(access)
+	fake.lastListLimit, fake.lastListOffset = limit, offset
+	return fake.runList, fake.runListTotal, nil
 }
 func (fake *fakeWritingAPI) ListEvents(_ context.Context, access writingAccess, _ string, _ int64, _ int) (writingEventPage, error) {
 	fake.remember(access)
@@ -161,6 +170,42 @@ func TestWritingRunReturnsStableMissingPlanError(t *testing.T) {
 	assertWritingErrorCode(t, recorder, http.StatusUnprocessableEntity, "PLAN_NOT_EXECUTABLE")
 }
 
+func TestWritingRunListIsPagedAndOwned(t *testing.T) {
+	completed := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	fake := &fakeWritingAPI{runList: []writingRunListItemView{{
+		RunID: "run_test", DocumentID: "doc_test", Title: "Governed run", Status: "completed",
+		StyleSlug: "yinyue", CreatedAt: completed.Add(-time.Hour), UpdatedAt: completed, CompletedAt: &completed,
+	}}, runListTotal: 1}
+	router, token := testWritingRouter(t, fake)
+	recorder := writingRequest(t, router, token, http.MethodGet, "/api/v2/runs?page=2&page_size=25", "", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fake.lastListLimit != 25 || fake.lastListOffset != 25 {
+		t.Fatalf("limit=%d offset=%d", fake.lastListLimit, fake.lastListOffset)
+	}
+	var payload struct {
+		Data struct {
+			Runs []struct {
+				RunID       string  `json:"run_id"`
+				Title       string  `json:"title"`
+				Status      string  `json:"status"`
+				CompletedAt *string `json:"completed_at"`
+			} `json:"runs"`
+			Total int `json:"total"`
+			Page  int `json:"page"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data.Runs) != 1 || payload.Data.Runs[0].RunID != "run_test" ||
+		payload.Data.Runs[0].Title != "Governed run" || payload.Data.Runs[0].CompletedAt == nil ||
+		payload.Data.Total != 1 || payload.Data.Page != 2 {
+		t.Fatalf("payload=%+v body=%s", payload, recorder.Body.String())
+	}
+}
+
 func TestWritingPlanReturnsStableMissingContractErrorWithDiagnosticPreview(t *testing.T) {
 	fake := &fakeWritingAPI{compileErr: errWritingContractRequired}
 	router, token := testWritingRouter(t, fake)
@@ -189,8 +234,8 @@ func TestWritingRunControlsAndApprovalRequireExactNamedRoutes(t *testing.T) {
 }
 
 func TestWritingEventsExposeDurableEnvelopeAsJSONAndSSE(t *testing.T) {
-	event := websocket.WritingEvent{Protocol: websocket.WritingProtocolV2, Type: websocket.MsgWritingRunStatus, RunID: "run_test", Sequence: 4, Timestamp: time.Now().UTC(), Status: "running", Payload: websocket.WritingRunStatusPayload{To: "running"}}
-	fake := &fakeWritingAPI{events: writingEventPage{Events: []websocket.WritingEvent{event}, NextSequence: 4}}
+	event := writingtransport.WritingEvent{Protocol: writingtransport.WritingProtocolV2, Type: writingtransport.MsgWritingRunStatus, RunID: "run_test", Sequence: 4, Timestamp: time.Now().UTC(), Status: "running", Payload: writingtransport.WritingRunStatusPayload{To: "running"}}
+	fake := &fakeWritingAPI{events: writingEventPage{Events: []writingtransport.WritingEvent{event}, NextSequence: 4}}
 	router, token := testWritingRouter(t, fake)
 	jsonResponse := writingRequest(t, router, token, http.MethodGet, "/api/v2/runs/run_test/events?after=3", "", "")
 	if jsonResponse.Code != http.StatusOK || !strings.Contains(jsonResponse.Body.String(), `"sequence":4`) {
@@ -215,10 +260,10 @@ func TestWritingEventAdapterSeparatesProvisionalDeltaFromCommittedVersion(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if committed.Type != websocket.MsgWritingDocumentCommitted {
+	if committed.Type != writingtransport.MsgWritingDocumentCommitted {
 		t.Fatalf("type=%s", committed.Type)
 	}
-	if payload, ok := committed.Payload.(websocket.WritingDocumentCommittedPayload); !ok || payload.Lifecycle != "committed" || payload.VersionID != "ver_test" {
+	if payload, ok := committed.Payload.(writingtransport.WritingDocumentCommittedPayload); !ok || payload.Lifecycle != "committed" || payload.VersionID != "ver_test" {
 		t.Fatalf("payload=%#v", committed.Payload)
 	}
 }

@@ -5,7 +5,7 @@
  *  - 标题评分（1-5 星）
  *  - 各段落评分（1-5 星）
  *  - 整体评价（好/一般/差 + 文字评论）
- *  - 通过 WebSocket 提交到后端 POST /api/v2/feedback
+ *  - 通过 REST 提交到后端 POST /api/v2/feedback
  *
  * 文档来源: docs/07-feedback.md
  */
@@ -17,6 +17,19 @@ import { Badge } from "@/components/ui/badge";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import type { FeedbackType, FeedbackSegment } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** REST 提交反馈（带 Bearer token，与 writing-api.ts 同一鉴权模式） */
+async function submitFeedback(traceId: string, segments: FeedbackSegment[]): Promise<void> {
+  const token = localStorage.getItem("token");
+  await fetch("/api/v2/feedback", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ trace_id: traceId, segments }),
+  });
+}
 
 // ─── 无笑容微笔图标（嘴巴为 "-"） ─────────────────────
 
@@ -136,7 +149,6 @@ function StarRating({
 // ─── 主组件 ────────────────────────────────────────────────
 
 export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps) {
-  const sendWS = useWritingRuntimeStore((s) => s.sendWS);
   const markFeedbackSubmitted = useWritingRuntimeStore((s) => s.markFeedbackSubmitted);
 
   const { title, paragraphs } = useMemo(() => parseArticleSegments(article), [article]);
@@ -201,21 +213,14 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
 
     if (segments.length === 0) return;
 
-    // 通过 WebSocket 提交
-    sendWS("feedback.submit", { trace_id: traceId, segments });
-
-    // 同时通过 REST API 提交（确保落库）
-    fetch("/api/v2/feedback", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trace_id: traceId, segments }),
-    }).catch(() => {
-      // WS 已发送，REST 失败可忽略
+    // 通过 REST 提交（乐观更新：先置已提交，失败不打断 UI）
+    void submitFeedback(traceId, segments).catch(() => {
+      console.error("Failed to submit feedback");
     });
 
     setSubmitted(true);
     markFeedbackSubmitted(traceId);
-  }, [title, titleRating, paragraphs, paragraphRatings, overallRating, comment, article, traceId, sendWS, markFeedbackSubmitted]);
+  }, [title, titleRating, paragraphs, paragraphRatings, overallRating, comment, article, traceId, markFeedbackSubmitted]);
 
   // ─── 快捷整体评价（不展开分段） ──────────────────────────
   const handleQuickFeedback = (type: FeedbackType) => {
@@ -234,12 +239,9 @@ export function FeedbackBar({ traceId, article, hasFeedback }: FeedbackBarProps)
           comment: "",
         },
       ];
-      sendWS("feedback.submit", { trace_id: traceId, segments });
-      fetch("/api/v2/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trace_id: traceId, segments }),
-      }).catch(() => {});
+      void submitFeedback(traceId, segments).catch(() => {
+        console.error("Failed to submit feedback");
+      });
       setSubmitted(true);
       markFeedbackSubmitted(traceId);
     }

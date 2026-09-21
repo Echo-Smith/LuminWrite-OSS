@@ -3,7 +3,8 @@
  *
  * 管理 Planner 返回的 Agent 集群 + DAG 拓扑，
  * 以及 DAG 执行过程中的节点状态更新。
- * 通过 WebSocket 接收 workflow 和 node 事件。
+ * Editorial Transport Migration：命令走 REST（lib/workflow-api.ts），
+ * workflow:* / node:* 事件经 SSE 接收（hooks/use-workflow-sse.ts）。
  */
 import { create } from "zustand";
 import type { Node, Edge, Connection } from "@xyflow/react";

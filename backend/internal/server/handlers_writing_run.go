@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -88,6 +88,29 @@ func (s *Server) handleGetWritingRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, run)
+}
+
+// handleListWritingRuns lists the caller's governed runs, newest first.
+//
+// GET /api/v2/runs?page=1&page_size=50
+// Header: Authorization: Bearer <jwt>
+func (s *Server) handleListWritingRuns(w http.ResponseWriter, r *http.Request) {
+	access, err := writingAccessFromRequest(r)
+	if err != nil {
+		s.writeWritingError(w, err)
+		return
+	}
+	page := parseIntDefault(r.URL.Query().Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 50)
+	runs, total, err := s.writingAPI.ListRuns(r.Context(), access, pageSize, (page-1)*pageSize)
+	if err != nil {
+		s.writeWritingError(w, err)
+		return
+	}
+	response.OK(w, map[string]any{"runs": runs, "total": total, "page": page, "page_size": pageSize})
 }
 
 func (s *Server) handleApproveWritingRun(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +213,7 @@ func (s *Server) handleWritingRunEvents(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func writeWritingSSE(w http.ResponseWriter, flusher http.Flusher, events []websocket.WritingEvent) {
+func writeWritingSSE(w http.ResponseWriter, flusher http.Flusher, events []writingtransport.WritingEvent) {
 	for _, event := range events {
 		payload, err := json.Marshal(event)
 		if err != nil {

@@ -16,11 +16,12 @@ func TestNewGovernedWritingRuntimeModeGating(t *testing.T) {
 		t.Fatalf("off must yield (nil, nil), got (%v, %v)", runtime, err)
 	}
 
-	// allowlist is not wired in M0b-1 — it errors rather than silently
-	// serving shadow under an allowlist label.
+	// allowlist mounts exactly like shadow (same composition spine, plus the
+	// gated authoritative lane) and fails on missing dependencies just the
+	// same — it must never half-build.
 	if _, err := newGovernedWritingRuntime(nil, writingruntime.RuntimeModeAllowlist, governedRuntimeDependencies{}, nil); err == nil ||
 		!strings.Contains(err.Error(), "dependencies are required") {
-		t.Fatalf("allowlist should error as not-wired, got %v", err)
+		t.Fatalf("allowlist with nil deps should error, got %v", err)
 	}
 
 	// shadow with missing dependencies is refused before any construction.

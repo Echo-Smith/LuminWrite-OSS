@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
@@ -16,35 +15,33 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
 )
 
-// ─── Harness: 单层 LLM 编排器 ──────────────────────────────
+// ─── Harness: 单层 LLM 执行核 ──────────────────────────────
 //
-// Harness 是架构 C 的核心编排器。
+// Harness 是执行核（⑥D 后）：RunCore 是唯一入口，产出 provisional value。
+// 会话持久化、记忆写入、终态/UI 事件、扣费等用户侧副作用已随 Legacy
+// 写作路径移除——权威提交归 governed runtime / WABench / 实验各自所有。
 //
 // 设计原则（继承 dsh/Pi 理念 [[memory:178679655388010121476]]）：
-//   - Harness 管：意图路由、工具集选择、会话状态、断路器、超时、断线重连
-//   - LLM 执行：在持续会话中自主决定调用什么工具、何时写作、何时修正
+//   - 意图路由、工具集选择、断路器、超时、断线检测
+//   - LLM 执行：在单轮中自主决定调用什么工具、何时写作、何时修正
 //   - 单层：不存在外层 ReAct + 内层 agent loop 的嵌套
 //
 // 核心特点：
 //   - 意图判定走规则（毫秒级），不走 LLM
 //   - 工具粒度细（search_web, read_source, write_article, review_article, revise_section）
-//   - 会话状态跨轮保留（文章、素材、记忆）
+//   - 会话状态仅在单次 run 内保留（文章、素材）
 
 // Harness 依赖项。
 type Harness struct {
-	llm           *tools.LLMClient
-	search        *tools.SearchClient
-	kbSearcher    tools.KnowledgeSearcher
-	profile       *profile.StyleProfile
-	sessionStore  SessionStore
-	emitter       engine.EventEmitter
+	llm        *tools.LLMClient
+	search     *tools.SearchClient
+	kbSearcher tools.KnowledgeSearcher
+	profile    *profile.StyleProfile
+
 	maxIterations int
 
-	// 计费回调：工具执行成功后按名称扣费（商业版注入，nil = 不扣费）
-	toolSettleFunc ToolSettleFunc
-
-	// memoryPort 记忆消费契约（P1）：retrieve_context/remember 工具后端
-	// + 会话收尾自动提取。nil = 记忆功能关闭。
+	// memoryPort 记忆消费契约（P1）：retrieve_context/remember 工具后端。
+	// nil = 记忆功能关闭。
 	memoryPort memoryport.Port
 
 	// WorldState 管理（借鉴 Codex ContextManager + WorldState）
@@ -57,46 +54,23 @@ type Harness struct {
 	autoCompact *worldstate.AutoCompactFallback
 }
 
-// NewHarness creates a Harness orchestrator.
-func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, kb tools.KnowledgeSearcher, p *profile.StyleProfile, store SessionStore, emitter engine.EventEmitter) *Harness {
+// NewHarness creates the execution core.
+func NewHarness(llm *tools.LLMClient, search *tools.SearchClient, kb tools.KnowledgeSearcher, p *profile.StyleProfile) *Harness {
 	return &Harness{
-		llm:           llm,
-		search:        search,
-		kbSearcher:    kb,
-		profile:       p,
-		sessionStore:  store,
-		emitter:       emitter,
-		maxIterations: 12,
-		worldState:    worldstate.NewWorldState(),
-		tokenBudget:   &worldstate.TokenBudget{ContextWindowID: ""},
-		autoCompact:   worldstate.NewAutoCompactFallback(),
+		llm:            llm,
+		search:         search,
+		kbSearcher:     kb,
+		profile:        p,
+		maxIterations:  12,
+		worldState:     worldstate.NewWorldState(),
+		tokenBudget:    &worldstate.TokenBudget{ContextWindowID: ""},
+		autoCompact:    worldstate.NewAutoCompactFallback(),
 	}
-}
-
-// SetToolSettleFunc 注入工具扣费回调（商业版使用）。
-// 必须在 Run 之前调用。
-func (h *Harness) SetToolSettleFunc(fn ToolSettleFunc) {
-	h.toolSettleFunc = fn
 }
 
 // SetMemoryPort 注入记忆消费契约（P1）。nil = 关闭记忆功能。
 func (h *Harness) SetMemoryPort(p memoryport.Port) {
 	h.memoryPort = p
-}
-
-// settleFuncFor 把扣费限制在持久交互路径。governed Core（persistent=false）
-// 运行在 shadow lane 时绝不能消耗用户积分：扣费属于用户侧副作用。
-func (h *Harness) settleFuncFor(persistent bool) ToolSettleFunc {
-	if persistent {
-		return h.toolSettleFunc
-	}
-	return nil
-}
-
-// Run 执行单次写作/对话请求。
-// execCtx 持有本次请求的输入和状态，session 持有跨轮的会话状态。
-func (h *Harness) Run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) error {
-	return h.run(ctx, execCtx, session, true)
 }
 
 // HarnessCoreOutput is provisional. RunCore never reads or writes session
@@ -114,7 +88,7 @@ func (h *Harness) RunCore(ctx context.Context, execCtx *engine.ExecutionContext,
 	if h == nil || execCtx == nil || session == nil {
 		return HarnessCoreOutput{}, fmt.Errorf("harness core requires execution context and isolated session")
 	}
-	if err := h.run(ctx, execCtx, session, false); err != nil {
+	if err := h.runCore(ctx, execCtx, session); err != nil {
 		return HarnessCoreOutput{}, err
 	}
 	return HarnessCoreOutput{Article: execCtx.Article, ArticleTitle: execCtx.ArticleTitle,
@@ -122,14 +96,13 @@ func (h *Harness) RunCore(ctx context.Context, execCtx *engine.ExecutionContext,
 		ReviewResult: session.ReviewResult}, nil
 }
 
-func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession, persistent bool) error {
+// runCore is the single execution path: no session persistence, no memory
+// retrieval, no compaction, no emitter, no settle callbacks. Everything it
+// touches lives in the caller-provided execCtx/session for this run only.
+func (h *Harness) runCore(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) error {
 	execCtx.Status = engine.StatusRunning
-	var emitter engine.EventEmitter
-	if persistent {
-		emitter = h.emitter
-	}
 
-	slog.Info("harness started",
+	slog.Info("harness core started",
 		"trace_id", execCtx.TraceID,
 		"conversation_id", session.ConversationID,
 		"user_input", execCtx.UserInput,
@@ -137,17 +110,7 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		"search_results", len(session.SearchResults),
 	)
 
-	// 1. 加载对话历史
-	if persistent {
-		session.LoadHistory(ctx, h.sessionStore, 50)
-	}
-
-	// 1b. 主动检索记忆（如果 SessionStore 实现了 MemoryRetriever）
-	if persistent && session.MemoryContext == nil {
-		h.retrieveMemory(ctx, execCtx, session)
-	}
-
-	// 2. 意图判定（规则，不调 LLM）
+	// 1. 意图判定（规则，不调 LLM）
 	intent := ClassifyIntent(execCtx.UserInput, session)
 	execCtx.TaskIntent = &engine.TaskIntent{
 		TaskMode:        string(intent),
@@ -161,35 +124,28 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		"intent", intent,
 	)
 
-	// 3. 构建 guided 标志（供 buildMessages 和 ToolsForIntent 使用）
+	// 2. 构建 guided 标志（供 buildMessages 和 ToolsForIntent 使用）
 	isGuided := execCtx.Mode == "guided"
 
-	// 3b. 对话历史压缩（借鉴 dsh compaction 模式）
-	// 在构建消息前检查是否需要压缩历史，避免 token 溢出
-	if persistent {
-		h.maybeCompact(ctx, execCtx, session, intent)
-	}
-
-	// 4. 构建消息
+	// 3. 构建消息
 	messages := h.buildMessages(execCtx, session, intent, isGuided)
 
-	// 5. 选择工具集
+	// 4. 选择工具集
 	hasSearch := h.search != nil && h.search.HasSources()
 	hasKB := h.kbSearcher != nil
 	toolDefs := ToolsForIntent(intent, hasSearch, isGuided, hasKB)
 
-	// 5. 构建工具执行器（含声明式 MaxCalls guard）
+	// 5. 构建工具执行器（含声明式 MaxCalls guard）。
+	// SettleFunc 恒为 nil：扣费属于用户侧副作用，执行核绝不消耗积分。
 	executorCfg := ToolExecutorConfig{
 		Search:     h.search,
 		KBSearcher: h.kbSearcher,
 		Session:    session,
 		ExecCtx:    execCtx,
-		Emitter:    emitter,
 		Profile:    h.profile,
 		LLM:        h.llm,
 		MemoryPort: h.memoryPort,
 		MaxCalls:   defaultMaxCalls(intent),
-		SettleFunc: h.settleFuncFor(persistent),
 	}
 	executor := BuildToolExecutor(executorCfg)
 
@@ -215,12 +171,9 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 
 	disconnected := false
 
-	// streamBody 同时写入最终正文缓冲区并转发给前端。
+	// streamBody 写入最终正文缓冲区（执行核不向前端转发）。
 	streamBody := func(text string) {
 		bodyBuf.WriteString(text)
-		if emitter != nil {
-			emitter.StreamDelta(text)
-		}
 	}
 
 	confirmedTitle := strings.TrimSpace(session.ArticleTitle)
@@ -237,9 +190,6 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			OnTitle: func(title string) {
 				articleTitle = title
 				execCtx.ArticleTitle = title
-				if emitter != nil {
-					emitter.ArticleTitle(title)
-				}
 			},
 			OnBody: streamBody,
 		})
@@ -268,9 +218,8 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 	}
 
 	onReasoning := func(delta string) {
-		if emitter != nil {
-			emitter.ReasoningDelta(delta)
-		}
+		// 执行核不转发推理增量（无 UI 通道）。
+		_ = delta
 	}
 
 	onReset := func() {
@@ -294,12 +243,6 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		}
 		// 下一轮流式输出会重新解析标题。
 		articleTitle = ""
-		// StreamReset 清空前端所有 streaming text parts。
-		// 不发 StreamDone，避免中间版本的正文被标记为 streaming:false 留在消息中。
-		// 最终的 StreamDone 在 Run 收尾时发送一次，确保前端只有一篇最终文章。
-		if emitter != nil {
-			emitter.StreamReset()
-		}
 	}
 
 	// 8. 启动 LLM 持续会话
@@ -331,29 +274,21 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 			"buffered_chars", bodyBuf.Len(),
 		)
 		execCtx.Status = engine.StatusPaused
-		if emitter != nil {
-			emitter.PausedWithReason(engine.StepName("streaming"), nil, "disconnect")
-		}
 		return nil
 	}
 
 	// 流式客户端在读取中断（取消/超时/断连）时返回部分文本和 nil error。
-	// 交互路径可以容忍截断输出，但 governed Core 必须稳定失败，
-	// 否则被取消或超时的节点会以截断正文走完 canonical 提交。
-	if !persistent {
-		if coreErr := streamCtx.Err(); coreErr != nil {
-			execCtx.Status = engine.StatusFailed
-			return fmt.Errorf("harness core stream cancelled: %w", coreErr)
-		}
+	// governed Core 必须稳定失败，否则被取消或超时的节点会以截断正文
+	// 走完 canonical 提交。
+	if coreErr := streamCtx.Err(); coreErr != nil {
+		execCtx.Status = engine.StatusFailed
+		return fmt.Errorf("harness core stream cancelled: %w", coreErr)
 	}
 
 	if err != nil {
 		// 配额/断路器检查
 		errMsg := strings.ToLower(err.Error())
 		if strings.Contains(errMsg, "quota") || strings.Contains(errMsg, "402") {
-			if emitter != nil {
-				emitter.Error("quota_exceeded", "AI 模型服务额度不足", execCtx.CurrentStep)
-			}
 			execCtx.Status = engine.StatusFailed
 			return engine.ErrQuotaExceeded
 		}
@@ -428,77 +363,11 @@ func (h *Harness) run(ctx context.Context, execCtx *engine.ExecutionContext, ses
 		execCtx.Article = articleBody
 	}
 
-	// 流式完成
-	if emitter != nil {
-		emitter.StreamDone(articleBody)
-	}
-
-	if persistent {
-		// 交互路径继续存储对话；governed Core 只返回 provisional value。
-		session.StoreMessage(ctx, h.sessionStore, "user", execCtx.UserInput, "text")
-		contentType := "text"
-		if articleIntent {
-			contentType = "article"
-		}
-		session.StoreMessage(ctx, h.sessionStore, "assistant", articleBody, contentType)
-	}
-
-	// P1-4: 会话收尾记忆提取（异步非阻塞，与 Pipeline 的 MemoryExtractStep
-	// 对齐）。浓信号通道：BeforeRevision 取首个历史版本（多轮修订时有
-	// diff 价值），Transcript 携带近期对话。chat 意图不提取（与 Pipeline 一致）。
-	if h.memoryPort != nil && persistent && articleIntent &&
-		session.UserID != "" && session.UserID != "anonymous" &&
-		h.memoryPort.EnabledForUser(session.UserID) {
-		outcome := memoryport.Outcome{
-			Kind:      memoryport.OutcomeWrite,
-			UserID:    session.UserID,
-			TraceID:   execCtx.TraceID,
-			Article:   articleBody,
-			StyleSlug: session.StyleSlug,
-			Mode:      string(intent),
-		}
-		if len(session.ArticleVersions) > 1 {
-			outcome.BeforeRevision = session.ArticleVersions[0]
-		}
-		tail := len(session.Messages) - 10
-		if tail < 0 {
-			tail = 0
-		}
-		for _, m := range session.Messages[tail:] {
-			content := m.Content
-			if len([]rune(content)) > 1000 {
-				content = string([]rune(content)[:1000])
-			}
-			outcome.Transcript = append(outcome.Transcript, memoryport.Message{Role: string(m.Role), Content: content})
-		}
-		go func(out memoryport.Outcome) {
-			extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := h.memoryPort.SubmitOutcome(extractCtx, out); err != nil {
-				slog.Warn("harness: memory submit outcome failed", "error", err, "trace_id", out.TraceID)
-			}
-		}(outcome)
-	}
-
-	// 发送 completed 事件
-	if emitter != nil {
-		var review interface{}
-		if session.ReviewResult != nil {
-			review = session.ReviewResult
-		}
-		emitter.Completed(
-			articleBody,
-			execCtx.ArticleTitle,
-			review,
-			map[string]interface{}{
-				"total_tokens": execCtx.TotalTokens,
-				"intent":       string(intent),
-			},
-		)
-	}
+	// 执行核收尾：无 StreamDone / StoreMessage / 记忆提取 / Completed 事件
+	// ——这些用户侧副作用随 Legacy 交互路径移除（⑥D）。
 
 	execCtx.Status = engine.StatusCompleted
-	slog.Info("harness completed",
+	slog.Info("harness core completed",
 		"trace_id", execCtx.TraceID,
 		"intent", intent,
 		"article_length", len([]rune(articleBody)),
@@ -565,67 +434,6 @@ func (h *Harness) buildMessages(execCtx *engine.ExecutionContext, session *Writi
 	})
 
 	return messages
-}
-
-// retrieveMemory 主动检索用户写作偏好和反馈记忆。
-// 如果 SessionStore 实现了 MemoryRetriever 接口，则调用 Retrieve；
-// 否则静默跳过。检索结果存入 session.MemoryContext。
-func (h *Harness) retrieveMemory(ctx context.Context, execCtx *engine.ExecutionContext, session *WritingSession) {
-	if h.sessionStore == nil {
-		return
-	}
-	retriever, ok := h.sessionStore.(MemoryRetriever)
-	if !ok {
-		return
-	}
-	if !h.sessionStore.IsEnabledForUser(session.UserID) {
-		return
-	}
-	if session.UserID == "" || session.UserID == "anonymous" {
-		return
-	}
-
-	explicit := map[string]any{}
-	if execCtx.StyleSlug != "" {
-		explicit["style"] = execCtx.StyleSlug
-	}
-	if execCtx.Mode != "" {
-		explicit["mode"] = execCtx.Mode
-	}
-	if execCtx.UserInput != "" {
-		explicit["message"] = execCtx.UserInput
-	}
-
-	intent := "writing"
-	if execCtx.TaskIntent != nil {
-		intent = execCtx.TaskIntent.TaskMode
-	}
-
-	req := memoryport.Request{
-		UserID:         session.UserID,
-		Query:          execCtx.UserInput,
-		Intent:         intent,
-		Explicit:       explicit,
-		SessionID:      execCtx.SessionID,
-		ConversationID: session.ConversationID,
-		TraceID:        execCtx.TraceID,
-		Source:         "harness",
-	}
-
-	bundle, err := retriever.Retrieve(ctx, req)
-	if err != nil {
-		slog.Warn("harness: memory retrieve failed", "error", err, "trace_id", execCtx.TraceID)
-		return
-	}
-	if bundle != nil {
-		session.MemoryContext = bundle
-		execCtx.MemoryContext = bundle
-		slog.Info("harness: memory retrieved",
-			"trace_id", execCtx.TraceID,
-			"injected", len(bundle.WriteDirectives),
-			"review_guard", len(bundle.ReviewGuard),
-		)
-	}
 }
 
 // buildSystemPrompt 构建 system prompt。

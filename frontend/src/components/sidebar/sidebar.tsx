@@ -794,6 +794,14 @@ function SessionItem({
         <p className="truncate text-sm">{session.title}</p>
         <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50">
           <span>{formatRelative(session.updatedAt ?? session.createdAt)}</span>
+          {session.source === "governed" && (
+            <span
+              className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1 font-medium leading-4 text-primary/80"
+              title="运行时记录（实时同步）"
+            >
+              运行时
+            </span>
+          )}
           {statusLabel && (
             <span className={cn(
               session.status === "running" && "text-emerald-500",

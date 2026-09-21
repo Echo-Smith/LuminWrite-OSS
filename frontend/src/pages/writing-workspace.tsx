@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { BookOpenText, ChevronDown, Menu, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
+import { BookOpenText, ChevronDown, Menu, PanelLeftClose, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { DetailPanel } from "@/components/sidebar/detail-panel";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -15,7 +15,6 @@ import { RevisionDiff } from "@/components/document/revision-diff";
 import { FeedbackBar } from "@/components/feedback/feedback-bar";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { PulseIndicator } from "@/components/animation";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -294,12 +293,10 @@ export function WritingWorkspace() {
   // SSE connection for governed run events
   const runId = useWritingRuntimeStore((state) => state.run?.run_id ?? null);
   useRunEventsSSE(runId);
-  const connected = useWritingRuntimeStore((state) => state.wsConnected);
 
   const sessions = useWritingRuntimeStore((state) => state.sessions);
   const activeSessionId = useWritingRuntimeStore((state) => state.activeSessionId);
   const loadSessions = useWritingRuntimeStore((state) => state.loadSessions);
-  const connectWS = useWritingRuntimeStore((state) => state.connectWS);
   const switchSession = useWritingRuntimeStore((state) => state.switchSession);
   const createSession = useWritingRuntimeStore((state) => state.createSession);
   const sessionsLoaded = useWritingRuntimeStore((state) => state.sessionsLoaded);
@@ -582,7 +579,6 @@ export function WritingWorkspace() {
     },
   });
 
-  const handleReconnect = useCallback(() => connectWS(), [connectWS]);
   const resizeDetailFromPointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     setDetailWidth(clampDetailWidth(window.innerWidth - event.clientX, sidebarOpen));
@@ -652,7 +648,6 @@ export function WritingWorkspace() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {!connected && <button className="workspace-connection" onClick={handleReconnect}><PulseIndicator status="paused" size="sm" ring={false} /><span>重新连接</span><RefreshCw className="h-3 w-3" /></button>}
             {detailPanel !== "drawer" && (
               <Button
                 variant="ghost"

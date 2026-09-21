@@ -16,7 +16,6 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/routing"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
-	ws "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 )
 
@@ -137,10 +136,6 @@ type MetricsRegistry struct {
 	HTTPRequestsTotal   *Counter
 	HTTPRequestDuration *Histogram
 
-	// WebSocket metrics
-	WSConnectionsActive *Gauge
-	WSErrorsTotal       *Counter
-
 	// Agent metrics
 	AgentExecutionsTotal *Counter
 	AgentDuration        *Histogram
@@ -208,8 +203,6 @@ func NewMetricsRegistry() *MetricsRegistry {
 	r := &MetricsRegistry{
 		HTTPRequestsTotal:       NewCounter("http_requests_total", "Total HTTP requests", "method", "path", "status"),
 		HTTPRequestDuration:     NewHistogram("http_request_duration_seconds", "HTTP request duration", defaultBuckets, "method", "path"),
-		WSConnectionsActive:     NewGauge("websocket_connections_active", "Active WebSocket connections"),
-		WSErrorsTotal:           NewCounter("websocket_errors_total", "Total WebSocket errors", "type"),
 		AgentExecutionsTotal:    NewCounter("agent_executions_total", "Total agent executions", "style", "status"),
 		AgentDuration:           NewHistogram("agent_execution_duration_seconds", "Agent execution duration", defaultBuckets, "style"),
 		LLMCallsTotal:           NewCounter("llm_calls_total", "Total LLM API calls", "model", "type"),
@@ -258,7 +251,6 @@ func NewMetricsRegistry() *MetricsRegistry {
 	r.counters = []*Counter{
 		r.GovernedContextTotal, r.GovernedLifecycleTotal, r.GovernedStyleTotal,
 		r.HTTPRequestsTotal,
-		r.WSErrorsTotal,
 		r.AgentExecutionsTotal,
 		r.LLMCallsTotal,
 		r.LLMErrorsTotal,
@@ -296,7 +288,6 @@ func NewMetricsRegistry() *MetricsRegistry {
 	}
 
 	r.gauges = []*Gauge{
-		r.WSConnectionsActive,
 		r.EvalRunsActive,
 	}
 
@@ -512,13 +503,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			s.profiles.L2Hits.Store(0)
 			s.profiles.Misses.Store(0)
 		}
-		// Sync WebSocket error metrics
-		s.metrics.WSErrorsTotal.Add(ws.WSMetrics.ReadErrors.Load(), "read")
-		s.metrics.WSErrorsTotal.Add(ws.WSMetrics.WriteErrors.Load(), "write")
-		s.metrics.WSErrorsTotal.Add(ws.WSMetrics.ParseErrors.Load(), "parse")
-		ws.WSMetrics.ReadErrors.Store(0)
-		ws.WSMetrics.WriteErrors.Store(0)
-		ws.WSMetrics.ParseErrors.Store(0)
 		// Sync grayscale routing metrics (labels: slug="", result)
 		reqTotal := routing.RolloutMetrics.Requests.Load()
 		errTotal := routing.RolloutMetrics.Errors.Load()

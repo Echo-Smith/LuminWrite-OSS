@@ -67,7 +67,7 @@
 
 3. **访问**
    - 打开 `https://luminbuddy.ericdocmic.top` → 自动跳转到 `/v2/`
-   - WebSocket 会自动走 `wss://luminbuddy.ericdocmic.top/api/v2/ws/agent`
+   - 写作命令走 REST（`/api/v2/runs` 等），运行时事件走 SSE（`/api/v2/runs/{id}/events` 与 `/api/v2/sse/topics`）
 
 > 无需改代码。前端 API 调用使用绝对路径 `/api/v2/...`，nginx 会代理到后端。
 > WebAuthn 配置已在 `.env.docker` 中设为 `luminbuddy.ericdocmic.top`。
@@ -129,7 +129,7 @@ location / {
 |---|---|---|
 | `luminbuddy.ericdocmic.top/` | `127.0.0.1:3000` | V1 首页 |
 | `luminbuddy.ericdocmic.top/v2/` | `127.0.0.1:3002` | V2 前端（自动 SPA 路由） |
-| `luminbuddy.ericdocmic.top/api/v2/ws/agent` | `127.0.0.1:8080` | V2 WebSocket |
+| `luminbuddy.ericdocmic.top/api/v2/runs/{id}/events` | `127.0.0.1:8080` | V2 SSE 运行事件 |
 | `luminbuddy.ericdocmic.top/api/v2/sse/topics` | `127.0.0.1:8080` | V2 SSE 热搜推送 |
 | `luminbuddy.ericdocmic.top/api/v2/admin/*` | `127.0.0.1:8080` | V2 Admin API |
 

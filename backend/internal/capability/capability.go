@@ -66,7 +66,8 @@ type UnifiedManifest struct {
 	Description string `json:"description"`
 	// Inputs/Outputs are the declared artifact/type names (governed artifact
 	// types, tool schema marker "tool://schema", validator IO types).
-	Inputs, Outputs []string `json:"inputs,omitempty"`
+	Inputs  []string `json:"inputs,omitempty"`
+	Outputs []string `json:"outputs,omitempty"`
 	// Permissions are the governed permission names the entry requires;
 	// surfaces that predate governed permissions carry their legacy marker
 	// (e.g. "legacy.agent") instead of inventing equivalents.

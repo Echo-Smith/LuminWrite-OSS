@@ -342,6 +342,8 @@ export interface WritingSession {
   updatedAt?: number;
   folderId: string | null;
   archived: boolean;
+  /** History origin: "governed" = writing_runs (primary), "legacy" = agent_traces (read-only history). */
+  source?: "governed" | "legacy";
   intent?: string | null;
   awaitInputAt: number | null;
   injectedMaterials?: string[];

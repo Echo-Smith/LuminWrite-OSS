@@ -24,6 +24,7 @@ import { Switch } from "@/components/ui/switch";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
+import { createWorkflow, createdViewToPlan, cancelWorkflow } from "@/lib/workflow-api";
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
@@ -112,7 +113,6 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
 
   const startWriting = useWritingRuntimeStore((s) => s.startWriting);
   const cancelWriting = useWritingRuntimeStore((s) => s.cancelWriting);
-  const sendWS = useWritingRuntimeStore((s) => s.sendWS);
   const agentMode = useSettingsStore((s) => s.agentMode);
 
   // Sync mode & style from active session so external callers (e.g. topic center)
@@ -213,11 +213,19 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
     }
 
     if (agentMode === "editorial") {
-      // 工作台模式：发送 workflow.start 触发 Planner + DAG 执行
-      const { setUserInput, setRunStatus } = useWorkflowStore.getState();
-      setUserInput(currentText.trim());
-      setRunStatus("planning");
-      sendWS("workflow.start", { user_input: currentText.trim(), kb_enabled: kbEnabled, style_slug: style, orchestration_mode: orchestrationMode, assurance_level: assuranceLevel, approval_mode: approvalMode });
+      // 工作台模式（Editorial Transport Migration）：REST 规划创建工作流，
+      // 执行进度由全局 SSE（use-workflow-sse）驱动 workflow-store。
+      const wf = useWorkflowStore.getState();
+      wf.setUserInput(currentText.trim());
+      wf.setRunStatus("planning");
+      createWorkflow({ user_input: currentText.trim(), kb_enabled: kbEnabled, style_slug: style })
+        .then((view) => {
+          wf.setPlan(createdViewToPlan(view));
+          wf.setTaskId(view.task_id);
+        })
+        .catch((err) => {
+          wf.setWorkflowFailed(err instanceof Error ? `规划失败：${err.message}` : "规划失败，请稍后重试");
+        });
       editorRef.current?.clear();
       setMessage("");
       return;
@@ -241,7 +249,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
 
     editorRef.current?.clear();
     setMessage("");
-  }, [isRunning, style, mode, model, materials, startWriting, agentMode, sendWS, kbEnabled, orchestrationMode, assuranceLevel, approvalMode]);
+  }, [isRunning, style, mode, model, materials, startWriting, agentMode, kbEnabled, orchestrationMode, assuranceLevel, approvalMode]);
 
   const handleAddMaterial = () => {
     if (materialInput.trim()) {
@@ -565,7 +573,11 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
               <button
                 onClick={() => {
                   if (agentMode === "editorial") {
-                    useWorkflowStore.getState().reset();
+                    // REST 取消执行中的 DAG（若无 taskId 则仅重置本地状态）
+                    const wf = useWorkflowStore.getState();
+                    const tid = wf.taskId;
+                    wf.reset();
+                    if (tid) cancelWorkflow(tid).catch(() => { /* 后端不可达时本地已重置 */ });
                   } else {
                     cancelWriting();
                   }

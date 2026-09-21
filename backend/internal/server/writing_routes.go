@@ -14,6 +14,7 @@ func (s *Server) registerWritingRoutes(r chi.Router) {
 		r.Post("/contracts/{contractId}/confirm", s.handleConfirmWritingContract)
 		r.Post("/documents/{documentId}/plans", s.handleCompileWritingPlan)
 		r.Post("/runs", s.handleCreateWritingRun)
+		r.Get("/runs", s.handleListWritingRuns)
 		r.Get("/runs/{runId}", s.handleGetWritingRun)
 		r.Get("/runs/{runId}/events", s.handleWritingRunEvents)
 		r.Post("/runs/{runId}/approve", s.handleApproveWritingRun)

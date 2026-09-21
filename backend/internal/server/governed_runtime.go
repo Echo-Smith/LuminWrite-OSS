@@ -103,15 +103,17 @@ type governedRuntimeDependencies struct {
 // before V3.0. mode=shadow builds a shadow RolloutExecutor per capability
 // (baseline authoritative, candidate isolated) and an Orchestrator wired with
 // the V2.9 context source/sink/runtime so context compilation and forgetting
-// actually run in the request path. mode=allowlist is not wired yet (M0b-2):
-// it errors rather than silently serving shadow, because allowlist activation
-// is a separate authorized change.
+// actually run in the request path. mode=allowlist additionally lets the
+// servicePolicyExecutor build authoritative candidate lanes for subjects on a
+// persisted, approved allowlist policy (AllowlistPromotionGate); misses keep
+// running shadow. Activation itself remains a separate authorized change —
+// this mode only provides the mechanism, never the authorization.
 func newGovernedWritingRuntime(store *writingstore.Store, mode writingruntime.RuntimeMode, deps governedRuntimeDependencies, specs []governedCapabilitySpec) (*governedWritingRuntime, error) {
 	if mode == writingruntime.RuntimeModeOff {
 		return nil, nil
 	}
 	if mode != writingruntime.RuntimeModeShadow && mode != writingruntime.RuntimeModeAllowlist {
-		return nil, fmt.Errorf("governed runtime mode %q is not wired yet (only off and shadow are implemented in M0b-1)", mode)
+		return nil, fmt.Errorf("governed runtime mode %q is not supported (valid modes: off, shadow, allowlist)", mode)
 	}
 	if store == nil || deps.canonical == nil || deps.sink == nil || deps.evidence == nil ||
 		deps.transitionStore == nil || deps.checkpoints == nil || deps.initial == nil || deps.materials == nil ||

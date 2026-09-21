@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/config"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
@@ -25,7 +24,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/crypto"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/memory"
@@ -35,7 +34,6 @@ import (
 // Server holds all application dependencies.
 type Server struct {
 	cfg               *config.Config
-	hub               *websocket.Hub
 	sseHub            *SSEHub
 	rateLimiter       *RateLimiter
 	llm               *tools.LLMClient
@@ -464,7 +462,6 @@ func New(cfg *config.Config) (*Server, error) {
 
 	s := &Server{
 		cfg:           cfg,
-		hub:           websocket.NewHub(),
 		sseHub:        NewSSEHub(),
 		rateLimiter:   rateLimiter,
 		llm:           llm,
@@ -660,8 +657,6 @@ func New(cfg *config.Config) (*Server, error) {
 			services.NewKbSearchAdapter(s.kbMgr),
 			s.profiles,
 			s.userStyleStore,
-			newHarnessSessionStore(s.memorySvc),
-			s.traces,
 		)
 		s.wabenchSvc = services.NewWABenchEvaluationService(
 			wabenchRepo,
@@ -674,7 +669,9 @@ func New(cfg *config.Config) (*Server, error) {
 	// ── Editorial system initialization ──
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
 		edStore := editorial.NewStore(adminRepo.DB().DB)
-		edEmitter := &editorialWSEmitter{hub: s.hub}
+		// Editorial Transport Migration: 编排事件经 SSE 定向推送（task owner 隔离），
+		// 取代旧的 WebSocket 全局广播。
+		edEmitter := newEditorialSSEEmitter(s.sseHub, edStore)
 		edSvc := editorial.NewService(edStore, edEmitter)
 
 		// Wire source credibility into search client
@@ -966,6 +963,21 @@ func (s *Server) Router() http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(s.jwtAuthMiddleware)
 				s.editorialHdlr.RegisterRoutes(r)
+			})
+		}
+
+		// Editorial workflow command facade (REST) — Editorial Transport Migration.
+		// 取代已下线的 workflow.* WebSocket 消息：命令走 REST，进度事件经
+		// /api/v2/sse/topics 以 workflow:*/node:* 事件定向推送给 task owner。
+		// 刻意不提供 pause/resume 端点：DAGExecutor 尚无 checkpoint/resume 语义，
+		// 假的 "not_yet_implemented" 端点不是诚实的契约。
+		if s.editorialSvc != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(s.jwtAuthMiddleware, s.rejectGuestMiddleware)
+				r.Post("/workflows", s.handleWorkflowCreate)
+				r.Post("/workflows/{id}/execute", s.handleWorkflowExecute)
+				r.Post("/workflows/{id}/cancel", s.handleWorkflowCancel)
+				r.Get("/workflows/{id}", s.handleWorkflowGet)
 			})
 		}
 
@@ -1594,23 +1606,12 @@ func (s *Server) triggerFeedbackMemoryExtraction(traceID string) {
 	slog.Info("memory: feedback-triggered extraction started", "trace_id", traceID, "feedback_count", len(feedback))
 }
 
-// newHarnessSessionStore wraps *memory.Service as agent.SessionStore.
-// Returns nil when the service is unavailable so callers can pass it
-// straight through to the harness without nil-guarding twice.
-func newHarnessSessionStore(svc *memsvc.Service) agent.SessionStore {
-	if svc == nil {
-		return nil
-	}
-	return svc
-}
-
-
 // resolveMaterialContents resolves browser-supplied material identities onto
 // tenant-scoped, owner-authorized raw contents (resolvedMaterial in
 // governed_runners.go). The research executors read these bytes by
 // material_ref from the content store — no external download, no
 // client-controlled path.
-func (s *Server) resolveMaterialContents(parent context.Context, userID string, refs []websocket.MaterialReference) ([]resolvedMaterial, error) {
+func (s *Server) resolveMaterialContents(parent context.Context, userID string, refs []writingtransport.MaterialReference) ([]resolvedMaterial, error) {
 	if s.kbMgr == nil || strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("material store unavailable")
 	}

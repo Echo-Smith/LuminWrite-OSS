@@ -3,9 +3,12 @@
  *
  * Combines:
  * 1. Governed runtime state (documents, runs, events, quality, research)
- * 2. Session management (migrated from legacy agent-store)
- * 3. Streaming text state (SSE content deltas)
- * 4. Temporary WebSocket connection (for workflow/editorial page compatibility)
+ * 2. Session management (governed runs primary, legacy agent_traces history)
+ * 3. Streaming text state (SSE content deltas via use-run-events-sse)
+ *
+ * The legacy WebSocket connection is gone: workflow/editorial run on
+ * hooks/use-workflow-sse.ts + lib/workflow-api.ts, feedback submits via
+ * REST, and the governed writing path is REST + SSE only.
  */
 import { create } from "zustand";
 import type {
@@ -40,9 +43,8 @@ import { useSettingsStore } from "./settings-store.ts";
 import { useAuthStore } from "./auth-store.ts";
 import { useAuthModal } from "./auth-modal-store.ts";
 import { useBillingStore } from "./billing-store.ts";
-import { useEditorialStore } from "./editorial-store.ts";
 import { useMemoryStore, type MemoryEntry } from "./memory-store.ts";
-import { useWorkflowStore, type AgentConfig as WFAgentConfig, type WorkflowSpec as WFWorkflowSpec } from "./workflow-store.ts";
+import { useWorkflowStore } from "./workflow-store.ts";
 import { resolveConversationId } from "../lib/conversation-session.ts";
 import { markSessionRead } from "../lib/session-read-state.ts";
 
@@ -157,6 +159,51 @@ async function writingRequest<T>(path: string, init: RequestInit = {}): Promise<
   return (body.data ?? body) as T;
 }
 
+// ─── History source-of-truth (governed runs first) ────────
+
+/** One row of GET /api/v2/runs — the governed run history listing. */
+interface GovernedRunListItem {
+  run_id: string;
+  document_id: string;
+  title: string;
+  status: string;
+  style_slug?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+/** Governed run status → the session status vocabulary the sidebar renders. */
+function mapGovernedRunStatus(status: string): WritingSession["status"] {
+  switch (status) {
+    case "running": return "running";
+    case "paused": return "paused";
+    case "completed": return "completed";
+    case "failed": return "error";
+    default: return "idle";
+  }
+}
+
+function mapGovernedRun(run: GovernedRunListItem): WritingSession {
+  return {
+    id: run.run_id,
+    title: run.title?.trim() || "运行记录",
+    messages: [],
+    traceId: run.run_id,
+    conversationId: run.run_id,
+    status: mapGovernedRunStatus(run.status),
+    style: run.style_slug || "yinyue",
+    mode: "auto",
+    createdAt: new Date(run.created_at).getTime(),
+    updatedAt: run.updated_at ? new Date(run.updated_at).getTime() : new Date(run.created_at).getTime(),
+    folderId: null,
+    archived: false,
+    source: "governed",
+    awaitInputAt: null,
+    kbEnabled: true,
+  };
+}
+
 // ─── Store Interface ──────────────────────────────────────
 
 interface WritingRuntimeState extends WritingRuntimeProjection {
@@ -180,10 +227,6 @@ interface WritingRuntimeState extends WritingRuntimeProjection {
   sessionsPage: number;
   folders: SessionFolder[];
   resumedTraceId: string | null;
-
-  // Temporary WebSocket (workflow/editorial page compatibility)
-  ws: WebSocket | null;
-  wsConnected: boolean;
 
   // ── Governed runtime actions ──
   loadDocument: (documentId: string, token?: string) => Promise<void>;
@@ -224,11 +267,6 @@ interface WritingRuntimeState extends WritingRuntimeProjection {
   renameSession: (traceId: string, title: string) => Promise<boolean>;
   loadArticleVersion: (traceId: string, versionId: string) => Promise<boolean>;
 
-  // ── WebSocket (temporary, for workflow page) ──
-  connectWS: () => void;
-  sendWS: (type: string, payload: Record<string, unknown>) => void;
-  handleServerMessage: (msg: { type: string; payload: Record<string, unknown> }) => void;
-
   // ── Internal helpers ──
   _getActiveSession: () => WritingSession | null;
   _updateActiveSession: (updater: (s: WritingSession) => WritingSession) => void;
@@ -260,10 +298,6 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
   sessionsPage: 0,
   folders: [],
   resumedTraceId: null,
-
-  // ── WebSocket initial state (temporary) ──
-  ws: null,
-  wsConnected: false,
 
   // ═══════════════════════════════════════════════════════
   // Governed Runtime Actions (preserved from original)
@@ -476,16 +510,16 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
     const session = get().sessions.find((s) => s.id === id);
     if (!session) return;
     markSessionRead(session);
-    // Resume running/paused sessions via WebSocket (temporary)
-    const wsState = get().ws?.readyState;
-    if (
-      session.traceId &&
-      (wsState === WebSocket.OPEN) &&
-      (session.status === "running" || session.status === "paused") &&
-      get().resumedTraceId !== session.traceId
-    ) {
-      set({ resumedTraceId: session.traceId });
-      get().resumeSession(session.traceId);
+    // Governed sessions restore through the run API: loadRun populates
+    // state.run, which drives the workspace's useRunEventsSSE(runId) hook and
+    // the run controls. The legacy /api/v2/sessions detail would 404 on a
+    // run id, so skip it entirely.
+    if (session.source === "governed") {
+      if (session.traceId) {
+        set({ activeRunId: session.traceId });
+        void get().loadRun(session.traceId);
+      }
+      return;
     }
     if (session.traceId && session.messages.length === 0) {
       get().loadSessionDetail(session.traceId);
@@ -513,11 +547,31 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
 
   loadSessions: async (page = 1, append = false) => {
     try {
-      const res = await fetch(`/api/v2/sessions?page=${page}&page_size=50`);
-      const json = await res.json();
-      if (!json.success || !json.data?.sessions) return;
+      // History source-of-truth: governed runs (writing_runs) are the primary
+      // source and merge at the top of page 1; legacy agent_traces sessions
+      // stay as read-only history appended below. A governed-fetch failure
+      // must not hide the legacy history (and vice versa).
+      const [runsJson, legacyJson] = await Promise.all([
+        page === 1
+          ? fetch("/api/v2/runs?page=1&page_size=50")
+              .then((res) => (res.ok ? res.json() : null))
+              .catch(() => null)
+          : Promise.resolve(null),
+        fetch(`/api/v2/sessions?page=${page}&page_size=50`)
+          .then((res) => res.json())
+          .catch(() => null),
+      ]);
 
-      const dbSessions = json.data.sessions as Array<{
+      const governed: WritingSession[] = [];
+      let governedTotal = 0;
+      if (runsJson?.success && Array.isArray(runsJson.data?.runs)) {
+        governedTotal = typeof runsJson.data.total === "number" ? runsJson.data.total : 0;
+        for (const run of runsJson.data.runs as GovernedRunListItem[]) {
+          governed.push(mapGovernedRun(run));
+        }
+      }
+
+      const dbSessions = (legacyJson?.data?.sessions ?? null) as Array<{
         trace_id: string;
         status: string;
         current_step: string;
@@ -533,9 +587,9 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
         article_title?: string;
         task_name?: string;
         custom_title?: string;
-      }>;
+      }> | null;
 
-      const dbSessionsMapped: WritingSession[] = dbSessions.map((t) => ({
+      const legacyMapped: WritingSession[] = (dbSessions ?? []).map((t) => ({
         id: t.trace_id,
         title: t.custom_title || t.article_title || t.task_name || t.user_input?.slice(0, 30) || "历史会话",
         articleTitle: t.article_title || null,
@@ -553,21 +607,45 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
         updatedAt: t.updated_at ? new Date(t.updated_at).getTime() : new Date(t.created_at).getTime(),
         folderId: t.folder_id || null,
         archived: Boolean(t.archived_at),
+        source: "legacy",
         awaitInputAt: null,
         kbEnabled: true,
       }));
 
+      if (!dbSessions && governed.length === 0) return;
+
       set((state) => {
-        const dbTraceIds = new Set(dbSessionsMapped.map((s) => s.traceId));
+        // Dedupe by trace id. An in-memory session wins over both sources (a
+        // run linked by startWriting carries the live messages), then governed
+        // entries win over any legacy row with the same trace id.
+        const inMemoryTraceIds = new Set(
+          state.sessions.filter((s) => s.traceId).map((s) => s.traceId as string),
+        );
+        const seen = new Set<string>();
+        const fresh = (sessions: WritingSession[]) =>
+          sessions.filter((s) => {
+            if (s.traceId && (inMemoryTraceIds.has(s.traceId) || seen.has(s.traceId))) return false;
+            if (s.traceId) seen.add(s.traceId);
+            return true;
+          });
+        const governedFresh = fresh(governed);
+        const legacyFresh = fresh(legacyMapped);
+
+        const fetchedTraceIds = new Set([...governedFresh, ...legacyFresh].map((s) => s.traceId));
         const localOnly = state.sessions.filter(
-          (s) => s.traceId && !dbTraceIds.has(s.traceId)
+          (s) => s.traceId && !fetchedTraceIds.has(s.traceId)
         );
         const localTemp = state.sessions.filter((s) => !s.traceId);
         const base = append ? state.sessions : [...localTemp, ...localOnly];
+        const legacyTotal = dbSessions
+          ? (legacyJson?.data?.total as number | undefined) ?? base.length
+          : 0;
         return {
-          sessions: append ? [...base, ...dbSessionsMapped] : [...base, ...dbSessionsMapped],
+          sessions: [...base, ...governedFresh, ...legacyFresh],
           sessionsLoaded: true,
-          sessionsTotal: json.data.total ?? base.length,
+          sessionsTotal: append
+            ? state.sessionsTotal + legacyFresh.length
+            : governedTotal + legacyTotal,
           sessionsPage: page,
         };
       });
@@ -602,6 +680,7 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
         updatedAt: t.updated_at ? new Date(t.updated_at as string).getTime() : new Date(t.created_at as string).getTime(),
         folderId: (t.folder_id as string) || null,
         archived: true,
+        source: "legacy",
         awaitInputAt: null,
         kbEnabled: true,
       }));
@@ -1128,631 +1207,12 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
   },
 
   // ═══════════════════════════════════════════════════════
-  // WebSocket (temporary, for workflow/editorial page)
+  // Internal Helpers
   // ═══════════════════════════════════════════════════════
 
-  connectWS: () => {
-    const { ws } = get();
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  // (deleted: legacy WebSocket message projection — governed path uses SSE)
 
-    const token = useAuthStore.getState().token;
-    const baseUrl = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v2/ws/agent`;
-    const wsUrl = token ? `${baseUrl}?token=${encodeURIComponent(token)}` : baseUrl;
-    const socket = new WebSocket(wsUrl);
-
-    socket.onopen = () => {
-      set({ wsConnected: true });
-      const session = get()._getActiveSession();
-      if (session?.traceId) {
-        get().resumeSession(session.traceId);
-      }
-    };
-
-    socket.onclose = () => {
-      set({ wsConnected: false, ws: null });
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data) as { type: string; payload: Record<string, unknown> };
-        get().handleServerMessage(msg);
-      } catch (e) {
-        console.error("Failed to parse WS message:", e);
-      }
-    };
-
-    socket.onerror = (e) => {
-      console.error("WebSocket error:", e);
-    };
-
-    set({ ws: socket });
-  },
-
-  sendWS: (type, payload) => {
-    const { ws } = get();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type, payload }));
-    }
-  },
-
-  handleServerMessage: (msg) => {
-    const { type, payload } = msg;
-    const p = payload;
-
-    switch (type) {
-      case "agent.created": {
-        const traceId = p.trace_id as string;
-        get()._updateActiveSession((s) => ({
-          ...s,
-          traceId,
-          conversationId: s.conversationId || traceId,
-          status: "running",
-        }));
-        break;
-      }
-
-      case "agent.step.start": {
-        const step = p.step as AgentStepName;
-        const part: ToolCallPart = {
-          type: "tool-call",
-          toolName: step,
-          status: "running",
-          startedAt: Date.now(),
-        };
-        get()._updateLastAssistantMessage((m) => {
-          const parts = [...m.parts];
-          for (let i = 0; i < parts.length; i++) {
-            if (parts[i].type === "reasoning") {
-              parts[i] = { ...(parts[i] as ReasoningPart), completed: true };
-            }
-          }
-          parts.push(part);
-          return { ...m, parts };
-        });
-        break;
-      }
-
-      case "agent.step.complete": {
-        const step = p.step as AgentStepName;
-        const result = p.result as Record<string, unknown> | undefined;
-        const durationMs = p.duration_ms as number | undefined;
-        const isDegraded = result?.degraded === true;
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          parts: m.parts.map((part, i) => {
-            if (
-              part.type === "tool-call" &&
-              part.toolName === step &&
-              part.status === "running"
-            ) {
-              const isLast = m.parts.slice(i + 1).every((p2) => p2.type !== "tool-call" || p2.toolName !== step || p2.status !== "running");
-              if (isLast) {
-                return {
-                  ...part,
-                  status: (isDegraded ? "degraded" : "complete") as AgentStepStatus,
-                  result,
-                  durationMs,
-                  completedAt: Date.now(),
-                  error: isDegraded ? (result?.error as string) : undefined,
-                };
-              }
-            }
-            return part;
-          }),
-        }));
-        break;
-      }
-
-      case "agent.stream": {
-        const delta = p.delta as string;
-        set((s) => ({ streamingText: s.streamingText + delta }));
-        get()._updateLastAssistantMessage((m) => {
-          const parts = [...m.parts];
-          let lastTextIdx = -1;
-          for (let i = parts.length - 1; i >= 0; i--) {
-            const part = parts[i];
-            if (part.type === "text" && (part as TextPart).streaming) {
-              lastTextIdx = i;
-              break;
-            }
-          }
-          if (lastTextIdx >= 0) {
-            const textPart = parts[lastTextIdx] as TextPart;
-            parts[lastTextIdx] = { ...textPart, text: textPart.text + delta };
-          } else {
-            parts.push({ type: "text", text: delta, streaming: true });
-          }
-          return { ...m, parts };
-        });
-        break;
-      }
-
-      case "agent.stream.reset": {
-        set({ streamingText: "" });
-        get()._updateLastAssistantMessage((m) => {
-          const parts = [...m.parts];
-          const filtered = parts.filter(
-            (part) => part.type !== "text"
-          );
-          return { ...m, parts: filtered };
-        });
-        break;
-      }
-
-      case "agent.reasoning": {
-        const delta = p.delta as string;
-        get()._updateLastAssistantMessage((m) => {
-          const parts = [...m.parts];
-          let lastReasoningIdx = -1;
-          for (let i = parts.length - 1; i >= 0; i--) {
-            if (parts[i].type === "reasoning") {
-              lastReasoningIdx = i;
-              break;
-            }
-          }
-          if (lastReasoningIdx >= 0) {
-            const reasoningPart = parts[lastReasoningIdx] as ReasoningPart;
-            if (reasoningPart.completed) {
-              parts.push({ type: "reasoning", text: delta });
-            } else {
-              parts[lastReasoningIdx] = { ...reasoningPart, text: reasoningPart.text + delta };
-            }
-          } else {
-            parts.push({ type: "reasoning", text: delta });
-          }
-          return { ...m, parts };
-        });
-        break;
-      }
-
-      case "agent.stream.done": {
-        const fullText = p.full_text as string | undefined;
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          parts: m.parts.map((part) => {
-            if (part.type === "text" && part.streaming) {
-              return { ...part, streaming: false, text: fullText ?? part.text };
-            }
-            return part;
-          }),
-        }));
-        break;
-      }
-
-      case "agent.article_title": {
-        const title = p.title as string;
-        if (title) {
-          get()._updateLastAssistantMessage((m) => ({
-            ...m,
-            articleTitle: title,
-          }));
-        }
-        break;
-      }
-
-      case "agent.await_input": {
-        const step = p.step as string;
-        const data = p.data;
-        if (step === "outline") {
-          get()._updateLastAssistantMessage((m) => {
-            const filteredParts = m.parts.filter(
-              (part) => !(part.type === "data" && (part as DataPart).dataType === "outline")
-            );
-            return {
-              ...m,
-              parts: [
-                ...filteredParts,
-                {
-                  type: "data",
-                  dataType: "outline" as const,
-                  data: data ?? (p as unknown),
-                  attempt: p.attempt as number | undefined,
-                  maxAttempts: p.max_attempts as number | undefined,
-                },
-              ],
-            };
-          });
-        }
-        get()._updateActiveSession((s) => ({ ...s, status: "running", awaitInputAt: Date.now() }));
-        break;
-      }
-
-      case "agent.paused": {
-        const reason = p.reason as string | undefined;
-        if (reason === "disconnect") {
-          get()._updateLastAssistantMessage((m) => ({
-            ...m,
-            parts: [
-              ...m.parts.map((part) =>
-                part.type === "text" && part.streaming ? { ...part, streaming: false } : part
-              ),
-              { type: "text", text: "📡 连接已断开，重连后可继续写作" },
-            ],
-          }));
-        }
-        get()._updateActiveSession((s) => ({ ...s, status: "paused" }));
-        break;
-      }
-
-      case "agent.resumed": {
-        get()._updateActiveSession((s) => ({ ...s, status: "running" }));
-        break;
-      }
-
-      case "agent.completed": {
-        const article = p.article as string;
-        const articleTitle = p.article_title as string | undefined;
-        const review = p.review;
-        const intent = (p.token_usage as { intent?: string })?.intent;
-        const tokenUsage = p.token_usage;
-        const pointsUsed = p.points_used as number | undefined;
-        const result: AgentResult = { article, review: review as AgentResult["review"], token_usage: tokenUsage as AgentResult["token_usage"], points_used: pointsUsed };
-
-        const editorialTraceId = p.trace_id as string | undefined;
-        if (editorialTraceId && !get()._getActiveSession()) {
-          const userInput = useWorkflowStore.getState().userInput || articleTitle || "工作台模式写作";
-          const newSession: WritingSession = {
-            id: editorialTraceId,
-            title: articleTitle || userInput.slice(0, 30) || "工作台模式写作",
-            messages: [
-              { id: genMsgId(), role: "user", parts: [{ type: "text", text: userInput }], createdAt: Date.now() - 1000 },
-              { id: genMsgId(), role: "assistant", parts: [], createdAt: Date.now(), status: "running" },
-            ],
-            traceId: editorialTraceId,
-            conversationId: editorialTraceId,
-            status: "completed",
-            style: useSettingsStore.getState().lastStyle || "yinyue",
-            mode: "editorial",
-            createdAt: Date.now(),
-            folderId: null,
-            archived: false,
-            awaitInputAt: null,
-            kbEnabled: true,
-            articleTitle: articleTitle || null,
-          };
-          set((state) => ({
-            sessions: [newSession, ...state.sessions.filter((s) => s.traceId !== editorialTraceId)],
-            activeSessionId: editorialTraceId,
-          }));
-        }
-
-        get()._updateLastAssistantMessage((m) => {
-          const nonTextParts = m.parts.filter((part) => part.type !== "text");
-          const finalParts: MessagePart[] = [];
-          if (article) {
-            finalParts.push({ type: "text", text: article, streaming: false });
-          } else {
-            for (const part of m.parts) {
-              if (part.type === "text") {
-                finalParts.push({ ...part, streaming: false });
-              }
-            }
-          }
-          const parts = [...nonTextParts, ...finalParts];
-          if (review) {
-            parts.push({ type: "data", dataType: "review" as const, data: result.review });
-          }
-          if (article && intent !== "chat") {
-            parts.push({ type: "data", dataType: "feedback" as const, data: { article } });
-          }
-          return { ...m, parts, status: "complete" as const, articleTitle: articleTitle || m.articleTitle, pointsUsed };
-        });
-
-        get()._updateActiveSession((s) => ({
-          ...s,
-          status: "completed",
-          title: articleTitle || s.title,
-          articleTitle: articleTitle || s.articleTitle,
-          intent: intent ?? s.intent ?? null,
-        }));
-
-        if (pointsUsed && pointsUsed > 0) {
-          useBillingStore.getState().loadBalance();
-        }
-        break;
-      }
-
-      case "agent.error": {
-        const errorMsg = p.message as string;
-        const errorCode = p.code as string;
-
-        const ERROR_MESSAGES: Record<string, string> = {
-          timeout: "⏱️ 写作超时，请简化选题后重试",
-          budget_exceeded: "💰 Token 预算已用尽，请稍后重试",
-          circuit_breaker: "🔌 AI 服务暂时不可用，请稍后重试",
-          quota_exceeded: "💳 AI 模型服务额度不足，请联系管理员充值后重试",
-          insufficient_balance: "积分余额不足，请充值后继续使用",
-          server_busy: "🔧 服务器繁忙，请稍后重试",
-          step_failed: `❌ 步骤执行失败：${errorMsg}`,
-          panic: `❌ 内部错误：${errorMsg}`,
-        };
-        let friendlyMsg = ERROR_MESSAGES[errorCode] ?? `❌ 错误：${errorMsg}`;
-
-        if (errorCode === "concurrent_limit") {
-          const limit = p.limit as number | undefined;
-          const active = p.active_count as number | undefined;
-          if (limit != null && active != null) {
-            friendlyMsg = `⏳ 当前已有 ${active} 个写作任务进行中（最多同时 ${limit} 个），请等待完成或取消后再试`;
-          } else {
-            friendlyMsg = "⏳ 已有写作任务进行中，请等待完成或取消后再试";
-          }
-        }
-
-        if (errorCode === "guest_limit_reached") {
-          const token = useAuthStore.getState().token;
-          useAuthModal.getState().openAuth({
-            guestToken: token ?? undefined,
-            defaultTab: "register",
-          });
-        }
-
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          status: "error" as const,
-          parts: [
-            ...m.parts.map((part) =>
-              part.type === "text" && part.streaming ? { ...part, streaming: false } : part
-            ),
-            { type: "text", text: friendlyMsg },
-          ],
-        }));
-        get()._updateActiveSession((s) => ({ ...s, status: "error" }));
-        break;
-      }
-
-      case "agent.cancelled": {
-        get()._updateActiveSession((s) => ({ ...s, status: "idle" }));
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          status: "complete" as const,
-          parts: m.parts.map((part) =>
-            part.type === "text" && part.streaming ? { ...part, streaming: false } : part
-          ),
-        }));
-        break;
-      }
-
-      case "agent.compaction": {
-        const originalMessages = p.original_messages as number;
-        const compactedMessages = (p.compacted_messages as number) ?? 1;
-        const savedTokens = p.saved_tokens as number;
-        const summaryPreview = p.summary_preview as string | undefined;
-        const historyVersion = p.history_version as number | undefined;
-        const triggerReason = p.trigger_reason as string | undefined;
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          parts: [
-            ...m.parts.filter((part) => part.type !== "compaction"),
-            {
-              type: "compaction" as const,
-              originalMessages,
-              compactedMessages,
-              savedTokens,
-              summaryPreview,
-              historyVersion,
-              triggerReason,
-            },
-          ],
-        }));
-        break;
-      }
-
-      case "task_name.updated": {
-        const traceId = p.trace_id as string;
-        const taskName = p.task_name as string;
-        if (!traceId || !taskName) break;
-        set((state) => ({
-          sessions: state.sessions.map((s) => {
-            if (s.traceId !== traceId) return s;
-            if (s.articleTitle) return s;
-            return { ...s, title: taskName };
-          }),
-        }));
-        break;
-      }
-
-      case "session.resumed": {
-        const traceId = p.trace_id as string;
-        const status = p.status as string;
-        const article = p.article as string | undefined;
-        const articleTitle = p.article_title as string | undefined;
-        const taskName = p.task_name as string | undefined;
-        const outline = p.outline;
-        const review = p.review;
-        const stepHistory = p.step_history as Array<Record<string, unknown>> | undefined;
-        const reasoningContent = p.reasoning_content as string | undefined;
-        const conversationId = p.conversation_id as string | undefined;
-        const userInput = p.user_input as string | undefined;
-        const style = p.style as string | undefined;
-        const mode = p.mode as string | undefined;
-
-        if (status === "not_found") {
-          console.warn("Session resume failed:", p.message);
-          get()._updateActiveSession((s) => ({
-            ...s,
-            traceId: null,
-            conversationId: null,
-            status: "idle",
-          }));
-          get()._updateLastAssistantMessage((m) => ({
-            ...m,
-            parts: m.parts.map((part) =>
-              part.type === "text" && part.streaming ? { ...part, streaming: false } : part
-            ),
-          }));
-          break;
-        }
-
-        get()._updateActiveSession((s) => ({
-          ...s,
-          traceId,
-          conversationId: conversationId || s.conversationId || traceId,
-          status: status as WritingSession["status"],
-          style: style || s.style,
-          mode: mode || s.mode,
-          articleTitle: articleTitle || s.articleTitle,
-          title: articleTitle || taskName || s.title,
-        }));
-
-        const assistantParts: MessagePart[] = [];
-
-        if (stepHistory && Array.isArray(stepHistory)) {
-          for (const step of stepHistory) {
-            assistantParts.push({
-              type: "tool-call",
-              toolName: step.step as AgentStepName,
-              status: (step.status === "running" ? "running" : "complete") as AgentStepStatus,
-              startedAt: step.startedAt ? new Date(step.started_at as string).getTime() : undefined,
-              completedAt: step.completedAt ? new Date(step.completed_at as string).getTime() : undefined,
-              durationMs: step.duration_ms as number | undefined,
-              result: step.result,
-              error: step.error as string | undefined,
-            });
-          }
-        }
-
-        if (reasoningContent) {
-          assistantParts.push({ type: "reasoning", text: reasoningContent });
-        }
-
-        if (article) {
-          assistantParts.push({ type: "text", text: article, streaming: status === "running" });
-        }
-
-        if (outline) {
-          assistantParts.push({ type: "data", dataType: "outline" as const, data: outline });
-        }
-
-        if (review) {
-          assistantParts.push({ type: "data", dataType: "review" as const, data: review });
-        }
-
-        if (article && (articleTitle || taskName)) {
-          assistantParts.push({ type: "data", dataType: "feedback" as const, data: { article } });
-        }
-
-        get()._updateLastAssistantMessage((m) => ({
-          ...m,
-          articleTitle: articleTitle || m.articleTitle,
-          parts: assistantParts.length > 0 ? assistantParts : m.parts,
-        }));
-
-        if (userInput) {
-          get()._updateActiveSession((s) => {
-            const hasUserMsg = s.messages.some((m) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text === userInput));
-            if (hasUserMsg) return s;
-            const userMsg: ChatMessage = {
-              id: `msg-user-${traceId}`,
-              role: "user",
-              parts: [{ type: "text", text: userInput }],
-              createdAt: Date.now(),
-            };
-            return { ...s, messages: [userMsg, ...s.messages] };
-          });
-        }
-
-        break;
-      }
-
-      case "memory.used": {
-        const memCtx = p as unknown as { injected: unknown[]; review_guard: unknown[]; dismissed: string[] };
-        useMemoryStore.getState().setContext({
-          injected: (memCtx.injected as MemoryEntry[]) ?? [],
-          review_guard: (memCtx.review_guard as MemoryEntry[]) ?? [],
-          dismissed: memCtx.dismissed ?? [],
-        });
-        break;
-      }
-
-      case "editorial.event": {
-        const evt = p as unknown as { type: string; task_id: string; payload: Record<string, unknown>; timestamp: string };
-        useEditorialStore.getState().pushEvent(evt);
-        break;
-      }
-
-      // Workflow DAG messages (forwarded to workflow-store)
-      case "workflow.created":
-      case "workflow.started":
-      case "workflow.completed":
-      case "workflow.failed":
-      case "workflow.paused":
-      case "workflow.resumed":
-      case "node.started":
-      case "node.stream.delta":
-      case "node.stream.reset":
-      case "node.reasoning.delta":
-      case "node.step_start":
-      case "node.step_complete":
-      case "node.completed":
-      case "node.failed":
-      case "node.error": {
-        const ws = useWorkflowStore.getState();
-        const payload = p;
-
-        switch (type) {
-          case "workflow.created":
-            ws.setPlan({
-              agents: (payload.agents as WFAgentConfig[]) || [],
-              workflow: (payload.workflow as WFWorkflowSpec) || ({} as WFWorkflowSpec),
-              rationale: (payload.rationale as string) || "",
-            });
-            if (payload.task_id) {
-              ws.setTaskId(payload.task_id as string);
-            }
-            break;
-          case "workflow.started":
-            ws.setRunStatus("running");
-            break;
-          case "node.started":
-            ws.setNodeStarted(payload.node_id as string, payload.agent_name as string);
-            break;
-          case "node.stream.delta":
-            ws.appendNodeStream(payload.node_id as string, payload.delta as string);
-            break;
-          case "node.stream.reset":
-            ws.resetNodeStream(payload.node_id as string);
-            break;
-          case "node.error":
-            console.warn(`[DAG] Node error: ${payload.node_id}`, payload.message);
-            break;
-          case "node.completed":
-            ws.setNodeCompleted(
-              payload.node_id as string,
-              payload.artifact_id as string,
-              payload.artifact_type as string,
-              payload.tokens_used as number,
-              payload.duration_ms as number
-            );
-            break;
-          case "node.failed":
-            ws.setNodeFailed(
-              payload.node_id as string,
-              payload.error as string,
-              payload.duration_ms as number
-            );
-            break;
-          case "workflow.completed":
-            ws.setWorkflowCompleted(payload.total_tokens as number);
-            break;
-          case "workflow.failed":
-            ws.setWorkflowFailed(payload.error as string);
-            break;
-        }
-        break;
-      }
-
-      case "ping": {
-        break;
-      }
-
-      default: {
-        if (import.meta.env.DEV) {
-          console.debug("[WS] unknown message type:", type);
-        }
-        break;
-      }
-    }
-  },
+  // (deleted: legacy WebSocket message projection — governed path uses SSE)
 
   // ═══════════════════════════════════════════════════════
   // Internal Helpers

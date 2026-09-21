@@ -20,6 +20,7 @@ import PricingPage from "@/pages/pricing";
 import BillingResultPage from "@/pages/billing-result";
 import { ToastContainer } from "@/components/ui/toast";
 import { useSSENotifications } from "@/hooks/use-sse-notifications";
+import { useWorkflowSSE } from "@/hooks/use-workflow-sse";
 import { PageTransition } from "@/components/animation";
 
 export function App() {
@@ -36,6 +37,9 @@ export function App() {
 
   // 全局 SSE 通知监听（文章完成、管理员广播等）
   useSSENotifications();
+
+  // 全局 Workflow/Editorial SSE 监听（编辑部 DAG 事件 → workflow-store / editorial-store）
+  useWorkflowSSE();
 
   return (
     <TooltipProvider>

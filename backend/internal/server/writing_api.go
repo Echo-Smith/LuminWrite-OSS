@@ -11,9 +11,10 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/arreview"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/websocket"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingquality"
@@ -129,8 +130,21 @@ type controlWritingRunCommand struct {
 }
 
 type writingEventPage struct {
-	Events       []websocket.WritingEvent `json:"events"`
+	Events       []writingtransport.WritingEvent `json:"events"`
 	NextSequence int64                    `json:"next_sequence"`
+}
+
+// writingRunListItemView is one governed run in the owner's history listing
+// (GET /api/v2/runs) — the sidebar's primary history source.
+type writingRunListItemView struct {
+	RunID       string     `json:"run_id"`
+	DocumentID  string     `json:"document_id"`
+	Title       string     `json:"title"`
+	Status      string     `json:"status"`
+	StyleSlug   string     `json:"style_slug"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 type writingAPIService interface {
@@ -142,6 +156,7 @@ type writingAPIService interface {
 	CompilePlan(context.Context, writingAccess, compileWritingPlanCommand) (writingPlanPreview, error)
 	CreateRun(context.Context, writingAccess, createWritingRunCommand) (writingstore.RuntimeRun, error)
 	GetRun(context.Context, writingAccess, string) (writingstore.RuntimeRun, error)
+	ListRuns(context.Context, writingAccess, int, int) ([]writingRunListItemView, int, error)
 	ListEvents(context.Context, writingAccess, string, int64, int) (writingEventPage, error)
 	ApproveRun(context.Context, writingAccess, approveWritingRunCommand) (writingstore.RuntimeRun, error)
 	ControlRun(context.Context, writingAccess, controlWritingRunCommand) (writingstore.RuntimeRun, error)
@@ -409,6 +424,26 @@ func (service *persistentWritingAPI) GetRun(ctx context.Context, access writingA
 	return run, nil
 }
 
+// ListRuns pages the caller's governed runs, newest first. Ownership follows
+// the run's document (the same rule GetRun authorizes through), so the store
+// query keyed on the document owner returns exactly the runs this access
+// could otherwise read one by one.
+func (service *persistentWritingAPI) ListRuns(ctx context.Context, access writingAccess, limit, offset int) ([]writingRunListItemView, int, error) {
+	items, total, err := service.store.ListRunsByOwner(ctx, access.UserID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	views := make([]writingRunListItemView, 0, len(items))
+	for _, item := range items {
+		views = append(views, writingRunListItemView{
+			RunID: item.RunID, DocumentID: item.DocumentID, Title: item.Title,
+			Status: item.Status, StyleSlug: item.StyleSlug,
+			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt, CompletedAt: item.CompletedAt,
+		})
+	}
+	return views, total, nil
+}
+
 func (service *persistentWritingAPI) ListEvents(ctx context.Context, access writingAccess, runID string, after int64, limit int) (writingEventPage, error) {
 	run, err := service.GetRun(ctx, access, runID)
 	if err != nil {
@@ -418,7 +453,7 @@ func (service *persistentWritingAPI) ListEvents(ctx context.Context, access writ
 	if err != nil {
 		return writingEventPage{}, err
 	}
-	page := writingEventPage{Events: make([]websocket.WritingEvent, 0, len(events)), NextSequence: after}
+	page := writingEventPage{Events: make([]writingtransport.WritingEvent, 0, len(events)), NextSequence: after}
 	for _, event := range events {
 		adapted, err := adaptWritingRunEvent(event, run.Status)
 		if err != nil {
@@ -548,7 +583,7 @@ func documentHasUserMaterials(document writingstore.DocumentRecord) bool {
 	if err != nil {
 		return false
 	}
-	var decoded []websocket.MaterialReference
+	var decoded []writingtransport.MaterialReference
 	if json.Unmarshal(refs, &decoded) != nil {
 		return false
 	}

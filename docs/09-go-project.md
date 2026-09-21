@@ -265,8 +265,9 @@ func NewRouter(h *handlers.Handlers, mw *middleware.Middlewares) *chi.Mux {
         // 知识库
         r.Post("/knowledge/search", h.Knowledge.Search)
 
-        // WebSocket
-        r.Get("/ws/agent", h.WS.HandleAgent)
+        // Governed writing（REST 命令 + SSE 事件；WS 已移除）
+        r.Post("/runs", h.WritingRun.Create)
+        r.Get("/runs/{runId}/events", h.WritingRun.Events)
 
         // Admin (需要 Admin Token)
         r.Group(func(r chi.Router) {
