@@ -45,10 +45,10 @@ flowchart LR
     end
     API --> RUN
     subgraph CAP[Shared capability layer]
-        S[Multi-source search<br/>SearXNG / Tavily / …]
+        S[Multi-source search<br/>SearXNG (built-in) + pluggable search adapters]
         K[Local RAG<br/>BM25 + vector + GraphRAG]
         M[Layered memory<br/>gating · promotion · telemetry]
-        E[Evaluation<br/>WABench · red team]
+        V[Evaluation<br/>WABench · red team]
     end
     RUN --> CAP
     CAP --> DB[(PostgreSQL 17<br/>pgvector · ParadeDB)]
@@ -113,7 +113,10 @@ docker compose up -d
 cd backend && cp .env.example .env && go run ./cmd/server/
 cd frontend && npm ci && npm run dev
 
-# Verification
+# Verification (recommended: make verify composite gate, from the repo root)
+make verify
+
+# or run the parts separately
 cd backend && go test ./...
 cd frontend && npm ci && npm test && npm run build
 ```
@@ -125,10 +128,13 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
 
 ## 🧩 Feature tour
 
-- **Multi-mode execution**: Harness / Pipeline / editorial DAG coexist
-  (research → write → review hand off via Artifacts, context slotted per role);
-- **Governed writing runtime** (experimental): WritingContract → ExecutablePlan →
-  Artifact → quality gates (Candidate/Accepted/Verified), off/shadow/allowlist
+- **Multi-mode execution**: unified scheduling by the governed runtime; the
+  editorial DAG's research → write → review is relayed through governed Executors
+  (context slotted per role); WebSocket retired from the main architecture;
+- **Governed writing runtime**: WritingContract → ExecutablePlan → typed Artifact →
+  quality gates (Candidate/Accepted/Verified), a versioned delivery protocol,
+  fail-closed; REST commands + SSE runtime events, resumable on disconnect; default
+  `shadow` (baseline authoritative + candidate shadow observation), off/shadow/allowlist
   rollout with checkpoint recovery ([docs/19](docs/19-governed-writing-runtime.md));
 - **Research-review path** (experimental): academic search (OpenAlex/CrossRef/
   Semantic Scholar) → evidence gate → outline gate → citation-verifiable draft,
@@ -136,8 +142,10 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
 - **AR-012 candidate evaluation** (experimental): external review sidecar produces
   isolated candidate drafts and mechanical comparison metrics (sidecar is a private
   component, not distributed here); an optional **different-vendor claim verifier**
-  (`AR_REVIEW_VERIFY_*`) re-checks every cited sentence of the candidate against the
-  frozen abstracts in bounded chunks, report-only, persisted as the `claim-check/1`
+  (`AR_REVIEW_VERIFY_*`) points at a verification model from a different vendor than
+  the generation model and judges citation support sentence by sentence for every
+  cited sentence of the manuscript (against its cited frozen abstracts; chunked calls
+  with failed chunks degraded), report-only, persisted as the `claim-check/1`
   job artifact;
 - **Passkey sign-in**: WebAuthn (Face ID / Touch ID / security keys). Registration
   records the authenticator's backup capability — iCloud/Google-password-manager
@@ -171,6 +179,12 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
 |---|---|---|
 | **SearXNG** | ✅ full | Self-hosted metasearch, zero API keys, built into the quickstart stack |
 | Tavily / Zhihu / Tencent News / Weibo / Bing / AnySearch | stub | Public interfaces; wire your own via the [adapter guide](docs/search-provider-adapter.md) |
+
+> **Edition boundary (OSS)**: The OSS edition ships no paid search provider
+> implementations, no commercial credential variables and no commercial CLI. Paid
+> search interfaces are exposed as stubs only and return `not-installed`; wire in a
+> full implementation yourself via the [adapter guide](docs/search-provider-adapter.md)
+> if you need one.
 
 ## ⚙️ Key configuration
 

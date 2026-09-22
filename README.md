@@ -44,7 +44,7 @@ flowchart LR
     end
     API --> RUN
     subgraph CAP[共享能力层]
-        S[多源检索<br/>SearXNG / Tavily / …]
+        S[多源检索<br/>SearXNG（内置）+ 可插拔检索适配器]
         K[本地 RAG<br/>BM25 + 向量 + GraphRAG]
         M[分层记忆<br/>门控 · 晋升 · 遥测]
         V[评测中心<br/>WABench · 红队]
@@ -110,7 +110,10 @@ docker compose up -d
 cd backend && cp .env.example .env && go run ./cmd/server/
 cd frontend && npm ci && npm run dev
 
-# 验证
+# 验证（推荐：make verify 本地综合门禁，仓库根目录运行）
+make verify
+
+# 或分别运行
 cd backend && go test ./...
 cd frontend && npm ci && npm test && npm run build
 ```
@@ -124,15 +127,16 @@ cd frontend && npm ci && npm test && npm run build
 - **多模式写作执行**：治理运行时统一调度；编辑部 DAG 的研究→写作→审校以受治理
   Executor 接力（上下文按角色分槽），WebSocket 已退出主架构；
 - **治理型写作运行时**：WritingContract → ExecutablePlan → typed Artifact →
-  质量门（Candidate/Accepted/Verified）的版本化交付协议，默认 `shadow`
-  （baseline 权威 + candidate 影子观测），off/shadow/allowlist
-  灰度与检查点恢复（[docs/19](docs/19-governed-writing-runtime.md)）；
+  质量门（Candidate/Accepted/Verified）的版本化交付协议，fail-closed；REST 命令 +
+  SSE 运行事件，断线可续传；默认 `shadow`（baseline 权威 + candidate 影子观测），
+  off/shadow/allowlist 灰度与检查点恢复（[docs/19](docs/19-governed-writing-runtime.md)）；
 - **研究综述路径**（实验性）：学术检索（OpenAlex/CrossRef/Semantic Scholar）→
   证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
   （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
-  `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿逐句判定
-  引用支撑性（分块调用 + 失败分块降级，report-only 落作业产物 `claim-check/1`）；
+  `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿中带引用的
+  句子逐句判定引用支撑性（对照所引冻结摘要；分块调用 + 失败分块降级，
+  report-only 落作业产物 `claim-check/1`）；
 - **Passkey 无密码登录**：WebAuthn（Face ID / Touch ID / 安全密钥）；注册时识别
   认证器备份能力——iCloud/Google 钥匙串类 Passkey 自动跨设备同步，个人中心
   展示「已同步 · 可跨设备」状态并支持吊销；
@@ -161,6 +165,10 @@ cd frontend && npm ci && npm test && npm run build
 |---|---|---|
 | **SearXNG** | ✅ 完整实现 | 自托管元搜索，零 API key，quickstart 栈内置 |
 | Tavily / 知乎 / 腾讯新闻 / 微博 / Bing / AnySearch | stub | 接口公开，可按[适配器指南](docs/search-provider-adapter.md)自行接入 |
+
+> **版本边界（Edition boundary）**：OSS 版不包含任何付费搜索 Provider 实现、
+> 商业凭证变量或商业 CLI。付费搜索接口仅以 stub 形式公开，调用即返回 `not-installed`，
+> 可按[适配器指南](docs/search-provider-adapter.md)自行接入完整实现。
 
 ## ⚙️ 关键配置
 
