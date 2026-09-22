@@ -503,9 +503,13 @@ type ToolExecutorConfig struct {
 
 	// Guard: 声明式调用次数限制（tool name → max calls, 0=unlimited）
 	// 由 Harness 从 ToolDescriptor.MaxCalls 传入。
-	// 当工具调用次数达到上限时，返回礼貌消息而非执行。
+	// 当工具调用次数达到上限时，优雅降级：返回 instructive 结果字符串
+	//（toolBudgetExhaustedResult）而非执行，不返回 error、不中断 run。
 	MaxCalls   map[string]int
 	callCounts map[string]int // 运行时计数器（非导出，由 BuildToolExecutor 初始化）
+
+	// Intent 当前运行意图（可留空）：仅用于 guard 耗尽降级日志定位预算档位。
+	Intent Intent
 
 	// 计费回调：工具执行成功后按名称扣费
 	// 由 Server 创建 Harness 时注入，nil = 不扣费（开源版无此回调）
@@ -516,10 +520,17 @@ type ToolExecutorConfig struct {
 	MemoryPort memoryport.Port
 }
 
+// toolBudgetExhaustedResult 是工具调用预算耗尽时的优雅降级返回（WP6）。
+// 它是一个普通工具结果字符串（非 error）：明确告知 LLM 预算已用尽、
+// 应基于已有上下文收束任务，避免 LLM 反复重试同一工具把 run 拖崩。
+// 执行器耗尽后对同一工具的重复调用稳定返回同一文案（幂等），不再执行真实逻辑。
+const toolBudgetExhaustedResult = `{"exhausted":true,"hint":"该工具本轮调用预算已用尽；请基于已有上下文继续完成任务，不要再调用此工具"}`
+
 // BuildToolExecutor 构建一个 ToolExecutor，用于在 ChatWithTools 中执行 LLM 的工具调用。
 //
 // Guard 机制：在执行任何工具前，先检查 MaxCalls 限制。
-// 如果工具调用次数已达上限，返回礼貌消息而非执行工具逻辑。
+// 如果工具调用次数已达上限，优雅降级：返回 toolBudgetExhaustedResult
+// （结果字符串而非 error）并 slog 记录，不执行工具逻辑、不中断 run。
 // 这替代了以前硬编码在 executeSearchWeb 中的 SearchCallCount 检查。
 func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 	if cfg.callCounts == nil {
@@ -527,16 +538,23 @@ func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 	}
 	return func(name string, arguments string) (string, error) {
 		// ── Guard: MaxCalls 检查 ──
+		// 预算耗尽时优雅降级（WP6）：返回 instructive 结果字符串而非硬错误，
+		// 不执行真实逻辑、不中断 run；耗尽后重复调用稳定返回同一文案（幂等）。
 		if max, ok := cfg.MaxCalls[name]; ok && max > 0 {
 			current := cfg.callCounts[name]
 			if current >= max {
-				slog.Info("tool guard: max calls reached",
+				traceID := ""
+				if cfg.ExecCtx != nil {
+					traceID = cfg.ExecCtx.TraceID
+				}
+				slog.Info("tool guard: max calls reached, degrade gracefully",
 					"tool", name,
-					"current", current,
+					"intent", string(cfg.Intent),
+					"used", current,
 					"max", max,
-					"trace_id", cfg.ExecCtx.TraceID,
+					"trace_id", traceID,
 				)
-				return fmt.Sprintf("已达到调用次数上限（%d次）。已有 %d 条搜索结果，请直接使用 read_source 读取详情或开始写作。", max, len(cfg.Session.SearchResults)), nil
+				return toolBudgetExhaustedResult, nil
 			}
 			cfg.callCounts[name]++
 		}
@@ -1971,11 +1989,17 @@ func quickReviewArticle(ctx context.Context, llm *tools.LLMClient, article strin
 // 这是声明式 guard 的配置层：工具名 → 最大调用次数（0=unlimited）。
 // 替代了以前硬编码在 executeSearchWeb 中的 SearchCallCount > 3 检查。
 //
+// retrieve_context 预算收紧依据（WP6）：消融 D 变体中 LLM 规划循环反复调用
+// retrieve_context 直至预算耗尽，导致执行失败；且按需检索应短平快——一次
+// 具体查询就应拿到所需上下文，而非分多次试探。因此 retrieve_context 最高档
+// （写作）从 5 收紧到 3，其余档位（3/2）保持不变。remember 限频（3/2/3，
+// 防 LLM 循环刷写）与搜索类工具预算均保持不变。
+//
 // 灵感来自 dsh 的 guard/ 包（声明式循环卫生）。
 func defaultMaxCalls(intent Intent) map[string]int {
 	switch intent {
 	case IntentWriting:
-		// 写作意图：搜索 5 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 5 次
+		// 写作意图：搜索 5 次、评审 1 次、提纲 1 次、字数检查 1 次、标题优化 1 次、事实核查 1 次、上下文检索 3 次
 		return map[string]int{
 			"search_web":       5,
 			"search_knowledge": 5,
@@ -1984,7 +2008,7 @@ func defaultMaxCalls(intent Intent) map[string]int {
 			"word_count_check": 1,
 			"rewrite_title":    1,
 			"fact_check":       1,
-			"retrieve_context": 5,
+			"retrieve_context": 3,
 			"remember":         3, // P1-3: 显式写入限频，防 LLM 循环刷写
 		}
 	case IntentPolish, IntentShorten, IntentExpand, IntentExtract:

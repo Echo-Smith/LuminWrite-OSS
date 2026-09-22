@@ -147,6 +147,7 @@ func (h *Harness) runCore(ctx context.Context, execCtx *engine.ExecutionContext,
 		LLM:        h.llm,
 		MemoryPort: h.memoryPort,
 		MaxCalls:   defaultMaxCalls(intent),
+		Intent:     intent,
 	}
 	executor := BuildToolExecutor(executorCfg)
 
@@ -558,6 +559,7 @@ func (h *Harness) buildSystemPrompt(session *WritingSession, intent Intent, isGu
 	sb.WriteString("- 已收集的搜索素材 → retrieve_context(source=\"search\", query=\"素材关键词\")\n")
 	sb.WriteString("- 当前风格配置详情 → retrieve_context(source=\"profile\", query=\"配置项\")\n")
 	sb.WriteString("- 对话历史中的关键信息 → retrieve_context(source=\"history\", query=\"信息描述\")\n")
+	sb.WriteString("retrieve_context 预算有限（最多 3 次），一次查询尽量具体；预算用尽后不要再调用。\n")
 
 	if session.HasArticle() {
 		sb.WriteString(fmt.Sprintf("\n当前已有文章（%d 字）。如需查看内容，请调用 retrieve_context(source=\"article\", query=\"文章相关描述\")。\n",
