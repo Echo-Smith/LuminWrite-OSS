@@ -9,6 +9,7 @@ import type {
   DocumentRecord,
   RuntimeRun,
 } from "./writing-runtime-types.ts";
+import { resolveWritingFlow, type WritingFlowType } from "./writing-flows.ts";
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -62,11 +63,14 @@ async function writingFetch<T>(path: string, init: RequestInit = {}): Promise<T>
 function buildWritingContract(payload: AgentStartPayload) {
   const message = payload.message.trim();
   const style = payload.style || "default";
+  // WP4 流程贯穿合同：intent.operation 与 collaboration.orchestration_mode
+  // 均取自流程映射表（真实枚举值，缺省/非法 flow 回退 long_form）
+  const flow = resolveWritingFlow(payload.flow);
   return {
     schema_version: "1.0",
     status: "draft",
     intent: {
-      operation: "create",
+      operation: flow.intentOperation,
       genre: "article",
       purpose: message,
     },
@@ -104,6 +108,7 @@ function buildWritingContract(payload: AgentStartPayload) {
     },
     collaboration: {
       approval_mode: payload.approval_mode || "auto",
+      orchestration_mode: flow.orchestration,
       max_revisions: 3,
       human_gate: false,
     },
@@ -112,40 +117,21 @@ function buildWritingContract(payload: AgentStartPayload) {
   };
 }
 
-function buildIntentPlan(contractRef: { id: string; version: number; hash: string }) {
+function buildIntentPlan(contractRef: { id: string; version: number; hash: string }, flowType?: WritingFlowType) {
+  // WP4 流程贯穿计划：proposed_steps 节点序列与 summary 均取自流程映射表
+  // （docs/28 节点图，evidence policy 落点标注在 summary 中）
+  const flow = resolveWritingFlow(flowType);
   return {
     intent_plan_id: `intent_${uuidV4().slice(0, 8)}`,
     contract_ref: contractRef,
-    summary: "Standard writing pipeline: outline → draft → quality",
+    summary: flow.summary,
     created_by: { type: "user" },
     created_at: new Date().toISOString(),
-    proposed_steps: [
-      {
-        step_id: "outline",
-        capability: "core.outline.generate",
-        description: "Generate article outline",
-        inputs: ["contract"],
-        outputs: ["outline"],
-      },
-      {
-        step_id: "draft",
-        capability: "core.draft.generate",
-        description: "Write full draft",
-        inputs: ["contract", "outline"],
-        outputs: ["full_draft"],
-        depends_on: ["outline"],
-      },
-      {
-        step_id: "quality",
-        capability: "core.validation.quality",
-        description: "Quality validation",
-        inputs: ["contract", "full_draft"],
-        outputs: ["quality_report"],
-        depends_on: ["draft"],
-      },
-    ],
+    proposed_steps: flow.steps.map((step) => ({ ...step })),
   };
 }
+
+export { buildWritingContract, buildIntentPlan };
 
 const DEFAULT_BUDGET = {
   max_cost_usd: 2.0,
@@ -192,8 +178,10 @@ export async function startWritingRun(payload: AgentStartPayload): Promise<{ run
       version: confirmedRecord.version,
       hash: confirmedRecord.contract_hash,
     };
-    const intentPlan = buildIntentPlan(contractRef);
+    const intentPlan = buildIntentPlan(contractRef, payload.flow);
     const baseVersionId = document.current_version_id ?? "";
+    // 初始 artifact 按流程映射：long_form 仅 contract；多材料/改写附 materials
+    const initialArtifactTypes = resolveWritingFlow(payload.flow).initialArtifactTypes;
 
     const preview = await writingFetch<{
       plan: Record<string, unknown>;
@@ -206,7 +194,7 @@ export async function startWritingRun(payload: AgentStartPayload): Promise<{ run
         base_version_id: baseVersionId,
         intent_plan: intentPlan,
         budget: DEFAULT_BUDGET,
-        initial_artifact_types: ["contract"],
+        initial_artifact_types: initialArtifactTypes,
         required_final_artifact: "revision_set",
       }),
     });

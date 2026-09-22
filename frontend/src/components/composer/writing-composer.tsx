@@ -15,6 +15,7 @@ import { Square, Plus, X, Loader2, FolderSearch, Maximize2, Minimize2, ImagePlus
 import { StylePicker } from "./style-picker";
 import { ModePicker } from "./mode-picker";
 import { ModelPicker } from "./model-picker";
+import { FlowPicker } from "./flow-picker";
 import { Lumi } from "@/components/lumi/lumi";
 import { TiptapEditor, type TiptapEditorHandle } from "./tiptap-editor";
 import { KnowledgeMaterialDialog } from "./knowledge-material-dialog";
@@ -28,6 +29,7 @@ import { createWorkflow, createdViewToPlan, cancelWorkflow } from "@/lib/workflo
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
+import { DEFAULT_WRITING_FLOW, type WritingFlowType } from "@/lib/writing-flows";
 import { cn } from "@/lib/utils";
 import { listMaterials, getMaterialContent, uploadMaterial, type UserMaterial } from "@/lib/material-api";
 
@@ -127,6 +129,8 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   });
   const [mode, setMode] = useState<WriteMode>(sessionMode);
   const [style, setStyle] = useState(sessionStyle);
+  // WP4 写作流程（长文创作/多材料综合/忠实改写），缺省 long_form
+  const [flow, setFlow] = useState<WritingFlowType>(DEFAULT_WRITING_FLOW);
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("auto");
   const [assuranceLevel, setAssuranceLevel] = useState<AssuranceLevel>("standard");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("conditional");
@@ -245,11 +249,12 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
       orchestration_mode: orchestrationMode,
       assurance_level: assuranceLevel,
       approval_mode: approvalMode,
+      flow,
     });
 
     editorRef.current?.clear();
     setMessage("");
-  }, [isRunning, style, mode, model, materials, startWriting, agentMode, kbEnabled, orchestrationMode, assuranceLevel, approvalMode]);
+  }, [isRunning, style, mode, model, materials, startWriting, agentMode, kbEnabled, orchestrationMode, assuranceLevel, approvalMode, flow]);
 
   const handleAddMaterial = () => {
     if (materialInput.trim()) {
@@ -530,6 +535,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
               </div>
             </PopoverContent>
           </Popover>
+
+          {/* 左侧：写作流程（WP4 三大流程，决定 contract/plan 节点图） */}
+          <FlowPicker value={flow} onChange={setFlow} compact={compact} />
 
           {/* 左侧：引导模式 */}
           <ModePicker

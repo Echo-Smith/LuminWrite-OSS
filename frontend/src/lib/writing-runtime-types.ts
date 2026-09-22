@@ -259,8 +259,10 @@ export const QUALITY_STATE_COPY: Record<QualityState, { label: string; descripti
 // ─── Message Part Types (migrated from agent-store) ──────────────
 
 import type { AgentStepName as _AgentStepName, AgentStepStatus as _AgentStepStatus } from "./types.ts";
+import type { WritingFlowType } from "./writing-flows.ts";
 export type AgentStepName = _AgentStepName;
 export type AgentStepStatus = _AgentStepStatus;
+export type { WritingFlowType };
 
 export type MessagePartType = "text" | "tool-call" | "data" | "reasoning" | "compaction";
 
@@ -377,6 +379,8 @@ export interface AgentStartPayload {
   assurance_level?: string;
   approval_mode?: string;
   word_limit?: number;
+  /** WP4 流程类型（docs/28 三大写作流程）；缺省或非法值按 long_form 处理 */
+  flow?: WritingFlowType;
 }
 
 export interface OutlineData {

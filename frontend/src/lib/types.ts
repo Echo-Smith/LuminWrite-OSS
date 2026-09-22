@@ -112,6 +112,8 @@ export interface WSServerMessage {
 
 // ─── 写作请求 ────────────────────────────────────────────
 
+import type { WritingFlowType } from "./writing-flows.ts";
+
 export type WriteMode = "auto" | "writing" | "guided" | "polish";
 
 export interface AgentStartPayload {
@@ -133,6 +135,8 @@ export interface AgentStartPayload {
   orchestration_mode?: "auto" | "fast" | "outline_first" | "sourced" | "strict_research" | "research_review";
   assurance_level?: "flexible" | "standard" | "sourced" | "strict";
   approval_mode?: "conditional" | "always" | "auto";
+  /** WP4 流程类型（docs/28 三大写作流程）；缺省或非法值按 long_form 处理 */
+  flow?: WritingFlowType;
 }
 
 // ─── 写作结果 ────────────────────────────────────────────
