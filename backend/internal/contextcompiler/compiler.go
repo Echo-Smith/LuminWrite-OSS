@@ -95,6 +95,7 @@ var blockOrder = []string{
 	"source_evidence",
 	"document_state",
 	"style_directives",
+	"review_guard",
 }
 
 // Blocks returns the compiler's block names in assembly order.
@@ -132,6 +133,7 @@ func defaultBudgetTable(total int) BudgetTable {
 		"source_evidence":  14,
 		"document_state":   12,
 		"style_directives": 8,
+		"review_guard":     6,
 	}
 	share := map[string]int{}
 	sum := 0
@@ -249,6 +251,9 @@ type Input struct {
 	DocumentState string
 	// StyleDirectives are user-memory style rules (read-only projection).
 	StyleDirectives []string
+	// ReviewGuard are feedback-memory directives rendered into review criteria.
+	// Only quality/review capabilities should declare and consume this block.
+	ReviewGuard []string
 	// TotalBudget overrides DefaultTokenBudget when positive.
 	TotalBudget int
 	// Wanted lists the blocks the node requires; a wanted block without data
@@ -453,6 +458,7 @@ func Compile(input Input) (Envelope, error) {
 		"source_evidence":  compileBlock(input.EvidenceLines),
 		"document_state":   strings.TrimSpace(input.DocumentState),
 		"style_directives": compileBlock(input.StyleDirectives),
+		"review_guard":     compileBlock(input.ReviewGuard),
 	}
 
 	envelope := Envelope{CompilerVersion: CompilerVersion, tokenBudget: total}

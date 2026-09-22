@@ -110,6 +110,8 @@ type WABenchCenterReview struct {
 	SecondaryRootCauses []string  `json:"secondaryRootCauses"`
 	ArbitrationStatus   string    `json:"arbitrationStatus"`
 	IsArbitration       bool      `json:"isArbitration"`
+	RubricVersion       string    `json:"rubricVersion,omitempty"`
+	RubricSnapshot      map[string]interface{} `json:"rubricSnapshot,omitempty"`
 	ReviewedAt          time.Time `json:"reviewedAt"`
 }
 
@@ -492,6 +494,17 @@ func (r *WABenchRepo) ListCenterReviews(ctx context.Context, runID string, limit
 		}
 		item.IsArbitration = centerReviewIsArbitration(evidence)
 		item.ContentAvailable = WABenchContentAvailable(item.TextStorage, item.PrivacyLevel)
+		// Surface the frozen rubric so historical reviews remain auditable and
+		// the UI can show exactly which weights produced a score.
+		if snapshot, ok := RubricSnapshotFromEvidence(evidence); ok {
+			item.RubricVersion = snapshot.Version
+			if encoded, encErr := json.Marshal(snapshot); encErr == nil {
+				var generic map[string]interface{}
+				if json.Unmarshal(encoded, &generic) == nil {
+					item.RubricSnapshot = generic
+				}
+			}
+		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -663,7 +676,24 @@ func (r *WABenchRepo) InsertHumanReviews(ctx context.Context, reviews []WABenchH
 		if secondaryRootCauses == nil {
 			secondaryRootCauses = []string{}
 		}
-		evidence, err := json.Marshal(review.Evidence)
+		// Freeze the rubric into the review evidence (immutable history), the
+		// same as the automated judge path. Copy first so we never mutate the
+		// caller's map.
+		evidenceMap := review.Evidence
+		if evidenceMap == nil {
+			evidenceMap = map[string]interface{}{}
+		}
+		if _, hasSnapshot := evidenceMap["rubricSnapshot"]; !hasSnapshot {
+			if weights, weightErr := r.caseRubricWeightsForOutput(ctx, review.OutputID); weightErr == nil && len(weights) == len(WABenchRubricDimensions) {
+				frozen := make(map[string]interface{}, len(evidenceMap)+1)
+				for key, value := range evidenceMap {
+					frozen[key] = value
+				}
+				frozen["rubricSnapshot"] = NewRubricSnapshot(weights)
+				evidenceMap = frozen
+			}
+		}
+		evidence, err := json.Marshal(evidenceMap)
 		if err != nil {
 			return err
 		}

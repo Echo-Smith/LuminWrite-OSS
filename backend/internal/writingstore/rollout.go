@@ -246,3 +246,8 @@ func (s *Store) LatestRolloutApprovalByActivationKey(ctx context.Context, activa
 	}
 	return record, nil
 }
+
+func hashShadowBody(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}

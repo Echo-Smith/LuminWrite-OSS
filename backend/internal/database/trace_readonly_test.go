@@ -6,8 +6,8 @@ package database_test
 // consumers were gone (agent_traces is a read-only history projection;
 // governed run state lives in writingstore). This test fails CI if the
 // deleted write methods come back — the only permitted writes are
-// user-surface maintenance on legacy rows (soft-delete, feedback,
-// article versions, topic maintenance).
+// user-surface maintenance on legacy rows (title rename, cancel,
+// soft-delete, feedback, article versions).
 
 import (
 	"go/ast"
@@ -41,11 +41,8 @@ func TestTraceRepoWritingLifecycleWritesAreGone(t *testing.T) {
 	}
 
 	deleted := []string{"CreateTrace", "UpdateTraceStep", "PauseTrace", "UpdateTaskName", "FailTrace", "LinkEditorialTask"}
-	// OSS note: the allowlist is trimmed to the user-surface methods this
-	// repository actually ships — UpdateTraceTitle, CancelTrace and
-	// RecoverStaleRunningTraces are commercial-only features absent here.
-	allowed := map[string]bool{"CompleteTrace": true,
-		"SoftDeleteTrace": true, "SaveFeedback": true,
+	allowed := map[string]bool{"UpdateTraceTitle": true, "CompleteTrace": true, "CancelTrace": true,
+		"RecoverStaleRunningTraces": true, "SoftDeleteTrace": true, "SaveFeedback": true,
 		"UpdateTraceArticle": true, "SaveArticleVersion": true, "CreateTopic": true, "UpdateTopic": true,
 		"DeleteTopic": true, "UpsertHotTopics": true}
 

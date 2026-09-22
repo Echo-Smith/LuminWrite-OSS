@@ -26,6 +26,9 @@ func TestOrchestratorCompletesReadyNodeAndPersistsCheckpoint(t *testing.T) {
 	if len(fixture.store.artifacts) != 2 || len(fixture.checkpoints.saved) != 1 {
 		t.Fatalf("artifacts=%#v checkpoints=%#v", fixture.store.artifacts, fixture.checkpoints.saved)
 	}
+	if len(fixture.store.initialArtifacts) != 1 || fixture.store.initialArtifacts[0].NodeID != InitialCaptureNodeID || len(fixture.store.completions) == 0 || fixture.store.completions[0].Status != "succeeded" {
+		t.Fatalf("initial artifacts were not persisted for lineage: %#v", fixture.store.initialArtifacts)
+	}
 }
 
 func TestOrchestratorDoesNotDispatchBeforeRequiredApproval(t *testing.T) {
@@ -46,7 +49,7 @@ func TestOrchestratorRetriesOnlySafeExecutor(t *testing.T) {
 	if err != nil || out.State != StateCompleted || fixture.executor.calls != 2 {
 		t.Fatalf("out=%#v err=%v calls=%d", out, err, fixture.executor.calls)
 	}
-	if len(fixture.store.attempts) != 2 {
+	if attemptsForNode(fixture.store.attempts, "node_draft") != 2 {
 		t.Fatalf("attempts=%#v", fixture.store.attempts)
 	}
 }
@@ -130,6 +133,16 @@ func TestOrchestratorEmitsCanonicalCommitBoundaryMetrics(t *testing.T) {
 	}
 }
 
+func TestOrchestratorCheckpointUsesExplicitEmptyUnsafeList(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	if _, err := fixture.orchestrator.Execute(context.Background(), fixture.store.run.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.checkpoints.saved) != 1 || fixture.checkpoints.saved[0].UnsafeInFlight == nil || fixture.checkpoints.saved[0].Validate() != nil {
+		t.Fatalf("checkpoint=%#v", fixture.checkpoints.saved)
+	}
+}
+
 func TestCanonicalCommitFailureIsStableAndProducesNoArtifact(t *testing.T) {
 	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
 	fixture.store.completionErr = errors.New("database unavailable")
@@ -144,11 +157,31 @@ func TestCanonicalCommitFailureIsStableAndProducesNoArtifact(t *testing.T) {
 	}
 }
 
+func TestOrchestratorTerminalizesUnexpectedDispatchFailure(t *testing.T) {
+	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
+	if err := fixture.orchestrator.FailDispatch(context.Background(), fixture.store.run.RunID, CodeArtifactCommitFailed); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.store.run.Status != string(StateFailed) || len(fixture.store.transitions) != 1 || fixture.store.transitions[0].Cause != "dispatch_failed_artifact_commit_failed" {
+		t.Fatalf("run=%#v transitions=%#v", fixture.store.run, fixture.store.transitions)
+	}
+}
+
 type orchestratorFixture struct {
 	orchestrator *Orchestrator
 	store        *fakeRuntimeStore
 	executor     *fakeGovernedExecutor
 	checkpoints  *memoryCheckpoints
+}
+
+func attemptsForNode(attempts []writingstore.NodeAttempt, nodeID string) int {
+	count := 0
+	for _, attempt := range attempts {
+		if attempt.NodeID == nodeID {
+			count++
+		}
+	}
+	return count
 }
 
 func newOrchestratorFixture(t *testing.T, idempotency writingplan.IdempotencyClass, approval bool) orchestratorFixture {
@@ -207,14 +240,15 @@ func (provider fixedInitialProvider) InitialArtifacts(context.Context, writingst
 }
 
 type fakeRuntimeStore struct {
-	mu            sync.Mutex
-	run           writingstore.RuntimeRun
-	plan          writingstore.PlanRecord
-	attempts      []writingstore.NodeAttempt
-	artifacts     []writingstore.ArtifactRecord
-	completions   []writingstore.AttemptCompletion
-	transitions   []TransitionRecord
-	completionErr error
+	mu               sync.Mutex
+	run              writingstore.RuntimeRun
+	plan             writingstore.PlanRecord
+	attempts         []writingstore.NodeAttempt
+	artifacts        []writingstore.ArtifactRecord
+	initialArtifacts []writingstore.ArtifactRecord
+	completions      []writingstore.AttemptCompletion
+	transitions      []TransitionRecord
+	completionErr    error
 
 	envelopes []writingstore.ContextEnvelopeRecord
 
@@ -261,6 +295,15 @@ func (store *fakeRuntimeStore) SaveInitialArtifacts(_ context.Context, artifacts
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.artifacts = append(store.artifacts, artifacts...)
+	return nil
+}
+
+// CommitInitialArtifacts: the fake records the attempt and artifacts atomically.
+func (store *fakeRuntimeStore) CommitInitialArtifacts(_ context.Context, _ writingstore.NodeAttempt, artifacts []writingstore.ArtifactRecord, _ writingstore.TraceContext) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.artifacts = append(store.artifacts, artifacts...)
+	store.initialArtifacts = append(store.initialArtifacts, artifacts...)
 	return nil
 }
 

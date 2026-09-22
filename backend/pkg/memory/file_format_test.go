@@ -96,7 +96,7 @@ func TestExportToMarkdown_SkipsArchived(t *testing.T) {
 			Tier:     TierHard,
 			Category: "style",
 			Key:      "active",
-			Value:    "default",
+			Value:    "yinyue",
 			Status:   StatusActive,
 		},
 		{
@@ -134,7 +134,7 @@ func TestParseMarkdownMemory_Basic(t *testing.T) {
   - confidence: 1.00 | occurrences: 5 | status: active
 
 ### style
-- **selected_style**: default
+- **selected_style**: yinyue
   - confidence: 1.00 | occurrences: 3 | status: active
 
 ## 行为模式 (Tier 2)
@@ -212,7 +212,7 @@ func TestExportParseRoundTrip(t *testing.T) {
 			Tier:        TierHard,
 			Category:    "style",
 			Key:         "selected_style",
-			Value:       "default",
+			Value:       "yinyue",
 			Confidence:  1.0,
 			Occurrences: 3,
 			Status:      StatusActive,
@@ -256,8 +256,8 @@ func TestExportParseRoundTrip(t *testing.T) {
 	if m1 == nil {
 		t.Fatal("expected to find style memory after round-trip")
 	}
-	if m1.Value != "default" {
-		t.Errorf("expected value 'default', got '%s'", m1.Value)
+	if m1.Value != "yinyue" {
+		t.Errorf("expected value 'yinyue', got '%s'", m1.Value)
 	}
 	if m1.Confidence != 1.0 {
 		t.Errorf("expected confidence 1.0, got %f", m1.Confidence)
@@ -341,7 +341,7 @@ func TestFileStore_ExportAndLoad(t *testing.T) {
 			Tier:        TierHard,
 			Category:    "style",
 			Key:         "selected_style",
-			Value:       "default",
+			Value:       "yinyue",
 			Confidence:  1.0,
 			Occurrences: 2,
 			Status:      StatusActive,
@@ -370,8 +370,8 @@ func TestFileStore_ExportAndLoad(t *testing.T) {
 	if len(file.Memories) != 1 {
 		t.Fatalf("expected 1 memory, got %d", len(file.Memories))
 	}
-	if file.Memories[0].Value != "default" {
-		t.Errorf("expected value 'default', got '%s'", file.Memories[0].Value)
+	if file.Memories[0].Value != "yinyue" {
+		t.Errorf("expected value 'yinyue', got '%s'", file.Memories[0].Value)
 	}
 }
 

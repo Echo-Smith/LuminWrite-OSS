@@ -590,8 +590,37 @@ func BuildToolExecutor(cfg ToolExecutorConfig) tools.ToolExecutor {
 			}
 		}
 
+		// ── Emit a unified tool RunEvent (fills ToolCalls + live trace stream). ──
+		// Arguments are stored as a bounded preview only, never full payloads,
+		// matching the privacy posture of the trace pipeline.
+		toolErr := ""
+		if err != nil {
+			toolErr = err.Error()
+		}
+		cfg.ExecCtx.RecordToolCall(engine.ToolCallRecord{
+			CallID:      fmt.Sprintf("tool-%s-%d", name, startTime.UnixNano()),
+			Step:        engine.StepName(name),
+			ToolName:    name,
+			InvokedBy:   "llm",
+			Arguments:   toolArgsPreview(arguments),
+			StartedAt:   startTime,
+			CompletedAt: time.Now(),
+			DurationMs:  durationMs,
+			Success:     err == nil,
+			Error:       toolErr,
+		})
+
 		return result, err
 	}
+}
+
+// toolArgsPreview returns a redaction-safe, length-bounded view of tool args.
+func toolArgsPreview(arguments string) map[string]interface{} {
+	const max = 120
+	if len(arguments) > max {
+		return map[string]interface{}{"preview": arguments[:max] + "…", "length": len(arguments)}
+	}
+	return map[string]interface{}{"preview": arguments, "length": len(arguments)}
 }
 
 // executeToolByName dispatches tool execution by name.

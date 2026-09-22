@@ -103,6 +103,15 @@ func (c *LLMClient) chatCompletionsStream(ctx context.Context, req *LLMRequest, 
 
 				if chunk.Usage != nil {
 					totalTokens = chunk.Usage.TotalTokens
+					if capture := usageCaptureFrom(ctx); capture != nil {
+						capture.Prompt += chunk.Usage.PromptTokens
+						capture.Completion += chunk.Usage.CompletionTokens
+						capture.Total += chunk.Usage.TotalTokens
+						capture.CacheHit += chunk.Usage.CacheHitTokens
+						capture.CacheMiss += chunk.Usage.CacheMissTokens
+						capture.Reasoning += chunk.Usage.CompletionTokensDetails.ReasoningTokens
+						capture.HasUsage = true
+					}
 				}
 			}
 		}

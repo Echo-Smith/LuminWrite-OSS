@@ -123,7 +123,7 @@ func Test_P0_0_AuthenticatedUserCanCreateTask(t *testing.T) {
 		AcceptCriteria: "Must pass tests",
 		Priority:       3,
 		Tags:           []string{"test"},
-		StyleSlug:      "default",
+		StyleSlug:      "yinyue",
 		TokenBudget:    100000,
 	}, userID)
 

@@ -45,6 +45,9 @@ func Recover(plan writingplan.ExecutablePlan, planVersion int, checkpoint *Check
 		state.HumanRequired = append(state.HumanRequired, checkpoint.UnsafeInFlight...)
 	}
 	for _, attempt := range attempts {
+		// Ledger-owned pseudo attempts (for example node_initial) are valid
+		// artifact lineage roots but are not executable plan nodes. They must
+		// never satisfy graph dependencies or change retry accounting.
 		if attempt.PlanID != plan.PlanID || attempt.PlanVersion != planVersion {
 			continue
 		}

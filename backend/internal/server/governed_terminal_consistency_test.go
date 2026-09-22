@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -474,7 +475,7 @@ func (h *t00Harness) createRun(t *testing.T, fixture *t00Fixture, envelope writi
 	run := e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": fixture.documentID, "contract_id": fixture.contractID, "contract_version": 2,
 		"contract_hash": fixture.contract.ContractHash, "base_version_id": fixture.baseVersion.VersionID,
-		"style_slug": "default", "plan": envelope, "budget": h.runBudget(), "permissions": permissions,
+		"style_slug": "yinyue", "plan": envelope, "budget": h.runBudget(), "permissions": permissions,
 	})
 	return e2eJSONField(t, run, "run_id")
 }
@@ -491,7 +492,7 @@ func (h *t00Harness) createRunDirect(t *testing.T, fixture *t00Fixture, envelope
 	runID := writingstore.StableID("run_", h.userID, "t00restart", fmt.Sprint(time.Now().UTC().UnixNano()))
 	run := writingstore.RunRecord{RunID: runID, DocumentID: fixture.documentID, ContractID: fixture.contractID,
 		ContractVersion: 2, ContractHash: fixture.contract.ContractHash, BaseVersionID: fixture.baseVersion.VersionID,
-		StyleSlug: "default", Status: "planned", ApprovalMode: fixture.contract.Collaboration.ApprovalMode,
+		StyleSlug: "yinyue", Status: "planned", ApprovalMode: fixture.contract.Collaboration.ApprovalMode,
 		RequestedAssurance: fixture.contract.Collaboration.AssuranceLevel, Budget: h.runBudget(),
 		Permissions: permissions, Trace: trace}
 	plan := writingstore.PlanRecord{RunID: runID, PlanVersion: 1, Envelope: envelope, Budget: h.runBudget(),
@@ -622,6 +623,14 @@ func (h *t00Harness) assertTerminalConsistency(t *testing.T, runID string, wantS
 	}
 	if effective, _ := lastTransition["effective_state"].(string); effective != "" && effective != wantStatus {
 		t.Fatalf("final run.transitioned ended in %q, want %q", effective, wantStatus)
+	}
+	// Shadow isolation: rollout_evidence events must never leak into the
+	// canonical event projection (the test uses RolloutOff policy).
+	for _, event := range events {
+		if event.EntityKind == "rollout_evidence" {
+			t.Fatalf("shadow evidence event leaked into canonical projection: seq=%d type=%q entity_kind=%q",
+				event.Sequence, event.EventType, event.EntityKind)
+		}
 	}
 	// 3. Checkpoint snapshot bindings and manifest (when the terminal path
 	// writes one).
@@ -1107,4 +1116,280 @@ func (h *t00Harness) completeDraftAttempt(t *testing.T, runID string, envelope w
 		t.Fatalf("draft delivery committed no candidate: %v", err)
 	}
 	return candidateID
+}
+
+// TestTerminalConsistencyStress runs each terminal scenario100 times with
+// fresh runs to verify that terminal state stability holds under repetition.
+// Each iteration creates a new run, drives it to terminal, and asserts all
+// four projections agree — the exact same check as the single-run test,
+// repeated to expose nondeterministic zombie writers.
+func TestTerminalConsistencyStress(t *testing.T) {
+	const stressIterations = 100
+	scenarios := []struct {
+		name       string
+		nodes      func() []writingplan.PlanNode
+		wantStatus string
+		assert     t00TerminalAssert
+	}{
+		{
+			name: "fail", wantStatus: "failed",
+			nodes:  func() []writingplan.PlanNode { return t00PlanNodes(t00SafeCapability, writingplan.FailureFail, 2) },
+			assert: t00TerminalAssert{wantEventTypes: []string{"node.started", "node.failed", "run.transitioned"}},
+		},
+		{
+			name: "pause", wantStatus: "paused",
+			nodes:  func() []writingplan.PlanNode { return t00PlanNodes("core.draft.generate", writingplan.FailurePause, 2) },
+			assert: t00TerminalAssert{requireCheckpoint: true, unsafeInFlight: []string{"node_t00_a"}, wantEventTypes: []string{"node.started", "node.failed", "run.transitioned"}},
+		},
+		{
+			name: "cancel", wantStatus: "cancelled",
+			nodes:  func() []writingplan.PlanNode { return t00PlanNodes("core.draft.generate", writingplan.FailurePause, 2) },
+			assert: t00TerminalAssert{requireCheckpoint: true, wantEventTypes: []string{"node.started", "node.cancelled", "run.transitioned"}},
+		},
+		{
+			name: "complete", wantStatus: "completed",
+			nodes:  func() []writingplan.PlanNode { return t00PlanNodes("core.draft.generate", writingplan.FailurePause, 2) },
+			assert: t00TerminalAssert{requireCheckpoint: true, wantEventTypes: []string{"node.started", "node.completed", "run.transitioned"}},
+		},
+	}
+	for _, scenario := range scenarios {
+		scenario := scenario
+		t.Run(scenario.name, func(t *testing.T) {
+			h := newT00Harness(t)
+			for i := 0; i < stressIterations; i++ {
+				// Each iteration gets a fresh fixture so the "complete"
+				// scenario's committed candidate version doesn't conflict
+				// with the next iteration's base_version_id.
+				fixture := h.fixture(t)
+				// Set up scripted behavior for this iteration.
+				switch scenario.name {
+				case "fail":
+					h.runners[t00SafeCapability].failNext(t00SafeCapability, 2)
+				case "pause":
+					h.runners["core.draft.generate"].failNext("core.draft.generate", 1)
+				case "cancel":
+					h.runners["core.draft.generate"].blockOn("core.draft.generate")
+				}
+				runID := h.createRun(t, fixture, h.buildEnvelope(t, fixture, scenario.nodes()))
+				if scenario.name == "cancel" {
+					// The cancel scenario blocks the runner until dispatch,
+					// then cancels via the API. Track the cumulative call
+					// count so each iteration waits for its own dispatch.
+					baseline := i
+					deadline := time.Now().Add(30 * time.Second)
+					for h.runners["core.draft.generate"].callCount("core.draft.generate") <= baseline {
+						if time.Now().After(deadline) {
+							t.Fatalf("iteration %d: blocked node never dispatched", i)
+						}
+						time.Sleep(50 * time.Millisecond)
+					}
+					e2eRequest(t, h.router, h.token, "POST", "/api/v2/runs/"+runID+"/cancel", map[string]any{})
+					h.runners["core.draft.generate"].release("core.draft.generate")
+				}
+				if final := h.waitForTerminal(t, runID, 60*time.Second); final != scenario.wantStatus {
+					t.Fatalf("iteration %d: run ended as %q, want %q", i, final, scenario.wantStatus)
+				}
+				h.assertTerminalConsistency(t, runID, scenario.wantStatus, scenario.assert)
+			}
+		})
+	}
+}
+
+// TestTerminalIdempotencyReplay drives a run to terminal state, then
+// replays the exact same terminal transition command20 times. Every replay
+// must be recognized as an idempotent replay (no new events, no status
+// change, Replayed=true).
+func TestTerminalIdempotencyReplay(t *testing.T) {
+	const replayCount = 20
+	h := newT00Harness(t)
+	fixture := h.fixture(t)
+	envelope := h.buildEnvelope(t, fixture, t00PlanNodes("core.draft.generate", writingplan.FailurePause, 2))
+	runID := h.createRun(t, fixture, envelope)
+	if final := h.waitForTerminal(t, runID, 60*time.Second); final != "completed" {
+		t.Fatalf("run ended as %q, want completed", final)
+	}
+	ctx := context.Background()
+	// Capture the terminal transition event's idempotency key.
+	events, err := h.store.ListRunEvents(ctx, runID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminalEvent *writingstore.RunEvent
+	for i := range events {
+		if events[i].EventType == "run.transitioned" {
+			terminalEvent = &events[i]
+		}
+	}
+	if terminalEvent == nil {
+		t.Fatal("no terminal transition event found")
+	}
+	command := writingstore.RunTransitionCommand{
+		RunID:          runID,
+		IdempotencyKey: terminalEvent.IdempotencyKey,
+		ExpectedFrom:   "running",
+		RequestedTo:    "completed",
+		RuleAccepted:   true,
+		Cause:          "idempotency_replay_test",
+		ReasonCode:     "replay",
+		Summary:        "terminal idempotency replay",
+		Trace: writingstore.TraceContext{
+			Provenance: map[string]any{"test": "idempotency_replay"},
+			SourceRefs: []string{},
+			Actor:      writingstore.Actor{Type: writingstore.ActorSystem, ID: "t00.replay"},
+		},
+	}
+	preEventCount := len(events)
+	preSequence := terminalEvent.Sequence
+	for i := 0; i < replayCount; i++ {
+		result, err := h.store.RecordRunTransition(ctx, command)
+		if err != nil {
+			t.Fatalf("replay %d: RecordRunTransition: %v", i, err)
+		}
+		if !result.Replayed {
+			t.Fatalf("replay %d: expected Replayed=true, got false (effective=%q accepted=%v)",
+				i, result.EffectiveState, result.Accepted)
+		}
+		if result.EffectiveState != "completed" {
+			t.Fatalf("replay %d: EffectiveState %q, want completed", i, result.EffectiveState)
+		}
+	}
+	// Verify no new events were added.
+	postEvents, err := h.store.ListRunEvents(ctx, runID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(postEvents) != preEventCount {
+		t.Fatalf("replay added events: pre=%d post=%d", preEventCount, len(postEvents))
+	}
+	if postEvents[len(postEvents)-1].Sequence != preSequence {
+		t.Fatalf("last event sequence changed: %d → %d", preSequence, postEvents[len(postEvents)-1].Sequence)
+	}
+	// Verify run status unchanged.
+	run, err := h.store.LoadRuntimeRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "completed" {
+		t.Fatalf("run status changed to %q after replay", run.Status)
+	}
+}
+
+// TestPostTerminalWriteRejection drives a run to terminal state, then
+// attempts every kind of store write that the terminal guards should block.
+// Each write must return ErrConflict and leave the database unchanged.
+func TestPostTerminalWriteRejection(t *testing.T) {
+	h := newT00Harness(t)
+	fixture := h.fixture(t)
+	envelope := h.buildEnvelope(t, fixture, t00PlanNodes("core.draft.generate", writingplan.FailurePause, 2))
+	runID := h.createRun(t, fixture, envelope)
+	if final := h.waitForTerminal(t, runID, 60*time.Second); final != "completed" {
+		t.Fatalf("run ended as %q, want completed", final)
+	}
+	ctx := context.Background()
+	run, err := h.store.LoadRuntimeRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := writingstore.TraceContext{
+		Provenance: map[string]any{"test": "post_terminal_rejection"},
+		SourceRefs: []string{},
+		Actor:      writingstore.Actor{Type: writingstore.ActorSystem, ID: "t00.rejection"},
+	}
+	preSequence := run.LastEventSequence
+
+	// 1. AppendRunEvent on terminal run must be rejected.
+	_, err = h.store.AppendRunEvent(ctx, writingstore.RunEvent{
+		RunID: runID, EventType: "snapshot.created",
+		EntityKind: "snapshot", EntityID: writingstore.StableID("snap_", runID, "post_terminal"),
+		Payload: map[string]any{"test": "post-terminal"}, Trace: trace,
+	})
+	if !errors.Is(err, writingstore.ErrConflict) {
+		t.Fatalf("AppendRunEvent: expected ErrConflict, got %v", err)
+	}
+
+	// 2. CompleteNodeAttempt on terminal run must be rejected.
+	attempts, err := h.store.ListRunAttempts(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planAttempt *writingstore.NodeAttempt
+	for i := range attempts {
+		if attempts[i].NodeID != writingruntime.InitialCaptureNodeID {
+			planAttempt = &attempts[i]
+			break
+		}
+	}
+	if planAttempt == nil {
+		t.Fatal("no plan node attempt found in completed run")
+	}
+	err = h.store.CompleteNodeAttempt(ctx, writingstore.AttemptCompletion{
+		RunID: runID, NodeID: planAttempt.NodeID, Attempt: planAttempt.Attempt,
+		Status: "succeeded", Artifacts: []writingstore.ArtifactRecord{},
+		Trace: trace, CompletedAt: time.Now().UTC(),
+	})
+	if !errors.Is(err, writingstore.ErrConflict) {
+		t.Fatalf("CompleteNodeAttempt: expected ErrConflict, got %v", err)
+	}
+
+	// 3. StartNodeAttempt on terminal run must be rejected.
+	dummyHash := "sha256:" + strings.Repeat("ab", 32)
+	key, err := writingstore.NodeAttemptKey(runID, "node_post_terminal", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = h.store.StartNodeAttempt(ctx, writingstore.NodeAttempt{
+		RunID: runID, PlanID: run.ActivePlanID, PlanVersion: run.ActivePlanVersion,
+		NodeID: "node_post_terminal", Attempt: 1, IdempotencyKey: key,
+		NodeKind: writingplan.NodeAction, CapabilityID: "core.draft.generate",
+		CapabilityVersion: "1.0.0", ExecutorID: "governed.baseline.core.draft.generate",
+		FailurePath: writingplan.FailureFail,
+		Bounds:      writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 2, TimeoutMS: 120000},
+		InputHash: dummyHash, InputArtifactIDs: []string{},
+	}, trace)
+	if !errors.Is(err, writingstore.ErrConflict) {
+		t.Fatalf("StartNodeAttempt: expected ErrConflict, got %v", err)
+	}
+
+	// 4. CommitCheckpoint on terminal run must be rejected.
+	_, err = h.store.CommitCheckpoint(ctx, writingstore.CheckpointBundle{
+		Snapshot: writingstore.SnapshotRecord{
+			SnapshotID: writingstore.StableID("snap_", runID, "post_terminal"),
+			SnapshotVersion: 999, RunID: runID,
+			CheckpointID: writingstore.StableID("ckpt_", runID, "post_terminal"),
+			PlanID: run.ActivePlanID, PlanVersion: run.ActivePlanVersion,
+			ContractID: run.ContractID, ContractVersion: run.ContractVersion,
+			ContractHash: run.ContractHash, DocumentID: run.DocumentID,
+			ContentHash: "sha256:" + strings.Repeat("ef", 32),
+			Status: "persisted", Complete: true,
+			Manifest:   map[string]any{"completed_nodes": map[string]int{}, "unsafe_in_flight": []string{}},
+			StorageRef: "storage://post_terminal", Trace: trace,
+			PersistedAt: time.Now().UTC(),
+		},
+	})
+	if !errors.Is(err, writingstore.ErrConflict) {
+		t.Fatalf("CommitCheckpoint: expected ErrConflict, got %v", err)
+	}
+
+	// 5. Verify the run projection is unchanged after all rejected writes.
+	runAfter, err := h.store.LoadRuntimeRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runAfter.Status != "completed" {
+		t.Fatalf("run status changed to %q after rejection test", runAfter.Status)
+	}
+	if runAfter.LastEventSequence != preSequence {
+		t.Fatalf("last_event_sequence changed: %d → %d", preSequence, runAfter.LastEventSequence)
+	}
+	// Shadow isolation: no rollout_evidence events should appear.
+	events, err := h.store.ListRunEvents(ctx, runID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.EntityKind == "rollout_evidence" {
+			t.Fatalf("shadow evidence event leaked: seq=%d type=%q entity_kind=%q",
+				event.Sequence, event.EventType, event.EntityKind)
+		}
+	}
 }

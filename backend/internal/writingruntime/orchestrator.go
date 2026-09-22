@@ -47,6 +47,9 @@ type RuntimeStore interface {
 	// node output reference them, and the artifact FKs require the rows.
 	// Idempotent: re-running a capture must not duplicate rows.
 	SaveInitialArtifacts(context.Context, []writingstore.ArtifactRecord) error
+	// CommitInitialArtifacts atomically saves initial artifacts and records
+	// the initial node attempt as a single transaction.
+	CommitInitialArtifacts(context.Context, writingstore.NodeAttempt, []writingstore.ArtifactRecord, writingstore.TraceContext) error
 }
 
 // MaterialSnapshotRepository persists the run-level initial material manifest.
@@ -283,6 +286,13 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	if err != nil {
 		return RunOutcome{}, fmt.Errorf("load initial artifacts: %w", err)
 	}
+	// Persist the initial artifacts (contract, material snapshots) through a
+	// terminal pseudo attempt. writing_artifacts is deliberately FK-bound to a
+	// node attempt, so the attempt and all of its artifacts must commit in the
+	// same transaction; otherwise a real database correctly rejects the write.
+	if err := orchestrator.persistInitialArtifacts(ctx, run, planRecord, initial); err != nil {
+		return RunOutcome{}, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not persist initial artifacts", err)
+	}
 	if planRecord.Envelope.StrategyDecision.ApprovalRequired && planRecord.ApprovalStatus != "approved" {
 		if RunState(run.Status) == StatePlanned {
 			_, _ = orchestrator.transition(ctx, runID, StatePlanned, StateAwaitingApproval, "approval_required")
@@ -334,6 +344,11 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 		return RunOutcome{}, err
 	}
 	for _, artifact := range persisted {
+		// The node_initial rows mirror the in-memory initial artifacts; skip
+		// them here so downstream inputs never see duplicates.
+		if artifact.NodeID == InitialCaptureNodeID {
+			continue
+		}
 		artifacts = append(artifacts, InputArtifact{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
 			ArtifactType: writingplan.ArtifactType(artifact.ArtifactType), ContentHash: artifact.ContentHash,
 			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef})
@@ -533,6 +548,27 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	return outcome(runID, StateCompleted, completed, artifacts, spentCost), nil
 }
 
+func (orchestrator *Orchestrator) persistInitialArtifacts(ctx context.Context, run writingstore.RuntimeRun, planRecord writingstore.PlanRecord, initial []InputArtifact) error {
+	records := make([]writingstore.ArtifactRecord, 0, len(initial))
+	for _, artifact := range initial {
+		records = append(records, writingstore.ArtifactRecord{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
+			RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID, PlanVersion: planRecord.PlanVersion,
+			NodeID: InitialCaptureNodeID, Attempt: 1, OutputKey: string(artifact.ArtifactType),
+			ArtifactType: string(artifact.ArtifactType), Status: "provisional", ContentHash: artifact.ContentHash,
+			MediaType: artifact.MediaType, ContentRef: artifact.ContentRef, Parents: []writingstore.ArtifactRef{},
+			InputHashes: []string{}, Producer: "writingruntime.initial", CapabilityVersion: "initial-1",
+			Trace: runtimeTrace("runtime.initial.artifacts"), CreatedAt: orchestrator.Now()})
+	}
+	return orchestrator.Store.CommitInitialArtifacts(ctx, writingstore.NodeAttempt{
+		RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID, PlanVersion: planRecord.PlanVersion,
+		NodeID: InitialCaptureNodeID, Attempt: 1, NodeKind: writingplan.NodeAction,
+		CapabilityID: "runtime.initial.artifacts", CapabilityVersion: "initial-1", ExecutorID: "writingruntime.initial",
+		FailurePath: writingplan.FailureFail,
+		Bounds:      writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: len(records), MaxCostUSD: 0, TimeoutMS: 1000},
+		InputHash:   hashInputs(initial), InputArtifactIDs: []string{}, CreatedAt: orchestrator.Now(),
+	}, records, runtimeTrace("runtime.initial.artifacts"))
+}
+
 // initialArtifacts returns the run's immutable initial artifact set. The
 // first dispatch captures the provider output into the RunLedger; every later
 // dispatch — including resumes after pause — loads that persisted snapshot and
@@ -540,6 +576,10 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 func (orchestrator *Orchestrator) initialArtifacts(ctx context.Context, run writingstore.RuntimeRun, planRecord writingstore.PlanRecord) ([]InputArtifact, error) {
 	saved, err := orchestrator.Materials.LoadInitialMaterialSnapshot(ctx, run.RunID)
 	if err == nil {
+		// Snapshot already captured — return deterministic artifacts from it.
+		// All ContentHash/ContentRef come from the frozen snapshot, so repeated
+		// dispatches (including resume after pause) produce byte-identical rows
+		// and never collide with the writing_artifacts immutable-content guard.
 		artifacts := make([]InputArtifact, 0, len(saved.Artifacts))
 		for _, artifact := range saved.Artifacts {
 			candidate := InputArtifact{ArtifactID: artifact.ArtifactID, Version: artifact.Version,
@@ -556,6 +596,10 @@ func (orchestrator *Orchestrator) initialArtifacts(ctx context.Context, run writ
 	if !errors.Is(err, writingstore.ErrNotFound) {
 		return nil, err
 	}
+	// First dispatch: capture the provider output into a content-addressed
+	// snapshot. The snapshot body includes CapturedAt (a deterministic wall-
+	// clock value captured once); subsequent loads use that frozen body so
+	// ContentHash stays stable across retries and resume-after-pause.
 	artifacts, err := orchestrator.Initial.InitialArtifacts(ctx, run, planRecord)
 	if err != nil {
 		return nil, err
@@ -574,29 +618,12 @@ func (orchestrator *Orchestrator) initialArtifacts(ctx context.Context, run writ
 		// A concurrent dispatch captured first; adopt its snapshot verbatim.
 		return orchestrator.initialArtifacts(ctx, run, planRecord)
 	}
-	// Persist the initial artifacts as real artifact rows: downstream node
-	// outputs record lineage edges to them, and the artifact FKs require the
-	// rows to exist. The rows bind to a synthetic succeeded "initial" attempt
-	// so the attempt FK resolves. Idempotent at the store layer.
-	initialKey, err := writingstore.NodeAttemptKey(run.RunID, "initial", 1)
-	if err != nil {
-		return nil, runtimeError(CodeArtifactCommitFailed, RetrySafe, "initial attempt key", err)
-	}
-	initialRows := make([]writingstore.ArtifactRecord, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		initialRows = append(initialRows, writingstore.ArtifactRecord{ArtifactID: artifact.ArtifactID,
-			Version: artifact.Version, RunID: run.RunID, PlanID: planRecord.Envelope.ExecutablePlan.PlanID,
-			PlanVersion: planRecord.PlanVersion,
-			NodeID:      InitialCaptureNodeID, Attempt: 1, IdempotencyKey: initialKey,
-			OutputKey: string(artifact.ArtifactType), ArtifactType: string(artifact.ArtifactType),
-			Status: "provisional", ContentHash: artifact.ContentHash, MediaType: artifact.MediaType,
-			ContentRef: artifact.ContentRef, Producer: "initial." + string(artifact.ArtifactType),
-			CapabilityVersion: "initial", Trace: writingstore.TraceContext{
-				Provenance: map[string]any{"initial": true}, SourceRefs: []string{}, Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "writingruntime.initial"}}})
-	}
-	if err := orchestrator.Store.SaveInitialArtifacts(ctx, initialRows); err != nil {
-		return nil, runtimeError(CodeArtifactCommitFailed, RetrySafe, "orchestrator could not persist initial artifacts", err)
-	}
+	// Return artifacts without writing artifact rows here — the caller
+	// (persistInitialArtifacts → CommitInitialArtifacts) writes both the
+	// synthetic "node_initial" attempt AND its artifact rows atomically
+	// in one transaction, avoiding the immutable-content conflict that
+	// arose when SaveInitialArtifacts and CommitInitialArtifacts both
+	// attempted to insert the same artifact_id + version.
 	return artifacts, nil
 }
 
@@ -639,6 +666,28 @@ func (orchestrator *Orchestrator) Resume(ctx context.Context, runID, commandID s
 		return RunOutcome{}, err
 	}
 	return orchestrator.Execute(ctx, runID)
+}
+
+// FailDispatch terminates an unexpected asynchronous dispatch failure with a
+// durable, auditable run transition. Expected human/control outcomes are
+// handled by Execute itself and must not call this method.
+func (orchestrator *Orchestrator) FailDispatch(ctx context.Context, runID string, code ErrorCode) error {
+	run, err := orchestrator.Store.LoadRuntimeRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	from := RunState(run.Status)
+	switch from {
+	case StatePlanned, StateAwaitingApproval, StateRunning, StatePausing, StateReplanning:
+		cause := "dispatch_failed"
+		if code != "" {
+			cause += "_" + strings.ToLower(string(code))
+		}
+		_, err := orchestrator.transition(ctx, runID, from, StateFailed, cause)
+		return err
+	default:
+		return nil
+	}
 }
 
 func (orchestrator *Orchestrator) Pause(ctx context.Context, runID, commandID string, actor writingstore.Actor) error {
@@ -914,7 +963,15 @@ func runtimeTrace(capability string) writingstore.TraceContext {
 	return writingstore.TraceContext{Provenance: map[string]any{"runtime": "governed", "capability": capability}, SourceRefs: []string{}, Actor: writingstore.Actor{Type: writingstore.ActorCapability, ID: capability}}
 }
 func artifactRecord(request ExecutionRequest, draft OutputArtifactDraft, trace writingstore.TraceContext, createdAt time.Time) writingstore.ArtifactRecord {
-	return writingstore.ArtifactRecord{ArtifactID: writingstore.StableID("art_", request.IdempotencyKey, draft.OutputKey, draft.ContentHash), Version: 1, RunID: request.RunID, PlanID: request.PlanID, PlanVersion: request.PlanVersion, NodeID: request.NodeID, Attempt: request.Attempt, IdempotencyKey: request.IdempotencyKey, OutputKey: draft.OutputKey, ArtifactType: string(draft.ArtifactType), Status: "provisional", ContentHash: draft.ContentHash, MediaType: draft.MediaType, ContentRef: draft.ContentRef, Parents: draft.Parents, Producer: draft.Producer, CapabilityVersion: draft.CapabilityVersion, InputHashes: draft.InputHashes, ModelRef: draft.ModelRef, PromptTemplateRef: draft.PromptTemplateRef, Trace: writingstore.TraceContext{Provenance: draft.Provenance, SourceRefs: draft.SourceRefs, Actor: trace.Actor}, CreatedAt: createdAt}
+	provenance := make(map[string]any, len(draft.Provenance)+1)
+	for k, v := range draft.Provenance {
+		provenance[k] = v
+	}
+	// Embed RunFingerprint into provenance for audit and reproducibility.
+	if draft.Fingerprint != nil {
+		provenance["run_fingerprint"] = draft.Fingerprint
+	}
+	return writingstore.ArtifactRecord{ArtifactID: writingstore.StableID("art_", request.IdempotencyKey, draft.OutputKey, draft.ContentHash), Version: 1, RunID: request.RunID, PlanID: request.PlanID, PlanVersion: request.PlanVersion, NodeID: request.NodeID, Attempt: request.Attempt, IdempotencyKey: request.IdempotencyKey, OutputKey: draft.OutputKey, ArtifactType: string(draft.ArtifactType), Status: "provisional", ContentHash: draft.ContentHash, MediaType: draft.MediaType, ContentRef: draft.ContentRef, Parents: draft.Parents, Producer: draft.Producer, CapabilityVersion: draft.CapabilityVersion, InputHashes: draft.InputHashes, ModelRef: draft.ModelRef, PromptTemplateRef: draft.PromptTemplateRef, Trace: writingstore.TraceContext{Provenance: provenance, SourceRefs: draft.SourceRefs, Actor: trace.Actor}, CreatedAt: createdAt}
 }
 func outcome(runID string, state RunState, completed map[string]int, artifacts []InputArtifact, cost float64) RunOutcome {
 	nodes := make([]string, 0, len(completed))

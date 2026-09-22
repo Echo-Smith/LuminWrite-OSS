@@ -10,7 +10,10 @@ import (
 
 func TestWritingStoreEvidenceAdapterPreservesTask11ExecutionIdentity(t *testing.T) {
 	recorder := &evidenceRecorderStub{}
-	store := WritingStoreEvidenceStore{Recorder: recorder}
+	store, err := NewStoreRolloutEvidence(recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := legacyRequest([]byte("contract"))
 	evidence := RuntimeEvidence{EvidenceID: "evt_evidence", Kind: "shadow_comparison", Identity: request.Identity(),
 		Adapter: OfflineAdapterPolicy(AdapterFamilyHarness), PolicyHash: hashForTest("policy"), PolicyVersion: 1,
@@ -30,9 +33,11 @@ func TestWritingStoreEvidenceAdapterPreservesTask11ExecutionIdentity(t *testing.
 
 type evidenceRecorderStub struct {
 	record writingstore.RuntimeEvidenceRecord
+	calls  int
 }
 
 func (recorder *evidenceRecorderStub) RecordRuntimeEvidence(_ context.Context, record writingstore.RuntimeEvidenceRecord) error {
+	recorder.calls++
 	recorder.record = record
 	return nil
 }

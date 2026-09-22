@@ -117,20 +117,17 @@ func NewMCPClient(ctx context.Context, cfg MCPClientConfig) (*MCPClient, error) 
 
 	switch cfg.Transport {
 	case "stdio":
-		if cfg.Command == "" {
-			return nil, fmt.Errorf("stdio transport requires 'command'")
+		// Allowlist gate (command_policy.go): stdio is disabled unless
+		// MCP_ALLOWED_COMMANDS admits the command — the admin API can write
+		// stdio configs into the DB, so this choke point bounds WHICH binary
+		// may run. The spawn itself is an explicit argv vector via
+		// buildStdioCmd: no shell, args verbatim.
+		if err := ValidateStdioCommand(cfg.Command); err != nil {
+			return nil, err
 		}
-		// stdio MCP servers are admin-configured executables. Resolve the
-		// command explicitly (PATH lookup or absolute path) and build the
-		// process from an argv slice — never through a shell — so config
-		// mistakes fail fast with a clear error and nothing is reinterpreted.
-		resolved, lookErr := exec.LookPath(cfg.Command)
-		if lookErr != nil {
-			return nil, fmt.Errorf("stdio transport command %q is not an executable: %w", cfg.Command, lookErr)
-		}
-		cmd := &exec.Cmd{
-			Path: resolved,
-			Args: append([]string{resolved}, cfg.Args...),
+		cmd, cmdErr := buildStdioCmd(cfg.Command, cfg.Args)
+		if cmdErr != nil {
+			return nil, cmdErr
 		}
 		if len(cfg.Env) > 0 {
 			cmd.Env = cfg.Env

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
@@ -40,7 +42,12 @@ type ContextEnvelopeSink interface {
 // data does not exist yet (source evidence, style directives) stay empty —
 // the manifest contract decides whether their absence is flagged.
 type StoreContextSource struct {
-	Store *writingstore.Store
+	Store      *writingstore.Store
+	MemoryPort memoryport.Port // nil disables user-memory injection
+	// Content is the content-addressed artifact gateway. When non-nil,
+	// CompileInputs loads node artifacts and projects them into the
+	// evidence view for the context envelope's source_evidence block.
+	Content ContentGateway
 }
 
 // CompileInputs assembles the compiler input for one node attempt.
@@ -134,7 +141,268 @@ func (source StoreContextSource) CompileInputs(ctx context.Context, run writings
 		}
 	}
 	sort.Strings(input.ThreadLabels)
+
+	// Load user memory (WP1.2): project WriteDirectives into StyleDirectives,
+	// ReviewGuard into ReviewGuard. The memoryport.Port is the anti-corruption
+	// layer — its output is already rendered-ready DTOs.
+	if source.MemoryPort != nil && source.MemoryPort.EnabledForUser(run.OwnerUserID) {
+		bundle, err := source.MemoryPort.PrepareInjection(ctx, memoryport.Request{
+			UserID:    run.OwnerUserID,
+			Query:     node.Capability, // capability as query context
+			Intent:    "writing",
+			SessionID: run.RunID,
+		})
+		if err == nil && bundle != nil {
+			// WriteDirectives → StyleDirectives
+			for _, d := range bundle.WriteDirectives {
+				input.StyleDirectives = append(input.StyleDirectives, d.Value)
+			}
+			// ReviewGuard → ReviewGuard
+			for _, d := range bundle.ReviewGuard {
+				input.ReviewGuard = append(input.ReviewGuard, d.Value)
+			}
+			// EntityProfile → EntityCards (only if capability declares it)
+			if bundle.EntityProfile != "" {
+				input.EntityCards = append(input.EntityCards, bundle.EntityProfile)
+			}
+		}
+	}
+
+	// WP2.1 Evidence View: project existing artifacts into the
+	// source_evidence block. This is a deterministic projection — the same
+	// artifacts always produce the same evidence lines.
+	if evidenceView, err := source.renderEvidenceView(ctx, run, node); err == nil {
+		for _, item := range evidenceView.Items {
+			line := item.ClaimOrTopic
+			if item.SourceRef != "" {
+				line += " [" + item.SourceRef + "]"
+			}
+			if item.ContentHash != "" {
+				short := item.ContentHash
+				// Strip the "sha256:" prefix for the short display
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				line += " {" + short + "}"
+			}
+			input.EvidenceLines = append(input.EvidenceLines, line)
+		}
+	}
+
 	return input, nil
+}
+
+// renderEvidenceView loads the node's artifacts and runtime evidence, then
+// projects them into a deterministic EvidenceView. Failure is non-fatal:
+// the caller degrades gracefully (empty evidence lines).
+func (source StoreContextSource) renderEvidenceView(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode) (EvidenceView, error) {
+	if source.Store == nil {
+		return EvidenceView{}, fmt.Errorf("store is required for evidence view")
+	}
+	// Load all artifacts for the run, then filter to this node.
+	allArtifacts, err := source.Store.ListRunArtifacts(ctx, run.RunID)
+	if err != nil {
+		return EvidenceView{}, fmt.Errorf("list run artifacts: %w", err)
+	}
+	var nodeArtifacts []writingstore.ArtifactRecord
+	for _, art := range allArtifacts {
+		if art.NodeID == node.NodeID {
+			nodeArtifacts = append(nodeArtifacts, art)
+		}
+	}
+
+	// Build evidence sources from node artifacts.
+	var evidenceSources EvidenceSources
+	for _, art := range nodeArtifacts {
+		observedAt := art.CreatedAt
+		if observedAt.IsZero() {
+			observedAt = time.Now().UTC()
+		}
+		switch art.ArtifactType {
+		case "source_pack":
+			if source.Content != nil {
+				if sp, err := source.loadSourcePackEvidence(ctx, art, observedAt); err == nil {
+					evidenceSources.SourcePacks = append(evidenceSources.SourcePacks, sp)
+				}
+			}
+		case "claim_map":
+			if source.Content != nil {
+				if cm, err := source.loadClaimMapEvidence(ctx, art, observedAt); err == nil {
+					evidenceSources.ClaimMaps = append(evidenceSources.ClaimMaps, cm)
+				}
+			}
+		case "materials":
+			if source.Content != nil {
+				if mats, err := source.loadMaterialSnapshotEvidence(ctx, art, observedAt); err == nil {
+					evidenceSources.MaterialSnapshots = append(evidenceSources.MaterialSnapshots, mats...)
+				}
+			}
+		case "research_evidence_pack":
+			if source.Content != nil {
+				if rps, err := source.loadResearchPackEvidence(ctx, art, observedAt); err == nil {
+					evidenceSources.ResearchPacks = append(evidenceSources.ResearchPacks, rps...)
+				}
+			}
+		}
+	}
+
+	// Load runtime evidence events for this node.
+	if events, err := source.Store.ListRunEvents(ctx, run.RunID, 0, 500); err == nil {
+		for _, event := range events {
+			if event.NodeID != node.NodeID {
+				continue
+			}
+			if event.EntityKind != "rollout_evidence" {
+				continue
+			}
+			evItem := RuntimeEvidenceItem{
+				EvidenceID: event.EventID,
+				Kind:       event.Payload["evidence_kind"].(string),
+				Status:     event.EventType,
+				RecordedAt: event.OccurredAt,
+			}
+			if lane, ok := event.Payload["lane"].(string); ok {
+				evItem.Lane = lane
+			}
+			if policyHash, ok := event.Payload["policy_hash"].(string); ok {
+				evItem.PolicyHash = policyHash
+			}
+			if policyVersion, ok := event.Payload["policy_version"].(float64); ok {
+				evItem.PolicyVersion = int(policyVersion)
+			}
+			evidenceSources.RuntimeEvidence = append(evidenceSources.RuntimeEvidence, evItem)
+		}
+	}
+
+	renderer := EvidenceViewRenderer{}
+	return renderer.Render(node.NodeID, 0, evidenceSources), nil
+}
+
+// loadSourcePackEvidence parses a source_pack artifact into SourcePackEvidence.
+func (source StoreContextSource) loadSourcePackEvidence(ctx context.Context, art writingstore.ArtifactRecord, observedAt time.Time) (SourcePackEvidence, error) {
+	body, err := source.loadArtifactContent(ctx, art)
+	if err != nil {
+		return SourcePackEvidence{}, err
+	}
+	var pack SourcePack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		return SourcePackEvidence{}, err
+	}
+	sources := make([]SourceRecordEvidence, len(pack.Sources))
+	for i, s := range pack.Sources {
+		sources[i] = SourceRecordEvidence{
+			SourceID: s.SourceID, Title: s.Title,
+			URL: s.URL, Excerpt: s.Excerpt, Score: s.Score,
+		}
+	}
+	return SourcePackEvidence{
+		Query: pack.Query, Sources: sources,
+		ContentHash: art.ContentHash, ObservedAt: observedAt,
+	}, nil
+}
+
+// loadClaimMapEvidence parses a claim_map artifact into ClaimMapEvidence.
+func (source StoreContextSource) loadClaimMapEvidence(ctx context.Context, art writingstore.ArtifactRecord, observedAt time.Time) (ClaimMapEvidence, error) {
+	body, err := source.loadArtifactContent(ctx, art)
+	if err != nil {
+		return ClaimMapEvidence{}, err
+	}
+	var cm ClaimMap
+	if err := json.Unmarshal(body, &cm); err != nil {
+		return ClaimMapEvidence{}, err
+	}
+	claims := make([]ClaimEvidence, len(cm.Claims))
+	for i, c := range cm.Claims {
+		claims[i] = ClaimEvidence{
+			ClaimID: c.ClaimID, Subject: c.Subject,
+			Predicate: c.Predicate, Value: c.Value, SourceRefs: c.SourceRefs,
+		}
+	}
+	findings := make([]FindingEvidence, len(cm.Findings))
+	for i, f := range cm.Findings {
+		findings[i] = FindingEvidence{
+			FindingID: f.FindingID, Code: string(f.Code),
+			Severity: f.Severity, Subject: f.Subject,
+			Predicate: f.Predicate, ClaimIDs: f.ClaimIDs, SourceRefs: f.SourceRefs,
+		}
+	}
+	return ClaimMapEvidence{
+		Claims: claims, Findings: findings,
+		ContentHash: art.ContentHash, ObservedAt: observedAt,
+	}, nil
+}
+
+// loadMaterialSnapshotEvidence parses a materials artifact manifest into
+// MaterialSnapshotEvidence entries.
+func (source StoreContextSource) loadMaterialSnapshotEvidence(ctx context.Context, art writingstore.ArtifactRecord, observedAt time.Time) ([]MaterialSnapshotEvidence, error) {
+	body, err := source.loadArtifactContent(ctx, art)
+	if err != nil {
+		return nil, err
+	}
+	var manifest MaterialManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return nil, err
+	}
+	result := make([]MaterialSnapshotEvidence, len(manifest.Materials))
+	for i, m := range manifest.Materials {
+		result[i] = MaterialSnapshotEvidence{
+			MaterialID: m.MaterialID, Title: m.Title,
+			SourceKind: string(m.SourceKind), SourceRef: m.SourceRef,
+			ContentHash: m.ContentHash, UpdatedAt: m.UpdatedAt,
+		}
+	}
+	return result, nil
+}
+
+// loadResearchPackEvidence parses a research_evidence_pack artifact into
+// ResearchPackEvidence entries (one per claim in the pack).
+func (source StoreContextSource) loadResearchPackEvidence(ctx context.Context, art writingstore.ArtifactRecord, _ time.Time) ([]ResearchPackEvidence, error) {
+	body, err := source.loadArtifactContent(ctx, art)
+	if err != nil {
+		return nil, err
+	}
+	// The research evidence pack is a JSON object with "claims" and "evidence" arrays.
+	var pack struct {
+		Claims []struct {
+			ClaimID      string   `json:"claim_id"`
+			Text         string   `json:"text"`
+			Kind         string   `json:"kind"`
+			PaperID      string   `json:"paper_id"`
+			ReviewStatus string   `json:"review_status"`
+			EvidenceIDs  []string `json:"evidence_ids"`
+		} `json:"claims"`
+		Evidence []struct {
+			EvidenceID string `json:"evidence_id"`
+			Quote      string `json:"quote"`
+		} `json:"evidence"`
+	}
+	if err := json.Unmarshal(body, &pack); err != nil {
+		return nil, err
+	}
+	result := make([]ResearchPackEvidence, len(pack.Claims))
+	for i, c := range pack.Claims {
+		result[i] = ResearchPackEvidence{
+			ClaimID: c.ClaimID, ClaimText: c.Text,
+			Kind: c.Kind, PaperID: c.PaperID,
+			ReviewStatus: c.ReviewStatus, EvidenceIDs: c.EvidenceIDs,
+		}
+	}
+	return result, nil
+}
+
+// loadArtifactContent is a thin helper that loads artifact body bytes.
+func (source StoreContextSource) loadArtifactContent(ctx context.Context, art writingstore.ArtifactRecord) ([]byte, error) {
+	if source.Content == nil {
+		return nil, fmt.Errorf("content gateway not configured")
+	}
+	return source.Content.Load(ctx, InputArtifact{
+		ArtifactID:   art.ArtifactID,
+		Version:      art.Version,
+		ArtifactType: writingplan.ArtifactType(art.ArtifactType),
+		ContentHash:  art.ContentHash,
+		MediaType:    art.MediaType,
+		ContentRef:   art.ContentRef,
+	})
 }
 
 // compileNodeContext compiles, persists, and returns the envelope for

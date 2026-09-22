@@ -277,7 +277,7 @@ func testGovernedHTTPMode(t *testing.T, mode writingkernel.OrchestrationMode) {
 	run := e2eRequest(t, router, token, "POST", "/api/v2/runs", map[string]any{
 		"document_id": documentID, "contract_id": contractID, "contract_version": 2,
 		"contract_hash": sealedContract.ContractHash, "base_version_id": baseVersion.VersionID,
-		"style_slug": "default", "plan": envelopeData,
+		"style_slug": "yinyue", "plan": envelopeData,
 		"budget":      map[string]any{"max_cost_usd": 100, "max_duration_ms": 3000000, "max_concurrency": 2, "max_nodes": 10, "max_items": 10},
 		"permissions": plan["data"].(map[string]any)["permissions"],
 	})

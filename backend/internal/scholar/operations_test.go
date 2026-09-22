@@ -1,166 +1,103 @@
 package scholar
 
+// Typed-operation tests for the in-process client (see the client.go header:
+// the transport moved from HTTP to a local executor). The former fake-worker
+// round trips for discover/rank/fetch_full_text asserted success envelopes
+// fabricated over HTTP; in-process those results come from the real
+// providers, the LLM and the constrained downloader, which speak HTTP through
+// pinned clients to hardcoded external URLs — exercising them here would need
+// live network egress or provider mocking that does not exist, so those round
+// trips are dropped. What remains is the transport-independent contract:
+// client-side validation that fails before any executor or network work, the
+// pure-logic rate limiter, and canonical payload marshaling.
+
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 )
 
-// T04 typed-operation tests: Discover/Rank/FetchFullText round trips through
-// a fake worker, plus the MinIntervalRateLimiter spacing behaviour.
-
-func fakeWorkerEnvelope(t *testing.T, outputs map[string]any) http.Handler {
-	t.Helper()
-	return mockWorkerHandler(t, http.StatusOK, func(req *OperationRequest) map[string]any {
-		env := successEnvelope(req)
-		env["outputs"] = outputs
-		return env
-	})
-}
-
-func TestDiscoverRoundTrip(t *testing.T) {
-	outputs := map[string]any{
-		"papers": []map[string]any{
-			{
-				"paper_id":           "p_abc123",
-				"doi":                "10.1000/x.1",
-				"title":              "A Study",
-				"authors":            []string{"A. Author"},
-				"year":               2024,
-				"venue":              "J. Tests",
-				"canonical_url":      nil,
-				"aliases":            []string{"W1", "doi:10.1000/x.1"},
-				"abstract":           "An abstract.",
-				"oa_url":             "https://example.org/a.pdf",
-				"providers":          []string{"openalex", "crossref"},
-				"possible_duplicate": false,
-			},
-		},
-		"provider_results": []map[string]any{
-			{"provider": "openalex", "status": "ok", "returned": 1},
-			{"provider": "crossref", "status": "error", "returned": 0, "error_code": "provider_timeout"},
-		},
-	}
-	srv := httptest.NewServer(fakeWorkerEnvelope(t, outputs))
-	defer srv.Close()
-	client := newTestClient(t, srv)
-
-	got, resp, err := client.Discover(context.Background(), "battery cathodes", []string{"openalex", "crossref"}, 5)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	if len(got.Papers) != 1 {
-		t.Fatalf("papers = %+v", got.Papers)
-	}
-	paper := got.Papers[0]
-	if paper.PaperID != "p_abc123" || paper.DOI == nil || *paper.DOI != "10.1000/x.1" {
-		t.Fatalf("paper = %+v", paper)
-	}
-	if paper.Year == nil || *paper.Year != 2024 {
-		t.Fatalf("year = %+v", paper.Year)
-	}
-	if len(got.ProviderResults) != 2 || got.ProviderResults[1].ErrorCode == nil {
-		t.Fatalf("provider_results = %+v", got.ProviderResults)
-	}
-	if resp.Usage.CostUSD != nil {
-		t.Fatalf("cost_usd should stay nil")
-	}
-}
-
 func TestDiscoverClientSideAllowlistValidation(t *testing.T) {
-	srv := httptest.NewServer(fakeWorkerEnvelope(t, map[string]any{}))
-	defer srv.Close()
-	client := newTestClient(t, srv)
+	client := newTestClient(t)
 
-	if _, _, err := client.Discover(context.Background(), "q", nil, 5); err == nil {
-		t.Fatal("empty allowlist must be rejected client-side")
+	_, _, err := client.Discover(context.Background(), "q", nil, 5)
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("empty allowlist must be rejected client-side, got %v", err)
+	}
+	var se *Error
+	if !errors.As(err, &se) {
+		t.Fatalf("want *Error, got %T: %v", err, err)
+	}
+	if se.Code != "client_empty_provider_allowlist" {
+		t.Fatalf("code = %q, want client_empty_provider_allowlist", se.Code)
+	}
+
+	// Unknown providers are rejected before any provider network call.
+	_, _, err = client.Discover(context.Background(), "q", []string{"not_a_provider"}, 5)
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("unknown provider must be rejected client-side, got %v", err)
+	}
+	if !errors.As(err, &se) {
+		t.Fatalf("want *Error, got %T: %v", err, err)
+	}
+	if se.Code != "client_unknown_provider" {
+		t.Fatalf("code = %q, want client_unknown_provider", se.Code)
 	}
 }
 
-func TestRankRoundTripAndValidation(t *testing.T) {
-	outputs := map[string]any{
-		"scores": []map[string]any{
-			{"paper_id": "p1", "score": 3, "reason": "on topic"},
-			{"paper_id": "p2", "score": 0, "reason": "unrelated"},
-		},
-	}
-	srv := httptest.NewServer(fakeWorkerEnvelope(t, outputs))
-	defer srv.Close()
-	client := newTestClient(t, srv)
+func TestRankClientSideValidation(t *testing.T) {
+	client := newTestClient(t)
 
-	got, _, err := client.Rank(context.Background(), "why do batteries age?", []RankCandidate{
-		{PaperID: "p1", Abstract: "a1"},
-		{PaperID: "p2", Abstract: "a2"},
-	})
-	if err != nil {
-		t.Fatalf("Rank: %v", err)
+	if _, _, err := client.Rank(context.Background(), "q", nil); err == nil {
+		t.Fatal("empty rank batch must be rejected client-side")
 	}
-	if len(got.Scores) != 2 || got.Scores[0].PaperID != "p1" || got.Scores[0].Score != 3 {
-		t.Fatalf("scores = %+v", got.Scores)
+	if _, _, err := client.Rank(context.Background(), "q", make([]RankCandidate, 9)); err == nil {
+		t.Fatal("rank batches above 8 candidates must be rejected client-side")
 	}
 
-	// Duplicate IDs rejected before send.
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("worker must not be reached for duplicate candidates")
-	}))
-	defer srv2.Close()
-	client2 := newTestClient(t, srv2)
-	if _, _, err := client2.Rank(context.Background(), "q", []RankCandidate{
-		{PaperID: "p1"}, {PaperID: "p1"},
-	}); err == nil {
-		t.Fatal("duplicate ids must be rejected client-side")
+	_, _, err := client.Rank(context.Background(), "q", []RankCandidate{{PaperID: "p1"}, {PaperID: "p1"}})
+	if err == nil {
+		t.Fatal("duplicate paper ids must be rejected client-side")
+	}
+	var se *Error
+	if !errors.As(err, &se) {
+		t.Fatalf("want *Error, got %T: %v", err, err)
+	}
+	if se.Code != "client_duplicate_paper_id" {
+		t.Fatalf("code = %q, want client_duplicate_paper_id", se.Code)
 	}
 }
 
-func TestFetchFullTextRoundTrip(t *testing.T) {
-	content := []byte("fake pdf body for the typed client test")
-	outputs := map[string]any{
-		"paper_id":              "p_abc123",
-		"acquisition_status":    "full_text_available",
-		"content_hash":          "sha256:deadbeef",
-		"size_bytes":            len(content),
-		"media_type":            "application/pdf",
-		"content_type_reported": "application/pdf",
-		"looks_like_pdf":        true,
-		"likely_scanned":        false,
-		"final_url":             "https://example.org/a.pdf",
-		"redirect_hops":         2,
-		"content_base64":        base64.StdEncoding.EncodeToString(content),
-		"blob":                  map[string]any{"transport": "inline_base64", "blob_url": nil},
-	}
-	srv := httptest.NewServer(fakeWorkerEnvelope(t, outputs))
-	defer srv.Close()
-	client := newTestClient(t, srv)
+// A well-formed batch must reach the executor intact: with the LLM env
+// cleared it gets past the candidate-count check to the LLM guard instead of
+// failing as a bad batch. Locks the payload-adapter plumbing (candidates
+// travel as []map[string]any from the typed method). No network I/O: rank
+// stops at llm_not_configured before any call.
+func TestRankCandidatesReachExecutor(t *testing.T) {
+	t.Setenv("SCHOLAR_LLM_BASE_URL", "")
+	t.Setenv("SCHOLAR_LLM_MODEL", "")
+	t.Setenv("SCHOLAR_LLM_API_KEY", "")
+	client := newTestClient(t)
 
-	got, _, err := client.FetchFullText(context.Background(), "p_abc123", "https://example.org/a.pdf", 10*1024*1024)
-	if err != nil {
-		t.Fatalf("FetchFullText: %v", err)
+	_, _, err := client.Rank(context.Background(), "why do batteries age?", []RankCandidate{{PaperID: "p1", Abstract: "a1"}})
+	var se *Error
+	if !errors.As(err, &se) {
+		t.Fatalf("want *Error, got %T: %v", err, err)
 	}
-	if string(got.Content()) != string(content) {
-		t.Fatalf("content mismatch: %d bytes", len(got.Content()))
-	}
-	if got.MediaType != "application/pdf" || got.RedirectHops != 2 {
-		t.Fatalf("outputs = %+v", got)
-	}
-	if got.Blob.Transport != "inline_base64" || got.Blob.BlobURL != nil {
-		t.Fatalf("blob = %+v", got.Blob)
+	if se.Code != "llm_not_configured" {
+		t.Fatalf("code = %q, want llm_not_configured (candidates must flow to the executor)", se.Code)
 	}
 }
 
 func TestFetchFullTextClientSideSizeLimitValidation(t *testing.T) {
-	srv := httptest.NewServer(fakeWorkerEnvelope(t, map[string]any{}))
-	defer srv.Close()
-	client := newTestClient(t, srv)
-	if _, _, err := client.FetchFullText(context.Background(), "p", "https://x/y.pdf", 26*1024*1024); err == nil {
+	client := newTestClient(t)
+	if _, _, err := client.FetchFullText(context.Background(), "p", "https://example.org/y.pdf", 26*1024*1024); err == nil {
 		t.Fatal("size_limit above the 25MiB design cap must be rejected client-side")
 	}
-	if _, _, err := client.FetchFullText(context.Background(), "p", "https://x/y.pdf", 0); err == nil {
+	if _, _, err := client.FetchFullText(context.Background(), "p", "https://example.org/y.pdf", 0); err == nil {
 		t.Fatal("size_limit=0 must be rejected client-side")
 	}
 }

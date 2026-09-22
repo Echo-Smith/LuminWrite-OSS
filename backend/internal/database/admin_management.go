@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +33,7 @@ type ModelConfig struct {
 	MaxTokens       int                    `json:"max_tokens"`
 	Temperature     float64                `json:"temperature"`
 	ReasoningEffort string                 `json:"reasoning_effort"`       // low | medium | high | max (thinking mode only)
+	Purpose         string                 `json:"purpose"`                // generation | verification | embedding
 	IsDefault       bool                   `json:"is_default"`
 	IsActive        bool                   `json:"is_active"`
 	Capabilities    map[string]interface{} `json:"capabilities"`
@@ -40,19 +43,73 @@ type ModelConfig struct {
 	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
+// EnsureEnvDefaultModelKey 把环境变量默认密钥绑定到默认模型配置行。
+//
+// 迁移播种的默认模型（如 deepseek-v4-flash）不带密钥，环境变量 AI_API_KEY
+// 不会自动出现在任何界面——表现为"默认配置的密钥没办法加载，必须到 admin
+// 重新配置才出现"。启动时按 admin 录入同样的加密方式把 env 密钥绑定到默认行：
+//   - 行不存在（种子被清空/删除）：按 env 配置补建默认行
+//   - 行存在且无密钥：绑定 env 密钥
+//   - 行已有密钥：不覆盖（admin 录入值优先）
+func (r *AdminRepo) EnsureEnvDefaultModelKey(ctx context.Context, provider, modelName, displayName, baseURL, apiKeyPlain string) error {
+	if r.db == nil || apiKeyPlain == "" || modelName == "" {
+		return nil
+	}
+	stored := apiKeyPlain
+	if len(r.encKey) > 0 {
+		encrypted, err := crypto.Encrypt(apiKeyPlain, r.encKey)
+		if err != nil {
+			return fmt.Errorf("encrypt env api key: %w", err)
+		}
+		stored = encrypted
+	}
+
+	var id, existingKey string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id::text, COALESCE(api_key_encrypted, '')
+		FROM model_configs
+		WHERE provider = $1 AND model_name = $2
+		ORDER BY is_default DESC, created_at ASC
+		LIMIT 1
+	`, provider, modelName).Scan(&id, &existingKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, iErr := r.db.ExecContext(ctx, `
+			INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_encrypted, max_tokens, temperature, is_default, is_active)
+			VALUES ($1, $2, $3, NULLIF($4, ''), $5, 131072, 0.7, TRUE, TRUE)
+		`, provider, modelName, displayName, baseURL, stored); iErr != nil {
+			return iErr
+		}
+		slog.Info("model config: recreated default row from env config", "model", modelName)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existingKey != "" {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE model_configs SET api_key_encrypted = $2, updated_at = NOW() WHERE id = $1
+	`, id, stored); err != nil {
+		return err
+	}
+	slog.Info("model config: bound env api key to default model", "model", modelName)
+	return nil
+}
+
 // ListModelConfigs returns all model configs.
 func (r *AdminRepo) ListModelConfigs(ctx context.Context) ([]*ModelConfig, error) {
 	if r.db == nil {
 		return []*ModelConfig{}, nil
 	}
 
-rows, err := r.db.QueryContext(ctx, `
-	SELECT id::text, provider, model_name, display_name, base_url,
-	       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
-	       capabilities, metadata, custom_headers, created_at, updated_at
-	FROM model_configs
-	ORDER BY provider, is_default DESC, model_name
-`)
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id::text, provider, model_name, display_name, base_url,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
+		       capabilities, metadata, custom_headers, created_at, updated_at
+		FROM model_configs
+		ORDER BY purpose, provider, is_default DESC, model_name
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +120,7 @@ rows, err := r.db.QueryContext(ctx, `
 		var c ModelConfig
 		var capJSON, metaJSON, hdrJSON []byte
 		if err := rows.Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-			&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+			&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.Purpose, &c.IsDefault, &c.IsActive,
 			&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			continue
 		}
@@ -93,11 +150,11 @@ func (r *AdminRepo) GetModelConfig(ctx context.Context, id string) (*ModelConfig
 	var capJSON, metaJSON, hdrJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
 		       capabilities, metadata, custom_headers, created_at, updated_at
 		FROM model_configs WHERE id = $1
 	`, id).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.Purpose, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -150,9 +207,14 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 		}
 	}
 
-	// If this is default, unset other defaults for same provider
+	// If this is default, unset other defaults for same provider + purpose
 	if c.IsDefault {
-		r.db.ExecContext(ctx, `UPDATE model_configs SET is_default = FALSE WHERE provider = $1`, c.Provider)
+		r.db.ExecContext(ctx, `UPDATE model_configs SET is_default = FALSE WHERE provider = $1 AND purpose = $2`, c.Provider, c.Purpose)
+	}
+
+	// Default purpose to 'generation' if not specified
+	if c.Purpose == "" {
+		c.Purpose = "generation"
 	}
 
 	var result ModelConfig
@@ -164,15 +226,15 @@ func (r *AdminRepo) CreateModelConfig(ctx context.Context, c *ModelConfig) (*Mod
 
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_id, api_key_encrypted,
-			max_tokens, temperature, reasoning_effort, is_default, is_active, capabilities, metadata, custom_headers)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			max_tokens, temperature, reasoning_effort, purpose, is_default, is_active, capabilities, metadata, custom_headers)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id::text, provider, model_name, display_name, base_url,
-		          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
 		          capabilities, metadata, custom_headers, created_at, updated_at
 	`, c.Provider, c.ModelName, c.DisplayName, c.BaseURL, apiKeyID, storedAPIKey,
-		c.MaxTokens, c.Temperature, c.ReasoningEffort, c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)).Scan(
+		c.MaxTokens, c.Temperature, c.ReasoningEffort, c.Purpose, c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.ReasoningEffort, &result.IsDefault, &result.IsActive,
+		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.ReasoningEffort, &result.Purpose, &result.IsDefault, &result.IsActive,
 		&rCapJSON, &rMetaJSON, &rHdrJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -213,7 +275,12 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 	}
 
 	if c.IsDefault {
-		r.db.ExecContext(ctx, `UPDATE model_configs SET is_default = FALSE WHERE provider = $1 AND id != $2`, c.Provider, id)
+		r.db.ExecContext(ctx, `UPDATE model_configs SET is_default = FALSE WHERE provider = $1 AND purpose = $2 AND id != $3`, c.Provider, c.Purpose, id)
+	}
+
+	// Default purpose to 'generation' if not specified
+	if c.Purpose == "" {
+		c.Purpose = "generation"
 	}
 
 	var result ModelConfig
@@ -240,14 +307,14 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 			UPDATE model_configs SET
 				provider = $2, model_name = $3, display_name = $4, base_url = $5,
 				api_key_id = $6, api_key_encrypted = $7, max_tokens = $8, temperature = $9,
-				reasoning_effort = $10, is_default = $11, is_active = $12, capabilities = $13, metadata = $14, custom_headers = $15, updated_at = NOW()
+				reasoning_effort = $10, purpose = $11, is_default = $12, is_active = $13, capabilities = $14, metadata = $15, custom_headers = $16, updated_at = NOW()
 			WHERE id = $1
 			RETURNING id::text, provider, model_name, display_name, base_url,
-			          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+			          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
 			          capabilities, metadata, custom_headers, created_at, updated_at
 		`
 		args = []interface{}{id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL,
-			apiKeyID, storedAPIKey, c.MaxTokens, c.Temperature, c.ReasoningEffort,
+			apiKeyID, storedAPIKey, c.MaxTokens, c.Temperature, c.ReasoningEffort, c.Purpose,
 			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)}
 	} else {
 		// Keep existing api_key_encrypted
@@ -255,20 +322,20 @@ func (r *AdminRepo) UpdateModelConfig(ctx context.Context, id string, c *ModelCo
 			UPDATE model_configs SET
 				provider = $2, model_name = $3, display_name = $4, base_url = $5,
 				api_key_id = $6, max_tokens = $7, temperature = $8,
-				reasoning_effort = $9, is_default = $10, is_active = $11, capabilities = $12, metadata = $13, custom_headers = $14, updated_at = NOW()
+				reasoning_effort = $9, purpose = $10, is_default = $11, is_active = $12, capabilities = $13, metadata = $14, custom_headers = $15, updated_at = NOW()
 			WHERE id = $1
 			RETURNING id::text, provider, model_name, display_name, base_url,
-			          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+			          api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
 			          capabilities, metadata, custom_headers, created_at, updated_at
 		`
 		args = []interface{}{id, c.Provider, c.ModelName, c.DisplayName, c.BaseURL,
-			apiKeyID, c.MaxTokens, c.Temperature, c.ReasoningEffort,
+			apiKeyID, c.MaxTokens, c.Temperature, c.ReasoningEffort, c.Purpose,
 			c.IsDefault, c.IsActive, string(capJSON), string(metaJSON), string(hdrJSON)}
 	}
 
 	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&result.ID, &result.Provider, &result.ModelName, &result.DisplayName, &result.BaseURL,
-		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.ReasoningEffort, &result.IsDefault, &result.IsActive,
+		&result.APIKeyID, &result.APIKeyEncrypted, &result.MaxTokens, &result.Temperature, &result.ReasoningEffort, &result.Purpose, &result.IsDefault, &result.IsActive,
 		&rCapJSON, &rMetaJSON, &rHdrJSON, &result.CreatedAt, &result.UpdatedAt)
 	if err != nil {
 		return nil, err

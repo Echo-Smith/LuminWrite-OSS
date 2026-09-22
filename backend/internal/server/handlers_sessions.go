@@ -20,8 +20,10 @@ import (
 
 // handleListUserSessions lists the authenticated user's writing traces.
 //
-// GET /api/v2/sessions?page=1&page_size=20
+// GET /api/v2/sessions?page=1&page_size=20&archived=false
 // Header: Authorization: Bearer <jwt>
+//
+// archived 参数：缺省=仅未归档（兼容旧行为）；true=仅归档；false=仅未归档。
 func (s *Server) handleListUserSessions(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	if user == nil {
@@ -37,7 +39,18 @@ func (s *Server) handleListUserSessions(w http.ResponseWriter, r *http.Request) 
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("page_size"), 50)
 
-	sessions, total, err := s.traces.ListTraces(r.Context(), user.Sub, page, pageSize)
+	// 归档过滤：默认只看未归档会话
+	var archived *bool
+	switch r.URL.Query().Get("archived") {
+	case "true":
+		v := true
+		archived = &v
+	case "false":
+		v := false
+		archived = &v
+	}
+
+	sessions, total, err := s.traces.ListTraces(r.Context(), user.Sub, page, pageSize, archived)
 	if err != nil {
 		slog.Warn("failed to list user sessions", "error", err, "user_id", user.Sub)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list sessions")
@@ -84,6 +97,51 @@ func (s *Server) handleGetUserSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.OK(w, detail)
+}
+
+// handleUpdateSessionTitle 用户重命名会话（custom_title，显示优先级最高）。
+//
+// PUT /api/v2/sessions/{traceId}/title
+// Body: { "title": "..." }
+func (s *Server) handleUpdateSessionTitle(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	if s.traces == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+
+	traceID := chi.URLParam(r, "traceId")
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "title is required")
+		return
+	}
+
+	// 游客（sub 非 UUID）按无主键过滤处理：UpdateTraceTitle 内部空串分支
+	userID := user.Sub
+	if !isLikelyUUIDForTitle(userID) {
+		userID = ""
+	}
+	if err := s.traces.UpdateTraceTitle(r.Context(), traceID, userID, body.Title); err != nil {
+		slog.Warn("failed to update session title", "error", err, "trace_id", traceID)
+		response.Err(w, http.StatusBadRequest, "rename_failed", err.Error())
+		return
+	}
+	response.OK(w, map[string]interface{}{"renamed": true, "title": strings.TrimSpace(body.Title)})
+}
+
+func isLikelyUUIDForTitle(s string) bool {
+	return len(s) == 36 && strings.Count(s, "-") == 4
 }
 
 // handleDeleteUserSession soft-deletes a trace for the authenticated user.

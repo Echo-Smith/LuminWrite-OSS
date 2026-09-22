@@ -349,15 +349,15 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 		if event.IdempotencyKey != expected {
 			return RunEvent{}, fmt.Errorf("%w: event idempotency key mismatch", ErrIdempotencyConflict)
 		}
-	} else if transitionScoped {
-		if event.NodeID != "" || event.Attempt != 0 || strings.TrimSpace(event.IdempotencyKey) == "" {
-			return RunEvent{}, fmt.Errorf("%w: transition event requires command idempotency only", ErrInvalidRecord)
-		}
 	} else if streamingScoped {
 		// Streaming events carry node attempt identity but skip dedup — many
 		// events of the same type exist per node attempt (deltas, progress).
 		if strings.TrimSpace(event.NodeID) == "" || event.Attempt < 1 {
 			return RunEvent{}, fmt.Errorf("%w: streaming event requires node_id and attempt", ErrInvalidRecord)
+		}
+	} else if transitionScoped {
+		if event.NodeID != "" || event.Attempt != 0 || strings.TrimSpace(event.IdempotencyKey) == "" {
+			return RunEvent{}, fmt.Errorf("%w: transition event requires command idempotency only", ErrInvalidRecord)
 		}
 	} else if event.NodeID != "" || event.Attempt != 0 || event.IdempotencyKey != "" {
 		return RunEvent{}, fmt.Errorf("%w: run-scoped event cannot carry node attempt identity", ErrInvalidRecord)
@@ -368,14 +368,26 @@ func (tx *Tx) AppendRunEvent(ctx context.Context, event RunEvent) (RunEvent, err
 		return RunEvent{}, fmt.Errorf("marshal event payload: %w", err)
 	}
 	var previousSequence int64
+	var currentStatus string
 	err = tx.tx.QueryRowContext(ctx, `
-		SELECT last_event_sequence FROM writing_runs WHERE run_id=$1 FOR UPDATE
-	`, event.RunID).Scan(&previousSequence)
+		SELECT last_event_sequence, status FROM writing_runs WHERE run_id=$1 FOR UPDATE
+	`, event.RunID).Scan(&previousSequence, &currentStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RunEvent{}, ErrNotFound
 	}
 	if err != nil {
 		return RunEvent{}, fmt.Errorf("lock run event sequence: %w", err)
+	}
+	// Terminal guard: once a run has reached a terminal status, no new events
+	// may be appended — except the terminal transition event itself, which is
+	// written by RecordRunTransition in the same transaction that changes the
+	// status (the event is written before the status UPDATE, so the guard sees
+	// the pre-transition status; the exception is a defensive measure for any
+	// future reordering).
+	if currentStatus == "completed" || currentStatus == "cancelled" || currentStatus == "failed" {
+		if event.EventType != "run.transitioned" {
+			return RunEvent{}, fmt.Errorf("%w: cannot append event to terminal run (status=%s)", ErrConflict, currentStatus)
+		}
 	}
 	if nodeScoped || transitionScoped {
 		var existing RunEvent

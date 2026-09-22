@@ -21,6 +21,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/mcp"
 	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
@@ -214,6 +215,13 @@ func New(cfg *config.Config) (*Server, error) {
 	// ── Override search config with database-stored API keys ──
 	// If admin has configured API keys via the frontend, they override env vars.
 	// This allows runtime configuration without restarting the server.
+		//
+		// Edition boundary (docs/29-wp5-boundary-governance.md §3): the tavily and
+		// anysearch overrides below are edition-neutral config plumbing shared by both
+		// editions. In the OSS edition both clients are stubs (search_stubs.go) whose
+		// Search/Extract return ErrProviderNotInstalled, so keys collected here can
+		// never produce paid-search results. OSS deployment templates must not carry
+		// TAVILY_*/ANYSEARCH_* variables (enforced by tools/edition_boundary_test.go).
 	if dbAvail && adminRepo != nil {
 		ctx := context.Background()
 		if key, baseURL, err := adminRepo.GetAPIKeyValue(ctx, "tavily"); err == nil && key != "" {
@@ -651,12 +659,20 @@ func New(cfg *config.Config) (*Server, error) {
 	// WABench V2 shadow runner uses the same Harness and runtime dependencies
 	// as the user-facing writing path; it does not bypass retrieval or tools.
 	if wabenchRepo != nil && defaultLLM != nil {
+		// Memory port for WABench: nil when memory service is unavailable,
+		// which disables memory injection for all candidates. When available,
+		// the adapter uses it read-only (PrepareInjection, never SubmitOutcome).
+		var wabenchMemoryPort memoryport.Port
+		if s.memorySvc != nil && s.memorySvc.IsAvailable() {
+			wabenchMemoryPort = s.memoryPort()
+		}
 		wabenchAdapter := services.NewHarnessWABenchExecutorWithResolver(
 			s.llmSvc,
 			s.search,
 			services.NewKbSearchAdapter(s.kbMgr),
 			s.profiles,
 			s.userStyleStore,
+			wabenchMemoryPort,
 		)
 		s.wabenchSvc = services.NewWABenchEvaluationService(
 			wabenchRepo,
@@ -1006,6 +1022,7 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/artifacts", s.handleGetSessionArtifacts)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/events", s.handleGetSessionEvents)
 		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/article", s.handleUpdateSessionArticle)
+		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/title", s.handleUpdateSessionTitle)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions", s.handleListArticleVersions)
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/versions/{versionId}", s.handleGetArticleVersion)
 		// Plan CRUD (DAG 工作流计划增删查改)
@@ -1714,9 +1731,9 @@ func (s *Server) newPostReviewStep() engine.Step {
 // newPostReviewStepWithLLM creates a PostReviewStep with a specific LLM client and style profile.
 func (s *Server) newPostReviewStepWithLLM(llm *tools.LLMClient, p *profile.StyleProfile) engine.Step {
 	if s.sensitiveSvc != nil {
-		return steps.NewPostReviewStepWithSearchAndJiaozhen(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p, s.search, s.jiaozhen)
+		return steps.NewPostReviewStepWithSearch(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p, s.search)
 	}
-	return steps.NewPostReviewStepWithSearchAndJiaozhen(llm, nil, p, s.search, s.jiaozhen)
+	return steps.NewPostReviewStepWithSearch(llm, nil, p, s.search)
 }
 
 // buildToolRegistry builds a ToolRegistry containing all pipeline steps as tools,

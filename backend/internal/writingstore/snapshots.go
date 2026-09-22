@@ -121,6 +121,17 @@ func (tx *Tx) CommitCheckpoint(ctx context.Context, bundle CheckpointBundle) (Sn
 		return SnapshotRecord{}, fmt.Errorf("check existing snapshot: %w", err)
 	}
 
+	// Terminal guard: reject new checkpoint commits on runs that have
+	// already reached a terminal status. Idempotent replays of an
+	// existing snapshot (handled above) are still allowed.
+	var runStatus string
+	if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_runs WHERE run_id=$1`, snapshot.RunID).Scan(&runStatus); err != nil {
+		return SnapshotRecord{}, fmt.Errorf("check run status: %w", err)
+	}
+	if runStatus == "completed" || runStatus == "cancelled" || runStatus == "failed" {
+		return SnapshotRecord{}, fmt.Errorf("%w: cannot commit checkpoint on terminal run (status=%s)", ErrConflict, runStatus)
+	}
+
 	if bundle.QualityReport != nil {
 		report := *bundle.QualityReport
 		if report.RunID != snapshot.RunID || report.SnapshotID != snapshot.SnapshotID ||

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -268,33 +269,57 @@ func (s *WABenchEvaluationService) ExecuteRun(ctx context.Context, runID string)
 		return err
 	}
 	accumulator := wabenchRunAccumulator{totalCases: len(cases)}
+	concurrency := 16
+	sem := make(chan struct{}, concurrency)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var firstErr error
 	for _, item := range cases {
 		if ctx.Err() != nil {
-			_ = s.repo.CompleteRun(context.Background(), runID, "failed")
-			return ctx.Err()
+			break
 		}
-		output, result := s.evaluateCase(ctx, *execution, item)
-		if err := s.repo.SaveCaseResult(ctx, execution.Run.PK, item.PK, output); err != nil {
-			_ = s.repo.CompleteRun(context.Background(), runID, "failed")
-			return err
-		}
-		accumulator.completedCases++
-		if result.stageFailure {
-			accumulator.stageFailures++
-		}
-		if result.hardFailure {
-			accumulator.hardFailureCases++
-		}
-		if result.qualityScored {
-			accumulator.scoredCases++
-			accumulator.weightedScoreSum += result.weightedScore
-			if !result.qualityPassed {
-				accumulator.qualityFailures++
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(item database.WABenchCase) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			output, result := s.evaluateCase(ctx, *execution, item)
+			mu.Lock()
+			defer mu.Unlock()
+			if firstErr != nil {
+				return
 			}
-		}
-		if result.redTeamCompromised {
-			accumulator.redTeamCompromised++
-		}
+			if err := s.repo.SaveCaseResult(ctx, execution.Run.PK, item.PK, output); err != nil {
+				firstErr = err
+				return
+			}
+			accumulator.completedCases++
+			if result.stageFailure {
+				accumulator.stageFailures++
+			}
+			if result.hardFailure {
+				accumulator.hardFailureCases++
+			}
+			if result.qualityScored {
+				accumulator.scoredCases++
+				accumulator.weightedScoreSum += result.weightedScore
+				if !result.qualityPassed {
+					accumulator.qualityFailures++
+				}
+			}
+			if result.redTeamCompromised {
+				accumulator.redTeamCompromised++
+			}
+		}(item)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		_ = s.repo.CompleteRun(context.Background(), runID, "failed")
+		return ctx.Err()
+	}
+	if firstErr != nil {
+		_ = s.repo.CompleteRun(context.Background(), runID, "failed")
+		return firstErr
 	}
 	decision := BuildWABenchGateDecision(execution.Suite, accumulator)
 	if err := s.repo.SaveGateDecision(ctx, execution.Run.PK, decision); err != nil {
@@ -353,8 +378,20 @@ func (s *WABenchEvaluationService) evaluateCase(ctx context.Context, execution d
 	}
 	output.TraceRef = trace.TraceID
 	output.OutputHash = sha256Text(trace.Article)
+	editDistance := levenshteinDistance(input, trace.Article)
+	inputLen := len([]rune(input))
+	outputLen := len([]rune(trace.Article))
+	editRatio := float64(0)
+	if inputLen > 0 {
+		editRatio = float64(editDistance) / float64(inputLen)
+	}
 	output.Metrics = map[string]interface{}{
-		"latencyMs": trace.LatencyMs, "totalTokens": trace.TotalTokens,
+		"latencyMs":     trace.LatencyMs,
+		"totalTokens":   trace.TotalTokens,
+		"editDistance":   editDistance,
+		"editRatio":     editRatio,
+		"inputLength":   inputLen,
+		"outputLength":  outputLen,
 		"cost":          map[string]interface{}{"availability": "unavailable"},
 		"runnerVersion": WABenchV2RunnerVersion,
 	}
@@ -423,6 +460,9 @@ func (s *WABenchEvaluationService) evaluateCase(ctx context.Context, execution d
 		"weightedScore": weightedScore, "passed": qualityPassed,
 		"feedback": judgeResult.Feedback, "symptoms": judgeResult.Symptoms,
 		"scoreScale": "1-5", "deterministicChecksMixedIntoScore": false,
+		// Freeze the rubric into the review so history is immutable and
+		// baseline-vs-candidate comparison uses the weights that produced it.
+		"rubricSnapshot": database.NewRubricSnapshot(item.RubricWeights),
 	}
 	output.Review = &database.WABenchReviewWrite{
 		ReviewID:   "review_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
@@ -711,4 +751,36 @@ func stringSliceContext(contextData map[string]interface{}, key string) []string
 		}
 	}
 	return result
+}
+
+// levenshteinDistance computes the character-level Levenshtein distance
+// between two strings. Used to measure how much modification a user would
+// need to make to transform the input prompt into the output article.
+func levenshteinDistance(a, b string) int {
+	arunes := []rune(a)
+	brunes := []rune(b)
+	la, lb := len(arunes), len(brunes)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if arunes[i-1] == brunes[j-1] {
+				cost = 0
+			}
+			curr[j] = min(curr[j-1]+1, min(prev[j]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
 }

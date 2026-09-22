@@ -224,6 +224,18 @@ func (c *LLMClient) responsesStream(ctx context.Context, req *LLMRequest, onDelt
 					}
 					if json.Unmarshal([]byte(data), &completed) == nil {
 						totalTokens = completed.Response.Usage.TotalTokens
+						if capture := usageCaptureFrom(ctx); capture != nil {
+							capture.Prompt += completed.Response.Usage.InputTokens
+							capture.Completion += completed.Response.Usage.OutputTokens
+							capture.Total += completed.Response.Usage.TotalTokens
+							capture.CacheHit += completed.Response.Usage.CachedTokens
+							cacheMiss := completed.Response.Usage.InputTokens - completed.Response.Usage.CachedTokens
+							if cacheMiss < 0 {
+								cacheMiss = 0
+							}
+							capture.CacheMiss += cacheMiss
+							capture.HasUsage = true
+						}
 					}
 
 				case "response.error":

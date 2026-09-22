@@ -238,7 +238,7 @@ func TestOrchestratorPressureWarnKeepsEnvelope(t *testing.T) {
 	fixture := newOrchestratorFixture(t, writingplan.IdempotencySafe, false)
 	metrics := &metricCapture{}
 	fixture.orchestrator.Telemetry = metrics
-	_, warnBudget, _, raw := pressureBudgets(t)
+	_, _, _, raw := pressureBudgets(t)
 	fixture.orchestrator.Context = &fixedContextSource{input: raw}
 	envelopes := &envelopeCaptureStore{fakeRuntimeStore: fixture.store}
 	fixture.orchestrator.Envelopes = envelopes
@@ -254,6 +254,31 @@ func TestOrchestratorPressureWarnKeepsEnvelope(t *testing.T) {
 	manifest, ok := fixture.orchestrator.Capabilities.Get("core.draft.generate")
 	if !ok {
 		t.Fatal("draft capability missing")
+	}
+	// Scan for a warn-band budget using the manifest's compilation context
+	// (Wanted + RetentionPriority), not the open compile from pressureBudgets().
+	// The manifest's context contract (including review_guard) changes the
+	// weight distribution, so the open-compile bands may not align.
+	wanted := manifest.Context.ContextWanted()
+	retentionPriority := manifest.Context.ContextRetentionPriority()
+	var warnBudget int
+	for budget := 1300; budget <= 40000; budget += 25 {
+		input := raw
+		input.TotalBudget = budget
+		input.Wanted = wanted
+		input.RetentionPriority = retentionPriority
+		envelope, err := contextcompiler.Compile(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pressure := envelope.Pressure()
+		if pressure >= contextcompiler.PressureWarnThreshold && pressure < contextcompiler.PressureCompressThreshold {
+			warnBudget = budget
+			break
+		}
+	}
+	if warnBudget == 0 {
+		t.Fatal("budget scan did not locate a warn-band budget for the manifest context")
 	}
 	manifest.Context.ContextTokenBudget = warnBudget
 	if err := capabilities.Register(manifest); err != nil {

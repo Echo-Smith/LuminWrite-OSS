@@ -42,6 +42,112 @@ func NewTraceRepo(db *DB) *TraceRepo {
 // writingstore, and user-surface maintenance goes through the methods
 // below — UpdateTraceTitle, CancelTrace, SoftDeleteTrace, …).
 
+// intentString extracts the classified intent ("chat" | "writing" | …) from
+// the execution context for token_usage persistence. Empty when unknown.
+func intentString(execCtx *engine.ExecutionContext) string {
+	if execCtx == nil || execCtx.TaskIntent == nil {
+		return ""
+	}
+	return execCtx.TaskIntent.TaskMode
+}
+
+// marshalTraceArray serializes a slice to a JSON array for a NOT NULL JSONB
+// column, coercing empty / nil to "[]" so the column constraint holds.
+func marshalTraceArray[T any](items []T) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	b, err := json.Marshal(items)
+	if err != nil || string(b) == "null" {
+		return []byte("[]")
+	}
+	return b
+}
+
+// Pricing mirrors engine.ExecutionContext.GetCostEstimate (DeepSeek), with
+// cache-read and cache-write split out so the breakdown matches llm-space's
+// usage model (llm-space treats cache read/write as first-class).
+const (
+	priceInputPer1M      = 0.27
+	priceOutputPer1M     = 1.10
+	priceCacheReadPer1M  = 0.014
+	priceCacheWritePer1M = 0.35
+)
+
+// traceSummaryRow is the precomputed scalar summary persisted on agent_traces
+// (migration 120). Pointer fields are nullable columns (unset when the metric
+// is not derivable). Keeping it flat lets list/aggregate/benchmark paths read
+// cheap columns instead of scanning the large llm_calls/tool_calls JSONB.
+type traceSummaryRow struct {
+	llmCallCount     int
+	toolCallCount    int
+	observationCount int
+	inputTokens      int
+	outputTokens     int
+	reasoningTokens  int
+	cacheReadTokens  int
+	cacheWriteTokens int
+	totalTokens      int
+
+	costInput      float64
+	costOutput     float64
+	costCacheRead  float64
+	costCacheWrite float64
+
+	firstTokenMs       *int64
+	outputTokensPerSec *float64
+	model              *string
+	agentMode          *string
+}
+
+func computeTraceSummary(execCtx *engine.ExecutionContext, durationMs int64) traceSummaryRow {
+	var s traceSummaryRow
+	for _, c := range execCtx.LLMCalls {
+		s.llmCallCount++
+		s.inputTokens += c.PromptTokens
+		s.outputTokens += c.CompletionTokens
+		s.reasoningTokens += c.ReasoningTokens
+		s.cacheReadTokens += c.CacheHitTokens
+		s.cacheWriteTokens += c.CacheWriteTokens
+		s.totalTokens += c.TotalTokens
+
+		nonCached := c.PromptTokens - c.CacheHitTokens - c.CacheWriteTokens
+		if nonCached < 0 {
+			nonCached = 0
+		}
+		s.costInput += float64(nonCached) / 1_000_000 * priceInputPer1M
+		s.costOutput += float64(c.CompletionTokens) / 1_000_000 * priceOutputPer1M
+		s.costCacheRead += float64(c.CacheHitTokens) / 1_000_000 * priceCacheReadPer1M
+		s.costCacheWrite += float64(c.CacheWriteTokens) / 1_000_000 * priceCacheWritePer1M
+
+		if s.firstTokenMs == nil && c.TTFT != nil {
+			v := c.TTFT.Milliseconds()
+			s.firstTokenMs = &v
+		}
+		if s.model == nil && c.Model != "" {
+			m := c.Model
+			s.model = &m
+		}
+	}
+	s.toolCallCount = len(execCtx.ToolCalls)
+	s.observationCount = s.llmCallCount + s.toolCallCount
+
+	if execCtx.PipelineMeta != nil && execCtx.PipelineMeta.AgentMode != "" {
+		am := execCtx.PipelineMeta.AgentMode
+		s.agentMode = &am
+	}
+
+	// Generation-only throughput, TTFT excluded from the window (llm-space).
+	if s.firstTokenMs != nil && s.outputTokens > 0 {
+		genMs := durationMs - *s.firstTokenMs
+		if genMs > 0 {
+			tps := float64(s.outputTokens) / (float64(genMs) / 1000.0)
+			s.outputTokensPerSec = &tps
+		}
+	}
+	return s
+}
+
 // CompleteTrace finalizes the trace with article, review, and token usage.
 func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.ExecutionContext) error {
 	if r.db == nil {
@@ -75,18 +181,50 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 	if execCtx.ReviewResult != nil {
 		reviewJSON, _ = json.Marshal(execCtx.ReviewResult)
 	}
-	tokenJSON, _ := json.Marshal(map[string]int{
+	tokenJSON, _ := json.Marshal(map[string]any{
 		"total_tokens": execCtx.TotalTokens,
+		"intent":       intentString(execCtx),
 	})
 	stepHistoryJSON, _ := json.Marshal(execCtx.StepHistory)
 	durationMs := time.Since(execCtx.StartedAt).Milliseconds()
+
+	// Enhanced per-call trace (migration 119) + precomputed scalar summary and
+	// derived metrics (migration 120). The arrays are the lazy, on-open detail
+	// payload; the flat summary is what the Eval Center list, benchmark and
+	// run-level aggregation read, so they never have to parse large JSONB.
+	llmCallsJSON := marshalTraceArray(execCtx.LLMCalls)
+	toolCallsJSON := marshalTraceArray(execCtx.ToolCalls)
+	// pipeline_metadata is nullable: pass SQL NULL (nil interface) when absent so
+	// the driver sends NULL rather than an empty BYTEA that fails JSONB typing.
+	var pipelineMetaJSON interface{}
+	if execCtx.PipelineMeta != nil {
+		if b, err := json.Marshal(execCtx.PipelineMeta); err == nil {
+			pipelineMetaJSON = string(b)
+		}
+	}
+	var traceSchema *string
+	if len(execCtx.LLMCalls) > 0 || len(execCtx.ToolCalls) > 0 || execCtx.PipelineMeta != nil {
+		ts := "enhanced-trace.v1"
+		traceSchema = &ts
+	}
+	summary := computeTraceSummary(execCtx, durationMs)
+	costTotal := summary.costInput + summary.costOutput + summary.costCacheRead + summary.costCacheWrite
 
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE agent_traces
 		SET status = $1, current_step = $2, step_history = $3,
 		    article = $4, article_title = $5, review_result = $6, token_usage = $7,
-		    duration_ms = $8, reasoning_content = $9, completed_at = NOW()
-		WHERE trace_id = $10
+		    duration_ms = $8, reasoning_content = $9,
+		    llm_calls = $10, tool_calls = $11, pipeline_metadata = $12,
+		    estimated_cost = $13, trace_schema = $14,
+		    llm_call_count = $15, tool_call_count = $16, observation_count = $17,
+		    input_tokens = $18, output_tokens = $19, reasoning_tokens = $20,
+		    cache_read_tokens = $21, cache_write_tokens = $22, total_tokens = $23,
+		    cost_input = $24, cost_output = $25, cost_cache_read = $26, cost_cache_write = $27,
+		    first_token_ms = $28, output_tokens_per_sec = $29,
+		    model = $30, agent_mode = $31,
+		    completed_at = NOW()
+		WHERE trace_id = $32
 	`,
 		string(execCtx.Status),
 		string(execCtx.CurrentStep),
@@ -97,6 +235,28 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 		tokenJSON,
 		durationMs,
 		execCtx.ReasoningContent,
+		llmCallsJSON,
+		toolCallsJSON,
+		pipelineMetaJSON,
+		costTotal,
+		traceSchema,
+		summary.llmCallCount,
+		summary.toolCallCount,
+		summary.observationCount,
+		summary.inputTokens,
+		summary.outputTokens,
+		summary.reasoningTokens,
+		summary.cacheReadTokens,
+		summary.cacheWriteTokens,
+		summary.totalTokens,
+		summary.costInput,
+		summary.costOutput,
+		summary.costCacheRead,
+		summary.costCacheWrite,
+		summary.firstTokenMs,
+		summary.outputTokensPerSec,
+		summary.model,
+		summary.agentMode,
 		execCtx.TraceID,
 	)
 	if err != nil {
@@ -105,10 +265,91 @@ func (r *TraceRepo) CompleteTrace(ctx context.Context, execCtx *engine.Execution
 	return err
 }
 
+// UpdateTraceTitle sets the user-editable custom_title for a trace.
+// Ownership is enforced by the caller (userID empty = guest, no filter).
+// 与 task_name/article_title 不同，custom_title 只代表用户显式命名，
+// 显示优先级最高，不会被 LLM 自动提取覆盖。
+func (r *TraceRepo) UpdateTraceTitle(ctx context.Context, traceID, userID, title string) error {
+	if r.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("标题不能为空")
+	}
+	if len([]rune(title)) > 128 {
+		title = string([]rune(title)[:128])
+	}
+	var (
+		res interface{ RowsAffected() (int64, error) }
+		err error
+	)
+	if userID == "" {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE agent_traces SET custom_title = $2, updated_at = NOW()
+			WHERE trace_id = $1
+		`, traceID, title)
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE agent_traces SET custom_title = $2, updated_at = NOW()
+			WHERE trace_id = $1 AND user_id = $3::uuid
+		`, traceID, title, userID)
+	}
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("trace not found or not owned by user")
+	}
+	return nil
+}
+
 // GetEditorialTaskID retrieves the editorial task ID associated with a trace.
 // After the two-table merge (087), task.ID is the trace_id, so just return it.
 func (r *TraceRepo) GetEditorialTaskID(ctx context.Context, traceID string) (string, error) {
 	return traceID, nil
+}
+
+// CancelTrace marks a trace as cancelled in the database.
+// Called when the user cancels a run whose session is no longer in server
+// memory (e.g. after a backend restart) — without this, the DB row would
+// stay "running" forever and the session list would keep showing 写作中.
+func (r *TraceRepo) CancelTrace(ctx context.Context, traceID string) error {
+	if r.db == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE agent_traces
+		SET status = 'cancelled', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+		WHERE trace_id = $1 AND status IN ('running', 'paused')
+	`, traceID)
+	return err
+}
+
+// RecoverStaleRunningTraces marks long-stale running/paused traces as failed.
+// Runs at server startup: if the process died (crash/restart) mid-run, no one
+// will ever write a terminal status, and the frontend would keep showing
+// "正在写作" for those sessions after a refresh.
+// Traces whose updated_at is within staleAfter are left untouched, so
+// multiple server instances don't kill each other's live runs.
+func (r *TraceRepo) RecoverStaleRunningTraces(ctx context.Context, staleAfter time.Duration) (int64, error) {
+	if r.db == nil {
+		return 0, nil
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE agent_traces
+		SET status = 'failed',
+		    error = '服务重启时写作仍在进行，已自动标记为失败',
+		    completed_at = COALESCE(completed_at, NOW()),
+		    updated_at = NOW()
+		WHERE status IN ('running', 'paused')
+		  AND completed_at IS NULL
+		  AND updated_at < NOW() - ($1::text)::interval
+	`, fmt.Sprintf("%d seconds", int(staleAfter.Seconds())))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // GetTrace retrieves a trace by ID.
@@ -136,18 +377,38 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	)
 
 	var taskName *string
+	var customTitle *string
+	var llmCallsRaw, toolCallsRaw, pipelineMetaRaw []byte
+	var traceSummaryRaw []byte
+	var estimatedCost *float64
+	var traceSchema *string
 	err := r.db.QueryRowContext(ctx, `
 		SELECT status, current_step, user_input, style_slug, mode,
 		       article, article_title, step_history, review_result, token_usage,
 		       duration_ms, error, created_at, completed_at, reasoning_content,
-		       task_name
+		       task_name, custom_title,
+		       llm_calls, tool_calls, pipeline_metadata, estimated_cost, trace_schema,
+		       jsonb_build_object(
+		         'llm_call_count', llm_call_count, 'tool_call_count', tool_call_count,
+		         'observation_count', observation_count,
+		         'input_tokens', input_tokens, 'output_tokens', output_tokens,
+		         'reasoning_tokens', reasoning_tokens,
+		         'cache_read_tokens', cache_read_tokens, 'cache_write_tokens', cache_write_tokens,
+		         'total_tokens', total_tokens,
+		         'cost_input', cost_input, 'cost_output', cost_output,
+		         'cost_cache_read', cost_cache_read, 'cost_cache_write', cost_cache_write,
+		         'first_token_ms', first_token_ms, 'output_tokens_per_sec', output_tokens_per_sec,
+		         'model', model, 'agent_mode', agent_mode
+		       )
 		FROM agent_traces
 		WHERE trace_id = $1
 	`, traceID).Scan(
 		&status, &currentStep, &userInput, &styleSlug, &mode,
 		&article, &articleTitle, &stepHistory, &reviewJSON, &tokenJSON,
 		&durationMs, &errorMsg, &createdAt, &completedAt, &reasoningContent,
-		&taskName,
+		&taskName, &customTitle,
+		&llmCallsRaw, &toolCallsRaw, &pipelineMetaRaw, &estimatedCost, &traceSchema,
+		&traceSummaryRaw,
 	)
 	if err != nil {
 		return nil, err
@@ -160,6 +421,12 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 		"user_input":    userInput,
 		"mode":          mode,
 		"created_at":    createdAt,
+	}
+	if len(traceSummaryRaw) > 0 {
+		var summary interface{}
+		if json.Unmarshal(traceSummaryRaw, &summary) == nil && summary != nil {
+			result["summary"] = summary
+		}
 	}
 
 	if styleSlug != nil {
@@ -179,6 +446,30 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	}
 	if errorMsg != nil {
 		result["error"] = *errorMsg
+	}
+	if len(llmCallsRaw) > 0 {
+		var llmCalls interface{}
+		if json.Unmarshal(llmCallsRaw, &llmCalls) == nil && llmCalls != nil {
+			result["llm_calls"] = llmCalls
+		}
+	}
+	if len(toolCallsRaw) > 0 {
+		var toolCalls interface{}
+		if json.Unmarshal(toolCallsRaw, &toolCalls) == nil && toolCalls != nil {
+			result["tool_calls"] = toolCalls
+		}
+	}
+	if len(pipelineMetaRaw) > 0 {
+		var pipelineMeta interface{}
+		if json.Unmarshal(pipelineMetaRaw, &pipelineMeta) == nil && pipelineMeta != nil {
+			result["pipeline_metadata"] = pipelineMeta
+		}
+	}
+	if estimatedCost != nil {
+		result["estimated_cost"] = *estimatedCost
+	}
+	if traceSchema != nil {
+		result["trace_schema"] = *traceSchema
 	}
 	if len(stepHistory) > 0 {
 		var history interface{}
@@ -201,6 +492,9 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	if taskName != nil && *taskName != "" {
 		result["task_name"] = *taskName
 	}
+	if customTitle != nil && *customTitle != "" {
+		result["custom_title"] = *customTitle
+	}
 
 	// Check if user feedback has been submitted for this trace
 	var feedbackCount int
@@ -212,7 +506,8 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 
 // ListTraces lists recent traces with pagination.
 // If userID is non-empty, results are filtered to that user.
-func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSize int) ([]map[string]interface{}, int, error) {
+// archived: nil=不过滤（默认行为，向后兼容）；true=仅归档；false=仅未归档。
+func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSize int, archived *bool) ([]map[string]interface{}, int, error) {
 	if r.db == nil {
 		return []map[string]interface{}{}, 0, nil
 	}
@@ -225,6 +520,16 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 	}
 	offset := (page - 1) * pageSize
 
+	// archived 过滤条件（默认排除已归档，保持旧行为）
+	archivedCond := "AND archived_at IS NULL"
+	if archived != nil {
+		if *archived {
+			archivedCond = "AND archived_at IS NOT NULL"
+		} else {
+			archivedCond = "AND archived_at IS NULL"
+		}
+	}
+
 	var (
 		rows   *sql.Rows
 		err    error
@@ -234,23 +539,27 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 
 	if userID != "" && userID != "anonymous" && isLikelyUUID(userID) {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title, task_name
+			SELECT trace_id, status, COALESCE(current_step, ''), COALESCE(user_input, ''), style_slug, mode,
+			       created_at, completed_at, duration_ms, article_title, task_name,
+			       COALESCE(folder_id::text, ''), archived_at, updated_at, custom_title
 			FROM agent_traces
-			WHERE user_id = $1 AND user_deleted = FALSE
-			ORDER BY created_at DESC
+			WHERE user_id = $1 AND user_deleted = FALSE `+archivedCond+`
+			ORDER BY COALESCE(updated_at, created_at) DESC
 			LIMIT $2 OFFSET $3
 		`, userID, pageSize, offset)
-		countQ = `SELECT COUNT(*) FROM agent_traces WHERE user_id = $1 AND user_deleted = FALSE`
+		countQ = `SELECT COUNT(*) FROM agent_traces WHERE user_id = $1 AND user_deleted = FALSE ` + archivedCond
 		countArgs = []interface{}{userID}
 	} else {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT trace_id, status, current_step, user_input, style_slug, mode, created_at, completed_at, duration_ms, article_title, task_name
+			SELECT trace_id, status, COALESCE(current_step, ''), COALESCE(user_input, ''), style_slug, mode,
+			       created_at, completed_at, duration_ms, article_title, task_name,
+			       COALESCE(folder_id::text, ''), archived_at, updated_at, custom_title
 			FROM agent_traces
-			WHERE user_deleted = FALSE
-			ORDER BY created_at DESC
+			WHERE user_deleted = FALSE `+archivedCond+`
+			ORDER BY COALESCE(updated_at, created_at) DESC
 			LIMIT $1 OFFSET $2
 		`, pageSize, offset)
-		countQ = `SELECT COUNT(*) FROM agent_traces WHERE user_deleted = FALSE`
+		countQ = `SELECT COUNT(*) FROM agent_traces WHERE user_deleted = FALSE ` + archivedCond
 		countArgs = []interface{}{}
 	}
 	if err != nil {
@@ -272,9 +581,15 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 			durationMs    *int64
 			articleTitle  *string
 			taskName      *string
+			folderID      string
+			archivedAt    *time.Time
+			updatedAt     *time.Time
+			customTitle   *string
 		)
 
-		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode, &createdAt, &completedAt, &durationMs, &articleTitle, &taskName); err != nil {
+		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode,
+			&createdAt, &completedAt, &durationMs, &articleTitle, &taskName,
+			&folderID, &archivedAt, &updatedAt, &customTitle); err != nil {
 			continue
 		}
 
@@ -285,6 +600,7 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 			"user_input":   userInput,
 			"mode":         mode,
 			"created_at":   createdAt,
+			"folder_id":    folderID,
 		}
 		if styleSlug != nil {
 			trace["style_slug"] = *styleSlug
@@ -301,6 +617,15 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		if taskName != nil && *taskName != "" {
 			trace["task_name"] = *taskName
 		}
+		if customTitle != nil && *customTitle != "" {
+			trace["custom_title"] = *customTitle
+		}
+		if archivedAt != nil {
+			trace["archived_at"] = *archivedAt
+		}
+		if updatedAt != nil {
+			trace["updated_at"] = *updatedAt
+		}
 
 		traces = append(traces, trace)
 	}
@@ -313,15 +638,36 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 }
 
 // SoftDeleteTrace marks a trace as deleted by the user (admin still sees it).
+// userID 为空（游客）时不限定 user_id —— 不能用 `OR $2 = ''` 的写法：
+// Postgres 会把 $2 按 uuid 解析，空串直接报 invalid input syntax，
+// 导致删除永远失败、刷新后"复活"。
 func (r *TraceRepo) SoftDeleteTrace(ctx context.Context, traceID, userID string) error {
 	if r.db == nil {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE agent_traces SET user_deleted = TRUE
-		WHERE trace_id = $1 AND (user_id = $2 OR $2 = '')
-	`, traceID, userID)
-	return err
+	var (
+		res interface{ RowsAffected() (int64, error) }
+		err error
+	)
+	if userID == "" {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE agent_traces SET user_deleted = TRUE, updated_at = NOW()
+			WHERE trace_id = $1
+		`, traceID)
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE agent_traces SET user_deleted = TRUE, updated_at = NOW()
+			WHERE trace_id = $1 AND user_id = $2::uuid
+		`, traceID, userID)
+	}
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("trace not found or not owned by user")
+	}
+	return nil
 }
 
 // HasFeedback checks if feedback has already been submitted for a trace.

@@ -10,7 +10,6 @@ func TestRegistrySnapshotsZeroAndFailedConfiguration(t *testing.T) {
 	if statuses := registry.Statuses(); len(statuses) != 0 {
 		t.Fatalf("new registry statuses=%#v", statuses)
 	}
-
 	err := registry.Connect(context.Background(), MCPClientConfig{Name: "broken", Transport: "invalid"})
 	if err == nil {
 		t.Fatal("invalid transport connected")
@@ -33,7 +32,6 @@ func TestRegistryStatusTracksConnectedToolsAndDisconnect(t *testing.T) {
 	registry := NewRegistry()
 	client := &MCPClient{name: "local", transport: "stdio", tools: []MCPToolDef{{Name: "search"}, {Name: "fetch"}}}
 	registry.recordConnected(MCPClientConfig{Name: "local", Transport: "stdio"}, client)
-
 	status := registry.Statuses()[0]
 	if !status.Connected || status.ToolCount != 2 || status.ErrorCode != "" {
 		t.Fatalf("connected status=%#v", status)

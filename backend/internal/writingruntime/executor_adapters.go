@@ -15,6 +15,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/editorial"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
 )
@@ -265,7 +266,6 @@ func sortedPayloadTypes(payloads map[writingplan.ArtifactType][][]byte) []writin
 // GovernedStepEmitter is the only emitter engine steps may receive under the
 // governed runtime. It is observer-only by construction: no session writes,
 // no persistence, no terminal events. Legacy emitters are rejected outright.
-//
 // When an EventSink is configured, streaming events (StreamDelta,
 // ReasoningDelta, StepStart, StepComplete, StreamDone) are forwarded to the
 // sink for SSE delivery to the frontend.
@@ -364,6 +364,32 @@ func (runner EngineStepRunner) Run(ctx context.Context, input LegacyNodeInput) (
 				execCtx.Outline = &outline
 			case "full_draft":
 				execCtx.Article = string(payload)
+			}
+		}
+	}
+	// Extract context envelope blocks (WP1.4): the governed path carries
+	// all long-term state through the envelope's compiled blocks, making
+	// them available to engine steps without direct prompt injection.
+	if input.Context != nil {
+		for _, block := range input.Context.Blocks {
+			switch block.Name {
+			case "review_guard":
+				if block.Body != "" {
+					execCtx.ReviewGuardLines = strings.Split(block.Body, "\n")
+				}
+			case "style_directives":
+				if block.Body != "" {
+					// Project style directives into MemoryContext as a
+					// synthetic bundle so the step's AddMemory path can
+					// consume them without touching memoryport directly.
+					directives := make([]memoryport.Directive, 0)
+					for _, line := range strings.Split(block.Body, "\n") {
+						if line != "" {
+							directives = append(directives, memoryport.Directive{Value: line, Kind: memoryport.KindPreference})
+						}
+					}
+					execCtx.MemoryContext = &memoryport.Bundle{WriteDirectives: directives}
+				}
 			}
 		}
 	}
@@ -628,9 +654,10 @@ type AgentHarnessCore interface {
 // AgentHarnessCoreBridge adapts the real Harness tool loop after RunCore has
 // removed session persistence and terminal event side effects.
 type AgentHarnessCoreBridge struct {
-	Core  AgentHarnessCore
-	Seed  engine.CompatibilityInput
-	Usage func(agent.HarnessCoreOutput) (LegacyUsage, error)
+	Core      AgentHarnessCore
+	Seed      engine.CompatibilityInput
+	Materials MaterialSnapshotResolver
+	Usage     func(agent.HarnessCoreOutput) (LegacyUsage, error)
 }
 
 func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request HarnessCoreRequest) (HarnessCoreResult, error) {
@@ -646,8 +673,18 @@ func (bridge AgentHarnessCoreBridge) RunCore(ctx context.Context, request Harnes
 			case "contract":
 				execCtx.UserInput = string(value)
 			case "materials":
-				execCtx.UserMaterials = append(execCtx.UserMaterials, string(value))
-				session.UserMaterials = append(session.UserMaterials, string(value))
+				if bridge.Materials == nil {
+					return HarnessCoreResult{}, runtimeError(CodeMaterialIntegrityFailed, RetryNever,
+						"harness material manifest has no resolver", ErrRuntimeNotReady)
+				}
+				resolved, err := bridge.Materials.ResolveMaterialSnapshots(ctx, value)
+				if err != nil {
+					return HarnessCoreResult{}, err
+				}
+				for _, body := range resolved {
+					execCtx.UserMaterials = append(execCtx.UserMaterials, string(body))
+					session.UserMaterials = append(session.UserMaterials, string(body))
+				}
 			case "outline":
 				var outline engine.OutlineData
 				if err := json.Unmarshal(value, &outline); err != nil {

@@ -166,6 +166,12 @@ type ExecutionContext struct {
 	// Memory context (populated by MemoryGateStep)
 	MemoryContext interface{} `json:"memory_context,omitempty"`
 
+	// ReviewGuardLines are feedback-memory directives from the context
+	// envelope's review_guard block (populated by governed executor adapter).
+	// Steps consume these as additional review criteria, complementing the
+	// interactive-path MemoryContext bundle.
+	ReviewGuardLines []string `json:"review_guard_lines,omitempty"`
+
 	// Short-term memory: conversation history (populated by ShortTermMemoryStep)
 	ConversationHistory interface{} `json:"conversation_history,omitempty"`
 
@@ -199,6 +205,17 @@ type ExecutionContext struct {
 	TotalTokens int `json:"total_tokens"`
 	MaxTokens   int `json:"max_tokens,omitempty"` // 0 = unlimited
 
+	// ─── Enhanced Trace Data ─────────────────────────────────
+	// Phase 1: LLM call tracing - detailed metrics for each LLM API call
+	LLMCalls []LLMCallRecord `json:"llm_calls,omitempty"`
+	
+	// Phase 2: Tool call tracing - track search, web fetch, and other tool invocations
+	ToolCalls []ToolCallRecord `json:"tool_calls,omitempty"`
+	
+	// Phase 3: Pipeline metadata - DAG structure and execution flow
+	PipelineMeta *PipelineMetadata `json:"pipeline_metadata,omitempty"`
+	// ─────────────────────────────────────────────────────────
+
 	// Exit mechanism state
 	FixAttempts         int           `json:"fix_attempts,omitempty"`
 	MaxFixAttempts      int           `json:"max_fix_attempts,omitempty"` // 0 = unlimited
@@ -214,6 +231,11 @@ type ExecutionContext struct {
 	disconnectCh chan struct{} // closed when WS client disconnects
 	disconnectMu sync.RWMutex
 	llmFailureMu sync.Mutex
+
+	// Unified trace RunEvent fan-out (trace_run_event.go). Guarded so parallel
+	// steps and the LLM/tool producers can append arrays + emit concurrently.
+	traceMu   sync.Mutex
+	traceSink TraceSink
 }
 
 // TaskIntent holds the result of intent classification.

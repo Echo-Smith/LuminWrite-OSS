@@ -33,13 +33,15 @@ const (
 	ContextSourceEvidence  ContextBlockName = "source_evidence"
 	ContextDocumentState   ContextBlockName = "document_state"
 	ContextStyleDirectives ContextBlockName = "style_directives"
+	ContextReviewGuard     ContextBlockName = "review_guard"
 )
 
 // ValidContextBlock reports whether the name is one of the compiler's blocks.
 func ValidContextBlock(name ContextBlockName) bool {
 	switch name {
 	case ContextContractDigest, ContextThroughLine, ContextCanonFacts, ContextTerminology,
-		ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextDocumentState, ContextStyleDirectives:
+		ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextDocumentState, ContextStyleDirectives,
+		ContextReviewGuard:
 		return true
 	}
 	return false
@@ -425,7 +427,7 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	outline := base("core.outline.generate", "writing.outline", "engine.step.outline", []ArtifactType{"contract"}, []ArtifactType{"outline"}, []Permission{"model.invoke", "materials.read"}, false)
 	outline.OptionalInputTypes = []ArtifactType{"materials", "source_pack"}
 	outline.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		OptionalContext:        []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards},
+		OptionalContext:        []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards, ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(outline)
 	draft := base("core.draft.generate", "writing.draft", "engine.step.write", []ArtifactType{"contract"}, []ArtifactType{"full_draft"}, []Permission{"model.invoke", "materials.read"}, false)
@@ -435,7 +437,7 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	// enforceable from the first run on. Evidence is style-neutral by
 	// contract and quality reports stay out of the draft's context.
 	draft.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
-		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextStyleDirectives},
+		OptionalContext: []ContextBlockName{ContextThroughLine, ContextCanonFacts, ContextTerminology, ContextOpenDecisions, ContextEntitiesCards, ContextSourceEvidence, ContextStyleDirectives, ContextReviewGuard},
 		// The evolving document is exactly what a continuation needs most:
 		// keep it when the budget binds, ahead of the default tail order.
 		RetentionPriority:      []ContextBlockName{ContextDocumentState},
@@ -446,7 +448,7 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	// M5 activation: the report reviews the committed document, so its
 	// required document_state has the same stable source as draft's.
 	quality.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
-		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextStyleDirectives},
+		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextStyleDirectives, ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(quality)
 	// M1.2 (docs/22): the sourced/strict templates and the compiler's
@@ -458,12 +460,12 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	// The evidence check reviews the draft against the run's own source pack;
 	// the pack arrives as an input artifact, not through the context blocks.
 	evidence.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence},
+		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(evidence)
 	fact := base("core.validation.fact", "validation.fact", "engine.step.fact", []ArtifactType{"source_pack", "full_draft"}, []ArtifactType{"fact_report"}, []Permission{"model.invoke", "validation.run"}, true)
 	fact.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence},
+		OptionalContext:        []ContextBlockName{ContextTerminology, ContextSourceEvidence, ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(fact)
 	finalize := base("core.document.finalize", "document.finalize", "kernel.document.finalize", []ArtifactType{"full_draft", "quality_report"}, []ArtifactType{"revision_set"}, []Permission{"document.revision"}, false)
@@ -471,6 +473,7 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	// document version; finalize without document state would guess.
 	finalize.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest, ContextDocumentState},
 		OptionalContext:        []ContextBlockName{ContextTerminology},
+		ForbiddenContext:       []ContextBlockName{ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(finalize)
 	research := base("core.retrieval.search", "research.collect", "engine.step.search", []ArtifactType{"contract", "materials"}, []ArtifactType{"source_pack"}, []Permission{"external.research", "materials.read"}, false)
@@ -479,7 +482,7 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	// style-neutral by contract.
 	research.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
 		OptionalContext:        []ContextBlockName{ContextCanonFacts, ContextOpenDecisions, ContextTerminology, ContextEntitiesCards},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(research)
 	// M1.2 (docs/22): the strict template's research node references the
@@ -490,7 +493,7 @@ func DefaultCapabilityRegistry() *CapabilityRegistry {
 	strictResearch.SupportsEvidence = true
 	strictResearch.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
 		OptionalContext:        []ContextBlockName{ContextCanonFacts, ContextOpenDecisions, ContextTerminology, ContextEntitiesCards},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
+		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
 		EnforceRequiredContext: true}
 	register(strictResearch)
 	registry.registerResearchReview()
@@ -628,17 +631,17 @@ func (registry *CapabilityRegistry) registerResearchReview() {
 	// design.md §3: discover consumes the run materials as optional context.
 	discover.OptionalInputTypes = []ArtifactType{"materials"}
 	discover.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
-		EnforceRequiredContext: true}
-	register(discover)
+			ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
+			EnforceRequiredContext: true}
+		register(discover)
 	read := research(CapabilityResearchRead, ClassResearchRead, "engine.step.research_read",
 		[]ArtifactType{"contract", "research_candidates"}, []ArtifactType{"research_evidence_pack"},
 		[]Permission{"external.research", "materials.read", "model.invoke"}, false, 20)
 	read.OptionalInputTypes = []ArtifactType{"materials"}
 	read.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
-		EnforceRequiredContext: true}
-	register(read)
+			ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
+			EnforceRequiredContext: true}
+		register(read)
 	// F5 user-material branch manifests: the same I/O as the external
 	// discover/read capabilities, but the permissions carry NO
 	// external.research and the executor ids are the material branch's own
@@ -651,17 +654,17 @@ func (registry *CapabilityRegistry) registerResearchReview() {
 		[]Permission{"materials.read", "model.invoke"}, false, 1)
 	materialDiscover.OptionalInputTypes = []ArtifactType{"materials"}
 	materialDiscover.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
-		EnforceRequiredContext: true}
-	register(materialDiscover)
+			ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
+			EnforceRequiredContext: true}
+		register(materialDiscover)
 	materialRead := research(CapabilityResearchReadMaterial, ClassResearchReadMaterial, "engine.step.research_read_materials",
 		[]ArtifactType{"contract", "research_candidates"}, []ArtifactType{"research_evidence_pack"},
 		[]Permission{"materials.read", "model.invoke"}, false, 20)
 	materialRead.OptionalInputTypes = []ArtifactType{"materials"}
 	materialRead.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
-		EnforceRequiredContext: true}
-	register(materialRead)
+			ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
+			EnforceRequiredContext: true}
+		register(materialRead)
 	// Kernel-owned gate capabilities: declared available with the pinned
 	// kernel.human_gate executor so ValidatePlan's executor-existence check
 	// holds, but no dispatch ever happens — the orchestrator pauses at the
@@ -695,17 +698,17 @@ func (registry *CapabilityRegistry) registerResearchReview() {
 		[]ArtifactType{"contract", "research_evidence_pack", "evidence_approval"}, []ArtifactType{"research_outline"},
 		[]Permission{"materials.read", "model.invoke"}, false, 1)
 	outline.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
-		EnforceRequiredContext: true}
-	register(outline)
+			ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
+			EnforceRequiredContext: true}
+		register(outline)
 	draft := research(CapabilityResearchDraft, ClassResearchDraft, "engine.step.research_draft",
 		[]ArtifactType{"contract", "research_evidence_pack", "evidence_approval", "approved_research_outline"},
 		[]ArtifactType{"full_draft", "research_citation_index"},
 		[]Permission{"materials.read", "model.invoke"}, false, 1)
 	draft.Context = ContextContract{RequiredContext: []ContextBlockName{ContextContractDigest},
-		ForbiddenContext:       []ContextBlockName{ContextStyleDirectives},
-		EnforceRequiredContext: true}
-	register(draft)
+			ForbiddenContext:       []ContextBlockName{ContextStyleDirectives, ContextReviewGuard},
+			EnforceRequiredContext: true}
+		register(draft)
 	// The v1 citation/fact validators are deterministic host-side checks over
 	// the pack + draft + citation index (T07 adds the model-assisted detail
 	// projection); they run as report producers, never gates.

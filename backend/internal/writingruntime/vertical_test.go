@@ -571,6 +571,9 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 			t.Fatal(err)
 		}
 		runner := node.runner(t, documentID)
+		if engineRunner, ok := runner.(EngineStepRunner); ok {
+			runner = engineRunner
+		}
 		baseline, err := NewLegacyExecutorAdapter(AdapterFamilyEngine,
 			ExecutorDescriptor{ExecutorID: bindingID, Version: "1", SupportedNodeKinds: []writingplan.NodeKind{writingplan.NodeAction, writingplan.NodeValidate}},
 			capability, capabilityVersion, []writingplan.Permission{"model.invoke", "materials.read"}, canonical, runner)
@@ -598,13 +601,15 @@ func runVerticalScenarioWithBackend(t *testing.T, name string, nodes []verticalN
 	}
 	providers := []InitialArtifactProvider{fixedInitialProvider{{ArtifactID: "art_" + runID + "_contract", Version: 1,
 		ArtifactType: "contract", ContentHash: contentHash(contractBytes), MediaType: "application/json", ContentRef: "memory://contract"}}}
-	if withMaterials {
-		adapter, err := NewMaterialAdapter(fakeMaterialSource{bodies: map[string]MaterialContent{"mat_forest": {Body: []byte("森林深处的狐狸在晨雾中活动，狐狸是森林生态的重要成员。"), SourceRefs: []string{"https://vertical.example.com/forest"}}}}, canonical)
-		if err != nil {
-			t.Fatal(err)
-		}
-		providers = append(providers, &MaterialArtifactProvider{Adapter: adapter,
-			Selection: verticalMaterialSelection{materials: []MaterialDescriptor{{MaterialID: "mat_forest",
+		if withMaterials {
+			matAdapter, matErr := NewMaterialAdapter(fakeMaterialSource{bodies: map[string]MaterialContent{
+				"mat_forest": {Body: []byte("森林狐狸观察日记：在密林深处，一只赤狐……"), SourceRefs: []string{"mem://forest"}},
+			}}, canonical)
+			if matErr != nil {
+				t.Fatal(matErr)
+			}
+			providers = append(providers, &MaterialArtifactProvider{Adapter: matAdapter,
+				Selection: verticalMaterialSelection{materials: []MaterialDescriptor{{MaterialID: "mat_forest",
 				OwnerID: "user_vertical", Title: "森林狐狸观察", SourceKind: MaterialSourceText,
 				SourceRef: "mem://forest", MediaType: "text/plain", UpdatedAt: now}}}})
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strconv"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/agent"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/contextcompiler"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
@@ -29,9 +32,9 @@ var (
 
 var publicWABenchStyleRefs = map[string]string{
 	"wabench.public.general-writing": "default",
-	"wabench.public.deep-commentary": "default",
-	"wabench.public.policy-essay":    "default",
-	"wabench.public.social-note":     "default",
+	"wabench.public.deep-commentary": "yinyue",
+	"wabench.public.policy-essay":    "shenlun",
+	"wabench.public.social-note":     "xiaohongshu",
 }
 
 type WABenchAgentRequest struct {
@@ -88,12 +91,22 @@ func (r staticWABenchLLMResolver) GetClient(context.Context, string) *tools.LLMC
 // session per case, provisional output only. It owns no session
 // persistence and no legacy trace lifecycle (⑥B) — run identity, timing
 // and evaluation evidence belong to WABench itself.
+//
+// Feature flag matrix for WP3 A/B/C/D candidates:
+//   - A: memoryEnabled=false, contextCompilerEnabled=false, projectMemoryEnabled=false — baseline
+//   - B: memoryEnabled=false, contextCompilerEnabled=true,  projectMemoryEnabled=false — context only
+//   - C: memoryEnabled=true,  contextCompilerEnabled=true,  projectMemoryEnabled=false — context + user memory
+//   - D: memoryEnabled=true,  contextCompilerEnabled=true,  projectMemoryEnabled=true  — context + user memory + project memory
 type HarnessWABenchExecutor struct {
 	llmResolver WABenchLLMResolver
 	search      *tools.SearchClient
 	kb          tools.KnowledgeSearcher
 	profiles    *profile.Loader
 	userStyles  *database.UserStyleStore
+	// memoryPort is the memory consumption contract for read-only injection.
+	// nil disables memory injection entirely (candidates A and B).
+	// WABench must NOT call SubmitOutcome — memory is strictly read-only.
+	memoryPort memoryport.Port
 }
 
 func NewHarnessWABenchExecutor(
@@ -102,9 +115,10 @@ func NewHarnessWABenchExecutor(
 	kb tools.KnowledgeSearcher,
 	profiles *profile.Loader,
 	userStyles *database.UserStyleStore,
+	memoryPort memoryport.Port,
 ) *HarnessWABenchExecutor {
 	return NewHarnessWABenchExecutorWithResolver(
-		staticWABenchLLMResolver{client: llm}, search, kb, profiles, userStyles,
+		staticWABenchLLMResolver{client: llm}, search, kb, profiles, userStyles, memoryPort,
 	)
 }
 
@@ -114,10 +128,11 @@ func NewHarnessWABenchExecutorWithResolver(
 	kb tools.KnowledgeSearcher,
 	profiles *profile.Loader,
 	userStyles *database.UserStyleStore,
+	memoryPort memoryport.Port,
 ) *HarnessWABenchExecutor {
 	return &HarnessWABenchExecutor{
 		llmResolver: llmResolver, search: search, kb: kb, profiles: profiles,
-		userStyles: userStyles,
+		userStyles: userStyles, memoryPort: memoryPort,
 	}
 }
 
@@ -232,6 +247,8 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 	traceID := "wabe_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	userID := "anonymous"
 	memoryEnabled := boolFeature(request.Candidate.FeatureFlags, "memoryEnabled", false)
+	contextCompilerEnabled := boolFeature(request.Candidate.FeatureFlags, "contextCompilerEnabled", false)
+	projectMemoryEnabled := boolFeature(request.Candidate.FeatureFlags, "projectMemoryEnabled", false)
 	if memoryEnabled {
 		userID = stringFeature(request.Candidate.FeatureFlags, "memoryUserId")
 		if _, err := uuid.Parse(userID); err != nil {
@@ -258,11 +275,42 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		})
 	}
 
-	// memoryEnabled keeps its validation contract (a candidate that opts in
-	// must name a frozen memory user) but no longer wires a session store:
-	// RunCore owns no session persistence, and WABench evaluations must not
-	// read or write a user's conversation history (⑥B).
-	_ = memoryEnabled
+	// ── Memory injection (read-only) ──
+	// When memoryEnabled=true, prepare a read-only memory injection via the
+	// memory consumption contract. WABench must NOT call SubmitOutcome —
+	// memory is strictly read-only for evaluation purposes.
+	if memoryEnabled && e.memoryPort != nil {
+		memReq := memoryport.Request{
+			UserID:    userID,
+			SessionID: execCtx.SessionID,
+			TraceID:   traceID,
+			Query:     request.Input,
+			Source:    "wabench",
+		}
+		bundle, memErr := e.memoryPort.PrepareInjection(ctx, memReq)
+		if memErr != nil {
+			slog.Warn("WABench memory injection failed, continuing without memory",
+				"trace_id", traceID, "error", memErr)
+		} else if bundle != nil && !bundle.IsEmpty() {
+			execCtx.MemoryContext = bundle
+		}
+	}
+
+	// ── Context compiler ──
+	// When contextCompilerEnabled=true, compile a context envelope from the
+	// case data and inject blocks into the execution context. This mirrors
+	// the EngineStepRunner pattern in writingruntime/executor_adapters.go.
+	if contextCompilerEnabled {
+		ccInput := buildWABenchContextInput(request, projectMemoryEnabled)
+		envelope, ccErr := contextcompiler.Compile(ccInput)
+		if ccErr != nil {
+			slog.Warn("WABench context compilation failed, continuing without envelope",
+				"trace_id", traceID, "error", ccErr)
+		} else {
+			injectContextEnvelope(execCtx, &envelope)
+		}
+	}
+
 	search := e.search
 	kb := e.kb
 	if request.Case.SourceMode == "frozen" {
@@ -340,6 +388,83 @@ func (e *HarnessWABenchExecutor) Execute(ctx context.Context, request WABenchAge
 		err = fmt.Errorf("agent emitted error: %s", strings.Join(emitterErrors, "; "))
 	}
 	return trace, err
+}
+
+// buildWABenchContextInput constructs a minimal contextcompiler.Input from
+// WABench case data. The "document" is the case input text; the "contract"
+// is the case metadata (task type, difficulty, case ID). When
+// projectMemoryEnabled is true, the Wanted list includes project-memory
+// blocks — but since WABench has no project store, those blocks will land
+// in the envelope's Missing channel (auditable, not fatal).
+func buildWABenchContextInput(request WABenchAgentRequest, projectMemoryEnabled bool) contextcompiler.Input {
+	input := contextcompiler.Input{
+		ContractDigest: fmt.Sprintf("wabench.case %s | task %s | difficulty %s",
+			request.Case.CaseID, request.Case.TaskType, request.Case.Difficulty),
+		DocumentState: request.Input,
+	}
+	// The draft capability's context contract (core.draft.generate):
+	//   required: contract_digest, document_state
+	//   optional: through_line_anchor, canon_facts, terminology, open_decisions,
+	//             entities_cards, source_evidence, style_directives, review_guard
+	input.Wanted = []string{
+		"contract_digest",
+		"document_state",
+	}
+	if projectMemoryEnabled {
+		// When project memory is enabled, request the blocks that would
+		// normally come from the project store. In WABench there is no
+		// real project, so these will appear as Missing entries in the
+		// envelope — which is the correct audit trail.
+		input.Wanted = append(input.Wanted,
+			"through_line_anchor",
+			"canon_facts",
+			"terminology",
+			"open_decisions",
+			"entities_cards",
+			"source_evidence",
+		)
+	}
+	return input
+}
+
+// injectContextEnvelope maps compiled context envelope blocks onto the
+// ExecutionContext fields, following the same pattern as EngineStepRunner.Run
+// in writingruntime/executor_adapters.go.
+func injectContextEnvelope(execCtx *engine.ExecutionContext, envelope *contextcompiler.Envelope) {
+	if envelope == nil {
+		return
+	}
+	for _, block := range envelope.Blocks {
+		switch block.Name {
+		case "review_guard":
+			if block.Body != "" {
+				execCtx.ReviewGuardLines = strings.Split(block.Body, "\n")
+			}
+		case "style_directives":
+			if block.Body != "" {
+				// Project style directives into MemoryContext as a synthetic
+				// bundle so the harness's AddMemory path can consume them
+				// without touching memoryport directly.
+				directives := make([]memoryport.Directive, 0)
+				for _, line := range strings.Split(block.Body, "\n") {
+					if line != "" {
+						directives = append(directives, memoryport.Directive{
+							Value: line, Kind: memoryport.KindPreference,
+						})
+					}
+				}
+				if len(directives) > 0 {
+					// Merge with existing MemoryContext if present (from
+					// memory injection above).
+					if existing, ok := execCtx.MemoryContext.(*memoryport.Bundle); ok && existing != nil {
+						existing.WriteDirectives = append(existing.WriteDirectives, directives...)
+					} else {
+						execCtx.MemoryContext = &memoryport.Bundle{WriteDirectives: directives}
+					}
+				}
+			}
+		}
+	}
 }
 
 type wabenchCaptureEmitter struct {

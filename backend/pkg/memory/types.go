@@ -33,7 +33,7 @@ type QualitySource string
 
 const (
 	QualityNone          QualitySource = ""                // 无信号
-	QualityWorkbuddy     QualitySource = "workbuddy_adopt" // 预设评论风格录用
+	QualityWorkbuddy     QualitySource = "workbuddy_adopt" // 印月三谈录用
 	QualityHighRating    QualitySource = "high_rating"     // 4-5 星反馈
 	QualityUserCopy      QualitySource = "user_copy"       // 用户复制了文章（未来）
 	QualityUserShare     QualitySource = "user_share"      // 用户分享了文章（未来）

@@ -63,16 +63,24 @@ type ToolCallFunction struct {
 
 // LLMRequest is the request body for the chat completions API.
 type LLMRequest struct {
-	Model           string          `json:"model"`
-	Messages        []LLMMessage    `json:"messages"`
-	Stream          bool            `json:"stream"`
-	Temperature     float64         `json:"temperature,omitempty"`
-	MaxTokens       int             `json:"max_tokens"`
-	Thinking        *Thinking       `json:"thinking,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
-	Tools           []ToolDef       `json:"tools,omitempty"`
-	ResponseFormat  *ResponseFormat `json:"response_format,omitempty"`
-	Instructions    string          `json:"-"` // Static system prompt for Responses API (higher cache hit rate)
+	Model            string          `json:"model"`
+	Messages         []LLMMessage    `json:"messages"`
+	Stream           bool            `json:"stream"`
+	Temperature      float64         `json:"temperature,omitempty"`
+	MaxTokens        int             `json:"max_tokens"`
+	Thinking         *Thinking       `json:"thinking,omitempty"`
+	ReasoningEffort  string          `json:"reasoning_effort,omitempty"` // "high" | "max" (thinking mode only)
+	Tools            []ToolDef       `json:"tools,omitempty"`
+	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`
+	StreamOptions    *StreamOptions  `json:"stream_options,omitempty"` // request final usage chunk for streaming
+	Instructions     string          `json:"-"` // Static system prompt for Responses API (higher cache hit rate)
+}
+
+// StreamOptions requests the provider to emit a final usage chunk when
+// streaming (Chat Completions), so prompt/completion/cache splits can be
+// captured, not just the aggregated total returned by the stream.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // ResponseFormat controls the output format of the model.
@@ -165,22 +173,42 @@ func NewLLMClient(baseURL, apiKey, model string, maxTokens int, temperature floa
 	}
 }
 
-// IsConfigured reports whether the client has a non-placeholder credential.
-// It intentionally does not imply that the provider has been probed or is
-// reachable; deployment readiness tracks that separately.
-func (c *LLMClient) IsConfigured() bool {
+// Model returns the client's configured model name (used for trace labeling).
+func (c *LLMClient) Model() string {
 	if c == nil {
-		return false
+		return ""
 	}
-	apiKey := strings.ToLower(strings.TrimSpace(c.apiKey))
-	if apiKey == "" {
-		return false
+	return c.model
+}
+
+// UsageSnapshot accumulates per-call token splits that the streaming return
+// does not surface (it only returns an aggregate total). Callers install it via
+// WithUsageCapture before a call and read it afterwards to record accurate
+// prompt/completion/cache/usage for trace + cost + throughput.
+type UsageSnapshot struct {
+	Prompt     int
+	Completion int
+	Reasoning  int
+	Total      int
+	CacheHit   int
+	CacheMiss  int
+	HasUsage   bool
+}
+
+type usageCaptureKey struct{}
+
+// WithUsageCapture returns a context carrying a fresh accumulator plus a handle
+// the caller reads after the call completes.
+func WithUsageCapture(ctx context.Context) (context.Context, *UsageSnapshot) {
+	snapshot := &UsageSnapshot{}
+	return context.WithValue(ctx, usageCaptureKey{}, snapshot), snapshot
+}
+
+func usageCaptureFrom(ctx context.Context) *UsageSnapshot {
+	if snapshot, ok := ctx.Value(usageCaptureKey{}).(*UsageSnapshot); ok {
+		return snapshot
 	}
-	switch apiKey {
-	case "your-api-key", "your-deepseek-api-key", "placeholder":
-		return false
-	}
-	return !strings.HasPrefix(apiKey, "your-")
+	return nil
 }
 
 // SetReasoningEffort sets the default reasoning effort for this client.
@@ -718,6 +746,12 @@ func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...Cha
 	}
 	for _, opt := range opts {
 		opt(req)
+	}
+	// Ask streaming providers to send a final usage chunk so prompt/completion/
+	// cache splits are observable (Chat Completions path only; Responses API
+	// uses its own request body and is unaffected by this field).
+	if stream {
+		req.StreamOptions = &StreamOptions{IncludeUsage: true}
 	}
 	// SenseNova rejects disabled thinking combined with a non-none effort.
 	// Normalize after all options so option order cannot reintroduce the conflict.

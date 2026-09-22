@@ -19,8 +19,9 @@ func newGovernedRolloutDependencies(store *writingstore.Store, telemetry writing
 		return nil
 	}
 	_ = telemetry // retained at this composition boundary for executor wiring.
+	evidenceStore, _ := writingruntime.NewStoreRolloutEvidence(store)
 	return &governedRolloutDependencies{
-		evidence: writingruntime.WritingStoreEvidenceStore{Recorder: store},
+		evidence: evidenceStore,
 		shadow:   writingruntime.WritingStoreShadowContentSink{Store: store},
 		gate:     writingruntime.AllowlistPromotionGate{Store: store, Criteria: writingruntime.DefaultPromotionCriteria()},
 	}

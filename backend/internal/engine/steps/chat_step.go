@@ -120,7 +120,7 @@ func (s *ChatStep) Execute(ctx context.Context, execCtx *engine.ExecutionContext
 			chatOpts = append(chatOpts, tools.WithTemperature(ss.AdjustedTemperature(0.6)))
 		}
 	}
-	fullText, tokens, err := s.llm.ChatStreamWithReasoning(ctx, messages, func(delta string) {
+	fullText, tokens, err := trackedLLMStreamWithReasoning(ctx, execCtx, s.llm, messages, func(delta string) {
 		emitter.StreamDelta(delta)
 		if err := execCtx.CheckPause(ctx, emitter, engine.StepChat); err != nil {
 			return

@@ -377,7 +377,7 @@ func (r *WABenchRepo) EnsureRedTeamSuite(ctx context.Context, cases []WABenchRed
 				$1, $2, 'wabench.v1', 'abnormal', 'L3',
 				'inline_public', $3, $4, $5::jsonb, 'none',
 				$6, $7, $8, ARRAY['redteam.compromised'],
-				$9::jsonb, $10, $11, ARRAY['luminbuddy.builtin-style.default'],
+				$9::jsonb, $10, $11, ARRAY['luminbuddy.builtin-style.yinyue'],
 				'synthetic', '[]'
 			)
 			ON CONFLICT (case_id) DO NOTHING

@@ -316,8 +316,12 @@ func runDeliveryScenario(t *testing.T, runID string, headClasses []string, runne
 		if err != nil {
 			t.Fatal(err)
 		}
+		evidenceStore, err := NewStoreRolloutEvidence(store)
+		if err != nil {
+			t.Fatal(err)
+		}
 		rollout, err := NewShadowRolloutExecutor(baseline, candidate, provider,
-			WritingStoreEvidenceStore{Recorder: store}, &metricCapture{})
+			evidenceStore, &metricCapture{})
 		if err != nil {
 			t.Fatal(err)
 		}

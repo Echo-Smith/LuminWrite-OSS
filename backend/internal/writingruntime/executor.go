@@ -44,6 +44,20 @@ type ExecutionIdentity struct {
 	Subject string `json:"subject,omitempty"`
 }
 
+// RunFingerprint captures the complete identity of a node execution for
+// provenance tracking and deterministic reproduction. It is attached to
+// OutputArtifactDraft and flows into ArtifactRecord when persisted.
+type RunFingerprint struct {
+	ContractHash        string `json:"contract_hash"`
+	PlanVersion         int    `json:"plan_version"`
+	PlanHash            string `json:"plan_hash"`
+	CapabilityVersion   string `json:"capability_version"`
+	ContextEnvelopeHash string `json:"context_envelope_hash,omitempty"`
+	ModelRef            string `json:"model_ref,omitempty"`
+	OutputArtifactHash  string `json:"output_artifact_hash,omitempty"`
+	QualityResult       string `json:"quality_result,omitempty"`
+}
+
 func (identity ExecutionIdentity) Validate() error {
 	if !hasIDPrefix(identity.RunID, "run_") || !hasIDPrefix(identity.PlanID, "plan_") || identity.PlanVersion < 1 || !hasIDPrefix(identity.NodeID, "node_") {
 		return runtimeError(CodeExecutorContractMismatch, RetryNever, "invalid execution identity", ErrInvalidExecutionRequest)
@@ -244,6 +258,9 @@ type OutputArtifactDraft struct {
 	PromptTemplateRef string
 	Provenance        map[string]any
 	SourceRefs        []string
+	// Fingerprint captures the execution identity for provenance tracking.
+	// Nil means no fingerprint was computed (legacy executors).
+	Fingerprint *RunFingerprint
 }
 
 type ExecutionUsage struct {

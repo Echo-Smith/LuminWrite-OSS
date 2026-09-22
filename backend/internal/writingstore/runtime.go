@@ -469,6 +469,15 @@ func (s *Store) StartNodeAttempt(ctx context.Context, attempt NodeAttempt, trace
 		if !created && saved.Status != "pending" && saved.Status != "expired" {
 			return nil
 		}
+		// Terminal guard: reject new node attempts on runs that have already
+		// reached a terminal status.
+		var runStatus string
+		if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_runs WHERE run_id=$1`, attempt.RunID).Scan(&runStatus); err != nil {
+			return fmt.Errorf("check run status: %w", err)
+		}
+		if runStatus == "completed" || runStatus == "cancelled" || runStatus == "failed" {
+			return fmt.Errorf("%w: cannot start node attempt on terminal run (status=%s)", ErrConflict, runStatus)
+		}
 		now := time.Now().UTC()
 		leaseHash := runtimeHash(saved.IdempotencyKey, "lease")
 		result, err := tx.tx.ExecContext(ctx, `
@@ -514,6 +523,15 @@ func (tx *Tx) completeNodeAttempt(ctx context.Context, completion AttemptComplet
 	}
 	if completion.Status != "succeeded" && completion.Status != "failed" && completion.Status != "paused" && completion.Status != "cancelled" {
 		return fmt.Errorf("%w: invalid attempt completion status", ErrInvalidRecord)
+	}
+	// Terminal guard: reject node attempt completions on runs that have
+	// already reached a terminal status.
+	var runStatus string
+	if err := tx.tx.QueryRowContext(ctx, `SELECT status FROM writing_runs WHERE run_id=$1`, completion.RunID).Scan(&runStatus); err != nil {
+		return fmt.Errorf("check run status: %w", err)
+	}
+	if runStatus == "completed" || runStatus == "cancelled" || runStatus == "failed" {
+		return fmt.Errorf("%w: cannot complete node attempt on terminal run (status=%s)", ErrConflict, runStatus)
 	}
 	outputIDs := make([]string, 0, len(completion.Artifacts))
 	for _, artifact := range completion.Artifacts {

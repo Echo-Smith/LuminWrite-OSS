@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine/steps"
@@ -195,7 +196,19 @@ func (h *Harness) runCore(ctx context.Context, execCtx *engine.ExecutionContext,
 		})
 	}
 
+	// Unified LLM trace capture for the harness agent-loop/stream call.
+	// Derives TTFT from the first streamed delta and total tokens from the
+	// returned count, so harness runs populate agent_traces.llm_calls too.
+	harnessLLMStart := time.Now()
+	var harnessTTFT *time.Duration
+	harnessFirstToken := false
+
 	onDelta := func(delta string) {
+		if !harnessFirstToken && delta != "" {
+			harnessFirstToken = true
+			d := time.Since(harnessLLMStart)
+			harnessTTFT = &d
+		}
 		// 检查客户端是否已断开
 		if !disconnected && execCtx.IsDisconnected() {
 			disconnected = true
@@ -250,9 +263,13 @@ func (h *Harness) runCore(ctx context.Context, execCtx *engine.ExecutionContext,
 	var tokens int
 	var err error
 
+	// Capture prompt/completion/cache splits that the streaming return omits, so
+	// write-draft cost and output-throughput are accurate (not just total).
+	callCtx, usage := tools.WithUsageCapture(streamCtx)
+
 	if len(toolDefs) > 0 {
 		fullText, tokens, err = h.llm.ChatWithTools(
-			streamCtx, messages,
+			callCtx, messages,
 			onDelta, onReasoning, onReset,
 			toolDefs, executor,
 			opts...,
@@ -260,11 +277,56 @@ func (h *Harness) runCore(ctx context.Context, execCtx *engine.ExecutionContext,
 	} else {
 		// 纯流式对话
 		fullText, tokens, err = h.llm.ChatStreamWithReasoning(
-			streamCtx, messages,
+			callCtx, messages,
 			onDelta, onReasoning,
 			opts...,
 		)
 	}
+
+	// Record the generation call onto the unified LLM trace (fills
+	// agent_traces.llm_calls so harness runs report token/cost/latency/TTFT).
+	provider := "unknown"
+	if strings.Contains(h.llm.Model(), "deepseek") {
+		provider = "deepseek"
+	}
+	apiEndpoint := "harness_agent_loop"
+	if len(toolDefs) == 0 {
+		apiEndpoint = "harness_stream"
+	}
+	generationStep := engine.StepChat
+	if articleIntent {
+		generationStep = engine.StepWrite
+	}
+	generationRecord := engine.LLMCallRecord{
+		CallID:        fmt.Sprintf("harness-%s-%d", execCtx.TraceID, harnessLLMStart.UnixNano()),
+		Step:          generationStep,
+		Model:         h.llm.Model(),
+		Provider:      provider,
+		TotalTokens:   tokens,
+		StartedAt:     harnessLLMStart,
+		CompletedAt:   time.Now(),
+		LatencyMs:     time.Since(harnessLLMStart).Milliseconds(),
+		TTFT:          harnessTTFT,
+		Success:       err == nil,
+		APIEndpoint:   apiEndpoint,
+		PromptSummary: fmt.Sprintf("%d messages", len(messages)),
+	}
+	if usage != nil && usage.HasUsage {
+		generationRecord.PromptTokens = usage.Prompt
+		generationRecord.CompletionTokens = usage.Completion
+		generationRecord.ReasoningTokens = usage.Reasoning
+		generationRecord.CacheHitTokens = usage.CacheHit
+		generationRecord.CacheMissTokens = usage.CacheMiss
+		if usage.Total > 0 {
+			generationRecord.TotalTokens = usage.Total
+		}
+	}
+	if err != nil {
+		generationRecord.Error = err.Error()
+	} else {
+		generationRecord.ResponseSummary = fmt.Sprintf("Generated %d chars", len([]rune(fullText)))
+	}
+	execCtx.RecordLLMCall(generationRecord)
 
 	// 断线处理：LLM 调用因断线取消，标记为 Paused 而非 Failed
 	if disconnected {

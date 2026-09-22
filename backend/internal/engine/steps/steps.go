@@ -163,15 +163,12 @@ func (s *IntentStep) classifyWithLLM(ctx context.Context, execCtx *engine.Execut
 返回格式：
 {"taskMode":"writing","confidence":0.9,"reason":"..."}`, message)
 
-	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0), tools.WithThinking(false), tools.WithJSONResponse())
 	if err != nil {
 		return nil, err
-	}
-	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
-		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
 	}
 
 	jsonStr := tools.ExtractJSONObject(resp)
@@ -311,15 +308,12 @@ func (s *QueryPlanStep) planWithLLM(ctx context.Context, execCtx *engine.Executi
 
 	userMsg := fmt.Sprintf("用户请求：\n%s", execCtx.NormalizedInput)
 
-	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0.1))
 	if err != nil {
 		return nil, fmt.Errorf("LLM query planning failed: %w", err)
-	}
-	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
-		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
 	}
 
 	jsonStr := tools.ExtractJSONObject(resp)
@@ -525,14 +519,14 @@ func (s *SearchStep) Execute(ctx context.Context, execCtx *engine.ExecutionConte
 		return nil
 	}
 	if execCtx.WritingTask != nil && s.llm != nil {
-		results := s.generateMockResults(ctx, execCtx.WritingTask.Topic)
+		results := s.generateMockResults(ctx, execCtx, execCtx.WritingTask.Topic)
 		execCtx.SearchResults = engine.SanitizeSearchResults(results)
 	}
 
 	return nil
 }
 
-func (s *SearchStep) generateMockResults(ctx context.Context, topic string) []engine.SearchResult {
+func (s *SearchStep) generateMockResults(ctx context.Context, execCtx *engine.ExecutionContext, topic string) []engine.SearchResult {
 	// Generate search context using LLM
 	systemMsg := "你是搜索结果摘要生成器。根据话题生成3-5条相关搜索结果摘要，每条包含标题和摘要。只返回 JSON 数组。"
 	userMsg := fmt.Sprintf(`话题：%s
@@ -540,7 +534,7 @@ func (s *SearchStep) generateMockResults(ctx context.Context, topic string) []en
 返回格式：
 [{"title":"...","snippet":"...","source":"web"}]`, topic)
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0.3), tools.WithThinking(false))
@@ -979,14 +973,11 @@ type 字段说明：用于标注该要点的段落角色，由你根据文章体
 }`, execCtx.WritingTask.Topic)
 	}
 
-	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
 	}, tools.WithInstructions(systemMsg), tools.WithTemperature(temperature), tools.WithThinking(true), tools.WithReasoningEffort("high"))
 	if err != nil {
 		return nil, fmt.Errorf("outline generation failed: %w", err)
-	}
-	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
-		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
 	}
 
 	jsonStr := tools.ExtractJSONObject(resp)
@@ -1226,13 +1217,13 @@ func (s *WriteStep) Execute(ctx context.Context, execCtx *engine.ExecutionContex
 			kbID = s.profile.KbID
 		}
 		toolExecutor := WritingToolExecutor(s.search, s.kbSearcher, kbID, execCtx.UserID, execCtx.SearchResults)
-		fullText, tokens, err = s.llm.ChatWithTools(
-			ctx, messages, streamCallback, onReasoning, onStreamReset,
+		fullText, tokens, err = trackedLLMWithTools(
+			ctx, execCtx, s.llm, messages, streamCallback, onReasoning, onStreamReset,
 			WritingTools(s.kbSearcher != nil), toolExecutor, streamOpts...,
 		)
 	} else {
-		fullText, tokens, err = s.llm.ChatStreamWithReasoning(
-			ctx, messages, streamCallback, onReasoning, streamOpts...,
+		fullText, tokens, err = trackedLLMStreamWithReasoning(
+			ctx, execCtx, s.llm, messages, streamCallback, onReasoning, streamOpts...,
 		)
 	}
 
@@ -1284,9 +1275,8 @@ type PostReviewStep struct {
 	llm            *tools.LLMClient
 	sensitiveCheck engine.SensitiveChecker
 	profile        *profile.StyleProfile
-	search         *tools.SearchClient   // optional, enables fact-checking via web search
-	jiaozhen       *tools.JiaozhenClient // optional, enables rumor fact-checking
-	strict         bool                  // governed validators never auto-pass infrastructure/format failures
+	search         *tools.SearchClient // optional, enables fact-checking via web search
+	strict         bool                // governed validators never auto-pass infrastructure/format failures
 }
 
 // RequireSuccess turns infrastructure and response-format failures into step
@@ -1318,12 +1308,6 @@ func NewPostReviewStepWithProfile(llm *tools.LLMClient, sc engine.SensitiveCheck
 // real-time fact-checking during the review.
 func NewPostReviewStepWithSearch(llm *tools.LLMClient, sc engine.SensitiveChecker, p *profile.StyleProfile, search *tools.SearchClient) *PostReviewStep {
 	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p, search: search}
-}
-
-// NewPostReviewStepWithSearchAndJiaozhen creates a PostReviewStep with both web search
-// and Jiaozhen fact-checking capabilities.
-func NewPostReviewStepWithSearchAndJiaozhen(llm *tools.LLMClient, sc engine.SensitiveChecker, p *profile.StyleProfile, search *tools.SearchClient, jiaozhen *tools.JiaozhenClient) *PostReviewStep {
-	return &PostReviewStep{llm: llm, sensitiveCheck: sc, profile: p, search: search, jiaozhen: jiaozhen}
 }
 
 func (s *PostReviewStep) Name() engine.StepName  { return engine.StepPostReview }
@@ -1381,10 +1365,20 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
 		profileRules.WriteString(s.profile.RenderReviewCriteria())
 	}
 
-	// Inject user feedback memories (Tier 3) as additional review criteria
+	// Inject user feedback memories (Tier 3) as additional review criteria.
+	// The interactive path carries feedback through MemoryContext (Bundle);
+	// the governed path carries it through the envelope's review_guard block
+	// projected into ReviewGuardLines. Both paths produce the same criteria.
 	if bundle, ok := execCtx.MemoryContext.(*memoryport.Bundle); ok {
 		if guardStr := memoryport.RenderReviewGuard(bundle); guardStr != "" {
 			profileRules.WriteString(guardStr)
+		}
+	} else if len(execCtx.ReviewGuardLines) > 0 {
+		profileRules.WriteString("\n\n--- 用户历史反馈（审查时请检查）---\n")
+		for _, line := range execCtx.ReviewGuardLines {
+			if strings.TrimSpace(line) != "" {
+				profileRules.WriteString("- " + line + "\n")
+			}
 		}
 	}
 
@@ -1427,12 +1421,9 @@ func (s *PostReviewStep) Execute(ctx context.Context, execCtx *engine.ExecutionC
   "passed": true
 }`, execCtx.Article, profileRules.String(), factCheckSection)
 
-	resp, llmUsage, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
 	}, tools.WithInstructions(systemMsg), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
-	if llmUsage != nil && llmUsage.Usage.TotalTokens > 0 {
-		execCtx.TotalTokens += llmUsage.Usage.TotalTokens
-	}
 	if err != nil {
 		if s.strict {
 			return fmt.Errorf("post review LLM call failed: %w", err)
@@ -1906,7 +1897,7 @@ func (s *AutoFixStep) fixTitle(ctx context.Context, execCtx *engine.ExecutionCon
 要求：生成一个新标题，必须满足上述所有约束，且能概括正文核心论点。只输出标题本身。`,
 		execCtx.ArticleTitle, execCtx.Article, issueList, constraints.String())
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0.3), tools.WithThinking(false))
@@ -1996,7 +1987,7 @@ func (s *AutoFixStep) fixBody(ctx context.Context, execCtx *engine.ExecutionCont
 
 %s`, execCtx.Article, issueList, lowDimsStr, fixInstructions.String())
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: userMsg},
 	}, tools.WithTemperature(0.3), tools.WithThinking(false))
@@ -2082,7 +2073,7 @@ issue type 约定：title_length（字数不合规）、title_generic（过于�
   "suggested_title": "建议的新标题（如标题无问题可留空字符串）"
 }`, execCtx.ArticleTitle, execCtx.Article, titleRules.String())
 
-	resp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	resp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "user", Content: userMsg},
 	}, tools.WithInstructions(systemMsg), tools.WithTemperature(0), tools.WithThinking(true), tools.WithReasoningEffort("high"), tools.WithJSONResponse())
 	if err != nil {
@@ -2134,7 +2125,7 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
   ]
 }`, execCtx.Article, time.Now().Format("2006年1月2日"))
 
-	extractResp, _, err := s.llm.Chat(ctx, []tools.LLMMessage{
+	extractResp, _, err := trackedLLMChat(ctx, execCtx, s.llm, []tools.LLMMessage{
 		{Role: "system", Content: extractSys},
 		{Role: "user", Content: extractUser},
 	}, tools.WithTemperature(0), tools.WithThinking(false), tools.WithJSONResponse())
@@ -2168,10 +2159,9 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
 
 	// Step 2: Search for each claim concurrently (web search)
 	type claimResult struct {
-		Claim    string
-		Query    string
-		Results  []engine.SearchResult
-		Jiaozhen *tools.JiaozhenResult
+		Claim   string
+		Query   string
+		Results []engine.SearchResult
 	}
 
 	var (
@@ -2191,21 +2181,11 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
 			// Web search
 			sr := s.search.Search(ctx, query, 3)
 
-			// Jiaozhen fact-check (if configured, skip candidate filter for article claims)
-			var jr *tools.JiaozhenResult
-			if s.jiaozhen != nil && s.jiaozhen.IsConfigured() {
-				jr = s.jiaozhen.CheckClaimDirect(ctx, claim)
-				if jr.Status != "ok" {
-					jr = nil // skip non-successful results
-				}
-			}
-
 			mu.Lock()
 			results = append(results, claimResult{
-				Claim:    claim,
-				Query:    query,
-				Results:  sr,
-				Jiaozhen: jr,
+				Claim:   claim,
+				Query:   query,
+				Results: sr,
 			})
 			mu.Unlock()
 		}(c.Claim, c.Query)
@@ -2218,7 +2198,6 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
 
 	// Step 3: Format results
 	var sb strings.Builder
-	jiaozhenCount := 0
 	for i, r := range results {
 		sb.WriteString(fmt.Sprintf("### 事实声明 %d：%s\n", i+1, r.Claim))
 		sb.WriteString(fmt.Sprintf("搜索关键词：%s\n", r.Query))
@@ -2236,19 +2215,12 @@ func (s *PostReviewStep) factCheckArticle(ctx context.Context, execCtx *engine.E
 			}
 		}
 
-		// Jiaozhen fact-check result
-		if r.Jiaozhen != nil {
-			sb.WriteString(fmt.Sprintf("较真查证结果：\n%s\n", r.Jiaozhen.Content))
-			jiaozhenCount++
-		}
-
 		sb.WriteString("\n")
 	}
 
 	slog.Info("fact-check: completed",
 		"trace_id", execCtx.TraceID,
-		"claims_checked", len(results),
-		"jiaozhen_checked", jiaozhenCount)
+		"claims_checked", len(results))
 
 	return sb.String()
 }

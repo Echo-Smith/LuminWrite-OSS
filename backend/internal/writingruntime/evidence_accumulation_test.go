@@ -107,7 +107,7 @@ func TestAllowlistEvidenceAccumulationHarness(t *testing.T) {
 			documentID := "doc_" + scenarioName + "_" + invocation
 			var governedPolicy AdapterRolloutPolicy
 			backend := verticalRolloutBackend{
-				evidence: durableEvidenceMirror{persistent: WritingStoreEvidenceStore{Recorder: persistent},
+				evidence: durableEvidenceMirror{persistent: &WritingStoreEvidenceStore{recorder: persistent},
 					memory: &MemoryRolloutEvidenceStore{}},
 				sink: &durableShadowTracker{persistent: WritingStoreShadowContentSink{Store: persistent, TTL: DefaultShadowContentTTL}},
 				ids:  func(string) (string, string) { return runID, documentID },

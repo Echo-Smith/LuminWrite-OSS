@@ -178,7 +178,7 @@ func TestTask13LiveModelVerticalAcceptance(t *testing.T) {
 			memory := &MemoryRolloutEvidenceStore{}
 			tracker := &durableShadowTracker{persistent: WritingStoreShadowContentSink{Store: persistent, TTL: DefaultShadowContentTTL}}
 			backend := verticalRolloutBackend{
-				evidence: durableEvidenceMirror{persistent: WritingStoreEvidenceStore{Recorder: persistent}, memory: memory},
+				evidence: durableEvidenceMirror{persistent: &WritingStoreEvidenceStore{recorder: persistent}, memory: memory},
 				sink:     tracker,
 				prepare:  livePreparePersistentLineage(persistent, db),
 				records: func(t *testing.T, runID string) []RuntimeEvidence {

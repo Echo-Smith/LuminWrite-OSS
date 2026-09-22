@@ -228,6 +228,9 @@ func (e *DAGExecutor) Execute(ctx context.Context, spec *WorkflowSpec, task *Tas
 			run.mu.Lock()
 			run.cancel = nil
 			run.mu.Unlock()
+			// 取消也要收敛状态：写失败终态 + 清理运行状态，否则
+			// 看板/历史会永远停留在"写作中"
+			e.finalize(execCtx, task, spec, false, run)
 			return execCtx.Err()
 
 		case <-done:
@@ -483,6 +486,17 @@ func (e *DAGExecutor) finalize(ctx context.Context, task *Task, spec *WorkflowSp
 				"task_id", task.ID, "error", err)
 		} else {
 			slog.Info("dag: task status updated to pending_publish", "task_id", task.ID)
+		}
+	}
+
+	// 失败/取消时收敛终态：看板拉回 draft、trace 标记 failed。
+	// 必须用独立 context — 取消路径传入的 ctx 已被 cancel，直接写库会失败，
+	// 状态就会永远停留在"写作中"。
+	if !success && e.store != nil {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := e.store.MarkTaskFailed(bgCtx, task.ID, "DAG 工作流执行失败或已被取消"); err != nil {
+			slog.Error("dag: failed to mark task failed", "task_id", task.ID, "error", err)
 		}
 	}
 

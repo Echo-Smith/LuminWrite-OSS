@@ -16,7 +16,7 @@ func TestGovernedRolloutProductionCompositionRequiresPersistentStore(t *testing.
 	if deps == nil {
 		t.Fatal("persistent composition was not created")
 	}
-	if _, ok := deps.evidence.(writingruntime.WritingStoreEvidenceStore); !ok {
+	if _, ok := deps.evidence.(*writingruntime.StoreRolloutEvidence); !ok {
 		t.Fatalf("evidence=%T", deps.evidence)
 	}
 	if _, ok := deps.shadow.(writingruntime.WritingStoreShadowContentSink); !ok {

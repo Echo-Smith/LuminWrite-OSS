@@ -39,8 +39,6 @@ const (
 	MCPErrorDisconnected  = "MCP_DISCONNECTED"
 )
 
-// ServerStatus is the credential-free, operator-facing state retained for
-// both successful and failed configured MCP servers.
 type ServerStatus struct {
 	Name        string    `json:"name"`
 	Transport   string    `json:"transport"`
@@ -52,10 +50,7 @@ type ServerStatus struct {
 
 // NewRegistry creates an empty MCP registry.
 func NewRegistry() *Registry {
-	return &Registry{
-		clients:  make(map[string]*MCPClient),
-		statuses: make(map[string]ServerStatus),
-	}
+	return &Registry{clients: make(map[string]*MCPClient), statuses: make(map[string]ServerStatus)}
 }
 
 // Connect connects to an MCP server and discovers its tools.
@@ -107,9 +102,7 @@ func validateMCPClientConfig(cfg MCPClientConfig) error {
 func (r *Registry) recordFailure(cfg MCPClientConfig, code string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.statuses[cfg.Name] = ServerStatus{
-		Name: cfg.Name, Transport: cfg.Transport, ErrorCode: code, LastChecked: time.Now().UTC(),
-	}
+	r.statuses[cfg.Name] = ServerStatus{Name: cfg.Name, Transport: cfg.Transport, ErrorCode: code, LastChecked: time.Now().UTC()}
 }
 
 func (r *Registry) recordConnected(cfg MCPClientConfig, client *MCPClient) {
@@ -126,8 +119,6 @@ func (r *Registry) recordConnected(cfg MCPClientConfig, client *MCPClient) {
 	}
 }
 
-// Statuses returns a stable, sorted snapshot without configuration values or
-// credentials. Failed configured servers remain visible until forgotten.
 func (r *Registry) Statuses() []ServerStatus {
 	if r == nil {
 		return []ServerStatus{}
@@ -204,7 +195,6 @@ func (r *Registry) Disconnect(name string) error {
 	return nil
 }
 
-// Forget removes the observable status after its configuration is deleted.
 func (r *Registry) Forget(name string) {
 	if r == nil {
 		return

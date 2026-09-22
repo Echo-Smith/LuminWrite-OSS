@@ -249,6 +249,23 @@ func (r *EvaluationRepo) ListSamples(ctx context.Context, setID string) ([]*Eval
 	return samples, nil
 }
 
+// GetSamplesByRun retrieves samples associated with a specific run
+func (r *EvaluationRepo) GetSamplesByRun(ctx context.Context, runID string) ([]*EvaluationSample, error) {
+	if r.db == nil {
+		return []*EvaluationSample{}, nil
+	}
+
+	// First get the set_id from the run
+	var setID string
+	err := r.db.QueryRowContext(ctx, `SELECT set_id FROM evaluation_runs WHERE id = $1`, runID).Scan(&setID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Then get samples for that set
+	return r.ListSamples(ctx, setID)
+}
+
 // ─── Evaluation Runs ─────────────────────────────────────
 
 type EvaluationRun struct {

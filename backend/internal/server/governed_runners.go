@@ -118,9 +118,9 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 // assembly (sensitive check + web search + jiaozhen) for governed dispatch.
 func (s *Server) newGovernedPostReviewStep(llm *tools.LLMClient, p *profile.StyleProfile) engine.Step {
 	if s.sensitiveSvc != nil {
-		return steps.NewPostReviewStepWithSearchAndJiaozhen(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p, s.search, s.jiaozhen)
+		return steps.NewPostReviewStepWithSearch(llm, &sensitiveCheckAdapter{svc: s.sensitiveSvc}, p, s.search)
 	}
-	return steps.NewPostReviewStepWithSearchAndJiaozhen(llm, nil, p, s.search, s.jiaozhen)
+	return steps.NewPostReviewStepWithSearch(llm, nil, p, s.search)
 }
 
 // governedOutlineStep adapts the legacy OutlineStep to governed dispatch.
@@ -224,10 +224,19 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 	// the external bindings.
 	var materialDiscover writingruntime.Executor
 	var materialRead writingruntime.Executor
+	// The scholar operations execute in-process (Go rewrite of the former
+	// private-network Python worker). SCHOLAR_WORKER_URL keeps its role as
+	// the research-path enablement signal and SCHOLAR_WORKER_TOKEN stays a
+	// required configuration guard; PDF text extraction goes through the
+	// docreader sidecar (the shared KB parsing surface).
 	if workerURL := strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_URL")); workerURL != "" {
-		scholarClient, scholarErr := scholar.NewClient(workerURL, strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_TOKEN")))
+		var scholarOpts []scholar.Option
+		if docreaderAddr := strings.TrimSpace(os.Getenv("DOCREADER_ADDR")); docreaderAddr != "" {
+			scholarOpts = append(scholarOpts, scholar.WithDocumentParser(scholar.NewDocreaderParser(docreaderAddr)))
+		}
+		scholarClient, scholarErr := scholar.NewClient(workerURL, strings.TrimSpace(os.Getenv("SCHOLAR_WORKER_TOKEN")), scholarOpts...)
 		if scholarErr != nil {
-			slog.Warn("governed runtime: scholar worker client invalid; research discover/read pause on dispatch", "error", scholarErr)
+			slog.Warn("governed runtime: scholar client invalid; research discover/read pause on dispatch", "error", scholarErr)
 		} else {
 			if executor, err := writingruntime.NewResearchDiscoverExecutor(scholarClient, canonical); err == nil {
 				discover = executor

@@ -149,7 +149,7 @@ func retainedShare(t *testing.T, total int, block string) int {
 	weights := map[string]int{
 		"contract_digest": 12, "canon_facts": 22, "terminology": 10,
 		"open_decisions": 10, "entities_cards": 12, "source_evidence": 14,
-		"document_state": 12, "style_directives": 8,
+		"document_state": 12, "style_directives": 8, "review_guard": 6,
 	}
 	sum := 0
 	for _, name := range Blocks() {
@@ -253,7 +253,7 @@ func TestCompileRejectsUnknownWantedBlock(t *testing.T) {
 	if _, err := Compile(input); err == nil || !strings.Contains(err.Error(), "not a compiler block") {
 		t.Fatalf("err=%v", err)
 	}
-	if !ValidBlock("canon_facts") || ValidBlock("secret_block") || len(Blocks()) != 9 {
+	if !ValidBlock("canon_facts") || ValidBlock("secret_block") || len(Blocks()) != 10 {
 		t.Fatalf("block registry mismatch: valid=%v blocks=%v", ValidBlock("canon_facts"), Blocks())
 	}
 }

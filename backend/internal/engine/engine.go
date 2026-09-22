@@ -126,6 +126,8 @@ func (e *AgentEngine) Run(ctx context.Context, execCtx *ExecutionContext) error 
 			StartedAt: &startCopy,
 		}
 		execCtx.StepHistory = append(execCtx.StepHistory, record)
+		// Unified RunEvent stream (live timeline / benchmark / WABench share this).
+		execCtx.EmitStepEvent(stepName, RunEventStart, startTime, 0, "")
 
 		slog.Info("step starting",
 			"trace_id", execCtx.TraceID,
@@ -326,6 +328,18 @@ func updateLastStepRecord(execCtx *ExecutionContext, step StepName, status strin
 			execCtx.StepHistory[i].DurationMs = durationMs
 			execCtx.StepHistory[i].Result = result
 			execCtx.StepHistory[i].Error = errMsg
+
+			// Mirror the lifecycle onto the unified RunEvent stream. Any
+			// non-"complete" status (error / degraded) is surfaced as an error.
+			evStatus := RunEventComplete
+			if status != "complete" {
+				evStatus = RunEventError
+			}
+			startedAt := now
+			if ts := execCtx.StepHistory[i].StartedAt; ts != nil {
+				startedAt = *ts
+			}
+			execCtx.EmitStepEvent(step, evStatus, startedAt, durationMs, errMsg)
 			break
 		}
 	}
