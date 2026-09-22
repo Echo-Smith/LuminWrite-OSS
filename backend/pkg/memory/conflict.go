@@ -17,11 +17,14 @@ func NewConflictResolver(store Store) *ConflictResolver {
 }
 
 // ResolveAndSave 处理一条新提取的记忆：
-//  - 如果同 category+key 不存在 → 新建
-//  - 如果同 category+key 存在且 value 相同 → 增加出现次数
-//  - 如果同 category+key 存在但 value 不同 → 旧记忆标记 superseded，新建记忆
-//  - Two-Strike: candidate 出现第二次 → 升级为 active
-func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, extracted ExtractedMemory, tier Tier, traceID string, grade ArticleGrade) (*Memory, error) {
+//   - 如果同 category+key 不存在 → 新建
+//   - 如果同 category+key 存在且 value 相同 → 增加出现次数
+//   - 如果同 category+key 存在但 value 不同 → 旧记忆标记 superseded，新建记忆
+//   - Two-Strike: candidate 出现第二次 → 升级为 active
+//
+// qs 是本次提取派生出的质量信号出处（人工录用/人工确认/好评等），
+// 用于证据阶梯与质量加权（WP6）。
+func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, extracted ExtractedMemory, tier Tier, traceID string, grade ArticleGrade, qs QualitySource) (*Memory, error) {
 	existing, err := r.store.FindByCategoryKey(ctx, userID, extracted.Category, extracted.Key)
 	if err != nil {
 		return nil, err
@@ -48,6 +51,9 @@ func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, ex
 
 		// 应用质量加权
 		applyQualityWeight(mem, grade)
+
+		// 证据阶梯补全（WP6）：新建路径也写入质量出处/证据状态/多源计数
+		applyEvidenceOnCreate(mem, grade, qs)
 
 		if err := r.store.Save(ctx, mem); err != nil {
 			return nil, err
@@ -113,10 +119,24 @@ func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, ex
 			}
 		}
 
+		// 强信号（人工录用/人工确认）覆盖较弱的质量出处
+		if isStrongQualitySource(qs) {
+			latest.QualitySource = qs
+		}
+
 		// 证据升级链路（Layer-0 止血④b）：每次被再次观测/正反馈都推进
 		// 证据状态。此前 evidence_status 恒为 none，写作场景的严格证据门
 		// 会把所有 Tier2/3 静默全拦。
 		latest.EvidenceStatus = upgradedEvidenceStatus(latest.EvidenceStatus, grade, latest.QualitySource)
+
+		// 多源计数（WP6）：不同 traceID 的再次观测视为独立证据源。
+		// 保留首个出处 SourceTraceID 不覆盖；旧记录 SourceCount 为 0 时先补到 1 再自增。
+		if traceID != "" && traceID != latest.SourceTraceID {
+			if latest.SourceCount < 1 {
+				latest.SourceCount = 1
+			}
+			latest.SourceCount++
+		}
 
 		if err := r.store.Save(ctx, latest); err != nil {
 			return nil, err
@@ -147,6 +167,10 @@ func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, ex
 		LastSeen:      time.Now(),
 	}
 	applyQualityWeight(mem, grade)
+
+	// 证据阶梯补全（WP6）：与 Case 1 新建路径一致
+	applyEvidenceOnCreate(mem, grade, qs)
+
 	if err := r.store.Save(ctx, mem); err != nil {
 		return nil, err
 	}
@@ -201,6 +225,36 @@ func applyQualityWeight(mem *Memory, grade ArticleGrade) {
 		mem.QualitySource = QualityNone
 		mem.QualityWeight = 0
 	}
+}
+
+// applyEvidenceOnCreate 新建记忆路径的证据阶梯补全（WP6）：
+//   - qs 非空且当前无质量出处，或 qs 本身是强信号（manual_approve/workbuddy）
+//     → 写入/覆盖 QualitySource
+//   - EvidenceStatus 按 initialEvidenceStatus 派生
+//   - SourceCount 记多源计数起点 1
+func applyEvidenceOnCreate(mem *Memory, grade ArticleGrade, qs QualitySource) {
+	if qs != "" && (mem.QualitySource == "" || isStrongQualitySource(qs)) {
+		mem.QualitySource = qs
+	}
+	mem.EvidenceStatus = initialEvidenceStatus(grade, mem.QualitySource)
+	mem.SourceCount = 1
+}
+
+// initialEvidenceStatus 派生新建记忆的初始证据状态：
+//   - 强信号（manual_approve/workbuddy）→ verified
+//   - 好评 → supported
+//   - 其余（中性/差评且无强信号）→ none
+//
+// 与 upgradedEvidenceStatus 的"再次出现"分支不同：首次观测本身不构成
+// 复现证据，none→supported 的 two-strike 升级只发生在 Case 2 强化路径。
+func initialEvidenceStatus(grade ArticleGrade, qs QualitySource) EvidenceStatus {
+	if isStrongQualitySource(qs) {
+		return EvidenceVerified
+	}
+	if grade == GradePositive {
+		return EvidenceSupported
+	}
+	return EvidenceNone
 }
 
 func maxFloat(a, b float64) float64 {

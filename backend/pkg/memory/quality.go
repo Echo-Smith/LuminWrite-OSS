@@ -76,3 +76,41 @@ func CollectSignals(isAdopted bool, feedback []FeedbackInfo, traceCompletedAt ti
 
 	return signals
 }
+
+// isStrongQualitySource 判断是否为强质量信号（人工显式确认类）。
+func isStrongQualitySource(qs QualitySource) bool {
+	return qs == QualityManualApprove || qs == QualityWorkbuddy
+}
+
+// DeriveSource 从质量信号中派生本次提取的质量出处（WP6）。
+// 规则：
+//   - 只采纳 7 天内的信号（与 CalculateGrade 的时效窗口一致）
+//   - 权重 >= 0.8 的 manual_approve/workbuddy 强信号优先于 high_rating
+//   - 其余取权重最高的信号
+//   - 无合格信号返回 QualityNone
+func (qc *QualityCalculator) DeriveSource(signals []QualitySignal) QualitySource {
+	const window = 7 * 24 * time.Hour
+	now := time.Now()
+	var bestStrong, bestAny *QualitySignal
+	for i := range signals {
+		sig := &signals[i]
+		if now.Sub(sig.EvidencedAt) >= window {
+			continue // 过期信号忽略
+		}
+		if bestAny == nil || sig.Weight > bestAny.Weight {
+			bestAny = sig
+		}
+		if sig.Weight >= 0.8 && isStrongQualitySource(sig.Source) {
+			if bestStrong == nil || sig.Weight > bestStrong.Weight {
+				bestStrong = sig
+			}
+		}
+	}
+	if bestStrong != nil {
+		return bestStrong.Source
+	}
+	if bestAny != nil {
+		return bestAny.Source
+	}
+	return QualityNone
+}

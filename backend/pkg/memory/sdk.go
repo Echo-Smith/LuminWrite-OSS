@@ -50,6 +50,9 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 	// 1. 计算质量评级
 	grade := s.qualityCalc.CalculateGrade(session.Signals, session.Feedback)
 
+	// 1b. 派生质量信号出处（WP6）：供证据阶梯与质量加权使用
+	qs := s.qualityCalc.DeriveSource(session.Signals)
+
 	// 2. 确定性提取（从 ExecutionContext 字段）
 	deterministic := extractDeterministic(&session)
 
@@ -95,7 +98,7 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 				continue
 			}
 			ext.Value = checkedValue
-			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade)
+			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade, qs)
 			if err != nil {
 				slog.Warn("memory: failed to save pattern", "category", ext.Category, "error", err)
 				continue
@@ -112,7 +115,7 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 				continue
 			}
 			ext.Value = checkedValue
-			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade)
+			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade, qs)
 			if err != nil {
 				slog.Warn("memory: failed to save LLM pattern", "category", ext.Category, "error", err)
 				continue
@@ -125,7 +128,7 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 
 	// 6. 保存 Tier 3 反馈记忆
 	for _, ext := range feedbackExtracted {
-		mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierFeedback, session.TraceID, grade)
+		mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierFeedback, session.TraceID, grade, qs)
 		if err != nil {
 			slog.Warn("memory: failed to save feedback memory", "category", ext.Category, "error", err)
 			continue

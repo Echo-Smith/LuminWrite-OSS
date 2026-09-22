@@ -52,6 +52,15 @@ func TestBundleFromMemoryContextGolden(t *testing.T) {
 	if w0.Kind != memoryport.KindPreference || w1.Kind != memoryport.KindPreference || got.ReviewGuard[0].Kind != memoryport.KindFeedback {
 		t.Errorf("kind mapping broken: %s %s %s", w0.Kind, w1.Kind, got.ReviewGuard[0].Kind)
 	}
+	// Strength = 衰减后有效置信度（时序信号）：非零且等于来源 Confidence，
+	// 供消费端预算截断排序（WP6）
+	guard := got.ReviewGuard[0]
+	if w0.Strength != 1.0 || w1.Strength != 0.72 || guard.Strength != 0.55 {
+		t.Errorf("directive strength mapping broken: m1=%v m2=%v guard=%v", w0.Strength, w1.Strength, guard.Strength)
+	}
+	if w0.Strength == 0 || w1.Strength == 0 || guard.Strength == 0 {
+		t.Error("strength must be non-zero (budget truncation ordering signal)")
+	}
 }
 
 func TestRenderWriteDirectivesGolden(t *testing.T) {

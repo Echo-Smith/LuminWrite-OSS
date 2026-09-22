@@ -67,4 +67,8 @@ func TestDefaultSafetyConfigUnlocksEvidence(t *testing.T) {
 	if cfg.RequireVerifiedForWriting {
 		t.Error("RequireVerifiedForWriting must default to false — strict gate deadlocks Tier2/3 (see Layer-0)")
 	}
+	// WP6 最小披露默认开启
+	if cfg.MaxInjectedPerIntent != 8 {
+		t.Errorf("MaxInjectedPerIntent = %d, want 8 (WP6 minimal disclosure default)", cfg.MaxInjectedPerIntent)
+	}
 }

@@ -214,6 +214,8 @@ func directiveFromEntry(e pkgmem.MemoryEntry, kind memoryport.DirectiveKind) mem
 		Dismissible:    e.Dismissible,
 		EvidenceStatus: string(e.EvidenceStatus),
 		Kind:           kind,
+		// Strength = 衰减后有效置信度（时序信号），供消费端预算截断排序
+		Strength: e.Confidence,
 	}
 }
 

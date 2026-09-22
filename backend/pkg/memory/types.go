@@ -228,10 +228,12 @@ type SafetyConfig struct {
 	RequireVerifiedForWriting bool // 写作场景要求 verified/supported 证据，默认 true
 	RequireVerifiedForChat    bool // 聊天场景要求 verified/supported 证据，默认 false
 	PIIFilterEnabled    bool    // PII 过滤开关：保存记忆前检查敏感内容，默认 true
-	MaxInjectedPerIntent int    // 每次注入的最大记忆条数（最小披露），默认 0=不限制
+	MaxInjectedPerIntent int    // 每次注入的最大记忆条数（最小披露），默认 8（最小披露）；0=不限制
 }
 
-// DefaultSafetyConfig 返回默认安全配置
+// DefaultSafetyConfig 返回默认安全配置。
+// WP6 最小披露默认开启：MaxInjectedPerIntent 默认 8（0=不限制），
+// 多记忆组合注入的 prompt bloat 由预算截断兜底。
 func DefaultSafetyConfig() SafetyConfig {
 	return SafetyConfig{
 		Enabled:               true,
@@ -245,7 +247,8 @@ func DefaultSafetyConfig() SafetyConfig {
 		RequireVerifiedForWriting: false,
 		RequireVerifiedForChat:    false,
 		PIIFilterEnabled:          true,
-		MaxInjectedPerIntent:      0,
+		// WP6 最小披露默认开启（默认 8；0=不限制）
+		MaxInjectedPerIntent: 8,
 	}
 }
 

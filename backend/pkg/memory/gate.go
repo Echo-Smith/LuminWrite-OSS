@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"strings"
 )
 
@@ -160,18 +161,11 @@ func (g *Gate) RetrieveAndGate(ctx context.Context, req RetrieveRequest) (*Memor
 		}
 	}
 
-	// 6. 最小披露限制 (P0-3)：按意图限制注入条数
-	if g.config.Safety.MaxInjectedPerIntent > 0 && len(injected) > g.config.Safety.MaxInjectedPerIntent {
-		// 按置信度排序，只保留 Top-N
-		for i := 0; i < len(injected); i++ {
-			for j := i + 1; j < len(injected); j++ {
-				if injected[j].Confidence > injected[i].Confidence {
-					injected[i], injected[j] = injected[j], injected[i]
-				}
-			}
-		}
-		injected = injected[:g.config.Safety.MaxInjectedPerIntent]
-	}
+	// 6. 最小披露限制 (P0-3)：按意图限制注入条数（WP6 默认 8）。
+	//    injected 与 reviewGuard 同用 MaxInjectedPerIntent 上限，
+	//    按置信度降序稳定排序后截断。
+	injected = topByConfidence(injected, g.config.Safety.MaxInjectedPerIntent)
+	reviewGuard = topByConfidence(reviewGuard, g.config.Safety.MaxInjectedPerIntent)
 
 	// 7. 拒答协议 (P0-3)：无足够证据记忆时触发拒答
 	result := &MemoryContext{
@@ -208,6 +202,21 @@ func (g *Gate) RetrieveAndGate(ctx context.Context, req RetrieveRequest) (*Memor
 	)
 
 	return result, nil
+}
+
+// topByConfidence 最小披露预算：按 Confidence 降序稳定排序后取前 n 条。
+// n <= 0 表示不限制，原样返回。
+func topByConfidence(entries []MemoryEntry, n int) []MemoryEntry {
+	if n <= 0 {
+		return entries
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].Confidence > entries[j].Confidence
+	})
+	if len(entries) > n {
+		return entries[:n]
+	}
+	return entries
 }
 
 // isExplicitlySpecified 检查用户是否已显式指定了某个维度
