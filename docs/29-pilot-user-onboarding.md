@@ -234,3 +234,17 @@ projectMemory:
 
 - [28-wp4-pilot-scenarios.md](28-wp4-pilot-scenarios.md) — WP4 三大流程、试点场景与验收标准（权威来源）
 - [19-governed-writing-runtime.md](19-governed-writing-runtime.md) — 治理型写作运行时（Contract / Plan / Run / Artifact / Quality Gate）
+
+## 8. 试点运营：指标采集
+
+试点期间每周执行一次 [backend/scripts/pilot-metrics.sql](../backend/scripts/pilot-metrics.sql)（只读 SQL，时间窗参数按文件头说明用 `psql -v start=... -v end=...` 传入），对齐 docs/28 成功指标：
+
+| 指标 | 目标 | 采集方式 |
+|---|---|---|
+| 任务完成率 | ≥95% | pilot-metrics.sql 查询 1 |
+| 质量门通过率 | ≥80% | pilot-metrics.sql 查询 2 |
+| ContextEnvelope 编译成功率 | ≥99% | pilot-metrics.sql 查询 3 |
+| 离线回放成功率 | 100% | pilot-metrics.sql 查询 4（代理口径：envelope 留存覆盖率） |
+| 用户满意度 (1-5) | ≥4.0 | pilot-metrics.sql 查询 5 |
+
+建议执行频率：每周一次（4 周试点共 4 个统计窗）。离线回放抽样按 docs/28 Monitoring 约定执行。
