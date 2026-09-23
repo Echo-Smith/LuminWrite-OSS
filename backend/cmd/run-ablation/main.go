@@ -28,10 +28,15 @@ func main() {
 
 	repo := database.NewWABenchRepo(db)
 
+	// 凭据只从环境注入：LLM_API_KEY 必填（fail-closed），绝不定死在源码里。
+	apiKey := os.Getenv("LLM_API_KEY")
+	if apiKey == "" {
+		log.Fatal("LLM_API_KEY must be set in the environment")
+	}
 	llm := tools.NewLLMClient(
-		"https://api.xiaomimimo.com/v1",
-		"sk-c1xnsr7lkt8vm035jpi9essgw082sprtj42gnikyjde55aum",
-		"mimo-v2.5",
+		envDefault("LLM_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		apiKey,
+		envDefault("LLM_MODEL", "mimo-v2.5"),
 		32768, 0.7, 120*time.Second,
 	)
 
@@ -79,4 +84,11 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("ALL RUNS COMPLETED")
+}
+
+func envDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
