@@ -168,9 +168,12 @@ func TestT09WallClockBudgetGuardIsPureLedgerFunction(t *testing.T) {
 
 	// Seed two completed attempts with fixed durations on the real run
 	// (distinct synthetic nodes, so they cannot collide with the run's real
-	// attempt rows).
-	h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 1500, "failed")
-	h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 2500, "failed")
+	// attempt rows). The run is already terminal — seeding goes through the
+	// terminal-guard bypass (direct status flip), not by weakening the guard.
+	h.bypassTerminalGuard(t, runID, func() {
+		h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 1500, "failed")
+		h.seedCompletedAttempt(t, runID, envelope.ExecutablePlan.PlanID, 2500, "failed")
+	})
 	guard := NewWallClockResearchBudgetBoundary(h.store)
 	// The seeded spend is 4000ms — far under the run's 50-minute budget, so
 	// reading the ledger cannot over-count into a fire.
@@ -226,15 +229,17 @@ func TestT09WallClockBudgetGuardCountsInFlightAttempt(t *testing.T) {
 	}
 	trace := writingstore.TraceContext{Provenance: map[string]any{}, SourceRefs: []string{},
 		Actor: writingstore.Actor{Type: writingstore.ActorSystem, ID: "t09.fixture"}}
-	if _, _, err := h.store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID,
-		PlanID: envelope.ExecutablePlan.PlanID, PlanVersion: 1, NodeID: request.NodeID, Attempt: 1,
-		IdempotencyKey: runID + ":" + request.NodeID + ":1", NodeKind: writingplan.NodeAction,
-		CapabilityID: "core.research.read", CapabilityVersion: "1.0.0",
-		ExecutorID: "engine.step.research_read", FailurePath: writingplan.FailurePause,
-		Bounds:    writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 1, TimeoutMS: 600000},
-		InputHash: "sha256:" + strings.Repeat("0", 64), InputArtifactIDs: []string{}}, trace); err != nil {
-		t.Fatal(err)
-	}
+	h.bypassTerminalGuard(t, runID, func() {
+		if _, _, err := h.store.StartNodeAttempt(ctx, writingstore.NodeAttempt{RunID: runID,
+			PlanID: envelope.ExecutablePlan.PlanID, PlanVersion: 1, NodeID: request.NodeID, Attempt: 1,
+			IdempotencyKey: runID + ":" + request.NodeID + ":1", NodeKind: writingplan.NodeAction,
+			CapabilityID: "core.research.read", CapabilityVersion: "1.0.0",
+			ExecutorID: "engine.step.research_read", FailurePath: writingplan.FailurePause,
+			Bounds:    writingplan.Bounds{MaxAttempts: 1, MaxConcurrency: 1, MaxItems: 1, MaxCostUSD: 1, TimeoutMS: 600000},
+			InputHash: "sha256:" + strings.Repeat("0", 64), InputArtifactIDs: []string{}}, trace); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if _, err := h.server.db.Exec(
 		`UPDATE writing_node_attempts SET started_at = NOW() - INTERVAL '10 minutes' WHERE run_id=$1 AND node_id=$2`,
 		runID, request.NodeID); err != nil {
@@ -328,6 +333,27 @@ func (brokenBudgetLedger) ListResearchTasks(context.Context, string, string) ([]
 
 func (brokenBudgetLedger) LoadRuntimeRun(context.Context, string) (writingstore.RuntimeRun, error) {
 	return writingstore.RuntimeRun{}, fmt.Errorf("run unavailable")
+}
+
+// bypassTerminalGuard 临时把 run 翻回非终态执行 fn，结束后恢复原状态。
+// 终态守卫（writingstore runtime）是运行时不变量；账本夹具需要在已完成的
+// run 上补写历史 attempt 行，这里用直接 SQL 翻状态绕过 store 层守卫，
+// 而不是削弱守卫本身。
+func (h *t06Harness) bypassTerminalGuard(t *testing.T, runID string, fn func()) {
+	t.Helper()
+	var orig string
+	if err := h.server.db.QueryRow(`SELECT status FROM writing_runs WHERE run_id=$1`, runID).Scan(&orig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.db.Exec(`UPDATE writing_runs SET status='running' WHERE run_id=$1`, runID); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := h.server.db.Exec(`UPDATE writing_runs SET status=$2 WHERE run_id=$1`, runID, orig); err != nil {
+			t.Errorf("restore run status: %v", err)
+		}
+	}()
+	fn()
 }
 
 // seedCompletedAttempt records a terminal synthetic attempt row with a fixed
