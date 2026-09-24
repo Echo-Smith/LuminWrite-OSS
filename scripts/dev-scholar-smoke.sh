@@ -1,36 +1,30 @@
 #!/usr/bin/env bash
-# T04/T09 integration smoke: start the real Python Scholar Worker on loopback
-# and drive it with the real Go client through the deterministic loopback:
+# Scholar in-process smoke: drive backend/internal/scholar exactly the way
+# the governed runtime wires it (SCHOLAR_WORKER_URL as the enablement
+# signal, SCHOLAR_WORKER_TOKEN as the required guard) and exercise the
+# bounded operations for real — there is no separate worker service:
 #
-#   1. /healthz                       — always (no network, no model)
-#   2. parse (deterministic TXT)      — always (no network, no model)
-#   3. discover (real provider fan-out, openalex) — unless
-#      SCHOLAR_SMOKE_OFFLINE=1 (offline behavior is covered by the pytest
-#      suite); a network failure here is reported as DISCOVER=SKIPPED.
+#   1. construction — NewClient must fail closed on an empty token
+#   2. health (wiring-compat no-op)  — always
+#   3. parse (deterministic TXT)     — always (no network, no model)
 #   4. rank — the FAIL-CLOSED error path: no SCHOLAR_LLM_* is configured, so
-#      the worker must answer a typed error (never silent all-zero scores).
+#      the executor must answer a typed error (never silent all-zero scores)
+#   5. discover (real provider fan-out, openalex) — unless
+#      SCHOLAR_SMOKE_OFFLINE=1; a network failure here is reported as
+#      DISCOVER=SKIPPED
+#
+# PDF parsing is delegated to the docreader sidecar in production; this smoke
+# uses plain text and covers the in-process path only.
 #
 # Usage: scripts/dev-scholar-smoke.sh
-# Requires: uv (services/scholar-worker/.venv is created on first run) and Go.
+# Requires: Go.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-WORKER_DIR="$ROOT/services/scholar-worker"
-TOKEN="smoke-token-$(date +%s)"
-PORT="${SCHOLAR_SMOKE_PORT:-18990}"
-BASE_URL="http://127.0.0.1:$PORT"
 
-# 1) Ensure the worker environment exists.
-if [ ! -x "$WORKER_DIR/.venv/bin/python" ]; then
-  echo "[smoke] creating worker venv..."
-  uv venv "$WORKER_DIR/.venv" --python 3.12
-  uv pip install --python "$WORKER_DIR/.venv/bin/python" -e "$WORKER_DIR[dev]"
-fi
-
-# 2) Build a tiny Go driver that uses backend/internal/scholar for real.
-DRIVER_MAIN="$ROOT/backend/cmd/scholar-smoke/main.go"
-mkdir -p "$(dirname "$DRIVER_MAIN")"
-cat > "$DRIVER_MAIN" <<'EOF'
+# 1) Build a tiny Go driver that uses backend/internal/scholar for real.
+DRIVER_DIR="$(mktemp -d "$ROOT/backend/cmd/scholar-inproc-smoke.XXXXXX")"
+cat > "$DRIVER_DIR/main.go" <<'EOF'
 package main
 
 import (
@@ -45,18 +39,26 @@ import (
 )
 
 func main() {
-	offline := os.Args[3] == "offline"
-	baseURL, token := os.Args[1], os.Args[2]
-	client, err := scholar.NewClient(baseURL, token)
+	offline := len(os.Args) > 1 && os.Args[1] == "offline"
+
+	// The governed runtime constructs the client only when SCHOLAR_WORKER_URL
+	// is set and fails closed on an empty token — mirror both here.
+	if _, err := scholar.NewClient("", ""); err == nil {
+		fmt.Fprintln(os.Stderr, "[smoke] FAIL: NewClient accepted an empty token — required-guard contract broken")
+		os.Exit(1)
+	}
+	fmt.Println("[smoke] empty-token construction fails closed OK")
+
+	client, err := scholar.NewClient("in-process-smoke", "smoke-token")
 	exitIf(err)
+
+	exitIf(client.Health(context.Background()))
+	fmt.Println("[smoke] health OK")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	exitIf(client.Health(ctx))
-	fmt.Println("[smoke] /healthz OK")
-
-	// ── parse: deterministic full loop (real worker, no network, no model).
+	// ── parse: deterministic full loop (in-process, no network, no model).
 	document := []byte("LuminScholar smoke document.\n\nSecond paragraph: hash-verified blocks follow.")
 	parse, resp, err := (writingruntime.ScholarParseRead{Client: client}).ParseDocument(ctx, document, "text/plain", "parser/1")
 	exitIf(err)
@@ -66,7 +68,7 @@ func main() {
 	}, "", "  ")
 	fmt.Printf("[smoke] parse OK\n%s\n", parsePretty)
 
-	// ── rank: fail-closed without SCHOLAR_LLM_*. The worker MUST answer a
+	// ── rank: fail-closed without SCHOLAR_LLM_*. The executor MUST answer a
 	// typed error (fail-closed contract); success here would be a failure.
 	if _, _, rankErr := client.Rank(ctx, "why do batteries age?", []scholar.RankCandidate{
 		{PaperID: "p_smoke_1", Abstract: "battery aging abstract"},
@@ -88,11 +90,11 @@ func main() {
 		return
 	}
 	pretty, _ := json.MarshalIndent(map[string]any{
-		"request_id":   resp.RequestID,
-		"paper_count":  len(discoverOutputs.Papers),
-		"providers":    discoverOutputs.ProviderResults,
-		"usage":        resp.Usage,
-		"versions":     resp.Versions,
+		"request_id":  resp.RequestID,
+		"paper_count": len(discoverOutputs.Papers),
+		"providers":   discoverOutputs.ProviderResults,
+		"usage":       resp.Usage,
+		"versions":    resp.Versions,
 	}, "", "  ")
 	fmt.Printf("[smoke] discover OK\n%s\n", pretty)
 }
@@ -105,30 +107,10 @@ func exitIf(err error) {
 }
 EOF
 
-# 3) Start the worker (loopback only, token via env).
-PID_DIR="$(mktemp -d)"
-echo "[smoke] starting worker on $BASE_URL..."
-(
-  cd "$WORKER_DIR"
-  SCHOLAR_WORKER_TOKEN="$TOKEN" SCHOLAR_WORKER_HOST=127.0.0.1 \
-    SCHOLAR_WORKER_PORT="$PORT" .venv/bin/python -m lumin_scholar &
-  echo $! > "$PID_DIR/worker.pid"
-) > /dev/null 2>&1
-WORKER_PID="$(cat "$PID_DIR/worker.pid")"
-
-cleanup() {
-  kill "$WORKER_PID" 2>/dev/null || true
-  rm -rf "$PID_DIR" "$(dirname "$DRIVER_MAIN")"
-}
+cleanup() { rm -rf "$DRIVER_DIR"; }
 trap cleanup EXIT
 
-for _ in $(seq 1 50); do
-  if curl -fsS "$BASE_URL/healthz" >/dev/null 2>&1; then break; fi
-  sleep 0.2
-done
-
-# 4) Run the Go driver from the backend module; cleanup via trap.
-echo "[smoke] running Go client against the live worker..."
+# 2) Run the driver from the backend module.
 if ! command -v go >/dev/null 2>&1; then
   for candidate in "$HOME/.local/go/bin" "/usr/local/go/bin" "/opt/homebrew/bin"; do
     if [ -x "$candidate/go" ]; then export PATH="$candidate:$PATH"; break; fi
@@ -136,5 +118,5 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 OFFLINE_FLAG=online
 if [ "${SCHOLAR_SMOKE_OFFLINE:-0}" = "1" ]; then OFFLINE_FLAG=offline; fi
-(cd "$ROOT/backend" && go run "./cmd/scholar-smoke" "$BASE_URL" "$TOKEN" "$OFFLINE_FLAG")
+(cd "$ROOT/backend" && go run "./cmd/$(basename "$DRIVER_DIR")" "$OFFLINE_FLAG")
 echo "[smoke] PASS"

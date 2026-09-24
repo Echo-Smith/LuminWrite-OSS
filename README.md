@@ -138,7 +138,9 @@ cd frontend && npm ci && npm test && npm run build
   贯穿 contract/plan 构建（编排模式、证据策略、节点图按流程切换，
   [docs/28](docs/28-wp4-pilot-scenarios.md)）；
 - **研究综述路径**（实验性）：学术检索（OpenAlex/CrossRef/Semantic Scholar）→
-  证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）；
+  证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）。scholar
+  运算在 backend Go 进程内执行（`backend/internal/scholar`），PDF 解析经
+  docreader sidecar——`SCHOLAR_WORKER_URL` 仅作为启用信号，无独立 worker 服务；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
   （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
   `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿中带引用的
@@ -164,7 +166,7 @@ cd frontend && npm ci && npm test && npm run build
 | 模型 | OpenAI 兼容 `/chat/completions`（DeepSeek / SenseNova 已验证，[切换指南](docs/provider-configuration.md)） |
 | Embedding | DashScope text-embedding-v3（可选，未配置自动降级） |
 | 前端 | React 19 · Vite 7 · TypeScript · Tailwind · Tiptap/ProseMirror · zustand |
-| 研究侧车 | scholar-worker（Python 3.12，仅依赖 httpx，research profile 启用） |
+| 研究路径 | Go 进程内 scholar（`backend/internal/scholar`），PDF 解析经 docreader sidecar |
 
 ## 🔍 搜索源
 
@@ -186,7 +188,7 @@ cd frontend && npm ci && npm test && npm run build
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_DEFAULT_MODEL` | — | LLM 后端（OpenAI 兼容） |
 | `SEARXNG_BASE_URL` | 空 | 唯一开箱可用的搜索源，强烈建议配置 |
 | `WRITING_RUNTIME_MODE` | shadow | 治理运行时：off / shadow / allowlist（shadow = baseline 权威 + candidate 影子观测） |
-| `RESEARCH_REVIEW_ENABLED` | false | 研究综述路径（需 `--profile research`） |
+| `RESEARCH_REVIEW_ENABLED` | false | 研究综述路径（启用需同时设置 `SCHOLAR_WORKER_URL`（任意非空值，启用信号）与 `SCHOLAR_WORKER_TOKEN`（必填守卫）） |
 | `AR012_CANDIDATE_ENABLED` | false | AR-012 候选评估端点（需 sidecar） |
 | `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | 空 | 异源 Claim 复核：三项齐备即启用，**必须与生成模型不同供应商**（report-only 二道防线） |
 | `DASHSCOPE_API_KEY` | 空 | Embedding（可选，未配置自动降级） |
