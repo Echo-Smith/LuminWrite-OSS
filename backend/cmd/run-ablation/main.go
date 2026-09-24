@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,11 +49,22 @@ func main() {
 	if apiKey == "" {
 		log.Fatal("LLM_API_KEY must be set in the environment")
 	}
+	// LLM_TIMEOUT_SECONDS：单个 LLM 请求的整体超时（含流式读取）。
+	// 默认 120s 对长文生成远远不够（3000-4000 字在此类端点要 2-7 分钟），
+	// 超时会掐断流、整轮输出作废——批量评估务必显式调大。
+	llmTimeout := 120 * time.Second
+	if raw := os.Getenv("LLM_TIMEOUT_SECONDS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			log.Fatalf("invalid LLM_TIMEOUT_SECONDS %q: want positive integer seconds", raw)
+		}
+		llmTimeout = time.Duration(n) * time.Second
+	}
 	llm := tools.NewLLMClient(
 		envDefault("LLM_BASE_URL", "https://api.xiaomimimo.com/v1"),
 		apiKey,
 		envDefault("LLM_MODEL", "mimo-v2.5"),
-		32768, 0.7, 120*time.Second,
+		32768, 0.7, llmTimeout,
 	)
 	// LLM_DISABLE_THINKING=1：端点不支持 thinking 参数（400）时使用——
 	// 此类端点上的模型默认即推理，不下发 thinking 也不损失推理能力；
