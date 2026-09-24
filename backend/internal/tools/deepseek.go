@@ -26,17 +26,18 @@ type LLMMetricsRecorder interface {
 
 // LLMClient is a client for the DeepSeek (OpenAI-compatible) API.
 type LLMClient struct {
-	baseURL           string
-	apiKey            string
-	model             string
-	maxTokens         int
-	temperature       float64
-	reasoningEffort   string // default reasoning effort: low | medium | high | max (thinking mode only)
-	httpClient        *http.Client
-	responsesAPIRatio float64    // 0.0~1.0, proportion of traffic routed to Responses API
-	abMetrics         *ABMetrics // A/B test metrics collector (nil if A/B disabled)
-	metrics           LLMMetricsRecorder
-	customHeaders     map[string]string // custom HTTP headers added to every request
+	baseURL               string
+	apiKey                string
+	model                 string
+	maxTokens             int
+	temperature           float64
+	reasoningEffort       string // default reasoning effort: low | medium | high | max (thinking mode only)
+	httpClient            *http.Client
+	responsesAPIRatio     float64    // 0.0~1.0, proportion of traffic routed to Responses API
+	abMetrics             *ABMetrics // A/B test metrics collector (nil if A/B disabled)
+	metrics               LLMMetricsRecorder
+	customHeaders         map[string]string // custom HTTP headers added to every request
+	thinkingParamDisabled bool              // 不向端点下发 thinking 参数（不支持该字段的端点会 400）
 }
 
 // LLMMessage represents a single message in the conversation.
@@ -221,6 +222,13 @@ func (c *LLMClient) SetReasoningEffort(effort string) {
 // SetCustomHeaders sets custom HTTP headers that will be added to every request.
 func (c *LLMClient) SetCustomHeaders(headers map[string]string) {
 	c.customHeaders = headers
+}
+
+// DisableThinkingParam 使 buildRequest 不再下发 thinking 参数。
+// 用于不支持该字段的 OpenAI 兼容端点（收到 thinking 会 400）；
+// 抑制后 reasoning_effort 也保持不发送（见 buildRequest 的条件）。
+func (c *LLMClient) DisableThinkingParam() {
+	c.thinkingParamDisabled = true
 }
 
 // applyCustomHeaders adds custom headers to the given HTTP request.
@@ -737,15 +745,23 @@ func (c *LLMClient) recordMetrics(model, callType string, duration time.Duration
 
 func (c *LLMClient) buildRequest(messages []LLMMessage, stream bool, opts ...ChatOption) *LLMRequest {
 	req := &LLMRequest{
-		Model:           c.model,
-		Messages:        messages,
-		Stream:          stream,
-		Temperature:     c.temperature,
-		MaxTokens:       c.maxTokens,
-		ReasoningEffort: c.reasoningEffort, // use client-level default
+		Model:       c.model,
+		Messages:    messages,
+		Stream:      stream,
+		Temperature: c.temperature,
+		MaxTokens:   c.maxTokens,
 	}
 	for _, opt := range opts {
 		opt(req)
+	}
+	// reasoning_effort 仅在 thinking 模式下有意义（字段契约即如此标注）。
+	// 部分 OpenAI 兼容端点不认识该字段时，与 max_tokens 组合会返回
+	// 200 空流（零 token 立即 EOF）或直接 400，未启用 thinking 不发送。
+	if c.thinkingParamDisabled {
+		req.Thinking = nil
+	}
+	if req.Thinking != nil && req.ReasoningEffort == "" {
+		req.ReasoningEffort = c.reasoningEffort
 	}
 	// Ask streaming providers to send a final usage chunk so prompt/completion/
 	// cache splits are observable (Chat Completions path only; Responses API

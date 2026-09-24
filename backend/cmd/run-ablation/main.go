@@ -54,6 +54,13 @@ func main() {
 		envDefault("LLM_MODEL", "mimo-v2.5"),
 		32768, 0.7, 120*time.Second,
 	)
+	// LLM_DISABLE_THINKING=1：端点不支持 thinking 参数（400）时使用——
+	// 此类端点上的模型默认即推理，不下发 thinking 也不损失推理能力；
+	// 抑制后 reasoning_effort 同样不发送（避免已知的空流组合）。
+	if os.Getenv("LLM_DISABLE_THINKING") == "1" {
+		llm.DisableThinkingParam()
+		log.Println("thinking parameter suppressed (LLM_DISABLE_THINKING=1)")
+	}
 
 	// ── Memory port（修复上次消融的关键缺陷）──
 	// 上次消融把 memoryPort 传成 nil，adapter（wabench_v2_adapter.go 的

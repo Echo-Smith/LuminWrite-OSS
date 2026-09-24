@@ -35,3 +35,19 @@ func TestThinkingCompatibilityDoesNotChangeOtherRequests(t *testing.T) {
 		t.Fatal("changed enabled thinking")
 	}
 }
+
+func TestDisableThinkingParam(t *testing.T) {
+	client := NewLLMClient("https://example.com/v1", "test", "mimo-v2.6", 4096, .7, time.Second)
+	request := client.buildRequest(nil, true, WithThinking(true))
+	if request.Thinking == nil {
+		t.Fatal("thinking param should be sent by default")
+	}
+	client.DisableThinkingParam()
+	request = client.buildRequest(nil, true, WithThinking(true))
+	if request.Thinking != nil {
+		t.Fatal("thinking param should be suppressed after DisableThinkingParam")
+	}
+	if request.ReasoningEffort != "" {
+		t.Fatal("reasoning_effort should stay unsent when thinking is suppressed")
+	}
+}
