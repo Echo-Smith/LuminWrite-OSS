@@ -6,6 +6,7 @@
 //	go run ./cmd/seed-ablation-cases/                  # seed suite, fixtures, cases
 //	go run ./cmd/seed-ablation-cases/ --seed-candidates # seed ablation candidates A-D
 //	go run ./cmd/seed-ablation-cases/ --seed-runs       # create ablation runs (requires candidates)
+//	go run ./cmd/seed-ablation-cases/ --seed-runs-v2    # create v2 ablation runs for the 200+ case rerun
 //	go run ./cmd/seed-ablation-cases/ --start-runs      # candidates + runs + print execution commands
 //	go run ./cmd/seed-ablation-cases/ --status           # show ablation run progress
 //
@@ -50,6 +51,7 @@ var rubricWeights = map[string]int{
 var (
 	flagSeedCandidates = flag.Bool("seed-candidates", false, "seed ablation candidates A-D")
 	flagSeedRuns       = flag.Bool("seed-runs", false, "create ablation runs (requires candidates)")
+	flagSeedRunsV2     = flag.Bool("seed-runs-v2", false, "create v2 ablation runs for the 200+ case rerun (requires candidates + cases)")
 	flagStartRuns      = flag.Bool("start-runs", false, "candidates + runs + print execution commands")
 	flagStatus         = flag.Bool("status", false, "show ablation run progress")
 )
@@ -94,6 +96,11 @@ func main() {
 			fail("seed runs: %v", err)
 		}
 		return
+	case *flagSeedRunsV2:
+		if err := seedAblationRunsV2(ctx, db); err != nil {
+			fail("seed v2 runs: %v", err)
+		}
+		return
 	case *flagStartRuns:
 		if err := seedAblationCandidates(ctx, db); err != nil {
 			fail("seed candidates: %v", err)
@@ -112,6 +119,9 @@ func main() {
 	}
 	defer tx.Rollback()
 
+	// 先构建全部用例，suite 的 case_count 与描述文案按实际数量生成。
+	cases := buildAllCases()
+
 	// ── 1. Upsert suite ──────────────────────────────────────────────────
 	coverage, _ := json.Marshal(map[string]interface{}{
 		"taskTypes":    []string{"writing", "polish"},
@@ -126,15 +136,15 @@ func main() {
 		INSERT INTO wabench_suites (
 			suite_id, schema_version, version, name, description, partition,
 			visibility, status, case_count, coverage, privacy
-		) VALUES ($1, 'wabench.v1', $2, $3, $4, $5, $6, 'active', 90, $7, $8)
+		) VALUES ($1, 'wabench.v1', $2, $3, $4, $5, $6, 'active', $7, $8, $9)
 		ON CONFLICT (suite_id) DO UPDATE SET
 			name = EXCLUDED.name, description = EXCLUDED.description,
 			updated_at = NOW()
 		RETURNING id::text
 	`, suiteID, suiteVersion,
 		"WP3 Context & Memory Ablation Benchmark",
-		"90-case ablation dataset for testing context compilation, memory isolation, and through-line consistency across long-form creation, multi-material synthesis, and faithful rewrite tasks.",
-		partition, visibility, coverage, privacy,
+		fmt.Sprintf("%d-case ablation dataset for testing context compilation, memory isolation, and through-line consistency across long-form creation, multi-material synthesis, and faithful rewrite tasks.", len(cases)),
+		partition, visibility, len(cases), coverage, privacy,
 	).Scan(&suitePK)
 	if err != nil {
 		fail("upsert suite: %v", err)
@@ -168,7 +178,6 @@ func main() {
 	weightsJSON, _ := json.Marshal(rubricWeights)
 	weightsStr := string(weightsJSON)
 
-	cases := buildAllCases()
 	caseCount := 0
 	for _, c := range cases {
 		contextJSON, _ := json.Marshal(c.context)
@@ -345,13 +354,15 @@ func buildSourceFixtures() []sourceFixture {
 	}
 }
 
-// ── 90 cases ─────────────────────────────────────────────────────────────────
+// ── 210 cases ────────────────────────────────────────────────────────────────
+// 原始 90 例（A/B/C 三类）+ 扩充 120 例（Category D，重心是多轮一致性）。
 
 func buildAllCases() []ablationCase {
 	var cases []ablationCase
 	cases = append(cases, buildCategoryA()...)
 	cases = append(cases, buildCategoryB()...)
 	cases = append(cases, buildCategoryC()...)
+	cases = append(cases, buildCategoryD()...)
 	return cases
 }
 
@@ -1671,6 +1682,1628 @@ func buildCategoryC() []ablationCase {
 	}
 }
 
+// ── Category D: 扩充用例（120 cases，总数到 210）─────────────────────────────
+//
+// 重心是多轮一致性（72 例）：用既有表达手法把「前文状态」编码进 inputText
+// （对话前情，参考 Category A 的 long 类用例）或 context.article（已有正文，
+// 参考 ablation-polish-030 的表达），考察长程生成中对既定事实、术语、命名、
+// 数值的贯穿一致性，capability 标 through_line_consistency / entity_tracking /
+// cross_chapter_state。另加 memory_isolation / explicit_override 类 20 例
+// （用户显式指令与记忆冲突时显式指令优先），其余 28 例补齐三类任务分布。
+
+func buildCategoryD() []ablationCase {
+	var cases []ablationCase
+	cases = append(cases, buildMultiTurnPriorStateCases()...)     // 36 例：前情编码进 inputText
+	cases = append(cases, buildContinuationConsistencyCases()...) // 36 例：前文编码进 context.article
+	cases = append(cases, buildExplicitOverrideCases()...)        // 20 例：记忆冲突与隔离
+	cases = append(cases, buildMixedFillCases()...)               // 28 例：三类分布补齐
+	return cases
+}
+
+// buildMultiTurnPriorStateCases 多轮一致性·前情在输入侧（36 例）。
+// 输入文本显式给出前几轮已确定的设定/事实/数值，要求本轮产出与之贯穿一致。
+func buildMultiTurnPriorStateCases() []ablationCase {
+	return []ablationCase{
+		{
+			caseID:   "ablation-mt-001",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是科幻连载《环宇航运年鉴》的第三轮写作。前两轮已确定的设定：星际货船'望舒号'（船体编号 HYS-2184-07）、跃迁引擎术语统一为'曲率泡'、所属公司'环宇航运'、故事时间线为2184年。本轮请撰写年鉴中'望舒号'的条目（约800字），所有船名、编号、术语、年份必须与前三轮设定完全一致，不得出现'曲率舱''褶皱引擎'等变体说法。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"船名'望舒号'与编号 HYS-2184-07 一致", "术语统一为'曲率泡'", "年份统一为2184年", "公司名'环宇航运'一致"},
+			mustNotHave:      []string{"出现'曲率舱'或'褶皱引擎'等变体术语", "年份或编号前后不一致", "船名出现其他版本"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-002",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是财经专栏'老陈聊基金'的季度复盘轮。前几轮已确定的组合数据：2025年组合年化收益率12.6%、最大回撤8.3%、第一大重仓为宁德时代（占比15%）、第二重仓为贵州茅台（占比10%）。本轮请撰写二季度复盘（约1200字），所有收益率、回撤、持仓占比数字必须与前几轮完全一致，年度数字不得在文中被改写。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"年化收益12.6%与回撤8.3%保持一致", "重仓占比15%与10%一致", "复盘围绕二季度展开"},
+			mustNotHave:      []string{"收益率或回撤数字出现不同版本", "持仓占比前后矛盾", "虚构前几轮没有的持仓"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-003",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是肠道健康科普系列的收尾轮。前几轮的术语约定：统一使用'肠道菌群'（不用'微生态''菌群生态'作同义替换）、益生菌剂量统一表述为'每日不低于100亿CFU'、引用研究统一为'2024年《细胞·宿主与微生物》研究'。本轮请撰写读者FAQ（约1000字），术语与剂量表述必须沿用前几轮约定。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"术语统一为'肠道菌群'", "剂量表述为'每日不低于100亿CFU'", "引用研究名称一致", "FAQ覆盖至少5个常见问题"},
+			mustNotHave:      []string{"出现'微生态'等同义替换", "剂量数字不一致", "引用不同年份的研究"},
+			capabilityTags:   []string{"through_line_consistency", "terminology_management"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-004",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是《从Python到Go》教程连载的第四章。前几轮已确定：示例项目模块路径统一为 github.com/lumipay/core、Go 版本统一为 go1.22、主角示例服务名为'order-service'、错误处理统一用'wrapping error'的译法'错误包裹'。本轮请撰写'接口与依赖注入'一章（约2500字），模块路径、版本号、服务名、译法必须与前三章一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"模块路径统一为 github.com/lumipay/core", "Go 版本统一为 go1.22", "服务名统一为 order-service", "译法统一为'错误包裹'"},
+			mustNotHave:      []string{"出现其他模块路径或版本号", "服务名前后不一致", "把'错误包裹'写成其他译法"},
+			capabilityTags:   []string{"cross_chapter_state", "terminology_management"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-005",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是游戏《雪国远征》策划案的平衡性报告轮。前几轮已锁定的数值设定：角色'霜羽'基础攻击力182、技能'凛冬之噬'冷却时间12秒、伤害系数240%、角色定位'远程输出'。本轮请撰写平衡性分析（约1500字），所有数值必须与设定完全一致，分析中引用数值时不得四舍五入或改写。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"攻击力182保持一致", "冷却12秒与系数240%一致", "定位表述一致", "有平衡性结论与调整建议"},
+			mustNotHave:      []string{"任何数值被改写或四舍五入", "技能名出现不同写法", "定位描述前后矛盾"},
+			capabilityTags:   []string{"entity_tracking", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-006",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是川西旅行专栏的定稿轮。前几轮行程单已确定：D3 翻越折多山（海拔4298米）、D4 抵达新都桥、全程包车费用2800元、最佳出行窗口为10月中下旬。本轮请撰写完整攻略（约1800字），天数、海拔、费用、时间窗口必须与行程单一致，不得出现与新都桥矛盾的住宿地点或第二个海拔数字。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"折多山海拔4298米一致", "包车费用2800元一致", "行程天数与节点一致", "出行窗口为10月中下旬"},
+			mustNotHave:      []string{"海拔或费用数字出现矛盾版本", "行程节点顺序错乱", "出现与10月中下旬矛盾的推荐时间"},
+			capabilityTags:   []string{"through_line_consistency", "cross_chapter_state"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-007",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是新能源车横评系列的总结轮。前几轮实测已确定：'星驰ES'CLTC续航701公里、实测续航512公里、零百加速6.9秒、快充30%-80%用时25分钟。本轮请撰写横评总结（约1500字），标称与实测两组数据必须分开表述且与前几轮一致，不得把实测续航写成标称续航。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"CLTC 701公里与实测512公里分列", "零百加速6.9秒一致", "快充25分钟一致", "有购买建议"},
+			mustNotHave:      []string{"标称与实测数据混淆", "任何参数出现不同数值", "车型名不一致"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-008",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是城市房地产市场月报专栏的写作轮。前几轮口径已确定：余杭区新房成交均价3.2万元/平方米、环比上涨12%、成交量2100套、库存去化周期9.8个月。本轮请撰写11月月报（约2000字），全部数据沿用既定口径，环比方向（上涨）不得写反，不同章节引用同一指标必须同值。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"均价3.2万/平全文一致", "环比上涨12%方向与数值一致", "成交量2100套一致", "去化周期9.8个月一致"},
+			mustNotHave:      []string{"环比方向写反（写成下跌）", "同一指标在不同章节数值不同", "虚构既定口径外的数据"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-009",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是高考数学教辅'概率与统计专题'的写作轮。前几轮的符号约定：随机变量统一记作 X、分布列用表格呈现、例题编号延续前几章（从例17开始）、'超几何分布'首次出现时给出英文标注 Hypergeometric Distribution。本轮请撰写'二项分布'一节（约2000字），符号、例题编号、英文标注约定必须延续。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"随机变量统一记作 X", "例题编号从例17延续", "超几何分布英文标注沿用约定", "分布列用表格呈现"},
+			mustNotHave:      []string{"随机变量改用其他符号", "例题编号与前几章冲突或跳号", "英文标注缺失或不一致"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-010",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是茶品牌'山雾里'品牌手册的一章。前几轮已确定：品牌 slogan 为'一杯山雾，半日清欢'、创始人陈砚秋、首款产品为'云雾绿茶'（2019年上市）、核心产地为黄山毛峰核心产区。本轮请撰写'品牌理念'章节（约1200字），slogan、人名、产品名、年份必须与已发布内容一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"slogan 一字不差", "创始人陈砚秋一致", "产品'云雾绿茶'与2019年一致", "产地表述一致"},
+			mustNotHave:      []string{"slogan 出现改写版本", "创始人名字写错", "上市年份不一致", "产地前后矛盾"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-011",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是餐厅'屿里'开业系列文案的第三篇。前两篇已确定：招牌菜为'青柠腌虾'与'炭烤鲈鱼'、主厨林岸曾在东京'银座若菜'修行六年、餐厅主打'潮汕与日式融合'。本轮请撰写开业首月回顾（约900字），菜名、主厨履历、定位表述必须与前两篇完全一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"两道招牌菜名一致", "主厨林岸与六年修行履历一致", "定位'潮汕与日式融合'一致"},
+			mustNotHave:      []string{"菜名出现其他写法", "修行年数或地点不一致", "餐厅定位表述漂移"},
+			capabilityTags:   []string{"through_line_consistency", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-012",
+			taskType: "writing", difficulty: "L3",
+			inputText: "这是学术论文《面向长文档的细粒度引用定位》的实验章节写作轮。前几轮已确定：方法缩写 FGL（Fine-grained Grounding Locator，首次出现处已给全称）、自建数据集名为 WebRC-1M（含128万段落）、基线为 GPT-4o 与 LongRAG、主指标为段落级 F1。本轮请撰写'实验设置与结果'（约2200字），缩写、数据集名、基线名、指标名必须与前文一致，F1 数值保留两位小数。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"方法缩写 FGL 一致", "数据集名 WebRC-1M 与128万段落一致", "两个基线名称一致", "指标统一为段落级 F1"},
+			mustNotHave:      []string{"缩写被重新展开或改写", "数据集规模出现不同数字", "基线名拼写不一致", "指标口径漂移"},
+			capabilityTags:   []string{"entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-013",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是《金帐汗国史》通俗读物的第五章。前几章已确定的译名与纪年：'拔都'（不用'巴图'）、'术赤系'、'贵由'、西征时间线为1236-1242年、1240年12月攻陷基辅。本轮请撰写'东欧战事'一章（约2500字），人名译法与年份必须沿用前几章，不得混用其他译名或把攻陷年份写成1239/1241年。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"人名译名'拔都''术赤系''贵由'一致", "西征时间线1236-1242年一致", "基辅陷落写为1240年12月"},
+			mustNotHave:      []string{"出现'巴图'等其他译名", "攻陷年份写错", "时间线前后矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-014",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是都市剧《雨季不再来》的分集写作轮，前几集已确定：外卖员韩东（28岁，骑电动车牌照'苏A·D78Q2'）、记者苏晴（供职《江城晚报》）、故事时间为2023年梅雨季、关键道具是韩东捡到的一部黑色手机。本轮请撰写第4集梗概（约1200字），人物姓名、年龄、时间线、道具必须与前三集一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"韩东与苏晴身份一致", "2023年梅雨季时间线一致", "黑色手机道具延续", "梗概符合分集结构"},
+			mustNotHave:      []string{"人物姓名或年龄错误", "时间线跳到其他季节", "关键道具凭空消失或更换"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-015",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是播客'深夜代码'第12期开场稿。前11期的栏目约定：主持人自称'阿哲'（不用真名）、栏目 slogan 为'写代码的人也要睡觉'、每期固定环节顺序为'近况—主题—观众来信'。本轮请撰写第12期开场稿（约600字），自称、slogan、环节顺序必须沿用，第12期主题为'删库跑路之后的那个晚上'。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"主持人自称'阿哲'", "slogan 一字不差", "三个环节顺序一致", "本期主题正确引入"},
+			mustNotHave:      []string{"自称改变", "slogan 改写", "环节顺序错乱", "主题与前11期重复"},
+			capabilityTags:   []string{"through_line_consistency"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-016",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是'星尘OS 3.0'更新公告的写作轮。前几轮发布会通稿已确定：系统名'星尘OS 3.0'、新特性官方命名为'灵动窗'（不写'灵动窗口'）、另一特性'秒环'、公测推送时间为9月26日、首批支持机型为星辰X5与星辰X5 Pro。本轮请撰写更新日志（约800字），命名、日期、机型必须与通稿一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"特性名'灵动窗'与'秒环'准确", "公测日期9月26日一致", "两款机型名完整一致"},
+			mustNotHave:      []string{"特性名出现变体写法", "日期不一致", "机型清单多出或漏写"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-017",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是耳机'AirWave 4'电商详情页文案轮。前几轮卖点会已确定：续航36小时（含充电盒）、快充10分钟可听歌6小时、蓝牙5.4、防水等级IPX5、首发价499元。本轮请撰写详情页主文案（约700字），全部卖点数据必须与卖点会一致，首发价不得写成499.9或599。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"续航36小时与快充表述一致", "蓝牙5.4与IPX5一致", "首发价499元准确"},
+			mustNotHave:      []string{"续航或快充数字不一致", "蓝牙或防水等级写错", "价格出现其他版本"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-018",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是滇池治理进展专栏的年度章。前几轮报道口径已确定：滇池外海正常高水位1887.4米、2025年蓝藻水华发生面积为近十年最小、湿地恢复面积累计6.9万亩、监测点位共18个。本轮请撰写'2025年治理进展'（约2200字），水位、面积、点位数必须沿用既定口径，'蓝藻面积近十年最小'的结论不得弱化或夸大。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"水位1887.4米一致", "湿地6.9万亩一致", "监测点位18个一致", "'近十年最小'结论表述准确"},
+			mustNotHave:      []string{"水位或面积数字不一致", "点位数量前后矛盾", "结论被夸大为'彻底解决'"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-019",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是'江城猛狮'足球队赛季总结专栏。前几轮报道已确定：前锋郑一鸣本赛季联赛出场29次打进23球、球队最终排名联赛第4、主场为滨江球场（容量4.2万人）、队长是中卫胡立。本轮请撰写赛季总结（约1800字），进球数、排名、球场信息、队长姓名必须与常规报道一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"郑一鸣23球与29次出场一致", "最终排名第4一致", "队长胡立一致", "滨江球场信息一致"},
+			mustNotHave:      []string{"进球数或出场数不一致", "排名写错", "队长与他人混淆"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-020",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是2型糖尿病患者指南系列的定稿轮。前几轮与内分泌科医生核对的口径：糖化血红蛋白（HbA1c）一般控制目标为<7%、二甲双胍起始剂量为每次500mg每日两次、低血糖识别标准为<3.9mmol/L、复诊频率为初始每3个月一次。本轮请撰写患者版指南（约2000字），目标值、剂量、标准、频率必须与核定口径一致，不得给出与口径矛盾的替代剂量。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"HbA1c 目标<7%一致", "二甲双胍500mg每日两次一致", "低血糖标准3.9mmol/L一致", "复诊频率一致"},
+			mustNotHave:      []string{"目标值或剂量出现矛盾版本", "低血糖标准写错", "复诊频率前后不一"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-021",
+			taskType: "writing", difficulty: "L3",
+			inputText: "这是 Rust 教程专栏的异步章。前几轮术语约定：'所有权（ownership）''借用检查器（borrow checker）''生命周期（lifetime）'三词采用'中文（英文）'的首次标注格式、示例 crate 名为'tokio-console-demo'、Rust 版本1.75。本轮请撰写'async/await 入门'（约2800字），术语格式、crate 名、版本必须沿用，首次出现的英文标注规则同样适用于新术语。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"术语采用'中文（英文）'标注格式", "示例 crate 名一致", "Rust 版本1.75一致", "新术语遵守首次标注规则"},
+			mustNotHave:      []string{"旧术语的英文标注丢失", "crate 名不一致", "版本号漂移"},
+			capabilityTags:   []string{"terminology_management", "cross_chapter_state"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-022",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是纪录片《敦煌画师》第二集解说词。第一集已确定：核心场景为莫高窟第220窟、主叙对象为初唐画师翟氏家族、时间线为贞观十六年（642年）前后、第四条口径是'翟家窟'为第220窟俗称。本轮请撰写第二集解说词（约2000字），窟号、家族、纪年、俗称必须与第一集一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"第220窟与'翟家窟'俗称一致", "翟氏家族主叙一致", "贞观十六年（642年）纪年一致"},
+			mustNotHave:      []string{"窟号写成其他编号", "纪年出现矛盾", "家族姓氏写错"},
+			capabilityTags:   []string{"entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-023",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是重疾险科普专栏的产品对比轮。前几轮讲解的'守护康宁'条款口径：等待期90天、基本保额上限50万、轻症赔付比例为基本保额的30%、缴费期可选10/20/30年。本轮请撰写与另一款产品的对比文（约2000字），'守护康宁'的全部条款数字必须沿用，对比表与正文中的数字必须互相一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"等待期90天一致", "保额上限50万一致", "轻症30%比例一致", "对比表与正文数字一致"},
+			mustNotHave:      []string{"条款数字与讲解轮矛盾", "表格与正文数字不一致", "缴费期选项遗漏或改写"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-024",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是宠物栏目'布丁日记'的新一期。前几期已确定：猫咪布丁是布偶猫（公、已绝育）、当前体重5.2公斤、兽医为'安安宠物医院'的许医生、日常主食为冻干 mixed 喂养中的'主食冻干'。本轮请撰写'布丁的减脂计划'（约900字），猫名、品种、体重、医院与医生、主食类型必须与前几期一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"布丁为已绝育布偶猫", "体重5.2公斤一致", "许医生与医院名一致", "主食类型表述一致"},
+			mustNotHave:      []string{"品种或性别矛盾", "体重数字不一致", "医生或医院名写错"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-025",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是银发经济深度稿的成文轮。前几轮调研简报已确定：样本量1200位60岁以上受访者、月均养老相关消费3180元、居家养老服务渗透率27%、最盼服务前三为助餐/助浴/陪诊。本轮请撰写深度报道（约2500字），样本量、消费额、渗透率、排序必须与简报一致，正文与引言中的同一数字不得出现两个版本。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"样本量1200位一致", "月均消费3180元一致", "渗透率27%一致", "三项服务排序一致"},
+			mustNotHave:      []string{"同一数字出现两个版本", "排序改变", "样本量或口径被改写"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-026",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是物流行业年报解读专栏。前几轮口径：'干线运输'与'末端配送'两个术语严格区分使用、全国次日达时效达成率92.5%、单票成本下降至8.7元、自动化分拣中心总数86个。本轮请撰写年报解读（约2200字），术语使用与三组数据必须沿用，'达成率'与'成本'两处数字在图表说明和正文中保持同值。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"术语区分使用无混用", "次日达92.5%一致", "单票成本8.7元一致", "分拣中心86个一致"},
+			mustNotHave:      []string{"'干线'与'末端'混用", "达成率或成本数字不一致", "中心数量前后矛盾"},
+			capabilityTags:   []string{"terminology_management", "cross_chapter_state"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-027",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是法律科普专栏'离婚冷静期'专题。前几轮已确定的引用规范：《民法典》第1079条（诉讼离婚）、第1077条（冷静期30日）、案例统一用'张某与李某案（2021）京01民终1234号'这类格式、术语用'婚姻登记机关'（不简写为'民政局'）。本轮请撰写专题文章（约2200字），法条编号、案例格式、术语必须沿用。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"第1077条对应冷静期30日", "第1079条对应诉讼离婚", "案例引用格式规范一致", "使用'婚姻登记机关'全称"},
+			mustNotHave:      []string{"法条编号张冠李戴", "冷静期写成其他天数", "简写'民政局'出现", "案例格式不一致"},
+			capabilityTags:   []string{"cross_chapter_state", "terminology_management"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-028",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是音乐产业专栏的年度盘点轮。前几轮已确定：独立乐队'潮汐信号'专辑《咸水楼》销量32万张、年度巡演覆盖12城18场、主演出的livehouse品牌为'回声舱'、乐评人口径称其为'年度最佳中文独立专辑'。本轮请撰写年度盘点（约1500字），专辑名、销量、场次、品牌名必须与前几轮一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"专辑《咸水楼》与32万张一致", "12城18场一致", "品牌'回声舱'一致", "乐评口径引用准确"},
+			mustNotHave:      []string{"专辑名或销量不一致", "场次数字矛盾", "品牌名写错"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-029",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是物流无人机白皮书的行业应用章。前几轮技术规格已锁定：'鸿雁-3'机型最大载重5公斤、抗风等级7级、续航46分钟、已获批航线23条、累计飞行4.8万架次。本轮请撰写'末端场景应用'一章（约2500字），机型参数与运营数据必须与规格章一致，白皮书其他章节引用时同样保持同值。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"载重5公斤与抗风7级一致", "续航46分钟一致", "航线23条与4.8万架次一致"},
+			mustNotHave:      []string{"参数出现四舍五入版本", "运营数据不一致", "机型名写错"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-030",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是咖啡连锁'拾雾'拓展计划专栏。前几轮披露：现有门店312家（华东占七成）、招牌 SKU 为'云雾拿铁'、单店模型回本周期14个月、2026年目标门店数500家。本轮请撰写拓展计划稿（约1500字），门店数、SKU 名、回本周期、目标数必须与披露口径一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"门店312家一致", "SKU'云雾拿铁'一致", "回本周期14个月一致", "2026年目标500家一致"},
+			mustNotHave:      []string{"门店数或目标数不一致", "SKU 名写错", "回本周期前后矛盾"},
+			capabilityTags:   []string{"through_line_consistency", "entity_tracking"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-031",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是天文科普书《寻星记》的系外行星章。前几章已确定：探测方法统一称'凌星法'（不用'掩星法'）、已确认系外行星数量引用为5800余颗、代表行星'开普勒-452b'、开普勒望远镜任务年限2009-2018年。本轮请撰写'寻找第二地球'一章（约2500字），方法名、数量、行星名、任务年限必须与前几章一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"方法统一称'凌星法'", "数量5800余颗一致", "开普勒-452b拼写一致", "任务年限2009-2018年一致"},
+			mustNotHave:      []string{"出现'掩星法'混称", "行星数量不一致", "任务年限写错"},
+			capabilityTags:   []string{"terminology_management", "cross_chapter_state"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-032",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是心理自助专栏'焦虑自测'篇。前几轮已确定的量表口径：GAD-7 共7题、每题0-3分、总分0-21分、10分及以上提示需寻求专业评估、文中不使用'焦虑症'作自我诊断表述。本轮请撰写自测导读（约1200字），题量、分值范围、分界分数、表述纪律必须与量表口径一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"7题与0-21分范围一致", "分界分数10分一致", "避免诊断式表述", "每题0-3分说明清楚"},
+			mustNotHave:      []string{"题数或总分不一致", "分界分数写成其他值", "出现'确诊'类表述"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-033",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是储能项目'朔光一号'的侧写稿。前期通稿已确定：电站规模100MW/400MWh、采用磷酸铁锂电池、系统转换效率87%、并网时间为2025年6月30日、服务区域为朔州及晋北电网。本轮请撰写项目侧写（约2000字），规模、效率、并网日期、服务区域必须与通稿一致，不得把100MW写成100MW·h。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"规模100MW/400MWh单位准确", "转换效率87%一致", "并网日期2025年6月30日一致", "服务区域一致"},
+			mustNotHave:      []string{"功率与容量单位混淆", "效率数字不一致", "并网日期写错"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-034",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是影评专栏对悬疑剧《雾中灯塔》的终评。前几轮短评已确定的译名与口径：剧名统一《雾中灯塔》（不用《雾锁灯塔》）、导演为朴宰赫（韩方）、共16集、关键意象是'每集片头的坏掉的钟'。本轮请撰写终评（约1800字），剧名、导演名、集数、意象描述必须与短评一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"剧名统一《雾中灯塔》", "导演朴宰赫一致", "16集一致", "片头钟的意象描述一致"},
+			mustNotHave:      []string{"剧名出现其他译法", "导演名写错", "集数不一致", "意象描述前后矛盾"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-035",
+			taskType: "writing", difficulty: "L1",
+			inputText: "这是母婴专栏'辅食添加'指南的修订轮。前几轮与营养师核定的口径：辅食添加起始时间为满6月龄、第一口辅食推荐强化铁米粉、7-12月龄婴儿铁推荐摄入量为每日10mg、一次只引入一种新食物并观察3天。本轮请撰写修订版指南（约1800字），月龄、推荐、剂量、观察期必须与核定口径一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"满6月龄起始一致", "强化铁米粉推荐一致", "铁10mg/日一致", "3天观察期一致"},
+			mustNotHave:      []string{"月龄或剂量不一致", "观察期写成7天等其他值", "推荐食物前后矛盾"},
+			capabilityTags:   []string{"through_line_consistency", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-036",
+			taskType: "writing", difficulty: "L2",
+			inputText: "这是制造企业'宏远精工'智能制造案例的收尾章。前几章已确定：改造产线为'A3线'、改造后良品率从97.1%提升至99.2%、单班人力从18人降至9人、引入的是自研'MES-星桥'系统、验收时间为2025年3月。本轮请撰写案例总结（约2200字），产线名、两组前后对比数字、系统名、验收时间必须与前几章一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"产线'A3线'与系统'MES-星桥'一致", "良品率97.1%→99.2%一致", "人力18人→9人一致", "验收时间2025年3月一致"},
+			mustNotHave:      []string{"前后对比数字不一致", "系统或产线名写错", "验收时间矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+	}
+}
+
+// buildContinuationConsistencyCases 多轮一致性·前文在正文侧（36 例）。
+// context.article 存放已完成的前文（上一章/上一节），要求续写或扩写且与前文
+// 的事实、术语、命名、数值贯穿一致（对齐 polish/dedupe 任务把 article 注入
+// CurrentArticle 的执行路径）。
+func buildContinuationConsistencyCases() []ablationCase {
+	return []ablationCase{
+		{
+			caseID:   "ablation-mt-037",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是《雾隐城》第一章的结尾。请续写第二章开头（约500字）：陆沉按老瞿的暗示在后天行动。续写必须保持第一章的全部设定一致：钟声每天敲十三下、酒馆名'半盏灯'、掌柜老瞿、青梅酿、袖中雁形纹铜牌、术语'雾契'，不得引入与之矛盾的设定。",
+			context: map[string]interface{}{
+				"article": "雾隐城的钟声每天敲十三下，这是陆沉来到这座城的第七天。他在'半盏灯'酒馆的角落坐下，掌柜老瞿递来一杯温热的青梅酿，压低声音说：'想打听雾契的事，就别在后天之前离开。'陆沉摩挲着袖中那枚刻着雁形纹的铜牌——那是父亲留下的唯一遗物。窗外，白雾正从护城河底漫上来。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"钟声十三下设定延续", "'半盏灯'与老瞿再次出现", "'雾契'术语一致", "雁形纹铜牌线索延续"},
+			mustNotHave:      []string{"钟声次数或酒馆名改变", "出现'雾约'等变体术语", "铜牌纹样被改写", "时间线与'后天'矛盾"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-038",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是《流云平台技术白皮书》第一章总述。请续写'第二章 架构设计'（约1200字），三个核心组件名必须与第一章完全一致：'海燕网关''信天翁调度器''企鹅存储'，平台整体 QPS 上限沿用12万的口径，不得引入与总述矛盾的新组件名。",
+			context: map[string]interface{}{
+				"article": "流云平台是面向大规模实时数据处理的一体化平台。平台由三个核心组件构成：负责协议接入与鉴权的'海燕网关'、负责任务编排与弹性伸缩的'信天翁调度器'，以及负责冷热分层持久化的'企鹅存储'。在标准集群配置下，平台整体 QPS 上限为12万。本白皮书将依次阐述平台的架构设计、部署方案与运维实践。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"三个组件名一字不差", "QPS 12万口径一致", "架构描述与总述职责划分一致"},
+			mustNotHave:      []string{"组件名出现变体", "QPS 数字不一致", "组件职责与总述矛盾"},
+			capabilityTags:   []string{"through_line_consistency", "terminology_management"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-039",
+			taskType: "polish", difficulty: "L3",
+			inputText: "以下是论文引言部分。请续写'方法'一章开头（约800字）：方法名沿用引言中定义的缩写 DBG（动态门控桥接，Dynamic Gating Bridge），评测数据集沿用 ClinQA-中文，基线沿用 BioBERT 与 GPT-3.5。缩写首次在方法章出现时不必再次展开，但拼写必须与引言一致。",
+			context: map[string]interface{}{
+				"article": "临床问答面临术语歧义与长文本推理的双重挑战。本文提出动态门控桥接方法（Dynamic Gating Bridge, DBG），通过门控网络在检索证据与参数化知识之间动态分配权重。我们在自建评测集 ClinQA-中文（涵盖12类临床问题、3.4万条问答对）上进行验证，并与 BioBERT、GPT-3.5 两个基线比较。实验表明，DBG 在段落级 F1 上显著优于基线。本文余下部分组织如下：第2章介绍方法，第3章报告实验。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"缩写 DBG 一致且不重复展开全称", "数据集名 ClinQA-中文一致", "两个基线名一致"},
+			mustNotHave:      []string{"缩写被改写或错误展开", "数据集名出现变体", "基线名拼写不一致"},
+			capabilityTags:   []string{"entity_tracking", "terminology_management"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-040",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是香薰品牌'屿光'的品牌手册'品牌故事'章。请续写'产品哲学'一章（约700字）：品牌名、创立年份（2016年创立于厦门）、slogan'把海风装进房间'必须与品牌故事章一致，产品线命名沿用'潮'系列与'屿'系列。",
+			context: map[string]interface{}{
+				"article": "屿光成立于2016年，创立地是厦门沙坡尾的一间老渔仓。创始人说，她想做的不是香薰，而是'可以带走的天气'。八年来，屿光坚持只用天然植物精油，slogan'把海风装进房间'被印在每一只保温棉包装上。目前品牌拥有'潮'与'屿'两条产品线：'潮'系列面向居家场景，'屿'系列面向随身出行。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"品牌名'屿光'一致", "2016年与厦门一致", "slogan 一字不差", "两条产品线名称一致"},
+			mustNotHave:      []string{"slogan 改写", "创立年份或地点不一致", "产品线名出现变体"},
+			capabilityTags:   []string{"through_line_consistency", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-041",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是《海上去》第一章'首航'。请续写'第二次出航'一章的开头（约700字）：船队规模、人数、纪年口径必须与首航章一致（宝船62艘、将士27800人、首航始于永乐三年即1405年），且第二次出航的时间必须在其之后、与史实 compatible 的表述（永乐五年冬，1407年）。",
+			context: map[string]interface{}{
+				"article": "永乐三年（1405年）六月，苏州刘家港帆樯如林。郑和奉旨率宝船62艘、将士27800人，开始了第一次下西洋。舰队经占城、爪哇，抵旧港宣慰司，又西行至古里。此行宣示了明王朝的海上存在，也为后续远航蹚出了航线。两年后，船队带回的象牙与胡椒在南京港卸下，而新的诏书已经拟好。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"宝船62艘与27800人一致", "首航纪年永乐三年（1405年）一致", "第二次出航时间在其后且符合史实口径"},
+			mustNotHave:      []string{"船数或人数不一致", "首航年份矛盾", "时间顺序颠倒"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-042",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是游戏世界观文档《北境编年史》的'立国'节。请续写'血色冬天'一节（约600字）：王国名'凛冬堡'、国王艾德蒙三世、'血色冬天'持续三年的设定必须沿用，且'血色冬天'应作为立国之后的灾变叙事展开，不得写成立国前的事件。",
+			context: map[string]interface{}{
+				"article": "凛冬堡立国于旧帝国崩塌后的第三十七年。开国者艾德蒙三世在灰岩隘口以三百重甲击退掠夺者联军，随后筑城、分田、立法。编年史记官用这样一句话概括那个时代：'城墙立起的那天，北风学会了绕路。'然而繁荣没有持续太久——编年史的下一页，墨迹骤然变得仓促。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"王国'凛冬堡'一致", "艾德蒙三世身份一致", "'血色冬天'作为立国后的灾变展开且持续三年"},
+			mustNotHave:      []string{"国王名或王国名错误", "灾变时间被置于立国前", "持续年限不一致"},
+			capabilityTags:   []string{"entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-043",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是'清岚空气净化器 K2'用户手册的'快速上手'章。请续写'进阶设置'一章（约600字）：产品名与型号、滤芯寿命6个月（日均使用8小时口径）、App 名称'清岚智家'必须与快速上手章一致，新章节中的指示灯说明不得与快速上手章的指示灯定义冲突。",
+			context: map[string]interface{}{
+				"article": "清岚空气净化器 K2 快速上手：第一步，撕开滤芯保护膜并将滤芯推入机身底部卡槽；第二步，接通电源，指示灯白色常亮表示待机；第三步，下载并登录'清岚智家'App，扫码完成配网。在日均使用8小时的条件下，K2 的复合滤芯寿命约为6个月，滤芯剩余寿命可在 App 内查看。白色指示灯呼吸闪烁表示正在净化，橙色常亮表示请检查滤芯。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"产品名 K2 一致", "滤芯6个月与8小时口径一致", "App 名'清岚智家'一致", "指示灯定义不冲突"},
+			mustNotHave:      []string{"滤芯寿命出现其他月数", "App 名写错", "指示灯定义前后矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-044",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是年报解读的'营收分析'节。请续写'成本与利润'节（约700字）：营收基数必须引用上一节的85.6亿元与同比增速23.4%，毛利率口径为42.8%，研发投入18.5亿元；新节数字必须能与上一节互相印证，不得出现与营收基数矛盾的推算。",
+			context: map[string]interface{}{
+				"article": "营收分析：2024年公司实现营业收入85.6亿元，同比增长23.4%。分业务看，核心产品线贡献62.3亿元，占比72.8%；新业务贡献14.1亿元，同比增长47.2%，是增长的主要引擎。海外收入12.9亿元，占比15.1%。公司毛利率为42.8%，较上年提升2.1个百分点，主要受产品结构优化驱动。全年研发投入18.5亿元，占营收比重21.6%。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"营收85.6亿与23.4%一致", "毛利率42.8%一致", "研发投入18.5亿一致", "推算与本节基数自洽"},
+			mustNotHave:      []string{"营收或增速引用错误", "毛利率出现另一个数字", "与上一节数据矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-045",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是科普书《点燃》第一章'宇宙的开端'。请续写第二章'一颗恒星的生老病死'开头（约700字）：宇宙年龄沿用第一章的138亿年口径，术语'原初气体''核聚变'与第一章保持同义同形，不得引入与第一章矛盾的时间尺度。",
+			context: map[string]interface{}{
+				"article": "大约138亿年前，我们的宇宙在一场无法用日常语言描述的事件中开始了膨胀。最初的几分钟里，只有最简单的元素得以成形：氢与氦，按比例约为3:1。此后数亿年，这些原初气体在引力作用下聚拢、坍缩，当核心温度突破千万度，第一批恒星点燃了。宇宙从此有了光，也有了后来一切的起点。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"宇宙年龄138亿年一致", "'原初气体''核聚变'术语同形", "氢氦比例3:1不被矛盾改写"},
+			mustNotHave:      []string{"宇宙年龄写错", "术语同义替换", "与第一章时间尺度冲突"},
+			capabilityTags:   []string{"cross_chapter_state", "terminology_management"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-046",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是单元剧《栖霞小筑》第1集梗概。请续写第2集梗概（约400字）：民宿名'栖霞小筑'、老板娘温姨、常客陈医师三个既定人物与场景必须沿用，第2集需延续第1集留下的悬念（深夜厨房的脚步声），不得引入与第1集矛盾的人物关系。",
+			context: map[string]interface{}{
+				"article": "第1集《空房》：都市白领方棠为躲避加班误入山中民宿'栖霞小筑'，老板娘温姨热情收留，却坚持只让她住二楼朝东的房间。夜里，方棠听见楼下厨房传来脚步声，下楼却只见常客陈医师在泡茶。陈医师欲言又止：'这栋楼里，有些房间白天和晚上不是同一间。'",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"民宿'栖霞小筑'一致", "温姨与陈医师人物一致", "深夜脚步声悬念延续"},
+			mustNotHave:      []string{"民宿或人名写错", "悬念被无视或直接解开", "人物关系与第1集矛盾"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-047",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是旅行长文《洱海之西》的前半部分。请续写下半段（约500字）：行程与费用口径必须与前半一致——租电动车每天80元、大理段预算2500元、住宿地点为才村码头附近；续写内容转入沙溪古镇段，两段之间的交通衔接须与前半的行程逻辑连贯。",
+			context: map[string]interface{}{
+				"article": "清晨六点半，我在才村码头看洱海醒来。此行大理段预算2500元，其中大头是住宿——才村码头附近的白族小院，每晚280元。租一辆电动车每天80元，沿环海西路向北，喜洲的稻田在十月镀成金色。三天的节奏刻意放慢：上午骑车，下午在院子里喝茶，晚上去人民路吃烤乳扇。离开大理的那天早晨，我在车站盘算下一段路：向北，去沙溪。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"租车80元/天与预算2500元一致", "才村码头住宿衔接连贯", "大理到沙溪的行程逻辑合理"},
+			mustNotHave:      []string{"费用数字不一致", "住宿地点矛盾", "行程衔接断裂"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-048",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是'墨鱼笔记'App 的历史更新日志。请续写 v2.0.0 的更新日志（约300字）：v2.0.0 的两大新功能官方命名为'灵犀检索'与'协作空间'；日志风格延续既有条目；如提及旧功能，功能名必须与历史条目一致（'批量标注''暗黑模式'），版本号格式沿用三段式。",
+			context: map[string]interface{}{
+				"article": "墨鱼笔记 更新日志\n\nv1.3.0（2025-08-12）\n- 新增'批量标注'：支持多选笔记后统一添加标签与颜色。\n- 优化同步速度，弱网环境下同步耗时降低40%。\n\nv1.2.0（2025-06-03）\n- 新增'暗黑模式'，跟随系统自动切换。\n- 修复导出 PDF 时图片模糊的问题。\n\nv1.1.0（2025-04-18）\n- 新增双向链接，支持笔记间跳转。\n- 修复移动端偶发闪退。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"两个新功能名准确", "版本号三段式格式一致", "旧功能名（如引用）与历史条目一致", "日志条目风格一致"},
+			mustNotHave:      []string{"功能名写错", "版本格式跳到 v2.0", "旧功能名改写", "风格突变"},
+			capabilityTags:   []string{"through_line_consistency", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-049",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是年报'董事长致辞'。请续写'经营讨论与分析'开篇（约600字）：致辞中提出的'三年再造一个启明'目标与'穿越周期'的表述必须被准确回引，经营讨论中的2024年营收85.6亿元、同比23.4%必须与此前发布口径一致，不得给出另一个营收数字。",
+			context: map[string]interface{}{
+				"article": "2024年，是启明科技'穿越周期'的一年。面对行业波动，我们选择把研发投入留在桌上、把短期利润让给未来。全年营收85.6亿元，同比增长23.4%，经营性现金流健康。我在年初说过'三年再造一个启明'——以2023年为基期，三年内实现规模与效率的倍增。这不是口号，而是分解到每一条产品线的硬约束。接下来的经营讨论，将向各位股东展示这份答卷的细节。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"'三年再造一个启明'与'穿越周期'准确回引", "营收85.6亿与23.4%一致"},
+			mustNotHave:      []string{"口号表述被改写", "营收数字出现另一个版本", "基期口径混乱"},
+			capabilityTags:   []string{"cross_chapter_state", "through_line_consistency"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-050",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是食谱书《汤事》的'基础高汤'章。请续写'进阶吊汤'一章开头（约600字）：章节术语必须与基础章一致——'清汤底''白汤底'两种基底名称、'吊汤'工艺时长8小时的口径、'扫汤'术语；不得把'扫汤'写成'清汤工序'等其他说法。",
+			context: map[string]interface{}{
+				"article": "基础高汤是一切汤品的起点。本书把基底分为两类：以鸡架、火腿与瘦肉慢煮出的'清汤底'，以及加入老母鸡与猪骨、乳化后呈奶白色的'白汤底'。无论哪种基底，吊汤的耐心都是同一件事——小火维持微沸，足足8小时，让鲜味物质从容释放。清汤底还需要最后一步'扫汤'：用鸡肉茸吸附悬浮杂质，让汤色澄澈见底。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"'清汤底''白汤底'名称一致", "8小时口径一致", "'扫汤'术语沿用"},
+			mustNotHave:      []string{"基底名称改写", "时长不一致", "'扫汤'被同义替换"},
+			capabilityTags:   []string{"terminology_management", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-051",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是高中教材《微积分初步》的'函数的概念'章。请续写'导数入门'章开头（约700字）：函数记号沿用 f(x)、自变量定义域表述沿用'定义域 D'，例题编号延续（基础章止于例9，导数章从例10开始），新增记号 f'(x) 需给出定义并与既有记号体系一致。",
+			context: map[string]interface{}{
+				"article": "第1章 函数的概念。设非空数集 D，若对 D 中每个自变量 x，按照对应法则 f，都有唯一确定的因变量 y 与之对应，则称 y=f(x) 为定义在 D 上的函数，D 称为定义域。本章约定：函数记号写作 f(x)，定义域记作 D。例1至例9依次讨论了函数的三种表示法：解析法、列表法与图像法。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"f(x) 与定义域 D 记号一致", "例题从例10延续", "f'(x) 定义与既有记号体系一致"},
+			mustNotHave:      []string{"记号体系改变", "例题编号重复或跳号", "定义域符号换成其他字母"},
+			capabilityTags:   []string{"cross_chapter_state", "terminology_management"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-052",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是'柚见'茶饮与'西岸画廊'联名案的策划前文。请续写'传播节奏'一节（约600字）：联名主题'果壳里的展览'、联名饮品名'艺术糖度'、开展日期10月18日必须与前文一致，传播节奏需覆盖开展前一周至展期内，不得把主题写成其他说法。",
+			context: map[string]interface{}{
+				"article": "本次联名由'柚见'茶饮与'西岸画廊'联合发起，主题定为'果壳里的展览'——把一杯茶的构图当作一幅画来策展。联名饮品命名为'艺术糖度'（柚子+茉莉+冷萃茶），包装上将复刻画廊当季特展的三幅主视觉。展期为10月18日至11月30日，联名饮品于同日首发，全渠道限售45天。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"主题'果壳里的展览'一致", "饮品名'艺术糖度'一致", "开展日期10月18日一致", "节奏覆盖时间范围合理"},
+			mustNotHave:      []string{"主题或饮品名改写", "日期不一致", "限售口径矛盾"},
+			capabilityTags:   []string{"through_line_consistency", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-053",
+			taskType: "polish", difficulty: "L3",
+			inputText: "以下是专栏《AI 绘画七讲》前三讲的要点回顾。请续写'第四讲：风格的一致性'开头（约600字）：前三讲确立的核心术语'提示词雕塑'与'负面词清单'必须沿用，第四讲需自然衔接第三讲结尾的'多图一致性'话题，术语不得同义替换。",
+			context: map[string]interface{}{
+				"article": "《AI 绘画七讲》前三讲回顾。第一讲《从一句话到一张图》：把生成指令拆成'主体—场景—光影—镜头'四层，这个过程我们称之为'提示词雕塑'。第二讲《控制的边界》：用重绘幅度与参考图控制构图，理解模型的服从与倔强。第三讲《多图的一致性》：同一角色跨图生成的可行路径。下一讲，我们把镜头拉近到风格的稳定复现——'负面词清单'将在这一讲扮演关键角色。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"'提示词雕塑'术语沿用", "'负面词清单'术语沿用", "与第三讲话题自然衔接"},
+			mustNotHave:      []string{"核心术语被同义替换", "讲次顺序混乱", "内容与前三讲重复"},
+			capabilityTags:   []string{"terminology_management", "through_line_consistency"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-054",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是企业内刊《启程》的'十年历程'章。请续写'新十年愿景'一章开头（约500字）：公司名'衡岳测绘'、创始人周衡、第一间办公室是'师大南门的两间民房'等细节必须与历程章一致，愿景表述须与'从画地图到画数据底座'的既有提法衔接。",
+			context: map[string]interface{}{
+				"article": "2015年夏天，周衡和三位同学在师大南门租下两间民房，衡岳测绘就在那里开始了第一单业务：为城中村改造测绘3.2平方公里。十年间，公司从4个人到680人，从画地图到建设'时空数据底座'，服务过的高速公路里程可绕地球赤道一圈。周衡在内刊创刊号上写过一句话：'我们测量的从来不是土地，而是变化。'",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"公司名与创始人一致", "'两间民房'细节一致", "'数据底座'提法衔接自然"},
+			mustNotHave:      []string{"公司或人名写错", "细节与历程章矛盾", "愿景与既有提法断裂"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-055",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是'拾读'会员体系文档的前文。请续写'积分规则'一节（约600字）：会员等级（铜卡/银卡/金卡）、积分口径'消费1元累计1积分'、金卡年费299元必须与前文一致，积分规则中的兑换比例需与前文的会员权益逻辑自洽。",
+			context: map[string]interface{}{
+				"article": "拾读会员体系分为三级：铜卡（注册即得）、银卡（年消费满500元升级）、金卡（年消费满2000元或直接购买年费299元升级）。会员在全场消费均可累计积分，口径为消费1元累计1积分，积分有效期为获取之日起24个月。等级权益按月刷新，升降级以滚动12个月的数据为准。以下细则说明积分的获取与兑换。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"三级会员名称一致", "'1元=1积分'口径一致", "金卡年费299元一致", "兑换规则与前文逻辑自洽"},
+			mustNotHave:      []string{"等级名称改写", "积分口径不一致", "年费出现其他数字", "有效期与前文矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-056",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是童话《月亮邮局》的前半篇。请续写结尾（约400字）：小刺猬'栗宝'、月亮邮局局长猫头鹰'灰羽'、'每封信要挂一颗星星作邮资'的设定必须沿用，结尾需兑现前半篇埋下的'给冬眠的熊朋友写信'的伏笔。",
+			context: map[string]interface{}{
+				"article": "森林深处有一个只在满月夜营业的月亮邮局。小刺猬栗宝攒了三颗亮晶晶的蒲公英种子，踮着脚推开了邮局的门。局长灰羽扶了扶眼镜：'孩子，这里的规矩你可得记住——每封信要挂一颗星星作邮资。'栗宝点点头，掏出信纸，它要给正在冬眠的熊朋友写信，告诉它春天来的时候，山那边开满了蓝色的风铃草。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"栗宝与灰羽名字一致", "'挂一颗星星作邮资'设定延续", "冬眠熊朋友的伏笔兑现"},
+			mustNotHave:      []string{"角色名写错", "邮资设定改变", "伏笔被遗漏"},
+			capabilityTags:   []string{"entity_tracking", "through_line_consistency"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-057",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是深度报道《凌晨四点的城市》前半部分。请续写后半部分（约600字）：报道对象环卫工赵秀兰、上岗时间凌晨4点、负责路段'永安街东段'、工具是编号为'环-217'的竹扫帚，这些细节必须与前半一致；后半部分需回应前半提出的'谁在为城市的清晨定价'之问。",
+			context: map[string]interface{}{
+				"article": "凌晨4点，永安街东段的路灯还亮着。52岁的赵秀兰已经挥动了她的竹扫帚——扫帚柄上写着褪色的编号'环-217'，这是她在这个路段的第八个年头。从街口的早点铺到废弃的电话亭，870米的路段，她要来回扫上四遍。'最怕的是秋冬，落叶跟下雨一样。'她笑着说，呵出的白气很快散进夜色里。这些年，总有人问：谁在为城市的清晨定价？答案或许就藏在这些扫帚起落的节奏里。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"赵秀兰与路段信息一致", "凌晨4点与'环-217'细节一致", "回应前半的设问"},
+			mustNotHave:      []string{"姓名或编号写错", "路段或时长矛盾", "与人物经历冲突的细节"},
+			capabilityTags:   []string{"entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-058",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是健身专栏《好好训练》的'训练哲学'章。请续写'四周周期计划'章（约800字）：哲学章确立的'三练一休'节奏与 RPE 自觉强度表（1-10分）必须沿用；计划表中的 RPE 数值须在该量表范围内，且不得引入与'三练一休'矛盾的安排。",
+			context: map[string]interface{}{
+				"article": "训练哲学：我们不追求把每一次训练都练到力竭。持续的进步来自可持续的节奏，而不是某一天的悲壮。本专栏所有计划遵循'三练一休'——训练三天，休息一天，让身体在压力与恢复之间找到平衡。强度用 RPE 自觉强度表衡量：1到10分，10分表示再也无法多做一次。学会给自己打分，是比任何计划都重要的能力。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"'三练一休'节奏一致", "RPE 量表1-10分口径一致", "计划安排与节奏不矛盾"},
+			mustNotHave:      []string{"节奏被改成五练两休等", "RPE 数值超出量表范围", "与哲学章原则冲突"},
+			capabilityTags:   []string{"cross_chapter_state", "terminology_management"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-059",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是滕王阁一层导览词。请续写二、三层的导览词（约500字）：一层的既有信息必须被准确延续——'落霞与孤鹜齐飞，秋水共长天一色'的名句出处、始建于唐永徽四年（653年）的纪年；续写内容不得与一层导览词的史实表述冲突。",
+			context: map[string]interface{}{
+				"article": "各位游客，现在我们所在的是滕王阁一层。滕王阁始建于唐永徽四年（653年），因唐高祖之子滕王李元婴始建而得名。大家抬头可见汉白玉石刻《滕王阁序》，其中'落霞与孤鹜齐飞，秋水共长天一色'正是王勃笔下千古传诵的名句。一层展区以'初唐风华'为主题，展现了阁楼始建的沿革。接下来请随我登上二层。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"名句引用一字不差", "永徽四年（653年）纪年一致", "续写与一层内容衔接连贯"},
+			mustNotHave:      []string{"名句改写", "始建纪年矛盾", "与一层史实冲突"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-060",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是《清溪县志（简编本）》的明代部分。请续写清代部分（约600字）：县名'清溪县'、明洪武年间'于氏自山西洪洞迁入'的移民记载等既有口径必须沿用；清代部分涉及的建置沿革须与明代部分衔接，不得出现与县名或沿革矛盾的说法。",
+			context: map[string]interface{}{
+				"article": "明洪武二年，清溪县隶属青州府。洪武十四年修筑土城，周长三里二百步。洪武二十一年，于氏一族自山西洪洞大槐树迁入县东于家洼，垦荒千亩，遂成望族。永乐九年，知县周鼎重修文庙，县学始盛。终明一代，清溪县出举人十四名、进士三名，以成化年间兵部侍郎于清远最为知名。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"县名'清溪县'一致", "于氏迁入记载沿用且年代自洽", "清代部分与明代沿革衔接"},
+			mustNotHave:      []string{"县名改写", "移民记载矛盾", "时代顺序错乱"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-061",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是播客《芯片往事》上半场脚本。请续写下半场脚本（约500字）：嘉宾'林工（前光刻工程师）'的身份、上半场确立的术语'套刻精度'与'浸没式光刻'必须沿用，下半场话题（国产供应链）需与上半场结尾的提问衔接。",
+			context: map[string]interface{}{
+				"article": "主持人：欢迎回到《芯片往事》。今天我们请到了在光刻行业干了二十二年的林工。林工，您常说外行看制程、内行看套刻精度，这话怎么讲？\n林工：简单说，套刻精度就是各层电路之间叠得准不准。差之毫厘，整片晶圆就废了。说到这就不得不提浸没式光刻——在镜头和晶圆之间加一层水，波长等效缩短，人类靠这个巧思把制程推过了65纳米这道坎。\n主持人：那这条路上，供应链的关键卡点在哪儿？我们下半场接着聊。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"嘉宾身份'林工'一致", "'套刻精度'与'浸没式光刻'术语沿用", "下半场衔接供应链话题"},
+			mustNotHave:      []string{"嘉宾身份混乱", "术语被同义替换", "话题与提问脱节"},
+			capabilityTags:   []string{"terminology_management", "through_line_consistency"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-062",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是楼盘'汀兰郡'楼书的'社区规划'章。请续写'户型哲学'章开头（约600字）：容积率1.8、中央水景'镜湖'、'一梯一户'的规划参数必须沿用，户型章的楼栋引用需与规划章的布局一致，不得出现'两梯四户'等矛盾表述。",
+			context: map[string]interface{}{
+				"article": "汀兰郡占地约9.6万平方米，容积率仅1.8，是板块内近五年最低密度的住宅用地。社区以中央水景'镜湖'为轴，南北向布置12栋小高层，全部采用'一梯一户'的电梯入户设计。建筑间距最宽处达78米，保证冬季日照不低于两小时。景观由普利斯设计事务所操刀，以'园在水中，家在园中'为总体意向。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"容积率1.8一致", "'镜湖'水景名一致", "'一梯一户'一致", "楼栋引用与布局自洽"},
+			mustNotHave:      []string{"容积率或密度表述矛盾", "水景名写错", "出现'两梯四户'等矛盾参数"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-063",
+			taskType: "polish", difficulty: "L3",
+			inputText: "以下是学术综述《面向生产环境的 RAG 系统》前两节。请续写第三节'评估体系'（约800字）：前文确立的术语'检索增强生成（RAG）''分块（chunking）'必须沿用；综述引用的核心系统名'忆阁'不得写错；新节中的指标应与前文的系统模块对应。",
+			context: map[string]interface{}{
+				"article": "1. 引言。检索增强生成（Retrieval-Augmented Generation, RAG）通过外挂知识库缓解大模型的幻觉问题，已成为企业落地的主流范式。本文以开源系统'忆阁'为例，剖析生产环境 RAG 的工程实践。\n2. 检索链路。忆阁的检索链路分为四步：文档解析、分块（chunking）、向量召回与重排序。其中分块策略采用'语义段落优先、滑窗兜底'的两级方案，块长中位数保持在384 token。重排序阶段的交叉编码器使首条命中率提升了11.3个百分点。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"'检索增强生成（RAG）'术语沿用", "'分块（chunking）'沿用", "系统名'忆阁'一致", "指标与前文模块对应"},
+			mustNotHave:      []string{"术语同义替换", "系统名写错", "指标与模块脱节", "与前文数字矛盾"},
+			capabilityTags:   []string{"terminology_management", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-064",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是SUV'探岳X'三个月长测报告的前半部分。请续写后半部分（约600字）：前半确立的数据必须沿用——百公里油耗8.2L、首保里程5000km、累计行驶6800公里；后半部分总结长测结论时，结论须与前半的实测数据一致，不得出现第二个油耗数字。",
+			context: map[string]interface{}{
+				"article": "提车三个月，探岳X的里程表停在6800公里。这三个月它跑过早晚高峰的环路，也跑过往返600公里的高速长途。城市通勤的百公里油耗8.2L，高速巡航能压到6.5L，对于一台2.0T中型SUV来说在及格线之上。4S店的首保安排在5000km，全程免费，机油机滤加工时共花费0元。空间和底盘是这份长测里最没得挑的两项，接下来聊聊储物和车机——这两项，就没那么体面了。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"油耗8.2L口径一致", "首保5000km一致", "累计6800公里一致", "结论与前半数据自洽"},
+			mustNotHave:      []string{"油耗出现另一个数字", "首保或里程不一致", "结论与前半评价矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-065",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是'岸芷茶饮'品牌升级提案的前文。请续写'落地方案'一章（约600字）：提案方向'东方水色'与新 slogan'一盏青绿，半盏闲云'必须与前文一致；落地节奏需覆盖门店物料、线上视觉两条线，不得引入与前文方向矛盾的新 slogan。",
+			context: map[string]interface{}{
+				"article": "岸芷茶饮现有视觉体系沿用了六年的'橘粉渐变'，与新客群审美脱节。本次提案确立方向为'东方水色'——以青瓷色与雾蓝为主色，取'岸芷汀兰'的植物意象做辅助图形。主 slogan 更新为'一盏青绿，半盏闲云'，副口号保留'现萃茶，慢慢喝'。方案按两条线推进：门店物料换装与线上视觉更新。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"方向'东方水色'一致", "新 slogan 一字不差", "两条落地线与前文对应"},
+			mustNotHave:      []string{"slogan 改写或出现第二个版本", "方向名不一致", "落地线与提案脱节"},
+			capabilityTags:   []string{"through_line_consistency", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mt-066",
+			taskType: "polish", difficulty: "L3",
+			inputText: "以下是纪实文学《守望者》第一章。请续写第二章开头（约600字）：护林员老聂、瞭望塔编号'7号塔'、林区名'云杉坪'、防火期口径'每年11月1日至次年5月31日'必须与第一章一致；第二章的时间推进需合理，不得让防火期设定自相矛盾。",
+			context: map[string]interface{}{
+				"article": "7号塔立在云杉坪的最高处，塔高二十四米，一百二十级旋梯。护林员老聂在这里守了十九年，每天清晨五点半，他背着水壶和望远镜登顶，先用对讲机向场部报一声'7号塔正常'。他的瞭望日志记满了三十七本，每一条都短得像电报：'晴。西南风三级。无烟。'防火期从每年11月1日持续到次年5月31日，那半年里，他的眼睛就是这片林子的第一道警报。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"老聂与'7号塔'一致", "林区'云杉坪'一致", "防火期起止口径一致", "时间推进合理"},
+			mustNotHave:      []string{"塔号或林区名写错", "防火期日期矛盾", "与第一章经历冲突"},
+			capabilityTags:   []string{"entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-067",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是'澄风净水器'手册的'安装与首次使用'章。请续写'故障排查'一章（约700字）：已有错误码 E01（电源异常）、E02（滤芯到期）必须沿用；新错误码从 E03 开始编号且命名逻辑与前文一致；排查表中的指示灯表现不得与前章的指示灯定义冲突。",
+			context: map[string]interface{}{
+				"article": "澄风净水器 安装与首次使用。安装完成后接通电源，面板指示灯依次蓝色闪烁三下后常亮，表示开机自检通过。首次使用请先放水15分钟，排空活性炭细粉。面板错误码提示：E01 表示电源适配器连接异常，请检查插头与插座；E02 表示滤芯寿命到期，请更换复合滤芯并长按复位键5秒复位。更换滤芯后机器将自动记录新的使用周期。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"E01、E02 定义一致", "新错误码从 E03 顺延", "指示灯表现与前章不冲突"},
+			mustNotHave:      []string{"已有错误码被重新定义", "错误码编号跳乱", "指示灯定义前后矛盾"},
+			capabilityTags:   []string{"cross_chapter_state", "entity_tracking"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-068",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是茶书《一叶知山》的'绿茶篇'。请续写'白茶篇'开头（约600字）：绿茶篇确立的工艺术语（'杀青''摊晾'）与'明前茶'的说法体系必须沿用；白茶篇需说明其不杀青的工艺差异，且术语使用须与绿茶篇的术语体系相互兼容、不冲突。",
+			context: map[string]interface{}{
+				"article": "绿茶的灵魂在于'杀青'——用高温迅速钝化酶的活性，把春天封存在叶片里。鲜叶采摘后先经'摊晾'散失部分水分，随后进入杀青工序，再揉捻、干燥。茶客把清明前采制的绿茶唤作'明前茶'，芽叶细嫩、氨基酸含量高，是绿茶中公认的鲜爽代表。但中国茶的版图里，还有一大家子走的是完全不同的路——它们连杀青这一步都省了。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"'杀青''摊晾'术语沿用", "'明前茶'说法体系一致", "白茶工艺差异表述与术语体系兼容"},
+			mustNotHave:      []string{"术语同义替换", "'明前茶'被解释错", "工艺描述与绿茶篇冲突"},
+			capabilityTags:   []string{"terminology_management", "cross_chapter_state"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-069",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是企业 ESG 报告的'环境（E）'章。请续写'社会（S）'章开头（约600字）：环境章的数据在叙事中需要被准确回引——光伏装机12MW、年减碳1.8万吨、中水回用率35%；社会章新给出的数据不得与环境章的口径冲突，两章的表述风格保持一致。",
+			context: map[string]interface{}{
+				"article": "环境（E）：2024年，公司完成厂区光伏装机12MW，全年发电量1380万度；叠加绿电采购，全年实现减碳1.8万吨。生产端实施中水回用改造，中水回用率达到35%，年节约自来水约9.6万吨。所有一级供应商均通过 ISO 14001 环境管理体系认证。下一章，我们将从'人'的维度审视公司的责任实践。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"光伏12MW与减碳1.8万吨回引准确", "中水回用率35%一致", "两章风格一致"},
+			mustNotHave:      []string{"环境数据回引错误", "新数据与环境章冲突", "风格突变"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-070",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是题库书《产品经理面试百题》的'前言与使用说明'。请按说明延续正文：编写第一章'基础认知'的前三道题（每题含题干与200字左右的参考答案要点）。必须沿用说明中的约定——难度分'基础/进阶/挑战'、题目编号规则'Q章号.序号'（如 Q1.1）、每题末尾附'考察点'一行。",
+			context: map[string]interface{}{
+				"article": "前言与使用说明。本书收录100道产品经理高频面试题，按难度分为'基础''进阶''挑战'三档，分别对应校招、社招1-3年、社招3年以上。题目编号规则为'Q章号.序号'，如第一章第1题为 Q1.1。每道题由'题干—参考答案要点—考察点'三部分构成。建议先自答再对照要点，重点体会答案背后的思考框架而非背诵文本。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"编号从 Q1.1 开始", "难度标注'基础'一致", "每题含'考察点'一行", "三段式结构一致"},
+			mustNotHave:      []string{"编号规则错误", "结构缺项", "难度档名称不一致"},
+			capabilityTags:   []string{"cross_chapter_state", "terminology_management"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mt-071",
+			taskType: "polish", difficulty: "L1",
+			inputText: "以下是少儿百科《蓝色星球》的'海洋篇'。请续写'极地篇'开头（约500字）：海洋篇的既有数字必须被尊重——马里亚纳海沟最深处10909米；极地篇涉及的深度、冰层厚度等新数字需自成体系且不得与海洋篇矛盾；'灯塔水母'等已出现物种名不得被误写。",
+			context: map[string]interface{}{
+				"article": "海洋篇。地球表面约71%被海洋覆盖。我们已知的海洋最深处位于马里亚纳海沟，深度达10909米——如果把珠穆朗玛峰放进去，峰顶距海面还有两千多米。在这片黑暗的世界里，科学家发现了靠体内发光诱捕猎物的鮟鱇鱼，还有一种被称为'返老还童大师'的灯塔水母。海洋的平均深度约3700米，也就是说，绝大多数海底世界，人类还从未亲眼见过。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"海沟10909米不被改写", "物种名'灯塔水母'不被误写", "极地篇新数字自成体系"},
+			mustNotHave:      []string{"深度数字出现矛盾版本", "物种名写错", "极地数据与海洋篇冲突"},
+			capabilityTags:   []string{"cross_chapter_state", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mt-072",
+			taskType: "polish", difficulty: "L2",
+			inputText: "以下是播客纪实《青柠十年》的'上半场'。请续写'下半场'开头（约600字）：公司名'青柠出行'、A轮融资3000万元、创始人杜若的既有事实必须沿用；下半场的时间线需从A轮之后自然推进，不得与上半场的关键节点（如融资时间）矛盾。",
+			context: map[string]interface{}{
+				"article": "2015年秋天，杜若把'青柠出行'的第一批300辆共享单车刷成了青柠色。上半场的故事很典型：三台山大学的宿舍创业、被12家投资机构拒之门外，直到2017年3月拿到A轮3000万元——投资方的条款里甚至写进了'创始人不得离开校园场景'的奇怪限制。签字那天，杜若在朋友圈只发了四个字：'继续骑吧。'故事到这里，还只是一个还算顺利的创业开头。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"公司名'青柠出行'一致", "A轮3000万元与时间节点一致", "创始人杜若一致", "下半场时间线自洽"},
+			mustNotHave:      []string{"公司或人名写错", "融资金额或时间矛盾", "关键节点被改写"},
+			capabilityTags:   []string{"entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "data.contradiction"},
+		},
+	}
+}
+
+// buildExplicitOverrideCases 记忆冲突与隔离（20 例）。
+// explicit_override：用户显式指令与既有记忆/偏好冲突时，显式指令必须优先；
+// memory_isolation：其他项目/其他会话的记忆不得泄漏进当前任务。
+func buildExplicitOverrideCases() []ablationCase {
+	return []ablationCase{
+		{
+			caseID:   "ablation-override-001",
+			taskType: "writing", difficulty: "L1",
+			inputText: "我的偏好记录里写着'喜欢分点论述'，但本条是显式指令，效力高于既往偏好：请用连贯的散文体撰写一篇《雨中的江南》（约800字），全文不得出现任何编号列表或项目符号，段落之间用自然过渡衔接。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"全文为连贯散文体", "没有任何编号或列表符号", "段落过渡自然", "主题围绕江南雨景"},
+			mustNotHave:      []string{"出现'1. 2. 3.'等列表结构", "沿用既往的分点偏好", "在结尾说明'应您的要求改为散文体'以外的多余解释"},
+			capabilityTags:   []string{"explicit_override", "style_consistency"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-002",
+			taskType: "writing", difficulty: "L1",
+			inputText: "档案里记着我习惯被称为'老周'，但本次是为公司上市仪式准备的正式致辞（约600字），显式要求：通篇使用全名'周建国'署名与自称（'我，周建国'），不得出现'老周'或任何昵称。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"自称与署名均为'周建国'", "全文无'老周'昵称", "符合上市仪式的正式语气"},
+			mustNotHave:      []string{"出现'老周'", "沿用昵称习惯", "语气过于随意"},
+			capabilityTags:   []string{"explicit_override"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-003",
+			taskType: "writing", difficulty: "L2",
+			inputText: "我的偏好档案显示'喜欢在文案里使用表情符号'。本次为一位已故学者的纪念文集撰写后记（约700字），显式指令优先：全文严禁出现任何表情符号，语气庄重克制，这是不可推翻的硬性要求。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"全文无任何表情符号", "语气庄重克制", "符合纪念文体的规范"},
+			mustNotHave:      []string{"出现任何 emoji", "沿用表情符号偏好", "语气轻快"},
+			capabilityTags:   []string{"explicit_override", "style_consistency"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-004",
+			taskType: "writing", difficulty: "L1",
+			inputText: "记忆里记录我常用'结论先行'的结构。本次是悬疑杂志的约稿（约900字），显式要求采用'悬念先行'结构：开篇只给现象不给答案，关键真相放在最后两段揭示，全文不得在开头出现任何总结句。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"开篇无总结句", "真相在最后两段揭示", "悬念结构完整", "约900字"},
+			mustNotHave:      []string{"沿用结论先行的旧结构", "开篇即给答案", "提前泄露关键真相"},
+			capabilityTags:   []string{"explicit_override", "structure_reasoning"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-005",
+			taskType: "writing", difficulty: "L1",
+			inputText: "我的历史对话里总用'小编'自称。本次为公司内刊《前行》撰写卷首语（约500字），显式指令：自称统一为'本刊'，全文不得出现'小编''笔者我'等表述，落款为'《前行》编辑部'。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"自称统一为'本刊'", "落款为'《前行》编辑部'", "卷首语体得当"},
+			mustNotHave:      []string{"出现'小编'", "出现'笔者我'", "落款错误"},
+			capabilityTags:   []string{"explicit_override"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-006",
+			taskType: "writing", difficulty: "L2",
+			inputText: "偏好记录显示我习惯在文章结尾加行动号召（如'立即咨询'）。本次是投稿给《算法评论》的学术摘要（约300字），显式要求：不得包含任何营销话术或行动号召，结尾一句必须是研究结论的自然收束。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"无任何营销话术", "结尾为研究结论收束", "符合学术摘要规范", "约300字"},
+			mustNotHave:      []string{"出现'立即咨询'类号召", "沿用结尾营销偏好", "出现夸张表述"},
+			capabilityTags:   []string{"explicit_override"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-007",
+			taskType: "writing", difficulty: "L2",
+			inputText: "我的记忆里偏好英式拼写（organise、colour）。本次为美国科技期刊《TechFront US》撰写专栏（约800字），显式指令：全文采用美式拼写（organize、color），且涉及日期格式统一用'September 21, 2026'样式，不得混用两种拼写体系。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"全文美式拼写", "日期为美式格式", "无英式拼写混入"},
+			mustNotHave:      []string{"出现 organise/colour", "混用两种拼写", "日期格式不统一"},
+			capabilityTags:   []string{"explicit_override", "terminology_management"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-008",
+			taskType: "writing", difficulty: "L1",
+			inputText: "以前的对话里我把'小程序'写作'微信小程序'。本次是平台官方公告（约500字），显式要求：全文统一使用官方名称'小程序'，首次出现时写'微信小程序平台（下称小程序）'，此后一律用简称，不得在后续段落反复出现全称。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"首次给出全称并声明简称", "此后统一用'小程序'", "符合官方公告语气"},
+			mustNotHave:      []string{"后续段落反复用全称", "出现'小程序应用'等变体", "沿用旧书写习惯"},
+			capabilityTags:   []string{"explicit_override", "terminology_management"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-009",
+			taskType: "writing", difficulty: "L1",
+			inputText: "记忆里我偏好繁复的长句文风。本次是为初中生科普栏目写的《为什么天空是蓝色的》（约600字），显式指令优先：全文使用短句，平均每句不超过20字，避免任何生僻术语，必须让初二学生能一次读懂。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"以短句为主", "无生僻术语", "初二学生可读懂", "科学解释正确"},
+			mustNotHave:      []string{"沿用繁复长句", "出现未解释的专业术语", "解释有科学错误"},
+			capabilityTags:   []string{"explicit_override", "audience_adaptation"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-010",
+			taskType: "writing", difficulty: "L2",
+			inputText: "我的写作习惯记录是'标题爱用问句'。本次为行业白皮书《2026企业上云趋势》撰写五个章节标题，显式指令：全部使用陈述句标题，每条不超过16字，禁止出现问号，且五个标题需呈递进关系。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"五个标题均为陈述句", "每条不超过16字", "无问号", "标题间有递进逻辑"},
+			mustNotHave:      []string{"出现问句标题", "任何标题超长", "沿用问句偏好"},
+			capabilityTags:   []string{"explicit_override", "structure_reasoning"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-011",
+			taskType: "writing", difficulty: "L1",
+			inputText: "记忆显示我以前要求把'AI'写成'人工智能'。本次是科技博客的快讯（约400字），显式新指令：全文统一使用'AI'（专有名词如'人工智能产业联盟'除外），与既往写法相反，请按新指令执行。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"正文统一用'AI'", "专有名词保留原文", "快讯结构完整"},
+			mustNotHave:      []string{"沿用'人工智能'旧写法", "两种写法混用", "忽略新指令"},
+			capabilityTags:   []string{"explicit_override", "terminology_management"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-012",
+			taskType: "writing", difficulty: "L2",
+			inputText: "我的偏好是免责声明放在文末。本次是面向投资者的产品说明会纪要（约700字），合规显式要求：风险免责声明必须放在正文第一段（加粗标注'风险提示'），正文随后展开，不得把免责内容移至文末。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"免责声明位于第一段", "标注'风险提示'", "正文在其后展开"},
+			mustNotHave:      []string{"免责声明出现在文末", "沿用旧位置偏好", "遗漏风险提示"},
+			capabilityTags:   []string{"explicit_override", "structure_reasoning"},
+			riskTags:         []string{"memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-013",
+			taskType: "writing", difficulty: "L1",
+			inputText: "写一篇医疗器械公司'康沂医疗'的新品发布稿（约800字）。注意：上一个会话是宠物用品品牌的文案项目，那个项目里的语境（'主子''铲屎官''猫抓板'等用语和宠物话题）与本任务完全无关，请勿带入任何宠物相关词汇或语气。",
+			context:          map[string]interface{}{"article": "", "contamination_test": true},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"聚焦康沂医疗新品", "医疗器械发布稿的专业语气"},
+			mustNotHave:      []string{"出现'铲屎官'等宠物用语", "带入宠物品牌语境", "混淆两个项目"},
+			capabilityTags:   []string{"memory_isolation"},
+			riskTags:         []string{"contamination.cross_user"},
+		},
+		{
+			caseID:   "ablation-override-014",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写一篇关于国产工业软件竞争格局的行业分析（约1500字）。我的记忆库中存有'晨曦科技是重要合作伙伴'的信息，但本文是面向全行业的客观分析：显式要求对所有厂商（含晨曦科技）采用同一评价标准，不得因合作关系使用褒扬性措辞或为其背书。",
+			context:          map[string]interface{}{"article": "", "contamination_test": true},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"对各厂商评价标准统一", "对晨曦科技表述中立", "分析有行业覆盖面"},
+			mustNotHave:      []string{"为晨曦科技背书", "使用'我们的合作伙伴'类表述", "刻意贬低其他厂商"},
+			capabilityTags:   []string{"memory_isolation", "fact_accuracy"},
+			riskTags:         []string{"contamination.cross_user", "memory.conflict"},
+		},
+		{
+			caseID:   "ablation-override-015",
+			taskType: "writing", difficulty: "L1",
+			inputText: "为用户B撰写一封离职告别信（发给同事，约400字）。系统里存着用户A上周的婚礼致辞草稿，那份草稿的风格（抒情、诗化、大量感叹号）和内容与本项目无关，请勿迁移：告别信应平实、克制、带感谢与联系方式交接说明。",
+			context:          map[string]interface{}{"article": "", "contamination_test": true},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"平实克制的语气", "包含感谢与工作交接内容", "符合离职信文体"},
+			mustNotHave:      []string{"婚礼致辞的诗化风格", "出现感叹号堆叠", "带入用户A的内容"},
+			capabilityTags:   []string{"memory_isolation"},
+			riskTags:         []string{"contamination.cross_user"},
+		},
+		{
+			caseID:   "ablation-override-016",
+			taskType: "polish", difficulty: "L2",
+			inputText: "将以下内部群公告改写为对外新闻稿（约500字）。注意：公告中带方括号的内部术语（[灰度四组]、[老王模块]）属于项目内部黑话，严禁出现在新闻稿中；对外表述必须改用公开、可理解的语言。",
+			context: map[string]interface{}{
+				"article": "内部群公告：各位，[灰度四组]下周一起接入[老王模块]的新计费逻辑，请相关同学留意联调时间。正式环境切换安排在下周四晚十点后进行，届时计费数据将按新规则出账。有问题在群里吼。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"面向公众的新闻稿语言", "计费升级的核心事实保留"},
+			mustNotHave:      []string{"出现[灰度四组]等内部术语", "保留内部群口吻", "泄露内部联调细节"},
+			capabilityTags:   []string{"memory_isolation", "audience_adaptation"},
+			riskTags:         []string{"contamination.cross_user"},
+		},
+		{
+			caseID:   "ablation-override-017",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写一篇都市现实题材短篇的开头（约600字）。提醒：上一部作品是武侠设定（内力、门派、轻功），那个世界观与本任务完全隔离，严禁出现任何武侠元素；本文的'超能力'仅限于主角能听懂鸟类对话这一项设定。",
+			context:          map[string]interface{}{"article": "", "contamination_test": true},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"都市现实场景", "主角能力仅'听懂鸟语'", "与武侠世界观完全隔离"},
+			mustNotHave:      []string{"出现内力/门派/轻功", "混入武侠设定", "能力设定被扩大"},
+			capabilityTags:   []string{"memory_isolation", "creative_writing"},
+			riskTags:         []string{"contamination.cross_user"},
+		},
+		{
+			caseID:   "ablation-override-018",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写'澜山生物'的公开融资进展稿（约500字）。隔离要求：记忆中存有该公司未公开的B轮估值细节（23亿元、投后条款），这些属于保密信息，严禁出现在稿件中；稿件只允许使用下列已授权信息：本轮由蓝湾资本领投、金额1.2亿元、资金用于新药研发管线扩建。",
+			context:          map[string]interface{}{"article": "", "contamination_test": true},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"仅使用授权信息（蓝湾资本领投、1.2亿元）", "用途为新药研发管线扩建", "符合公开稿件规范"},
+			mustNotHave:      []string{"出现23亿元估值", "提及投后条款细节", "引用未授权保密信息"},
+			capabilityTags:   []string{"memory_isolation"},
+			riskTags:         []string{"contamination.cross_user", "privacy.leak"},
+		},
+		{
+			caseID:   "ablation-override-019",
+			taskType: "writing", difficulty: "L1",
+			inputText: "为'启慧教育'撰写面向学校客户的解决方案介绍（约800字）。隔离提示：上个游戏项目术语表把'用户'统一叫'玩家'、把'课程'叫'副本'，该术语表不适用于本项目：全文必须使用'用户''学员''课程'等教育行业规范用语。",
+			context:          map[string]interface{}{"article": "", "contamination_test": true},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"使用'学员''课程'等教育用语", "符合面向学校客户的语气"},
+			mustNotHave:      []string{"出现'玩家''副本'", "沿用游戏术语表", "语气娱乐化"},
+			capabilityTags:   []string{"memory_isolation", "terminology_management"},
+			riskTags:         []string{"contamination.cross_user"},
+		},
+		{
+			caseID:   "ablation-override-020",
+			taskType: "polish", difficulty: "L1",
+			inputText: "润色以下公司简介。隔离要求：我之前的旧版简介里写着总部在'深圳市南山区科技园南路12号'、电话0755-88886666，但那是2023年的旧资料且不可信；润色版一律不出现具体地址与电话，涉及总部时只写'总部位于深圳'。",
+			context: map[string]interface{}{
+				"article": "云杉智联成立于2018年，是一家专注于工业物联网网关与边缘计算设备的科技公司。公司产品覆盖20多个行业，服务客户超过1600家，2024年营收突破4.5亿元。公司总部位于深圳，并在苏州、成都设有研发中心。未来三年，云杉智联将持续投入边缘智能芯片的自研，让每一台工业设备都拥有会思考的大脑。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"保留公司核心事实（成立年份、营收等）", "总部仅表述为'总部位于深圳'"},
+			mustNotHave:      []string{"出现旧地址或旧电话", "改写营收等关键数字", "润色引入错误事实"},
+			capabilityTags:   []string{"memory_isolation", "meaning_preservation"},
+			riskTags:         []string{"contamination.cross_user"},
+		},
+	}
+}
+
+// buildMixedFillCases 三类分布补齐（28 例）：writing 10 例、多材料 frozen 9 例、
+// polish 9 例，主题与 A/B/C 三类既有用例互补。
+func buildMixedFillCases() []ablationCase {
+	return []ablationCase{
+		// --- writing 补齐（10 例）---
+		{
+			caseID:   "ablation-mix-001",
+			taskType: "writing", difficulty: "L1",
+			inputText: "撰写一份马拉松赛事经济分析（约2000字）。以'江州国际马拉松'为例：2025年参赛规模3.5万人、外地跑者占比41%、人均消费约2860元。文章需涵盖报名费收入、酒店餐饮拉动、城市品牌曝光三个维度，所有数字在各章节保持一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"三个维度均有覆盖", "参赛规模3.5万与占比41%一致", "人均消费2860元全文一致"},
+			mustNotHave:      []string{"参赛人数前后矛盾", "消费数据不一致", "维度缺失"},
+			capabilityTags:   []string{"long_form_writing", "numerical_accuracy", "cross_chapter_state"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mix-002",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写博物馆文创专栏文章《让文物开口卖萌》（约1800字）。以大汶口文化博物馆的'陶纹咖啡'杯、汉阳陵的'珊珊'手办为案例，讨论文创产品的边界：既要有趣又不能消解文物的严肃性。案例名称全文保持一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"两个案例均有展开", "案例名称全文一致", "讨论'趣味与严肃'的边界"},
+			mustNotHave:      []string{"案例名前后不一", "只罗列案例无观点", "对文物娱乐化失度"},
+			capabilityTags:   []string{"long_form_writing", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		{
+			caseID:   "ablation-mix-003",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写跨境电商独立站选品指南（约2000字）。覆盖：选品逻辑（需求验证、利润测算、合规筛查）、工具链（选品插件、关键词工具）、避坑清单。利润测算示例需自洽：售价39.9美元、头程物流3.2美元、平台佣金15%、目标毛利率不低于40%。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"三部分结构完整", "利润测算示例数字自洽", "含避坑清单"},
+			mustNotHave:      []string{"测算数字前后矛盾", "毛利率计算错误", "遗漏合规筛查"},
+			capabilityTags:   []string{"long_form_writing", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mix-004",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写罕见病科普文章《被看见的万分之一》（约1800字）。以'渐冻症'（肌萎缩侧索硬化，ALS）与'戈谢病'为例，覆盖：疾病概述、确诊之难（平均确诊周期）、患者组织的作用。表述需克制准确，不做疗效承诺，不渲染悲情。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"两种疾病均有介绍", "强调确诊之难", "表述克制无疗效承诺"},
+			mustNotHave:      []string{"夸大或承诺疗法效果", "渲染悲情消费患者", "疾病名称错误"},
+			capabilityTags:   []string{"long_form_writing", "public_writing"},
+			riskTags:         []string{"rewrite.hallucination"},
+		},
+		{
+			caseID:   "ablation-mix-005",
+			taskType: "writing", difficulty: "L1",
+			inputText: "撰写县域经济观察稿《小城咖啡》（约1500字）。以中部县城'清河县'为样本：一年新增咖啡馆17家、单杯均价15元、县城常住人口28万。分析咖啡下沉的动因与隐忧，数字全文一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"17家/15元/28万三个数字一致", "有动因与隐忧两面分析"},
+			mustNotHave:      []string{"数字前后矛盾", "只唱多不谈风险", "样本县名不一致"},
+			capabilityTags:   []string{"long_form_writing", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mix-006",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写《机器人送外卖到得了吗》行业稿（约1800字）。覆盖：配送机器人现状（楼宇内配送为主）、成本账（单台约4.5万元、替代人力测算）、卡点（电梯物联、路权、极端天气）。成本测算数字在各段落一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"现状/成本/卡点三部分完整", "单台4.5万元口径一致", "卡点分析具体"},
+			mustNotHave:      []string{"成本数字不一致", "对替代人力的测算夸大", "遗漏卡点"},
+			capabilityTags:   []string{"long_form_writing", "numerical_accuracy", "cross_chapter_state"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mix-007",
+			taskType: "writing", difficulty: "L1",
+			inputText: "撰写播客产业观察《耳朵经济的一百种活法》（约1500字）。涵盖：中文播客听众画像（约1.2亿）、变现路径（付费订阅、品牌冠名、直播衍生）、'小而美'与平台化的分歧。听众规模数字全文一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"三部分覆盖完整", "听众1.2亿口径一致", "呈现两种路线的分歧"},
+			mustNotHave:      []string{"听众数字不一致", "变现路径遗漏", "结构混乱"},
+			capabilityTags:   []string{"long_form_writing", "numerical_accuracy"},
+			riskTags:         []string{"data.contradiction"},
+		},
+		{
+			caseID:   "ablation-mix-008",
+			taskType: "writing", difficulty: "L2",
+			inputText: "撰写气象科技稿《把天气预报算得更准》（约1800字）。覆盖：数值预报的原理、AI 气象大模型的进展、对航运与农业的应用价值。要求专业术语（同化、集合预报）首次出现时给出通俗解释，且解释在全文保持一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"三部分完整", "术语有通俗解释且前后一致", "应用价值落到具体行业"},
+			mustNotHave:      []string{"术语无解释或解释不一致", "原理描述有科学错误", "应用部分空泛"},
+			capabilityTags:   []string{"long_form_writing", "terminology_management"},
+			riskTags:         []string{"context.long_range"},
+		},
+		{
+			caseID:   "ablation-mix-009",
+			taskType: "writing", difficulty: "L3",
+			inputText: "撰写古籍数字化深度稿《给善本建一座桥》（约2200字）。覆盖：古籍数字化的技术链路（高清扫描、OCR 识别、异体字库、知识图谱）、'识典古籍'等公开平台案例、版权与整理者的署名之争。专有名词与案例名全文一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"技术链路四环节完整", "平台案例准确且一致", "涉及版权争议的平衡呈现"},
+			mustNotHave:      []string{"链路环节缺失", "案例名前后不一", "争议表述失衡"},
+			capabilityTags:   []string{"long_form_writing", "entity_tracking", "cross_chapter_state"},
+			riskTags:         []string{"entity.confusion", "context.long_range"},
+		},
+		{
+			caseID:   "ablation-mix-010",
+			taskType: "writing", difficulty: "L1",
+			inputText: "撰写城市更新观察稿《老厂房的第二次生命》（约1500字）。以'首钢园'与'上海杨浦滨江'为案例，讨论工业遗存活化的三种模式（文化场馆、产业园区、公共空间），案例信息全文一致。",
+			context:          map[string]interface{}{"article": ""},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"两个案例均有展开", "三种模式清晰", "案例信息一致"},
+			mustNotHave:      []string{"案例张冠李戴", "模式划分混乱", "只有概念没有案例"},
+			capabilityTags:   []string{"long_form_writing", "entity_tracking"},
+			riskTags:         []string{"entity.confusion"},
+		},
+		// --- 多材料 frozen 补齐（9 例）---
+		{
+			caseID:   "ablation-mix-011",
+			taskType: "writing", difficulty: "L2",
+			inputText: "基于三份气候文献，撰写深度解读《1.5°C：一个数字的政治与科学》（约2200字）。要求：(1)准确引用三份文献的关键数据；(2)说明1.5°C目标的科学依据与达成难度；(3)观点平衡，不夸大单一来源。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"IPCC第六次评估报告摘要（2023）", "中国气候变化蓝皮书（2024）", "NASA全球气候变化关键指标（2024）"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-climate-ipcc-2023", "src-climate-china-2024", "src-climate-nasa-2024"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"三份文献均有引用", "关键数据准确", "平衡呈现科学与政治维度"},
+			mustNotHave:       []string{"数据引用错误", "单一来源观点垄断", "编造未提供的结论"},
+			capabilityTags:    []string{"multi_material_synthesis", "citation_fidelity"},
+			riskTags:          []string{"source.citation"},
+		},
+		{
+			caseID:   "ablation-mix-012",
+			taskType: "writing", difficulty: "L1",
+			inputText: "基于三份市场报告，撰写《2025年新能源车融资环境研判》（约1800字）。要求：(1)综合三份报告的销量与渗透率数据；(2)指出数据口径差异并说明处理方式；(3)给出融资环境判断及理由。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"Gartner新能源汽车市场报告（2024）", "IDC新能源汽车市场追踪（2024）", "McKinsey出行行业报告（2024）"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-market-ev-gartner", "src-market-ev-idc", "src-market-ev-mckinsey"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"三份报告数据均有引用", "口径差异有说明", "融资判断有数据支撑"},
+			mustNotHave:       []string{"忽略口径差异", "判断无依据", "数据张冠李戴"},
+			capabilityTags:    []string{"multi_material_synthesis", "source_conflict_resolution"},
+			riskTags:          []string{"source.conflict"},
+		},
+		{
+			caseID:   "ablation-mix-013",
+			taskType: "writing", difficulty: "L2",
+			inputText: "基于三份AI治理文件，撰写一份《AI 产品上线合规自查清单》（约1500字）。要求：(1)条目化输出（每条含检查项与依据）；(2)依据须注明来自哪份文件；(3)清单可操作，避免空泛表述。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"欧盟人工智能法案概述（2024）", "中国人工智能治理政策框架（2024）", "美国AI行政命令与政策动态（2023-2024）"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-policy-eu-ai-act", "src-policy-china-ai", "src-policy-us-eo"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"条目化清单", "每条注明依据来源", "覆盖三份文件的要求"},
+			mustNotHave:       []string{"条目无依据", "清单不可操作", "遗漏重要合规项"},
+			capabilityTags:    []string{"multi_material_synthesis", "citation_fidelity", "compliance_writing"},
+			riskTags:          []string{"source.citation"},
+		},
+		{
+			caseID:   "ablation-mix-014",
+			taskType: "writing", difficulty: "L1",
+			inputText: "基于三份 API 文档，撰写《订单-支付链路联调指南》（约1800字）。要求：(1)按'下单→支付→回调'串联三个模块的接口；(2)端点与错误码与文档完全一致；(3)给出至少三个常见联调问题的排查步骤。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"RESTful API设计规范v3.1 - 用户管理模块", "RESTful API设计规范v3.1 - 订单管理模块", "RESTful API设计规范v3.1 - 支付模块"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-tech-rest-api-1", "src-tech-rest-api-2", "src-tech-rest-api-3"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"链路串联完整", "端点与错误码准确", "三个排查步骤具体"},
+			mustNotHave:       []string{"端点拼写错误", "错误码与文档不符", "链路顺序错乱"},
+			capabilityTags:    []string{"multi_material_synthesis", "citation_fidelity", "technical_writing"},
+			riskTags:          []string{"source.citation"},
+		},
+		{
+			caseID:   "ablation-mix-015",
+			taskType: "writing", difficulty: "L2",
+			inputText: "基于三份季度财报，撰写董事会汇报材料《前三季度经营回顾》（约1500字）。要求：(1)管理层视角，突出趋势与风险；(2)所有财务数据与财报一致；(3)结尾给出四季度行动建议（不超过三条）。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"科技公司季度财报 - Q1数据", "科技公司季度财报 - Q2数据", "科技公司季度财报 - Q3数据"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-biz-quarterly-1", "src-biz-quarterly-2", "src-biz-quarterly-3"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"数据与财报一致", "有趋势与风险分析", "行动建议不超过三条"},
+			mustNotHave:       []string{"数据错误", "建议超过三条", "风格不符合董事会材料"},
+			capabilityTags:    []string{"multi_material_synthesis", "numerical_accuracy", "business_writing"},
+			riskTags:          []string{"source.fabrication"},
+		},
+		{
+			caseID:   "ablation-mix-016",
+			taskType: "writing", difficulty: "L3",
+			inputText: "基于气候与市场两类文献，撰写交叉分析《气候目标如何重塑汽车产业》（约2500字）。要求：(1)至少引用一份气候文献与两份市场报告；(2)建立'排放目标→产业政策→市场结构'的传导链条；(3)链条各环节的数据引用准确。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"IPCC第六次评估报告摘要（2023）", "Gartner新能源汽车市场报告（2024）", "IDC新能源汽车市场追踪（2024）", "McKinsey出行行业报告（2024）"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-climate-ipcc-2023", "src-market-ev-gartner", "src-market-ev-idc", "src-market-ev-mckinsey"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"跨类文献均有引用", "传导链条完整", "环节数据准确"},
+			mustNotHave:       []string{"链条断裂", "数据引用错误", "两类文献割裂"},
+			capabilityTags:    []string{"multi_material_synthesis", "cross_source_synthesis"},
+			riskTags:          []string{"source.synthesis", "context.token_pressure"},
+		},
+		{
+			caseID:   "ablation-mix-017",
+			taskType: "writing", difficulty: "L2",
+			inputText: "基于政策与市场两类文件，撰写《监管如何影响新能源车市场格局》（约2000字）。要求：(1)对照至少两份政策文件与两份市场报告；(2)识别监管变量对市场数据的影响机制；(3)不臆造政策内容。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"欧盟人工智能法案概述（2024）", "中国人工智能治理政策框架（2024）", "Gartner新能源汽车市场报告（2024）", "IDC新能源汽车市场追踪（2024）", "McKinsey出行行业报告（2024）"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-policy-eu-ai-act", "src-policy-china-ai", "src-market-ev-gartner", "src-market-ev-idc", "src-market-ev-mckinsey"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"政策与市场文献对照", "影响机制有逻辑", "不臆造政策条款"},
+			mustNotHave:       []string{"虚构监管要求", "机制分析牵强", "文献引用错位"},
+			capabilityTags:    []string{"multi_material_synthesis", "cross_source_synthesis", "policy_analysis"},
+			riskTags:          []string{"source.synthesis"},
+		},
+		{
+			caseID:   "ablation-mix-018",
+			taskType: "writing", difficulty: "L2",
+			inputText: "基于 API 文档与季度财报，撰写《API 平台商业化复盘》（约2000字）。要求：(1)将 API 能力（用户/订单/支付模块）与业务数据对应；(2)评估开放能力对营收的贡献逻辑；(3)指出财报与文档中对不上的口径并标注。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"RESTful API设计规范v3.1 - 用户管理模块", "RESTful API设计规范v3.1 - 订单管理模块", "RESTful API设计规范v3.1 - 支付模块", "科技公司季度财报 - Q1数据", "科技公司季度财报 - Q2数据", "科技公司季度财报 - Q3数据"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-tech-rest-api-1", "src-tech-rest-api-2", "src-tech-rest-api-3", "src-biz-quarterly-1", "src-biz-quarterly-2", "src-biz-quarterly-3"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"API 与业务数据对应", "贡献逻辑有依据", "口径差异被标注"},
+			mustNotHave:       []string{"强行归因", "口径差异被忽略", "文档与财报数据混淆"},
+			capabilityTags:    []string{"multi_material_synthesis", "cross_source_synthesis", "analytical_writing"},
+			riskTags:          []string{"source.synthesis", "context.token_pressure"},
+		},
+		{
+			caseID:   "ablation-mix-019",
+			taskType: "writing", difficulty: "L3",
+			inputText: "基于全部15份源材料，撰写《致股东信：在不确定中定价确定性》（约2500字）。要求：(1)以公司高管口吻，融合宏观（气候、政策）与经营（市场、财报）视角；(2)至少引用8份来源且注明；(3)避免年报套话，有具体判断。",
+			context: map[string]interface{}{
+				"article":   "",
+				"materials": []string{"全部15份源材料"},
+			},
+			sourceMode:        "frozen",
+			sourceFixtureRefs: []string{"src-climate-ipcc-2023", "src-climate-china-2024", "src-climate-nasa-2024", "src-market-ev-gartner", "src-market-ev-idc", "src-market-ev-mckinsey", "src-policy-eu-ai-act", "src-policy-china-ai", "src-policy-us-eo", "src-tech-rest-api-1", "src-tech-rest-api-2", "src-tech-rest-api-3", "src-biz-quarterly-1", "src-biz-quarterly-2", "src-biz-quarterly-3"},
+			expectedBehavior:  "answer",
+			mustHave:          []string{"宏观与经营视角融合", "至少引用8份来源", "有具体判断非套话"},
+			mustNotHave:       []string{"来源引用不足", "通篇套话", "数据编造"},
+			capabilityTags:    []string{"multi_material_synthesis", "cross_source_synthesis", "long_form_writing"},
+			riskTags:          []string{"context.token_pressure", "source.synthesis"},
+		},
+		// --- polish 补齐（9 例）---
+		{
+			caseID:   "ablation-mix-020",
+			taskType: "polish", difficulty: "L1",
+			inputText: "将以下内部邮件改写为致客户的正式公告（约400字）。要求：保留延期与补偿两个核心事实，补偿口径（'发放14天会员权益'）一字不改，语气诚恳专业，不出现内部吐槽表述。",
+			context: map[string]interface{}{
+				"article": "老张说这周稳定性那个事儿还得再拖一周，上周三的存储迁移出了岔子，周四又回滚了一次。老板的意思是这周五之前必须稳住。对外的说法统一为'服务升级延期至下周三完成'，补偿就按之前说的，给受影响用户发14天会员权益，别写多了。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"延期与补偿事实准确", "14天会员权益一字不改", "正式公告语气"},
+			mustNotHave:      []string{"出现'出了岔子'等内部口吻", "补偿口径被改写", "遗漏延期说明"},
+			capabilityTags:   []string{"faithful_rewrite", "audience_adaptation", "meaning_preservation"},
+			riskTags:         []string{"rewrite.factual_drift"},
+		},
+		{
+			caseID:   "ablation-mix-021",
+			taskType: "polish", difficulty: "L2",
+			inputText: "将以下访谈录音整理稿润色为可发布的专访文章（约900字）。要求：(1)保留受访者全部关键观点与数字（装机量、目标年份）；(2)删除口头禅与重复表述；(3)不得替受访者新增观点。",
+			context: map[string]interface{}{
+				"article": "受访者（某储能企业负责人）：呃……我们去年那个装机量是1.2吉瓦时，对，1.2吉瓦时，同比增长大概……应该是翻了一番吧。就是说这个行业，嗯，它其实最后拼的不是价格，是安全。对，安全。我们的目标呢，是2027年，把海外收入占比做到35%，呃，对，35%。我觉得这个还是，嗯，比较稳妥的一个目标。然后别的，暂时没有什么要补充的。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"装机量1.2吉瓦时与翻番表述保留", "2027年与35%目标准确", "无新增观点"},
+			mustNotHave:      []string{"数字被改写", "替受访者加观点", "口头禅残留"},
+			capabilityTags:   []string{"faithful_rewrite", "voice_preservation"},
+			riskTags:         []string{"rewrite.voice_drift"},
+		},
+		{
+			caseID:   "ablation-mix-022",
+			taskType: "polish", difficulty: "L1",
+			inputText: "将以下专业菜谱改写为厨房新手也能跟着做的版本（约500字）。要求：所有用料克数与火候时间不得改动，把'壬水汆烫'更正为'沸水汆烫'这类术语替换为日常说法，步骤顺序不变。",
+			context: map[string]interface{}{
+				"article": "白灼菜心：菜心300g，洗净去老根。壬水汆烫：锅中注水2000ml，沸后加食盐5g、食用油10ml，入菜心汆烫45秒，捞出过冰水。豉油汁：蒸鱼豉油30ml、清水20ml、白糖2g，小火煮至微沸。装盘：菜心沥尽，淋豉油汁，葱丝姜丝各2g铺面，热油15ml烧至七成热（约210℃），浇淋激香。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"克数与时间全部保留", "术语有通俗替换", "步骤顺序不变"},
+			mustNotHave:      []string{"用量或时间被改动", "步骤顺序变化", "术语未替换"},
+			capabilityTags:   []string{"faithful_rewrite", "audience_adaptation", "meaning_preservation"},
+			riskTags:         []string{"rewrite.factual_drift"},
+		},
+		{
+			caseID:   "ablation-mix-023",
+			taskType: "polish", difficulty: "L2",
+			inputText: "将以下合同条款改写为消费者能读懂的白话解读（约400字）。硬性要求：不得改变条款的权利义务含义，关键数字（30日、5%等）必须原样保留，每条解读后注明'以合同原文为准'。",
+			context: map[string]interface{}{
+				"article": "第七条 交付与验收：乙方应于合同生效之日起三十（30）日内完成交付，甲方应于交付后十（10）个工作日内完成验收；逾期未提出书面异议的，视为验收合格。第八条 违约责任：任何一方违约的，应向守约方支付合同总价款百分之五（5%）的违约金；违约金不足以弥补损失的，守约方有权另行追偿。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"30日/10个工作日/5%原样保留", "权利义务含义不变", "注明'以合同原文为准'"},
+			mustNotHave:      []string{"数字被改写", "义务含义被淡化", "遗漏免责提示"},
+			capabilityTags:   []string{"faithful_rewrite", "meaning_preservation", "audience_adaptation"},
+			riskTags:         []string{"rewrite.meaning_distortion"},
+		},
+		{
+			caseID:   "ablation-mix-024",
+			taskType: "polish", difficulty: "L1",
+			inputText: "将以下旅行攻略压缩为300字以内的速览版。要求：五天的行程骨架、交通方式与两处必吃店名必须保留，其余细节可省略，但保留的部分不得改变原信息。",
+			context: map[string]interface{}{
+				"article": "泉州五日行程（全文版）：D1 抵达，宿西街，傍晚逛开元寺东西塔；D2 清源山看日出，下山吃面线糊，下午游府文庙；D3 包车去惠安，看崇武古城，午餐尝崇武鱼卷；D4 上午蟳埔村体验簪花围，下午回城逛中山路骑楼，晚餐在西街的老字号面煎粿铺和石花膏店解决；D5 上午泉州海外交通史博物馆，下午返程。全程公共交通加一日包车，人均预算2200元。注意事项：簪花体验要提前一天预约；开元寺免费但需在公众号预约入场。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"五天骨架完整", "两处必吃店名保留", "300字以内", "保留信息与原文一致"},
+			mustNotHave:      []string{"行程顺序改变", "店名写错或遗漏", "超过300字"},
+			capabilityTags:   []string{"faithful_rewrite", "compression"},
+			riskTags:         []string{"rewrite.information_loss"},
+		},
+		{
+			caseID:   "ablation-mix-025",
+			taskType: "polish", difficulty: "L2",
+			inputText: "将以下中文课程简介翻译为英文（约150词）。要求：课程名'数字叙事工作坊'译为 Digital Storytelling Workshop，八周时长译准确（an eight-week course），师资头衔（副教授）译法规范，所有数据（24学时）准确。",
+			context: map[string]interface{}{
+				"article": "数字叙事工作坊：本课程共八周、24学时，面向对跨媒体创作感兴趣的高年级本科生。课程将讲授故事结构、视觉语言与交互设计三大模块，结课作品为一部3-5分钟的互动叙事短片。主讲教师为传播学院副教授林岚，其作品曾获两届国际数字叙事节金奖。选课人数上限30人，需提交一份一页纸的作品构思作为选课材料。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"课程名译法规范", "八周与24学时准确", "副教授头衔译法得当"},
+			mustNotHave:      []string{"数据翻译错误", "头衔误译", "遗漏选课要求"},
+			capabilityTags:   []string{"faithful_rewrite", "translation"},
+			riskTags:         []string{"rewrite.translation_error"},
+		},
+		{
+			caseID:   "ablation-mix-026",
+			taskType: "polish", difficulty: "L2",
+			inputText: "将以下 SOP 文档改写为新员工培训话术（约600字）。要求：流程步骤与判定阈值不得改动（响应时长30分钟、升级阈值4小时），把条文语气转为'讲解者口吻'，关键数字需重复强调一次以便记忆。",
+			context: map[string]interface{}{
+				"article": "客服工单处理SOP：1）接单后须在30分钟内首次响应；2）一般问题48小时内闭环；3）超过4小时未解决的工单自动升级至值班主管；4）升级工单须在升级后2小时内给出处理方案；5）所有工单关闭前须完成用户回访。本SOP自2025年7月1日起执行，每周五抽查执行情况。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"30分钟与4小时阈值不变", "讲解者口吻", "关键数字重复强调"},
+			mustNotHave:      []string{"阈值被改动", "仍是条文腔", "数字未强调"},
+			capabilityTags:   []string{"faithful_rewrite", "style_adaptation"},
+			riskTags:         []string{"rewrite.voice_drift"},
+		},
+		{
+			caseID:   "ablation-mix-027",
+			taskType: "polish", difficulty: "L1",
+			inputText: "将以下招聘 JD 改写为小红书风格的招聘帖（约300字）。要求：岗位（前端开发）、城市（杭州）、薪资区间（20-35K）三项硬信息不得改动或夸大，其余可改写为亲切口语，但不得承诺 JD 中没有的福利。",
+			context: map[string]interface{}{
+				"article": "招聘：前端开发工程师。工作地：杭州。薪资：20-35K·14薪。职责：负责数据可视化平台的前端架构与性能优化。要求：三年以上前端经验，熟练掌握 TypeScript 与主流框架，有大型可视化项目经验者优先。福利：五险一金、补充医疗、年度体检、15天年假。",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"岗位/城市/薪资准确", "小红书风格自然", "福利未超出原 JD"},
+			mustNotHave:      []string{"薪资被夸大", "虚构福利", "三项硬信息缺失"},
+			capabilityTags:   []string{"faithful_rewrite", "style_adaptation"},
+			riskTags:         []string{"rewrite.hallucination"},
+		},
+		{
+			caseID:   "ablation-mix-028",
+			taskType: "polish", difficulty: "L3",
+			inputText: "将以下带注释的代码片段说明改写为面向初中级开发者的教程（约700字）。要求：代码逻辑解释不得出错，配置参数（maxRetries=3、timeoutMs=2000）原样保留，教程需补充一段'常见错误'但不得与原注释矛盾。",
+			context: map[string]interface{}{
+				"article": "// 带退避的重试封装\n// maxRetries: 最大重试次数（不含首次调用）\n// timeoutMs: 单次调用超时，毫秒\nfunc WithRetry[T any](fn func() (T, error), maxRetries int, timeoutMs int) (T, error) {\n    // 指数退避：第 n 次重试等待 2^n * 100ms\n    // 注意：fn 必须是幂等的，否则重复调用可能产生副作用\n    var lastErr error\n    for attempt := 0; attempt <= maxRetries; attempt++ {\n        if attempt > 0 {\n            time.Sleep(backoff(attempt))\n        }\n        ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)\n        defer cancel()\n        result, err := invoke(ctx, fn)\n        if err == nil {\n            return result, nil\n        }\n        lastErr = err\n    }\n    var zero T\n    return zero, lastErr\n}",
+			},
+			sourceMode:       "none",
+			expectedBehavior: "answer",
+			mustHave:         []string{"退避与幂等要点解释正确", "参数名与数值原样保留", "常见错误不与原注释矛盾"},
+			mustNotHave:      []string{"逻辑解释错误", "参数被改写", "新增内容与原注释冲突"},
+			capabilityTags:   []string{"faithful_rewrite", "technical_accuracy", "audience_adaptation"},
+			riskTags:         []string{"rewrite.factual_drift"},
+		},
+	}
+}
+
 // ── ablation candidates ──────────────────────────────────────────────────────
 
 // seedAblationCandidates inserts the four ablation candidates (A-D) into
@@ -1814,6 +3447,61 @@ func seedAblationRuns(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	fmt.Printf("Ablation runs: %d new (of %d total)\n", inserted, len(ablationCandidateIDs()))
+	return nil
+}
+
+// ── ablation runs v2（200+ 用例消融重跑）─────────────────────────────────────
+
+// v2RunDateSuffix 是 v2 重跑 run_id 的日期后缀（计划执行日 2026-09-23），
+// 固定写死以保证幂等：重复执行 --seed-runs-v2 不会产生第二组 run。
+const v2RunDateSuffix = "20260923"
+
+// seedAblationRunsV2 为四个消融候选各创建一个 v2 pending run，run_id 形如
+// ablation-run-v2-A-baseline-20260923。run 绑定现有 suite 与 candidate，
+// total_cases 取 suite 当前实际用例数；已存在则跳过（幂等）。
+func seedAblationRunsV2(ctx context.Context, db *sql.DB) error {
+	// Look up suite PK.
+	var suitePK string
+	if err := db.QueryRowContext(ctx,
+		`SELECT id::text FROM wabench_suites WHERE suite_id = $1`, suiteID,
+	).Scan(&suitePK); err != nil {
+		return fmt.Errorf("suite %s not found (run default seed first): %w", suiteID, err)
+	}
+
+	inserted := 0
+	for _, candidateID := range ablationCandidateIDs() {
+		// Look up candidate PK.
+		var candidatePK string
+		if err := db.QueryRowContext(ctx,
+			`SELECT id::text FROM wabench_candidates WHERE candidate_id = $1`, candidateID,
+		).Scan(&candidatePK); err != nil {
+			return fmt.Errorf("candidate %s not found (run --seed-candidates first): %w", candidateID, err)
+		}
+
+		// ablation-A-baseline -> ablation-run-v2-A-baseline-20260923
+		v2RunID := "ablation-run-v2-" + strings.TrimPrefix(candidateID, "ablation-") + "-" + v2RunDateSuffix
+		res, err := db.ExecContext(ctx, `
+			INSERT INTO wabench_runs (
+				run_id, schema_version, suite_pk, candidate_pk, adapter_id, runner_version,
+				environment, traffic_type, status, total_cases
+			) VALUES (
+				$1, 'wabench.v1', $2, $3, 'luminbuddy-v2', 'wabench.v1',
+				'ablation', 'replay', 'pending',
+				(SELECT COUNT(*) FROM wabench_cases WHERE suite_pk = $2)
+			)
+			ON CONFLICT (run_id) DO NOTHING
+		`, v2RunID, suitePK, candidatePK)
+		if err != nil {
+			return fmt.Errorf("insert run %s: %w", v2RunID, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			inserted++
+			fmt.Printf("  run %s: created\n", v2RunID)
+		} else {
+			fmt.Printf("  run %s: already exists\n", v2RunID)
+		}
+	}
+	fmt.Printf("Ablation v2 runs: %d new (of %d total)\n", inserted, len(ablationCandidateIDs()))
 	return nil
 }
 
