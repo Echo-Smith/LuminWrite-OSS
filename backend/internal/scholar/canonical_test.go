@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-// The golden fixture mirrors services/scholar-worker/tests/test_canonical_hash.py
-// (GOLDEN_FIXTURE). It covers 中文, emoji, <>&, quotes, backslash, control
-// characters, nested maps/arrays, bools and nulls. If you change either side,
-// change both in the same commit — that is the point of the golden pin.
+// The golden fixture pins the canonical JSON digest (frozen since the T04
+// contract). It covers 中文, emoji, <>&, quotes, backslash, control
+// characters, nested maps/arrays, bools and nulls. Treat fixture and pinned
+// digest as immutable — persisted input_hash values must stay comparable
+// across releases.
 func goldenFixture() map[string]any {
 	return map[string]any{
 		"control": "line1\nline2\ttab\x01ctl sep",
@@ -84,8 +85,8 @@ func TestHashPayloadRejectsFloats(t *testing.T) {
 }
 
 func TestCanonicalJSONMatchesPythonForNestedControlChars(t *testing.T) {
-	// Second pin: smaller fixture that also exists on the Python side (the
-	// worker's compute_input_hash produced this digest for the same value).
+	// Second pin: smaller fixture whose digest was pinned during T04 (the
+	// retired Python worker produced the same value; kept as a regression pin).
 	payload := map[string]any{
 		"a": "<b>&</b>",
 		"c": "ctl\x01\uff0c中文",

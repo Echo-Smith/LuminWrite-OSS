@@ -6,10 +6,9 @@ import (
 	"fmt"
 )
 
-// Typed outputs mirroring the worker's T04 operation responses
-// (services/scholar-worker/src/lumin_scholar/{discovery,operations}.py).
-// The client validates the envelope; these types decode `outputs` for each
-// operation so Go callers work with typed records instead of raw JSON.
+// Typed outputs for the T04 operation responses. The client validates the
+// envelope; these types decode `outputs` for each operation so Go callers
+// work with typed records instead of raw JSON.
 
 // ProviderResult is one source's outcome in a discover response
 // (status: ok | error; error_code present only on error).

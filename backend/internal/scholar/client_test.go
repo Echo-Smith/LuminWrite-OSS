@@ -23,7 +23,7 @@ const testToken = "go-test-token"
 
 // testBaseURL is deliberately inert: NewClient keeps baseURL as the
 // research-path enablement signal for wiring compatibility and never dials it.
-const testBaseURL = "https://scholar-worker.invalid"
+const testBaseURL = "https://scholar.invalid"
 
 // hashOf is a test helper mirroring HashPayload's canonicalisation.
 func hashOf(t *testing.T, payload map[string]any) string {

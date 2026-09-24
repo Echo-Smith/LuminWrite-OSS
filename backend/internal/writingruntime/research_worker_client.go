@@ -9,23 +9,20 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/scholar"
 )
 
-// maxParsePayloadBytes is the F4-aligned parse transport ceiling (review
-// 2026-09-08). The document travels base64-inlined, so a full 25 MiB
-// original (researchFetchSizeLimit / downloader.DEFAULT_SIZE_LIMIT) encodes
-// to ≈33.4 MiB plus the JSON envelope: the worker's request-body cap
-// (api.DEFAULT_MAX_BODY_BYTES) is 40 MiB and a client-side guard rejects
-// oversized documents BEFORE building the request, so the worker can never
-// answer 413 to a file the 25 MiB download cap allowed through.
+// maxParsePayloadBytes is the F4-aligned parse ceiling (review 2026-09-08),
+// kept at the 25 MiB design cap through the in-process migration. The parse
+// executor rejects oversized documents BEFORE any download or parse work, so
+// a file the 25 MiB fetch cap allowed through can never trip the parser
+// boundary mid-operation.
 const maxParsePayloadBytes = 25 * 1024 * 1024
 
-// Typed parse/read access to the Scholar Worker, layered on the T04 client
-// (Client.Call + HashPayload already enforce the envelope, echo validation,
-// and the cross-language canonical input_hash). T05 keeps these two adapters
-// in the runtime package so the scholar client's T04 surface stays frozen;
-// promoting them into internal/scholar is a mechanical follow-up.
+// Typed parse/read access to the in-process scholar client, layered on the
+// T04 surface (Client.Call + HashPayload already enforce the envelope, echo
+// validation, and the frozen canonical input_hash). T05 keeps these two
+// adapters in the runtime package so the scholar client's T04 surface stays
+// frozen; promoting them into internal/scholar is a mechanical follow-up.
 
-// ParseOutputs mirrors the worker parse response outputs
-// (services/scholar-worker/src/lumin_scholar/parser.py).
+// ParseOutputs is the parse operation's outputs envelope.
 type ParseOutputs struct {
 	Blocks   []ParsedBlock `json:"blocks"`
 	Coverage ParseCoverage `json:"coverage"`
@@ -52,10 +49,10 @@ type ParseCoverage struct {
 	LikelyScanned   *bool  `json:"likely_scanned"`
 }
 
-// ReadOutputs mirrors the worker read response outputs
-// (services/scholar-worker/src/lumin_scholar/reader.py). The worker has
-// already self-validated every evidence entry against the request blocks;
-// the host re-verifies (research_pack.go) before anything enters a pack.
+// ReadOutputs is the read operation's outputs envelope. The scholar
+// executor has already self-validated every evidence entry against the
+// request blocks; the runtime re-verifies (research_pack.go) before
+// anything enters a pack.
 type ReadOutputs struct {
 	PaperID             string              `json:"paper_id"`
 	Claims              []ReaderClaimOutput `json:"claims"`
@@ -76,7 +73,7 @@ type ReaderClaimOutput struct {
 	Limitations []string `json:"limitations"`
 }
 
-// ReaderEvidence is one worker-validated excerpt: quote must equal
+// ReaderEvidence is one executor-validated excerpt: quote must equal
 // block text[start_char:end_char] under Unicode code point offsets.
 type ReaderEvidence struct {
 	EvidenceID    string `json:"evidence_id"`
@@ -90,7 +87,7 @@ type ReaderEvidence struct {
 }
 
 // ReaderBlock is one block sent to the read operation (≤24, contracts.md §4):
-// text plus its parse hash so the worker can verify integrity before reading.
+// text plus its parse hash so the executor can verify integrity before reading.
 type ReaderBlock struct {
 	BlockID   string `json:"block_id"`
 	Text      string `json:"text"`

@@ -1,18 +1,17 @@
-// Package scholar is the Go host-side client for the private-network Python
-// Scholar Worker (specs/research-review/contracts.md §4). The Go host owns
-// budgets, artifacts, and final transactions; the worker only performs
-// bounded operations addressed by this client.
+// Package scholar is the in-process Go scholar executor client
+// (specs/research-review/contracts.md §4). The research runtime owns
+// budgets, artifacts, and final transactions; this package performs the
+// bounded operations the runtime addresses — in-process, with no separate
+// worker service.
 //
-// Wire contract (mirrors services/scholar-worker/src/lumin_scholar/contracts.py):
+// Operation envelope (OperationResponse):
 //
-//	POST /internal/v1/operations/{operation}
-//	Authorization: Bearer <SCHOLAR_WORKER_TOKEN>
 //	request:  {request_id, input_hash, operation_version, deadline_ms, payload}
 //	success:  {request_id, input_hash, outputs, usage, warnings, versions}
 //	failure:  {error: {code, retryable, retry_after_ms?, outcome_unknown}}
 //
 // deadline_ms is absolute Unix epoch milliseconds; the client derives it from
-// the context deadline so worker-side checks and host-side timeouts agree.
+// the context deadline so executor-side checks and host-side timeouts agree.
 package scholar
 
 import (
@@ -91,12 +90,10 @@ type ErrorBody struct {
 
 // HashPayload computes the canonical input_hash for a payload: sha256 over
 // the canonical JSON form defined in canonical.go — recursively key-sorted,
-// UTF-8 without ASCII/HTML escaping, compact separators. That rule is a
-// cross-language contract with the worker's compute_input_hash
-// (json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":")));
-// the golden fixture in canonical_test.go and
-// services/scholar-worker/tests/test_canonical_hash.py pins the digest on
-// both sides. Floats are rejected (fail closed) — see canonical.go.
+// UTF-8 without ASCII/HTML escaping, compact separators. The rule is frozen
+// by the golden digest pins in canonical_test.go: persisted input_hash
+// values must stay comparable across releases, so the rule never changes
+// opportunistically. Floats are rejected (fail closed) — see canonical.go.
 func HashPayload(payload map[string]any) (string, error) {
 	encoded, err := CanonicalPayloadJSON(payload)
 	if err != nil {

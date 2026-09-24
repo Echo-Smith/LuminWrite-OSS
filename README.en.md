@@ -148,7 +148,10 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
   [docs/28](docs/28-wp4-pilot-scenarios.md));
 - **Research-review path** (experimental): academic search (OpenAlex/CrossRef/
   Semantic Scholar) → evidence gate → outline gate → citation-verifiable draft,
-  fail-closed end to end (off by default);
+  fail-closed end to end (off by default). The scholar operations execute
+  in-process inside the Go backend (`backend/internal/scholar`); PDF parsing
+  goes through the docreader sidecar — `SCHOLAR_WORKER_URL` is only the
+  enablement signal, there is no separate worker service;
 - **AR-012 candidate evaluation** (experimental): external review sidecar produces
   isolated candidate drafts and mechanical comparison metrics (sidecar is a private
   component, not distributed here); an optional **different-vendor claim verifier**
@@ -181,7 +184,7 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
 | Models | OpenAI-compatible `/chat/completions` (DeepSeek / SenseNova verified, [guide](docs/provider-configuration.md)) |
 | Embedding | DashScope text-embedding-v3 (optional; graceful degradation when unset) |
 | Frontend | React 19 · Vite 7 · TypeScript · Tailwind · Tiptap/ProseMirror · zustand |
-| Research sidecar | scholar-worker (Python 3.12, httpx only, enabled via research profile) |
+| Research path | In-process Go scholar (`backend/internal/scholar`), PDF parsing via the docreader sidecar |
 
 ## 🔍 Search providers
 
@@ -205,7 +208,7 @@ Full annotated list: [.env.docker.example](.env.docker.example).
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_DEFAULT_MODEL` | — | LLM backend (OpenAI-compatible) |
 | `SEARXNG_BASE_URL` | empty | The only out-of-the-box search source — strongly recommended |
 | `WRITING_RUNTIME_MODE` | shadow | Governed runtime: off / shadow / allowlist (shadow = baseline authoritative + candidate shadow observation) |
-| `RESEARCH_REVIEW_ENABLED` | false | Research-review path (needs `--profile research`) |
+| `RESEARCH_REVIEW_ENABLED` | false | Research-review path (enabling also requires `SCHOLAR_WORKER_URL` (any non-empty value, the enablement signal) and `SCHOLAR_WORKER_TOKEN` (required guard)) |
 | `AR012_CANDIDATE_ENABLED` | false | AR-012 candidate evaluation endpoint (needs sidecar) |
 | `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | empty | Different-vendor claim verifier: enabled once all three are set; **must be a different provider than the generation model** (report-only second line of defense) |
 | `DASHSCOPE_API_KEY` | empty | Embedding (optional, degrades gracefully) |

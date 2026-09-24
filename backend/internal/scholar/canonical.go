@@ -8,27 +8,25 @@ import (
 	"unicode/utf8"
 )
 
-// Canonical JSON rule — CROSS-LANGUAGE CONTRACT with the Python Scholar
-// Worker (services/scholar-worker/src/lumin_scholar/contracts.py,
-// compute_input_hash). T04 pinned it; both sides must agree byte-for-byte:
+// Canonical JSON rule — payload-hash contract pinned in T04 and frozen by
+// the golden digest pins in canonical_test.go. Persisted input_hash values
+// must stay comparable across releases, so the rule is fixed byte-for-byte:
 //
 //   - Object keys are sorted recursively by Unicode code point (Go
-//     sort.Strings on the UTF-8 keys is equivalent).
+//     sort.Strings on the UTF-8 keys).
 //   - Strings are raw UTF-8 with no escaping beyond JSON's mandatory
 //     escapes: no HTML escaping of <, >, &, no \u2028/\u2029 escaping
-//     (Python ensure_ascii=False semantics).
+//     (ensure_ascii=False semantics).
 //   - Separators are compact ("," and ":"), no whitespace.
 //   - The hash is sha256 over the UTF-8 bytes, hex-encoded, "sha256:" prefix.
 //
 // Numbers: integer types (and json.Number verbatim) are safe. float64 is
-// REJECTED (fail closed): Go's and Python's float formatting differ
+// REJECTED (fail closed): float formatting differs across runtimes
 // (1.0 vs 1.0e+00 style edges), so payloads must not carry floats — a
 // float in a hashed payload is a caller bug we surface loudly.
 //
-// The golden cross-language fixture lives in canonical_test.go and
-// services/scholar-worker/tests/test_canonical_hash.py; both assert the
-// same digest. Change the rule or fixture only in the same commit on both
-// sides.
+// The golden fixture lives in canonical_test.go and pins the exact digest;
+// treat both as immutable (a rule change invalidates every persisted hash).
 
 // appendCanonicalJSON writes v in the canonical form onto dst.
 func appendCanonicalJSON(dst []byte, v any) ([]byte, error) {
