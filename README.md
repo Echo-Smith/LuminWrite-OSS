@@ -70,7 +70,11 @@ flowchart LR
 - **写入**：会话收尾自动提取行为模式；用户说「记住 X」即时落硬偏好（PII 过滤前置）；
 - **读取**：语义 + 关键词 + 近期多信号召回，证据边界按场景松紧，置信度半衰期衰减；
 - **观测**：`gate_inject / gate_refusal / explicit_capture / session_extract` 全事件遥测——
-  静默失败存活多个版本的教训，固化成了基础设施。
+  静默失败存活多个版本的教训，固化成了基础设施；
+- **证据阶梯与最小披露（WP6）**：`evidence_status` 首次观测即定级（强信号 verified /
+  好评 supported / 其余 none 待两击晋升），人工确认直达 verified，conflicted 永不因
+  重复观测洗白；单意图注入条数默认上限 8，工具预算耗尽返回幂等提示而非误导文案
+  （消融 D 变体教训）。
 
 ## 🎯 解决了什么问题
 
@@ -130,6 +134,9 @@ cd frontend && npm ci && npm test && npm run build
   质量门（Candidate/Accepted/Verified）的版本化交付协议，fail-closed；REST 命令 +
   SSE 运行事件，断线可续传；默认 `shadow`（baseline 权威 + candidate 影子观测），
   off/shadow/allowlist 灰度与检查点恢复（[docs/19](docs/19-governed-writing-runtime.md)）；
+- **三大核心写作流程**：长文创作 / 多材料综合 / 忠实改写——写作入口的流程选择器
+  贯穿 contract/plan 构建（编排模式、证据策略、节点图按流程切换，
+  [docs/28](docs/28-wp4-pilot-scenarios.md)）；
 - **研究综述路径**（实验性）：学术检索（OpenAlex/CrossRef/Semantic Scholar）→
   证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
@@ -187,12 +194,32 @@ cd frontend && npm ci && npm test && npm run build
 > 日常换 Key 走 Admin 后台「模型配置」热更新（加密入库，优先于环境变量）。
 > `API_KEY_ENCRYPTION_KEY` 一经使用必须保持稳定。
 
+### 消融基准 runner（评测工具链，可选）
+
+`backend/cmd/run-ablation` + `backend/cmd/seed-ablation-cases`：210 用例（含 72 个
+多轮一致性用例），`--seed-runs-v2` 幂等创建版本化 pending run。凭据与端点全走环境变量：
+
+| 环境变量 | 说明 |
+|---|---|
+| `LLM_API_KEY` | 必填（fail-closed），执行与盲评 judge 共用 |
+| `LLM_BASE_URL` / `LLM_MODEL` | 默认 xiaomi mimo 端点 / `mimo-v2.5`，可指向任意 OpenAI 兼容端点 |
+| `LLM_DISABLE_THINKING` | `1` = 不下发 `thinking` 参数（不支持该字段的端点会 400 / 空流） |
+| `LLM_TIMEOUT_SECONDS` | 单请求整体超时，默认 120；长文生成建议 600+ |
+| `RUN_IDS` / `RUN_ID` | 逗号分隔多个 / 单个 run |
+| `ABLATION_CONCURRENCY` | 每 run 并发（默认 16，按端点限流调低） |
+| `ABLATION_TIMEOUT` | Go duration（默认 2h） |
+
+试点指标采集：[backend/scripts/pilot-metrics.sql](backend/scripts/pilot-metrics.sql)；
+试点上手文档：[docs/29](docs/29-pilot-user-onboarding.md)。
+
 ## 🗺 Roadmap
 
 - [x] 记忆注入遥测（已上线：`/admin/memory/telemetry`）
 - [x] WebSocket 退出主架构（REST 命令 + SSE 运行事件，断线续传）
 - [x] 治理运行时成为主干（默认 shadow；Harness 执行核 / 编辑部角色受治理接入）
 - [x] 历史 SoT 迁移（governed documents/runs 为主，`agent_traces` 只读）
+- [x] 三大核心写作流程选择 UI（长文创作 / 多材料综合 / 忠实改写）
+- [x] 210 用例消融基准 v2（多轮一致性子集 + 真实记忆端口接入）
 - [ ] allowlist 晋升资格链线上验证（policy → evidence → approval → gate）
 - [ ] 编辑部 DAG 生命周期进一步接入统一记忆契约（按角色分槽注入）
 - [ ] 搜索源适配器社区共建（Tavily 等完整实现）

@@ -73,7 +73,13 @@ flowchart LR
 - **Read**: multi-signal recall (semantic + keyword + recent), scene-tuned evidence
   boundaries, half-life confidence decay;
 - **Observe**: `gate_inject / gate_refusal / explicit_capture / session_extract`
-  events — the lesson of failures that survived releases quietly, turned into infrastructure.
+  events — the lesson of failures that survived releases quietly, turned into infrastructure;
+- **Evidence ladder & minimal disclosure (WP6)**: `evidence_status` is graded at first
+  observation (strong signal → verified, positive rating → supported, else none pending
+  two-strike promotion); manual confirmation reaches verified directly; conflicted is
+  never whitewashed by re-observation. Per-intent injection defaults to a cap of 8, and
+  exhausted tool budgets return an idempotent hint instead of misleading copy (lesson
+  from ablation variant D).
 
 ## 🎯 Problems solved
 
@@ -136,6 +142,10 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
   fail-closed; REST commands + SSE runtime events, resumable on disconnect; default
   `shadow` (baseline authoritative + candidate shadow observation), off/shadow/allowlist
   rollout with checkpoint recovery ([docs/19](docs/19-governed-writing-runtime.md));
+- **Three core writing flows**: long-form creation / multi-material synthesis /
+  faithful rewrite — the flow picker at the writing entry threads through contract/plan
+  construction (orchestration mode, evidence policy and node graph per flow,
+  [docs/28](docs/28-wp4-pilot-scenarios.md));
 - **Research-review path** (experimental): academic search (OpenAlex/CrossRef/
   Semantic Scholar) → evidence gate → outline gate → citation-verifiable draft,
   fail-closed end to end (off by default);
@@ -203,12 +213,33 @@ Full annotated list: [.env.docker.example](.env.docker.example).
 > Day-to-day key changes go through the admin console (encrypted at rest, takes
 > precedence over env vars). Keep `API_KEY_ENCRYPTION_KEY` stable once in use.
 
+### Ablation benchmark runner (optional tooling)
+
+`backend/cmd/run-ablation` + `backend/cmd/seed-ablation-cases`: 210 cases (72
+multi-turn consistency), `--seed-runs-v2` idempotently creates versioned pending
+runs. Credentials and endpoints are entirely environment-driven:
+
+| Variable | Purpose |
+|---|---|
+| `LLM_API_KEY` | required (fail-closed), shared by execution and the blind-review judge |
+| `LLM_BASE_URL` / `LLM_MODEL` | default xiaomi mimo endpoint / `mimo-v2.5`; any OpenAI-compatible endpoint works |
+| `LLM_DISABLE_THINKING` | `1` = omit the `thinking` parameter (endpoints without the field 400 / return empty streams) |
+| `LLM_TIMEOUT_SECONDS` | per-request timeout, default 120; use 600+ for long-form generation |
+| `RUN_IDS` / `RUN_ID` | comma-separated multiple / single run |
+| `ABLATION_CONCURRENCY` | per-run concurrency (default 16; lower for strict rate limits) |
+| `ABLATION_TIMEOUT` | Go duration (default 2h) |
+
+Pilot metrics collection: [backend/scripts/pilot-metrics.sql](backend/scripts/pilot-metrics.sql);
+pilot onboarding: [docs/29](docs/29-pilot-user-onboarding.md).
+
 ## 🗺 Roadmap
 
 - [x] Memory injection telemetry (live: `/admin/memory/telemetry`)
 - [x] WebSocket retired from the main architecture (REST commands + SSE runtime events, resumable)
 - [x] Governed runtime as the backbone (default shadow; Harness core / editorial roles governed)
 - [x] History source-of-truth migration (governed documents/runs primary, `agent_traces` read-only)
+- [x] Three-flow selection UI (long-form / multi-material / faithful rewrite)
+- [x] 210-case ablation benchmark v2 (multi-turn consistency subset + real memory port)
 - [ ] Allowlist promotion qualification verified end to end (policy → evidence → approval → gate)
 - [ ] Editorial DAG on the unified memory contract (role-slotted injection)
 - [ ] Community search adapters (full Tavily etc.)
