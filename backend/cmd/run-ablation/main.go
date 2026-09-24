@@ -74,6 +74,32 @@ func main() {
 		log.Println("thinking parameter suppressed (LLM_DISABLE_THINKING=1)")
 	}
 
+	// ── 429/503 退避基数（LLM_429_BACKOFF_BASE_MS）──
+	// AMD 网关等 token 速率限制按分钟级窗口回填：默认 500ms/1s/2s 的指数
+	// 退避远短于回填周期，重试耗尽后整例报废。设为如 30000（=30s）后序列
+	// 变为 30s/1m/2m，与窗口回填节奏匹配。正整数毫秒，非法值 fail-fast。
+	if raw := strings.TrimSpace(os.Getenv("LLM_429_BACKOFF_BASE_MS")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			log.Fatalf("invalid LLM_429_BACKOFF_BASE_MS %q: want positive integer milliseconds", raw)
+		}
+		llm.SetRateLimitBackoffBase(time.Duration(n) * time.Millisecond)
+		log.Printf("429/503 retry backoff base set to %dms (series: base, 2x, 4x)", n)
+	}
+
+	// ── 请求最小间隔（LLM_MIN_REQUEST_INTERVAL）──
+	// 全局整流：该 pacing 挂在本 runner 唯一的 LLM client 传输层上，judge
+	// 与执行共用同一 client，因此对全部出站请求生效（含流式与重试）。
+	// 未设置 = 不整流。Go duration 格式，如 "2s"。
+	if raw := strings.TrimSpace(os.Getenv("LLM_MIN_REQUEST_INTERVAL")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			log.Fatalf("invalid LLM_MIN_REQUEST_INTERVAL %q: want a Go duration like 2s / 500ms", raw)
+		}
+		llm.SetMinRequestInterval(d)
+		log.Printf("minimum request interval set to %s (pacing applies to every request on this client)", d)
+	}
+
 	// ── Memory port（修复上次消融的关键缺陷）──
 	// 上次消融把 memoryPort 传成 nil，adapter（wabench_v2_adapter.go 的
 	// `memoryEnabled && e.memoryPort != nil` 分支）对 nil port 会静默跳过

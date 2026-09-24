@@ -7,11 +7,17 @@
 //	go run ./cmd/seed-ablation-cases/ --seed-candidates # seed ablation candidates A-D
 //	go run ./cmd/seed-ablation-cases/ --seed-runs       # create ablation runs (requires candidates)
 //	go run ./cmd/seed-ablation-cases/ --seed-runs-v2    # create v2 ablation runs for the 200+ case rerun
+//	go run ./cmd/seed-ablation-cases/ --seed-memories   # seed Tier1 hard preferences for the memory user (C/D candidates)
+//	go run ./cmd/seed-ablation-cases/ --wipe-memories   # delete all memories of the memory user (user_memories / memory_entities / dismissals)
 //	go run ./cmd/seed-ablation-cases/ --start-runs      # candidates + runs + print execution commands
 //	go run ./cmd/seed-ablation-cases/ --status           # show ablation run progress
 //
 // The script is idempotent: it uses ON CONFLICT to skip already-seeded rows.
 // It reads DATABASE_URL (or TEST_DATABASE_URL) from the environment.
+// Memory seeding additionally honors the runner LLM contract
+// (LLM_API_KEY / LLM_BASE_URL / LLM_MODEL) and DASHSCOPE_* for embeddings;
+// the Create path itself needs neither (no LLM/embedding call is required to
+// persist a Tier1 hard preference).
 package main
 
 import (
@@ -22,12 +28,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
+	memsvc "github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memory"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
 // ── configuration ────────────────────────────────────────────────────────────
@@ -52,6 +63,8 @@ var (
 	flagSeedCandidates = flag.Bool("seed-candidates", false, "seed ablation candidates A-D")
 	flagSeedRuns       = flag.Bool("seed-runs", false, "create ablation runs (requires candidates)")
 	flagSeedRunsV2     = flag.Bool("seed-runs-v2", false, "create v2 ablation runs for the 200+ case rerun (requires candidates + cases)")
+	flagSeedMemories   = flag.Bool("seed-memories", false, "seed Tier1 hard preferences for the ablation memory user (C/D candidates)")
+	flagWipeMemories   = flag.Bool("wipe-memories", false, "delete all memories of the ablation memory user")
 	flagStartRuns      = flag.Bool("start-runs", false, "candidates + runs + print execution commands")
 	flagStatus         = flag.Bool("status", false, "show ablation run progress")
 )
@@ -85,6 +98,16 @@ func main() {
 	switch {
 	case *flagStatus:
 		showAblationStatus(ctx, db)
+		return
+	case *flagSeedMemories:
+		if err := seedAblationMemories(ctx, dbURL); err != nil {
+			fail("seed memories: %v", err)
+		}
+		return
+	case *flagWipeMemories:
+		if err := wipeAblationMemories(ctx, dbURL); err != nil {
+			fail("wipe memories: %v", err)
+		}
 		return
 	case *flagSeedCandidates:
 		if err := seedAblationCandidates(ctx, db); err != nil {
@@ -3338,7 +3361,7 @@ func seedAblationCandidates(ctx context.Context, db *sql.DB) error {
 			name:        "C: Context + User Memory",
 			flags: map[string]interface{}{
 				"memoryEnabled":          true,
-				"memoryUserId":           "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+				"memoryUserId":           ablationMemoryUserID,
 				"contextCompilerEnabled": true,
 				"projectMemoryEnabled":   false,
 			},
@@ -3348,7 +3371,7 @@ func seedAblationCandidates(ctx context.Context, db *sql.DB) error {
 			name:        "D: Context + User Memory + Project Memory",
 			flags: map[string]interface{}{
 				"memoryEnabled":          true,
-				"memoryUserId":           "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+				"memoryUserId":           ablationMemoryUserID,
 				"contextCompilerEnabled": true,
 				"projectMemoryEnabled":   true,
 			},
@@ -3575,6 +3598,262 @@ func showAblationStatus(ctx context.Context, db *sql.DB) {
 		fmt.Println("  No ablation runs found. Run with --start-runs first.")
 	}
 	fmt.Println()
+}
+
+// ── memory seeding（C/D 候选的记忆库种子）───────────────────────────────────
+
+// ablationMemoryUserID 是消融 C/D 候选（feature_flags.memoryUserId）使用的
+// 记忆用户 ID。该用户是纯种子用户：WABench 执行走 RunCore（契约无记忆写
+// 入），库若为空则 C/D 的记忆注入从未有内容可注入——必须先用 --seed-memories
+// 播种。seedAblationCandidates 中的两处引用与这里必须保持同一常量。
+const ablationMemoryUserID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+// seedMemory 是一条待播种的 Tier1 硬偏好。CaseRef 记录它呼应哪条消融用例：
+// 要么是该用例 inputText 里声称「记忆里记录…」的既有偏好（explicit_override
+// 用例的显式指令正是对它的反转/推翻），要么是 memory_isolation 用例要求隔离
+// 的世界观/项目语境。
+type seedMemory struct {
+	Category string
+	Key      string
+	Value    string
+	CaseRef  string // 对应的 ablation case ID；无直接对应用例时为空
+}
+
+// ablationSeedMemories 返回播种清单（12 条，术语/世界观/篇幅/结构/语体各居
+// 其位）。内容刻意通过 PII 语义检查：不含电话、地址、邮箱、证件号等敏感
+// 信息；Tier1 硬偏好经 SDK.Create 写入（confidence 1.0、每轮必注入，且免
+// 证据门——RequireVerifiedForWriting 默认 false）。
+func ablationSeedMemories() []seedMemory {
+	return []seedMemory{
+		{
+			// override-011 的显式新指令正是反转它：全文统一使用「AI」。
+			Category: "terminology", Key: "term_ai_naming",
+			Value:   "科技写作术语偏好：全文使用『人工智能』而非『AI』",
+			CaseRef: "ablation-override-011",
+		},
+		{
+			// override-017 的 memory_isolation 用例要求把这个世界观隔离在本任务之外。
+			Category: "topic", Key: "wuxia_worldview",
+			Value:   "题材偏好：创作武侠小说，作品设定在内力、门派、轻功的传统武侠世界观",
+			CaseRef: "ablation-override-017",
+		},
+		{
+			Category: "word_count", Key: "prefers_long_form",
+			Value:   "篇幅偏好：单篇 2000 字起步，喜欢铺陈背景与细节",
+			CaseRef: "",
+		},
+		{
+			Category: "structure", Key: "bullet_points",
+			Value:   "喜欢分点论述：用『1. 2. 3.』编号列表组织观点",
+			CaseRef: "ablation-override-001",
+		},
+		{
+			Category: "structure", Key: "conclusion_first",
+			Value:   "常用『结论先行』结构：开篇先给总结句",
+			CaseRef: "ablation-override-004",
+		},
+		{
+			Category: "style", Key: "emoji_usage",
+			Value:   "喜欢在文案里适当使用表情符号",
+			CaseRef: "ablation-override-003",
+		},
+		{
+			Category: "tone", Key: "self_reference_xiaobian",
+			Value:   "自称习惯用『小编』",
+			CaseRef: "ablation-override-005",
+		},
+		{
+			Category: "style", Key: "long_complex_sentences",
+			Value:   "偏好繁复的长句文风，多用排比与从句",
+			CaseRef: "ablation-override-009",
+		},
+		{
+			Category: "tone", Key: "ending_call_to_action",
+			Value:   "习惯在文章结尾加行动号召（如『立即咨询』）",
+			CaseRef: "ablation-override-006",
+		},
+		{
+			Category: "style", Key: "british_spelling",
+			Value:   "英文行文偏好英式拼写：organise、colour",
+			CaseRef: "ablation-override-007",
+		},
+		{
+			Category: "terminology", Key: "term_mini_program",
+			Value:   "习惯把『小程序』写作『微信小程序』",
+			CaseRef: "ablation-override-008",
+		},
+		{
+			Category: "title", Key: "question_style",
+			Value:   "标题爱用问句",
+			CaseRef: "ablation-override-010",
+		},
+	}
+}
+
+// seedStore 抽象播种器需要的两个操作，使幂等逻辑可以脱离 Postgres 单测。
+// 真实实现 memsvcSeedStore 走 internal/memory 的装配：
+//
+//   - findActive → PgStore.FindByCategoryKey（只认 active/candidate 状态）
+//   - createHardPreference → Service.Create → SDK.Create：Tier1 硬偏好、
+//     confidence 1.0、PII 检查（CLI 侧 sensitiveCheck 为 nil → Noop 放行）、
+//     embedding 失败不阻塞保存（Gate union 召回兜底）
+type seedStore interface {
+	findActive(ctx context.Context, userID, category, key string) (bool, error)
+	createHardPreference(ctx context.Context, userID, category, key, value string) error
+}
+
+// seedMemoriesInto 把种子逐条写入 userID 的记忆库。幂等：按 category+key
+// 查重，已存在（active/candidate）即跳过、绝不重复插入。
+// 返回 (created, skipped) 便于二次执行断言 0 新增。
+func seedMemoriesInto(ctx context.Context, st seedStore, userID string, seeds []seedMemory, logf func(string, ...interface{})) (int, int, error) {
+	created, skipped := 0, 0
+	for _, s := range seeds {
+		exists, err := st.findActive(ctx, userID, s.Category, s.Key)
+		if err != nil {
+			return created, skipped, fmt.Errorf("lookup %s/%s: %w", s.Category, s.Key, err)
+		}
+		if exists {
+			skipped++
+			logf("  %-12s/%-24s already exists (skipped)  <- %s", s.Category, s.Key, caseRefLabel(s))
+			continue
+		}
+		if err := st.createHardPreference(ctx, userID, s.Category, s.Key, s.Value); err != nil {
+			return created, skipped, fmt.Errorf("create %s/%s: %w", s.Category, s.Key, err)
+		}
+		created++
+		logf("  %-12s/%-24s created                    <- %s", s.Category, s.Key, caseRefLabel(s))
+	}
+	return created, skipped, nil
+}
+
+func caseRefLabel(s seedMemory) string {
+	if s.CaseRef == "" {
+		return "(baseline preference)"
+	}
+	return "echoes " + s.CaseRef
+}
+
+// memsvcSeedStore 是 seedStore 的真实实现，走真实记忆服务装配。
+type memsvcSeedStore struct {
+	db  *database.DB
+	svc *memsvc.Service
+}
+
+func (s *memsvcSeedStore) findActive(ctx context.Context, userID, category, key string) (bool, error) {
+	existing, err := memsvc.NewPgStore(s.db).FindByCategoryKey(ctx, userID, category, key)
+	if err != nil {
+		return false, err
+	}
+	return len(existing) > 0, nil
+}
+
+func (s *memsvcSeedStore) createHardPreference(ctx context.Context, userID, category, key, value string) error {
+	_, err := s.svc.Create(ctx, userID, category, key, value)
+	return err
+}
+
+// seedAblationMemories 为 ablationMemoryUserID 播种 Tier1 硬偏好。装配与
+// cmd/run-ablation 的 buildMemoryPort 同款：memsvc.NewService(db, llm,
+// embedding, nil)，LLM 走与 runner 相同的环境变量契约
+// （LLM_API_KEY / LLM_BASE_URL / LLM_MODEL），DASHSCOPE_* 未配置时 embedding
+// 传 nil（SDK.Create 对 nil embedder 安全降级，只跳过向量持久化）。
+// 注意：Create 路径不调用 LLM——LLM_API_KEY 缺失仅影响提取链，不影响播种，
+// 因此这里只告警不 fail-fast。
+func seedAblationMemories(ctx context.Context, dbURL string) error {
+	memDB, err := database.NewPostgres(dbURL, 5, 2)
+	if err != nil {
+		return fmt.Errorf("open memory database: %w", err)
+	}
+	defer memDB.Close()
+
+	apiKey := os.Getenv("LLM_API_KEY")
+	if apiKey == "" {
+		log.Println("WARN [seed-memories] LLM_API_KEY not set: the Create path writes Tier1 " +
+			"preferences directly without calling the LLM, so seeding proceeds; extraction would be unavailable")
+	}
+	llm := tools.NewLLMClient(
+		envOrDefault("LLM_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		apiKey,
+		envOrDefault("LLM_MODEL", "mimo-v2.5"),
+		32768, 0.7, 60*time.Second,
+	)
+
+	embeddingClient := tools.NewEmbeddingClient(
+		os.Getenv("DASHSCOPE_API_KEY"),
+		envOrDefault("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+		envOrDefault("DASHSCOPE_MODEL", "text-embedding-v3"),
+		1024,
+	)
+	if !embeddingClient.IsConfigured() {
+		log.Println("WARN [seed-memories] DASHSCOPE_API_KEY not set: seeded memories will have no " +
+			"embedding (semantic recall skips them; keyword/recency union recall still works)")
+		embeddingClient = nil
+	}
+
+	memSvc := memsvc.NewService(memDB, llm, embeddingClient, nil)
+	if memSvc == nil || !memSvc.IsAvailable() {
+		return fmt.Errorf("memory service unavailable (db unreachable)")
+	}
+
+	// user_memories.user_id 外键指向 users——消融记忆用户是合成 UUID，
+	// 必须先确保桩用户行存在（幂等；仅 id/uid/role 非空字段，无法登录）。
+	if _, err := memDB.Exec(
+		`INSERT INTO users (id, uid, role) VALUES ($1::uuid, $2, 'user') ON CONFLICT (id) DO NOTHING`,
+		ablationMemoryUserID, "ablation-memory-user"); err != nil {
+		return fmt.Errorf("ensure bench memory user: %w", err)
+	}
+
+	st := &memsvcSeedStore{db: memDB, svc: memSvc}
+	fmt.Printf("Seeding %d Tier1 hard preferences for memory user %s...\n",
+		len(ablationSeedMemories()), ablationMemoryUserID)
+	created, skipped, err := seedMemoriesInto(ctx, st, ablationMemoryUserID, ablationSeedMemories(),
+		func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) })
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Memory seeding done: %d created, %d skipped (idempotent by category+key)\n", created, skipped)
+	return nil
+}
+
+// wipeAblationMemories 删除记忆用户的全部记忆痕迹：memory_session_dismissals
+//（经 user_memories 子查询关联）、memory_entities、user_memories。全部参数
+// 绑定（$1），不做字符串拼接。
+func wipeAblationMemories(ctx context.Context, dbURL string) error {
+	memDB, err := database.NewPostgres(dbURL, 5, 2)
+	if err != nil {
+		return fmt.Errorf("open memory database: %w", err)
+	}
+	defer memDB.Close()
+
+	steps := []struct {
+		label string
+		sql   string
+	}{
+		{
+			label: "memory_session_dismissals",
+			sql: `DELETE FROM memory_session_dismissals
+				  WHERE memory_id IN (SELECT id FROM user_memories WHERE user_id = $1::uuid)`,
+		},
+		{label: "memory_entities", sql: `DELETE FROM memory_entities WHERE user_id = $1::uuid`},
+		{label: "user_memories", sql: `DELETE FROM user_memories WHERE user_id = $1::uuid`},
+	}
+	for _, step := range steps {
+		res, err := memDB.ExecContext(ctx, step.sql, ablationMemoryUserID)
+		if err != nil {
+			return fmt.Errorf("delete %s: %w", step.label, err)
+		}
+		n, _ := res.RowsAffected()
+		fmt.Printf("  %-26s deleted %d rows\n", step.label, n)
+	}
+	fmt.Printf("Memory wipe done for user %s\n", ablationMemoryUserID)
+	return nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

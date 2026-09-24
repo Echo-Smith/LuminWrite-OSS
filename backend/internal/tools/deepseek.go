@@ -38,6 +38,37 @@ type LLMClient struct {
 	metrics               LLMMetricsRecorder
 	customHeaders         map[string]string // custom HTTP headers added to every request
 	thinkingParamDisabled bool              // 不向端点下发 thinking 参数（不支持该字段的端点会 400）
+	// rateLimitBackoffBase 是 doRequest / doStreamRequest 对 429/503（及
+	// 传输层失败）重试的指数退避基数（delay = base × 2^attempt）。
+	// 零值表示使用 defaultRateLimitBackoffBase；批量评估等 token 速率窗口
+	// 分钟级回填的网关场景可通过 SetRateLimitBackoffBase 调大。
+	rateLimitBackoffBase time.Duration
+}
+
+// defaultRateLimitBackoffBase 是 429/503 退避的默认基数。
+const defaultRateLimitBackoffBase = 500 * time.Millisecond
+
+// SetRateLimitBackoffBase sets the base delay of the exponential 429/503 retry
+// backoff used by doRequest and doStreamRequest (delay = base × 2^attempt, so
+// the series stays base, 2×base, 4×base for 3 retries). A zero or negative
+// value resets to the default (500ms). Configure before use; token-rate-limit
+// windows that refill on the order of minutes need a much larger base than the
+// default, otherwise retries are exhausted and the whole case is scrapped.
+func (c *LLMClient) SetRateLimitBackoffBase(d time.Duration) {
+	if d <= 0 {
+		c.rateLimitBackoffBase = 0 // zero value = default
+		return
+	}
+	c.rateLimitBackoffBase = d
+}
+
+// backoffBase returns the configured 429/503 retry backoff base, falling back
+// to defaultRateLimitBackoffBase when unset (zero value).
+func (c *LLMClient) backoffBase() time.Duration {
+	if c.rateLimitBackoffBase > 0 {
+		return c.rateLimitBackoffBase
+	}
+	return defaultRateLimitBackoffBase
 }
 
 // LLMMessage represents a single message in the conversation.
@@ -804,7 +835,7 @@ func (c *LLMClient) doRequest(ctx context.Context, req *LLMRequest) ([]byte, err
 
 	// Retry with exponential backoff for rate limit (429) errors
 	maxRetries := 3
-	baseDelay := 500 * time.Millisecond
+	baseDelay := c.backoffBase() // default 500ms; tunable via SetRateLimitBackoffBase
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST",
@@ -885,7 +916,7 @@ func (c *LLMClient) doStreamRequest(ctx context.Context, req *LLMRequest) (io.Re
 	// （尚未消费任何流内容），429/503 退避后重试可自愈——批量评估等
 	// 高并发流式场景下 token 速率限制命中时不再整例报废。
 	maxRetries := 3
-	baseDelay := 500 * time.Millisecond
+	baseDelay := c.backoffBase() // default 500ms; tunable via SetRateLimitBackoffBase
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST",
