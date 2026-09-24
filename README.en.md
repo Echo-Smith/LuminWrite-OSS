@@ -235,6 +235,11 @@ runs. Credentials and endpoints are entirely environment-driven:
 | `RUN_IDS` / `RUN_ID` | comma-separated multiple / single run |
 | `ABLATION_CONCURRENCY` | per-run concurrency (default 16; lower for strict rate limits) |
 | `ABLATION_TIMEOUT` | Go duration (default 2h) |
+| `LLM_429_BACKOFF_BASE_MS` | 429/503 backoff base in ms (default 500; use 8000 for strict token-rate endpoints — 8s/16s/32s sequence) |
+| `LLM_MIN_REQUEST_INTERVAL` | global minimum interval between requests (Go duration, e.g. `2s`; off by default) |
+
+Memory seeding (the C/D candidates' memory injection needs preset content):
+`go run ./cmd/seed-ablation-cases/ --seed-memories` (12 Tier-1 preferences mirroring the explicit-override/isolation cases, idempotent); `--wipe-memories` resets.
 
 Pilot metrics collection: [backend/scripts/pilot-metrics.sql](backend/scripts/pilot-metrics.sql);
 pilot onboarding: [docs/29](docs/29-pilot-user-onboarding.md).

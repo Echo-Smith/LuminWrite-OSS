@@ -212,6 +212,11 @@ cd frontend && npm ci && npm test && npm run build
 | `RUN_IDS` / `RUN_ID` | 逗号分隔多个 / 单个 run |
 | `ABLATION_CONCURRENCY` | 每 run 并发（默认 16，按端点限流调低） |
 | `ABLATION_TIMEOUT` | Go duration（默认 2h） |
+| `LLM_429_BACKOFF_BASE_MS` | 429/503 退避基数毫秒（默认 500；token 限流严格的端点建议 8000，序列 8s/16s/32s） |
+| `LLM_MIN_REQUEST_INTERVAL` | 全局请求最小间隔（Go duration，如 `2s`；默认不整流） |
+
+记忆种子（C/D 候选的记忆注入需要预置内容）：
+`go run ./cmd/seed-ablation-cases/ --seed-memories`（12 条与显式覆盖/隔离用例呼应的 Tier1 偏好，幂等）；`--wipe-memories` 重置。
 
 试点指标采集：[backend/scripts/pilot-metrics.sql](backend/scripts/pilot-metrics.sql)；
 试点上手文档：[docs/29](docs/29-pilot-user-onboarding.md)。
