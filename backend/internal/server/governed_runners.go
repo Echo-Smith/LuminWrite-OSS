@@ -404,7 +404,16 @@ func (s *Server) mountGovernedRuntime(store *writingstore.Store) {
 				Provenance: map[string]any{}, SourceRefs: []string{}}},
 		initial:   governedInitialProvider{store: store, server: s},
 		materials: store,
-		context:   writingruntime.StoreContextSource{Store: store},
+		// WP1/WP2 production closure: the context source gets the canonical
+		// content gateway so the evidence view can read artifact bodies
+		// (research_evidence_pack et al.), and the server's memory
+		// consumption port so user-memory directives reach StyleDirectives /
+		// ReviewGuard. The port is availability- and rollout-gated inside
+		// memoryport (EnabledForUser → svc configured && available &&
+		// per-user flag): with user memory off — the pilot decision — it
+		// behaves exactly like a nil port (no injection, no new failure
+		// modes), so this wiring changes nothing about the default behavior.
+		context:   writingruntime.StoreContextSource{Store: store, Content: canonical, MemoryPort: s.memoryPort()},
 		telemetry: s.metrics,
 	}
 	runtime, err := newGovernedWritingRuntime(store, mode, deps, specs)

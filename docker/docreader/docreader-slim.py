@@ -2,9 +2,19 @@
 Slim Docreader — TCP server for document parsing.
 
 Replaces the 5.53GB wechatopenai/weknora-docreader gRPC sidecar.
-Implements the simple TCP protocol expected by backend file_parse.go:
+Implements the simple TCP protocols expected by the backend:
   Request:  "PARSE <filepath>\n"
   Response: parsed text content (UTF-8, until connection close)
+  Request:  "PARSEBYTES <size> <ext>\n" + exactly <size> raw bytes
+  Response: parsed text content (UTF-8, until connection close)
+
+PARSEBYTES keeps document bytes INSIDE the sidecar: the caller streams the
+document over the socket and this container stages it in its own private
+staging directory (DOCREADER_STAGING_DIR, mounted at /tmp/docreader in
+compose). The caller's filesystem is never consulted, so no shared volume
+between backend and docreader is needed — a path sent by the backend would
+not exist inside this container (docker-compose.yml: backend mounts no
+document volume).
 
 Supports: .pdf, .docx, .doc, .xlsx, .xls, .pptx, .ppt, .csv, .html, .md, .txt
 """
@@ -15,8 +25,10 @@ Supports: .pdf, .docx, .doc, .xlsx, .xls, .pptx, .ppt, .csv, .html, .md, .txt
 import io
 import logging
 import os
+import re
 import socketserver
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -31,6 +43,17 @@ logger = logging.getLogger("docreader-slim")
 # Try to import markitdown (lazy import in handler)
 _markitdown = None
 
+# Bounded inline-byte protocol: refuse documents above this cap before
+# staging. The research path's own client-side design cap is 25 MiB
+# (researchFetchSizeLimit); the sidecar keeps headroom above it.
+MAX_INLINE_BYTES = int(os.environ.get("DOCREADER_MAX_INLINE_BYTES", str(32 * 1024 * 1024)))
+# Private staging directory for inline bytes (compose mounts docreader_tmp
+# here). Kept inside this container — never read caller-supplied paths.
+STAGING_DIR = os.environ.get("DOCREADER_STAGING_DIR", "/tmp/docreader")
+# The staged filename suffix must be a boring extension token; it feeds
+# format detection only and never contains path separators.
+_SUFFIX_RE = re.compile(r"^\.[a-z0-9]{1,10}$")
+
 def get_markitdown():
     global _markitdown
     if _markitdown is None:
@@ -41,6 +64,35 @@ def get_markitdown():
             logger.error("Failed to init MarkItDown: %s", e)
             raise
     return _markitdown
+
+
+def read_exact(rfile, size: int) -> bytes:
+    """Read exactly `size` bytes from the buffered socket file."""
+    chunks = []
+    remaining = size
+    while remaining > 0:
+        chunk = rfile.read(min(remaining, 1024 * 1024))
+        if not chunk:
+            raise IOError(f"client sent {size - remaining} of {size} bytes and disconnected")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def parse_inline(payload: bytes, suffix: str) -> str:
+    """Stage inline bytes in the private staging dir, parse, and clean up."""
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=STAGING_DIR, prefix="inline-", suffix=suffix, delete=False) as staged:
+            path = staged.name
+            staged.write(payload)
+        return parse_file(path)
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def parse_file(file_path: str) -> str:
@@ -119,7 +171,7 @@ def parse_file(file_path: str) -> str:
 
 
 class DocreaderHandler(socketserver.StreamRequestHandler):
-    """Handle a single TCP connection: read PARSE command, respond with text."""
+    """Handle a single TCP connection: read PARSE/PARSEBYTES, respond with text."""
 
     def handle(self):
         try:
@@ -128,6 +180,9 @@ class DocreaderHandler(socketserver.StreamRequestHandler):
                 return
 
             cmd = line.decode("utf-8", errors="replace").strip()
+            if cmd.startswith("PARSEBYTES "):
+                self._handle_inline(cmd)
+                return
             if not cmd.startswith("PARSE "):
                 self.wfile.write(b"ERROR: Unknown command\n")
                 return
@@ -146,6 +201,32 @@ class DocreaderHandler(socketserver.StreamRequestHandler):
                 self.wfile.write(f"ERROR: {e}".encode("utf-8"))
             except Exception:
                 pass
+
+    def _handle_inline(self, cmd: str):
+        """Bounded inline-byte request: 'PARSEBYTES <size> <.ext>' + raw bytes."""
+        parts = cmd.split()
+        if len(parts) < 2 or len(parts) > 3:
+            self.wfile.write(b"ERROR: PARSEBYTES expects '<size> <.ext>'\n")
+            return
+        if not parts[1].isdigit():
+            self.wfile.write(b"ERROR: PARSEBYTES size must be an integer\n")
+            return
+        size = int(parts[1])
+        suffix = parts[2] if len(parts) == 3 else ".bin"
+        if size <= 0 or size > MAX_INLINE_BYTES:
+            self.wfile.write(
+                f"ERROR: PARSEBYTES size {size} outside (0, {MAX_INLINE_BYTES}]\n".encode("utf-8"))
+            return
+        if not _SUFFIX_RE.match(suffix):
+            self.wfile.write(b"ERROR: PARSEBYTES suffix must match .[a-z0-9]{1,10}\n")
+            return
+
+        payload = read_exact(self.rfile, size)
+        logger.info("PARSEBYTES request: %d bytes as %s", size, suffix)
+        content = parse_inline(payload, suffix)
+        encoded = content.encode("utf-8")
+        self.wfile.write(encoded)
+        logger.info("PARSEBYTES response: %d bytes", len(encoded))
 
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -167,7 +248,8 @@ def main():
 
     server = ThreadedTCPServer((host, port), DocreaderHandler)
     logger.info("Slim Docreader TCP server starting on %s:%d", host, port)
-    logger.info("Protocol: 'PARSE <filepath>\\n' -> text content")
+    logger.info("Protocol: 'PARSE <filepath>\\n' or 'PARSEBYTES <size> <ext>\\n'+bytes -> text content")
+    logger.info("Inline-byte cap: %d bytes; staging dir: %s", MAX_INLINE_BYTES, STAGING_DIR)
     logger.info("Supported formats: pdf, docx, doc, xlsx, xls, pptx, ppt, csv, html, md, txt, json")
 
     try:

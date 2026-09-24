@@ -126,7 +126,7 @@ func (r *OfflineReplayer) Replay(ctx context.Context, runID, nodeID string, atte
 	// 8. Build the evidence view (deterministic projection of saved artifacts).
 	var evidenceView *EvidenceView
 	if r.Content != nil {
-		if ev, err := r.renderEvidenceView(ctx, run, node); err == nil {
+		if ev, err := r.renderEvidenceView(ctx, run, node, &plan.Envelope.ExecutablePlan); err == nil {
 			evidenceView = &ev
 		}
 	}
@@ -241,7 +241,7 @@ func (r *OfflineReplayer) reconstructInput(
 
 	// Evidence lines from saved artifacts (deterministic projection).
 	if r.Content != nil {
-		if evidenceView, err := r.renderEvidenceView(ctx, run, node); err == nil {
+		if evidenceView, err := r.renderEvidenceView(ctx, run, node, &plan.Envelope.ExecutablePlan); err == nil {
 			for _, item := range evidenceView.Items {
 				line := item.ClaimOrTopic
 				if item.SourceRef != "" {
@@ -314,8 +314,11 @@ func defaultReplayContextContract() writingplan.ContextContract {
 
 // renderEvidenceView loads saved artifacts and runtime evidence events, then
 // projects them into a deterministic EvidenceView. This is the same logic as
-// StoreContextSource.renderEvidenceView but reads from the store directly.
-func (r *OfflineReplayer) renderEvidenceView(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode) (EvidenceView, error) {
+// StoreContextSource.renderEvidenceView — including the WP1/WP2 selection
+// (own artifacts + resolved input references + transitive plan-dependency
+// products) — but reads from the already-loaded persisted plan instead of
+// re-fetching the active plan record.
+func (r *OfflineReplayer) renderEvidenceView(ctx context.Context, run writingstore.RuntimeRun, node writingplan.PlanNode, plan *writingplan.ExecutablePlan) (EvidenceView, error) {
 	if r.Store == nil {
 		return EvidenceView{}, fmt.Errorf("store is required for evidence view")
 	}
@@ -323,12 +326,7 @@ func (r *OfflineReplayer) renderEvidenceView(ctx context.Context, run writingsto
 	if err != nil {
 		return EvidenceView{}, fmt.Errorf("list run artifacts: %w", err)
 	}
-	var nodeArtifacts []writingstore.ArtifactRecord
-	for _, art := range allArtifacts {
-		if art.NodeID == node.NodeID {
-			nodeArtifacts = append(nodeArtifacts, art)
-		}
-	}
+	nodeArtifacts := selectEvidenceArtifacts(allArtifacts, node, plan)
 
 	var evidenceSources EvidenceSources
 	for _, art := range nodeArtifacts {
@@ -505,6 +503,9 @@ func (r *OfflineReplayer) loadResearchPackEvidence(ctx context.Context, art writ
 			ClaimID: c.ClaimID, ClaimText: c.Text,
 			Kind: c.Kind, PaperID: c.PaperID,
 			ReviewStatus: c.ReviewStatus, EvidenceIDs: c.EvidenceIDs,
+			// Same pack-revision binding as the live compile path so replay
+			// reconstructs byte-identical evidence lines (envelope hash match).
+			ContentHash: art.ContentHash,
 		}
 	}
 	return result, nil

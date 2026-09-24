@@ -119,8 +119,13 @@ func (c *LLMClient) chatCompletionsStream(ctx context.Context, req *LLMRequest, 
 			if err == io.EOF {
 				break
 			}
-			slog.Error("stream read error", "error", err)
-			break
+			// 流中断必须作为错误向上传播：把部分文本当成功返回会让调用方
+			// 无法区分「生成完成」和「流中断」（批量评估里表现为空正文被
+			// 记成空答案而不是基础设施失败）。已流出的部分文本仍随错误返回，
+			// 供调用方记录/诊断，但语义是失败。
+			slog.Error("stream read error", "error", err, "partial_content_length", fullText.Len())
+			return fullText.String(), totalTokens, finishReason,
+				fmt.Errorf("SSE stream read failed: %w", err)
 		}
 	}
 

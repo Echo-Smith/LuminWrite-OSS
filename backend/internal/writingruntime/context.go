@@ -199,17 +199,14 @@ func (source StoreContextSource) renderEvidenceView(ctx context.Context, run wri
 	if source.Store == nil {
 		return EvidenceView{}, fmt.Errorf("store is required for evidence view")
 	}
-	// Load all artifacts for the run, then filter to this node.
+	// Load all artifacts for the run, then select the ones this node's view
+	// projects: its own outputs, its resolved input references, and the
+	// products of its transitive plan dependencies (WP1/WP2 closure).
 	allArtifacts, err := source.Store.ListRunArtifacts(ctx, run.RunID)
 	if err != nil {
 		return EvidenceView{}, fmt.Errorf("list run artifacts: %w", err)
 	}
-	var nodeArtifacts []writingstore.ArtifactRecord
-	for _, art := range allArtifacts {
-		if art.NodeID == node.NodeID {
-			nodeArtifacts = append(nodeArtifacts, art)
-		}
-	}
+	nodeArtifacts := selectEvidenceArtifacts(allArtifacts, node, source.loadEvidencePlan(ctx, run))
 
 	// Build evidence sources from node artifacts.
 	var evidenceSources EvidenceSources
@@ -276,6 +273,112 @@ func (source StoreContextSource) renderEvidenceView(ctx context.Context, run wri
 
 	renderer := EvidenceViewRenderer{}
 	return renderer.Render(node.NodeID, 0, evidenceSources), nil
+}
+
+// loadEvidencePlan resolves the run's active plan for the evidence view's
+// dependency walk. It is best-effort by design: a missing or unloadable plan
+// degrades the view to the node's own artifacts plus its input references —
+// infrastructure gaps never fail context compilation.
+func (source StoreContextSource) loadEvidencePlan(ctx context.Context, run writingstore.RuntimeRun) *writingplan.ExecutablePlan {
+	record, err := source.Store.LoadActivePlan(ctx, run.RunID)
+	if err != nil {
+		return nil
+	}
+	return &record.Envelope.ExecutablePlan
+}
+
+// selectEvidenceArtifacts chooses the artifacts one node's evidence view
+// projects, deterministically (input order preserved, identity deduped):
+//
+//  1. the node's own artifacts — a retry attempt re-projects its earlier
+//     outputs (the pre-closure behavior, kept as a subset);
+//  2. the node's resolved input references — the same
+//     latest-version-per-type rule selectInputs applies at dispatch, so the
+//     view covers exactly what the node will read;
+//  3. the products of the node's TRANSITIVE plan dependencies — the plan
+//     graph is the provenance contract, so a downstream node (research
+//     draft, quality) sees the upstream research_evidence_pack through its
+//     dependency chain even when the pack is not one of its declared input
+//     types.
+//
+// plan may be nil (plan record unavailable): the dependency products then
+// contribute nothing and the view degrades to (1)+(2). The offline replayer
+// calls this with the persisted plan so replay stays byte-consistent with
+// what compileNodeContext assembled.
+func selectEvidenceArtifacts(allArtifacts []writingstore.ArtifactRecord, node writingplan.PlanNode, plan *writingplan.ExecutablePlan) []writingstore.ArtifactRecord {
+	selected := map[string]bool{}
+	key := func(art writingstore.ArtifactRecord) string {
+		return art.ArtifactID + "\x00" + fmt.Sprint(art.Version)
+	}
+	include := func(art writingstore.ArtifactRecord) { selected[key(art)] = true }
+
+	// (1) Own artifacts.
+	for _, art := range allArtifacts {
+		if art.NodeID == node.NodeID {
+			include(art)
+		}
+	}
+	// (2) Resolved input references: latest version per declared input type
+	// (mirrors orchestrator selectInputs; ListRunArtifacts order is stable).
+	latest := map[writingplan.ArtifactType]writingstore.ArtifactRecord{}
+	for _, art := range allArtifacts {
+		artifactType := writingplan.ArtifactType(art.ArtifactType)
+		if current, ok := latest[artifactType]; !ok || art.Version > current.Version {
+			latest[artifactType] = art
+		}
+	}
+	for _, artifactType := range node.InputArtifactTypes {
+		if art, ok := latest[artifactType]; ok {
+			include(art)
+		}
+	}
+	// (3) Transitive plan-dependency products. Only nodes that exist in the
+	// plan graph count as dependency producers; within those products the
+	// same latest-version-per-type freshness rule as the input resolution
+	// applies, so a re-read's stale pack revision never shadows the current
+	// one.
+	if plan != nil {
+		planNodes := map[string]bool{}
+		for _, planNode := range plan.Nodes {
+			planNodes[planNode.NodeID] = true
+		}
+		dependencies := map[string]bool{}
+		pending := append([]string(nil), node.DependsOn...)
+		for len(pending) > 0 {
+			dependency := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			if dependencies[dependency] {
+				continue
+			}
+			dependencies[dependency] = true
+			for _, planNode := range plan.Nodes {
+				if planNode.NodeID == dependency {
+					pending = append(pending, planNode.DependsOn...)
+				}
+			}
+		}
+		latestDependency := map[writingplan.ArtifactType]writingstore.ArtifactRecord{}
+		for _, art := range allArtifacts {
+			if !dependencies[art.NodeID] || !planNodes[art.NodeID] {
+				continue
+			}
+			artifactType := writingplan.ArtifactType(art.ArtifactType)
+			if current, ok := latestDependency[artifactType]; !ok || art.Version > current.Version {
+				latestDependency[artifactType] = art
+			}
+		}
+		for _, art := range latestDependency {
+			include(art)
+		}
+	}
+
+	result := make([]writingstore.ArtifactRecord, 0, len(selected))
+	for _, art := range allArtifacts {
+		if selected[key(art)] {
+			result = append(result, art)
+		}
+	}
+	return result
 }
 
 // loadSourcePackEvidence parses a source_pack artifact into SourcePackEvidence.
@@ -385,6 +488,10 @@ func (source StoreContextSource) loadResearchPackEvidence(ctx context.Context, a
 			ClaimID: c.ClaimID, ClaimText: c.Text,
 			Kind: c.Kind, PaperID: c.PaperID,
 			ReviewStatus: c.ReviewStatus, EvidenceIDs: c.EvidenceIDs,
+			// The pack revision this claim was read from: it must survive
+			// into the envelope's source_evidence block (envelope hash
+			// coverage, WP1/WP2 closure).
+			ContentHash: art.ContentHash,
 		}
 	}
 	return result, nil

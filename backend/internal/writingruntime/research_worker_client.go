@@ -10,10 +10,13 @@ import (
 )
 
 // maxParsePayloadBytes is the F4-aligned parse ceiling (review 2026-09-08),
-// kept at the 25 MiB design cap through the in-process migration. The parse
-// executor rejects oversized documents BEFORE any download or parse work, so
-// a file the 25 MiB fetch cap allowed through can never trip the parser
-// boundary mid-operation.
+// kept at the 25 MiB design cap through the in-process migration. The
+// document travels base64-inlined, so a full 25 MiB original
+// (researchFetchSizeLimit / downloader.DefaultSizeLimit) encodes to ≈33.4
+// MiB plus the JSON envelope: the parse executor rejects oversized documents
+// BEFORE building the request, so a file the 25 MiB fetch cap allowed
+// through can never trip the parser boundary mid-operation, and callers get
+// a typed error instead of an oversized payload nobody can accept.
 const maxParsePayloadBytes = 25 * 1024 * 1024
 
 // Typed parse/read access to the in-process scholar client, layered on the
@@ -22,7 +25,9 @@ const maxParsePayloadBytes = 25 * 1024 * 1024
 // adapters in the runtime package so the scholar client's T04 surface stays
 // frozen; promoting them into internal/scholar is a mechanical follow-up.
 
-// ParseOutputs is the parse operation's outputs envelope.
+// ParseOutputs mirrors the parse operation's outputs as emitted by the
+// in-process Go scholar pipeline (internal/scholar parser.go/reader.go —
+// the private-network Python worker this once mirrored is gone).
 type ParseOutputs struct {
 	Blocks   []ParsedBlock `json:"blocks"`
 	Coverage ParseCoverage `json:"coverage"`
@@ -49,10 +54,10 @@ type ParseCoverage struct {
 	LikelyScanned   *bool  `json:"likely_scanned"`
 }
 
-// ReadOutputs is the read operation's outputs envelope. The scholar
-// executor has already self-validated every evidence entry against the
-// request blocks; the runtime re-verifies (research_pack.go) before
-// anything enters a pack.
+// ReadOutputs mirrors the read operation's outputs (in-process Go scholar
+// pipeline, internal/scholar reader.go). The reader has already
+// self-validated every evidence entry against the request blocks; the
+// runtime re-verifies (research_pack.go) before anything enters a pack.
 type ReadOutputs struct {
 	PaperID             string              `json:"paper_id"`
 	Claims              []ReaderClaimOutput `json:"claims"`
@@ -119,10 +124,10 @@ func (adapter ScholarParseRead) FetchFullText(ctx context.Context, paperID, oaUR
 	return adapter.Client.FetchFullText(ctx, paperID, oaURL, sizeLimit, opts...)
 }
 
-// ParseDocument calls the worker parse op with an inline base64 document.
+// ParseDocument calls the parse op with an inline base64 document.
 // Documents above the 25 MiB design cap are rejected client-side (F4): the
-// encoded request could not fit the worker's 40 MiB body cap anyway, and a
-// typed error beats a 413 the caller cannot distinguish from a dead worker.
+// encoded request could not fit the transport anyway, and a typed error
+// beats an ambiguous transport failure.
 func (adapter ScholarParseRead) ParseDocument(ctx context.Context, document []byte, mediaType, parserVersion string, opts ...scholar.CallOption) (*ParseOutputs, *scholar.OperationResponse, error) {
 	if len(document) > maxParsePayloadBytes {
 		return nil, nil, &scholar.Error{Kind: scholar.ErrProtocol, Code: "client_document_too_large",

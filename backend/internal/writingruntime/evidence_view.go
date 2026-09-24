@@ -126,6 +126,12 @@ type ResearchPackEvidence struct {
 	ReviewStatus string
 	EvidenceIDs  []string
 	SourceRefs   []string
+	// ContentHash is the pack artifact's content hash. It rides on every
+	// claim item so the envelope's source_evidence block — and therefore the
+	// envelope hash — binds each claim to the exact pack revision it was
+	// compiled from (WP1/WP2 closure: the hash must survive into the
+	// persisted ContextEnvelope of draft/quality nodes).
+	ContentHash string
 }
 
 // Render produces a deterministic EvidenceView from the provided artifacts.
@@ -253,8 +259,12 @@ func (r *EvidenceViewRenderer) Render(nodeID string, attempt int, sources Eviden
 		item := EvidenceViewItem{
 			ClaimOrTopic:    rp.ClaimText,
 			SupportStrength: supportStrength,
-			ObservedAt:      time.Time{}, // research packs don't carry a timestamp directly
-			Freshness:       "as_of_run",
+			// The pack's content hash: tamper-evident binding from the claim
+			// item to the exact pack revision (also feeds the deterministic
+			// evidence id below).
+			ContentHash: rp.ContentHash,
+			ObservedAt:  time.Time{}, // research packs don't carry a timestamp directly
+			Freshness:   "as_of_run",
 		}
 		if len(rp.SourceRefs) > 0 {
 			item.SourceRef = strings.Join(rp.SourceRefs, "; ")

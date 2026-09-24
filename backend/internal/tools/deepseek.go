@@ -671,8 +671,11 @@ func (c *LLMClient) chatStreamRound(
 			if err == io.EOF {
 				break
 			}
-			slog.Error("stream read error", "error", err)
-			break
+			// 流中断作为轮次失败向上传播（ChatWithTools 会将其包装为
+			// "agent loop iteration N failed"），不把部分文本当成功。
+			slog.Error("stream read error", "error", err, "partial_content_length", contentBuf.Len())
+			return LLMMessage{}, totalTokens, cacheHitTokens, finishReason,
+				fmt.Errorf("SSE stream read failed: %w", err)
 		}
 	}
 

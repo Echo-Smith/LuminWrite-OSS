@@ -2,13 +2,19 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
 
 func TestWABenchJudgeRequiresFiveOneToFiveScores(t *testing.T) {
@@ -217,5 +223,138 @@ func assertWABenchFailureNotScored(t *testing.T, db *database.DB, runID, failure
 	}
 	if total != 20 || reviews != 19 || failures != 1 || gate != "fail" {
 		t.Fatalf("total=%d reviews=%d failures=%d gate=%s", total, reviews, failures, gate)
+	}
+}
+
+// ── Judge 修复重试 ───────────────────────────────────────────────────────────
+
+var validJudgeJSON = `{"scores":{"taskCompliance":4,"sourceFidelity":4,"structureReasoning":4,"styleConsistency":4,"directUsability":4},"feedback":"ok","symptoms":[],"primaryRootCause":"model","secondaryRootCauses":[],"redTeamCompromised":false}`
+
+// newJudgeLLMTestServer replays the given responses in order for
+// POST /chat/completions and records how many calls arrived.
+func newJudgeLLMTestServer(t *testing.T, responses []string) (*httptest.Server, *int) {
+	t.Helper()
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		index := calls
+		calls++
+		mu.Unlock()
+		if index >= len(responses) {
+			index = len(responses) - 1
+		}
+		body, _ := json.Marshal(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": responses[index]}, "finish_reason": "stop"},
+			},
+			"usage": map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+func newJudgeTestInput() WABenchJudgeInput {
+	return WABenchJudgeInput{
+		Case:      database.WABenchCase{CaseID: "case_repair", TaskType: "writing", RubricWeights: map[string]int{"taskCompliance": 20, "sourceFidelity": 20, "structureReasoning": 20, "styleConsistency": 20, "directUsability": 20}},
+		Suite:     database.WABenchSuite{Partition: "development"},
+		Candidate: database.WABenchCandidate{ModelManifest: map[string]interface{}{"model": "test-model"}},
+		Article:   "正文内容",
+		Routing:   map[string]interface{}{},
+	}
+}
+
+func TestLLMWABenchJudgeRepairsCorruptThenInvalidEnumResponses(t *testing.T) {
+	srv, calls := newJudgeLLMTestServer(t, []string{
+		// 第一轮：markdown 围栏里是损坏 JSON（缺右括号）
+		"```json\n{\"scores\":{\"taskCompliance\":4,\"sourceFidelity\":4\n```",
+		// 第二轮：JSON 合法但枚举值越界
+		`{"scores":{"taskCompliance":4,"sourceFidelity":4,"structureReasoning":4,"styleConsistency":4,"directUsability":4},"feedback":"x","primaryRootCause":"hallucination","redTeamCompromised":false}`,
+		// 第三轮（修复重试第 2 次）：合法
+		validJudgeJSON,
+	})
+	client := tools.NewLLMClient(srv.URL, "test", "test-model", 4096, 0.1, 10*time.Second)
+	judge := NewLLMWABenchJudge(client)
+
+	result, err := judge.Judge(context.Background(), newJudgeTestInput())
+	if err != nil {
+		t.Fatalf("judge should recover within the repair budget: %v", err)
+	}
+	if result.PrimaryRootCause != "model" || result.Scores.TaskCompliance != 4 {
+		t.Fatalf("unexpected repaired result: %+v", result)
+	}
+	if *calls != 3 {
+		t.Fatalf("judge calls = %d, want 3 (initial + 2 repairs)", *calls)
+	}
+}
+
+func TestLLMWABenchJudgeRepairRetriesExhaustedIsInfraFailure(t *testing.T) {
+	srv, calls := newJudgeLLMTestServer(t, []string{
+		`{"scores":{"taskCompliance":99,"sourceFidelity":4,"structureReasoning":4,"styleConsistency":4,"directUsability":4},"feedback":"x","redTeamCompromised":false}`,
+	})
+	client := tools.NewLLMClient(srv.URL, "test", "test-model", 4096, 0.1, 10*time.Second)
+	judge := NewLLMWABenchJudge(client)
+
+	_, err := judge.Judge(context.Background(), newJudgeTestInput())
+	if err == nil {
+		t.Fatal("permanently invalid judge responses must surface as an error")
+	}
+	if !strings.Contains(err.Error(), "repair attempts") {
+		t.Fatalf("error should mention exhausted repair attempts: %v", err)
+	}
+	if *calls != 1+wabenchJudgeMaxRepairRetries {
+		t.Fatalf("judge calls = %d, want %d (bounded, no runaway retries)", *calls, 1+wabenchJudgeMaxRepairRetries)
+	}
+}
+
+// ── 空终答失败码 ─────────────────────────────────────────────────────────────
+
+func TestWABenchGenerationFailureClassification(t *testing.T) {
+	cases := []struct {
+		name          string
+		generationErr error
+		agentStatus   engine.ExecutionStatus
+		article       string
+		wantCode      string
+	}{
+		{"empty article with clean completion is infra-shaped", nil, engine.StatusCompleted, "  \n", "generation.empty"},
+		{"explicit generation error stays generic failure", errors.New("stream cut"), engine.StatusCompleted, "", "generation.failed"},
+		{"non-completed status stays generic failure", nil, engine.StatusFailed, "", "generation.failed"},
+		{"non-empty article with error stays generic failure", errors.New("boom"), engine.StatusCompleted, "有正文", "generation.failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, symptom := classifyWABenchGenerationFailure(tc.generationErr, tc.agentStatus, tc.article)
+			if code != tc.wantCode {
+				t.Fatalf("code = %q, want %q", code, tc.wantCode)
+			}
+			if symptom == "" {
+				t.Fatal("symptom must not be empty")
+			}
+		})
+	}
+}
+
+func TestWABenchGateDecisionSeparatesJudgeInfraFromHardFailures(t *testing.T) {
+	suite := database.WABenchSuite{Partition: "development"}
+	decision := BuildWABenchGateDecision(suite, wabenchRunAccumulator{
+		totalCases: 3, completedCases: 3, stageFailures: 1,
+		judgeInfraFailures: 1, scoredCases: 2, weightedScoreSum: 190,
+	})
+	if decision.Decision != "fail" {
+		t.Fatal("judge infra failure must fail the gate")
+	}
+	reasons := strings.Join(decision.Evidence["reasons"].([]string), ",")
+	if !strings.Contains(reasons, "judge_infra_failures") {
+		t.Fatalf("gate reasons should attribute judge infra failures: %v", decision.Evidence["reasons"])
+	}
+	if strings.Contains(reasons, "hard_failures") {
+		t.Fatalf("judge infra failure must not be counted as a candidate hard failure: %v", decision.Evidence["reasons"])
+	}
+	if got, _ := decision.Evidence["judgeInfraFailures"].(int); got != 1 {
+		t.Fatalf("gate evidence judgeInfraFailures = %v, want 1", decision.Evidence["judgeInfraFailures"])
 	}
 }

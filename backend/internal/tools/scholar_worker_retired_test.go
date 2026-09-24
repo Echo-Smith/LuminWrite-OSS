@@ -46,8 +46,8 @@ var retiredScholarWhitelist = map[string]bool{
 	"backend/internal/tools/scholar_worker_retired_test.go":  true,
 }
 
-// retiredScholarSkipDirs are never scanned: VCS internals, dependency trees
-// and build output are not repository content.
+// retiredScholarSkipDirs are never scanned: VCS internals, dependency trees,
+// build output and local tool state are not repository content.
 var retiredScholarSkipDirs = map[string]bool{
 	".git":         true,
 	"node_modules": true,
@@ -56,6 +56,11 @@ var retiredScholarSkipDirs = map[string]bool{
 	"dist":         true,
 	"build":        true,
 	"coverage":     true,
+	// .mimosa is the git-ignored state directory of a local editor plugin;
+	// it caches snapshots of old file contents and is regenerated live, so
+	// scanning it produces noise about files that were never part of the
+	// repository.
+	".mimosa": true,
 }
 
 func TestRepoHasNoRetiredScholarWorkerReferences(t *testing.T) {

@@ -151,7 +151,11 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
   fail-closed end to end (off by default). The scholar operations execute
   in-process inside the Go backend (`backend/internal/scholar`); PDF parsing
   goes through the docreader sidecar — `SCHOLAR_WORKER_URL` is only the
-  enablement signal, there is no separate worker service;
+  enablement signal, there is no separate worker service; context closure
+  (WP1/WP2): the research evidence pack reaches downstream nodes (outline,
+  draft, quality) through input references and transitive plan dependencies
+  and lands in their ContextEnvelope, with evidence lines bound to the pack
+  content hash;
 - **AR-012 candidate evaluation** (experimental): external review sidecar produces
   isolated candidate drafts and mechanical comparison metrics (sidecar is a private
   component, not distributed here); an optional **different-vendor claim verifier**
@@ -180,7 +184,7 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
 |---|---|
 | Backend | Go 1.25 · chi · SSE (net/http) · pgx/v5 · go-redis (deliberately lean deps) |
 | Database | PostgreSQL 17 (ParadeDB image: pgvector + pg_bm25) · Redis 7 |
-| Doc parsing | docreader sidecar (markitdown, TCP, ~150MB) |
+| Doc parsing | docreader sidecar (markitdown, TCP, ~150MB); PDF parsing now uses a bounded inline-byte protocol — the backend streams document bytes over `PARSEBYTES` (32 MiB cap) instead of staging a temp file path |
 | Models | OpenAI-compatible `/chat/completions` (DeepSeek / SenseNova verified, [guide](docs/provider-configuration.md)) |
 | Embedding | DashScope text-embedding-v3 (optional; graceful degradation when unset) |
 | Frontend | React 19 · Vite 7 · TypeScript · Tailwind · Tiptap/ProseMirror · zustand |

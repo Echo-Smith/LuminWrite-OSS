@@ -141,6 +141,8 @@ cd frontend && npm ci && npm test && npm run build
   证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）。scholar
   运算在 backend Go 进程内执行（`backend/internal/scholar`），PDF 解析经
   docreader sidecar——`SCHOLAR_WORKER_URL` 仅作为启用信号，无独立 worker 服务；
+  上下文闭环（WP1/WP2）：研究证据包随输入引用与传递计划依赖进入下游节点
+  （提纲/成稿/质量）的 ContextEnvelope，证据行绑定包内容哈希；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
   （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
   `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿中带引用的
@@ -162,7 +164,7 @@ cd frontend && npm ci && npm test && npm run build
 |---|---|
 | 后端 | Go 1.25 · chi · SSE（net/http）· pgx/v5 · go-redis（依赖面刻意克制） |
 | 数据库 | PostgreSQL 17（ParadeDB 镜像：pgvector + pg_bm25）· Redis 7 |
-| 文档解析 | docreader sidecar（markitdown，TCP 协议，~150MB） |
+| 文档解析 | docreader sidecar（markitdown，TCP 协议，~150MB）；PDF 解析已升级为有界字节协议——backend 以 `PARSEBYTES` 内联传输文档字节（32 MiB 上限），不再落盘临时路径 |
 | 模型 | OpenAI 兼容 `/chat/completions`（DeepSeek / SenseNova 已验证，[切换指南](docs/provider-configuration.md)） |
 | Embedding | DashScope text-embedding-v3（可选，未配置自动降级） |
 | 前端 | React 19 · Vite 7 · TypeScript · Tailwind · Tiptap/ProseMirror · zustand |

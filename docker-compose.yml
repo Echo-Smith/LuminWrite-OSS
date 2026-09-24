@@ -53,6 +53,10 @@ services:
   # ── Docreader (document parsing sidecar, TCP port 50051) ──
   # Lightweight document parsing. Called by backend via TCP protocol.
   # Replaces the 5.53GB wechatopenai/weknora-docreader with a ~150MB slim image.
+  # Transport: the backend streams document bytes inline
+  # ("PARSEBYTES <size> <ext>\n" + raw bytes) and the sidecar stages them in
+  # ITS OWN staging dir below — no shared volume with backend is needed (a
+  # backend-local path would not exist inside this container).
   # Supports: PDF, Word (.docx/.doc), Excel (.xlsx/.xls), PowerPoint (.pptx/.ppt),
   #           HTML, Markdown, CSV, JSON, plain text.
   docreader:
@@ -62,7 +66,12 @@ services:
     image: luminbuddy-v2-docreader:latest
     platform: linux/amd64
     container_name: luminbuddy-v2-docreader
+    environment:
+      # Bounded inline-byte protocol cap (backend pre-rejects at 25 MiB).
+      DOCREADER_MAX_INLINE_BYTES: "33554432"
     volumes:
+      # Private staging dir for inline document bytes (written and removed by
+      # the sidecar itself; nothing is shared with other services).
       - docreader_tmp:/tmp/docreader
     networks:
       - internal

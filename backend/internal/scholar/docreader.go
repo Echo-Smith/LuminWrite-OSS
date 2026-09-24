@@ -1,20 +1,34 @@
 package scholar
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"time"
 )
 
+// maxUploadDocumentBytes is the bounded byte protocol's client-side cap. It
+// matches the research fetch ceiling (researchFetchSizeLimit /
+// downloader.DefaultSizeLimit = 25 MiB): a document the downloader allowed
+// through must fit the parse transport, and anything larger is rejected
+// locally with a typed error instead of shipping ~33 MiB of base64 or
+// tripping the sidecar's cap.
+const maxUploadDocumentBytes = 25 * 1024 * 1024
+
 // DocreaderParser extracts PDF text through the docreader TCP sidecar — the
-// same parsing surface knowledge-base uploads use (docker/docreader,
-// protocol: send "PARSE <filepath>\n", read UTF-8 text until close). One
-// parsing surface for both KB and research means extraction quality is
-// tuned in one place. The sidecar receives bytes via a temp file in a
-// private directory; it never sees caller-controlled paths beyond that.
+// same parsing surface knowledge-base uploads use (docker/docreader).
+//
+// Transport (bounded inline-byte protocol): the client sends
+// "PARSEBYTES <size> .pdf\n" followed by exactly <size> raw document bytes.
+// The sidecar stages those bytes inside its own container (its private
+// /tmp/docreader staging volume), parses, and answers with UTF-8 text until
+// connection close. No document path ever crosses the wire, so the default
+// compose deployment needs NO shared volume between backend and docreader —
+// the previous path-based protocol sent a backend-local /tmp path the
+// sidecar could not see and every parse degenerated into an empty
+// extraction ("likely scanned").
 //
 // Known trade-off (accepted in the rewrite decision): docreader returns
 // flat extracted text without page boundaries, so parsed PDF blocks carry
@@ -23,11 +37,8 @@ import (
 type DocreaderParser struct {
 	// Addr is the docreader TCP address, e.g. "docreader:50051".
 	Addr string
-	// Timeout bounds one extraction call.
+	// Timeout bounds one extraction call (dial gets its own 10s bound).
 	Timeout time.Duration
-	// TempDir is the private staging directory for document bytes; empty
-	// means os.TempDir().
-	TempDir string
 }
 
 // NewDocreaderParser builds a parser for a docreader sidecar address.
@@ -50,24 +61,16 @@ func (p *DocreaderParser) ExtractText(req extractionContext) (string, *bool, err
 		return "", nil, &ParseError{Code: "parse_extractor_unconfigured",
 			Message: "docreader address is not configured"}
 	}
-	dir := p.TempDir
-	if dir == "" {
-		dir = os.TempDir()
+	// Client-side bound before any bytes move: the sidecar enforces the same
+	// ceiling (DOCREADER_MAX_INLINE_BYTES, 32 MiB by default) but a local
+	// typed error beats a wasted upload and an ambiguous ERROR response.
+	if len(req.Content) == 0 {
+		return "", nil, &ParseError{Code: "parse_document_empty",
+			Message: "document has no bytes to extract"}
 	}
-	// The sidecar is path-based: stage the bytes in a private temp dir. The
-	// filename carries no user input beyond the fixed extension.
-	tmpFile, err := os.CreateTemp(dir, "scholar-parse-*.pdf")
-	if err != nil {
-		return "", nil, docreaderErrorCode(fmt.Errorf("staging document: %w", err))
-	}
-	path := tmpFile.Name()
-	defer os.Remove(path)
-	if _, err := tmpFile.Write(req.Content); err != nil {
-		tmpFile.Close()
-		return "", nil, docreaderErrorCode(fmt.Errorf("writing document: %w", err))
-	}
-	if err := tmpFile.Close(); err != nil {
-		return "", nil, docreaderErrorCode(fmt.Errorf("closing staged document: %w", err))
+	if len(req.Content) > maxUploadDocumentBytes {
+		return "", nil, &ParseError{Code: "parse_document_too_large",
+			Message: fmt.Sprintf("document is %d bytes; the docreader transport allows at most %d bytes (25 MiB design cap)", len(req.Content), maxUploadDocumentBytes)}
 	}
 
 	timeout := p.Timeout
@@ -81,9 +84,16 @@ func (p *DocreaderParser) ExtractText(req extractionContext) (string, *bool, err
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
-	if _, err := fmt.Fprintf(conn, "PARSE %s\n", path); err != nil {
+	// Bounded inline-byte request: header line, then the raw document. The
+	// sidecar reads exactly <size> bytes, stages them in its own container,
+	// and never consults any caller-supplied path.
+	if _, err := fmt.Fprintf(conn, "PARSEBYTES %d .pdf\n", len(req.Content)); err != nil {
 		return "", nil, docreaderErrorCode(err)
 	}
+	if _, err := io.Copy(conn, bytes.NewReader(req.Content)); err != nil {
+		return "", nil, docreaderErrorCode(fmt.Errorf("sending document: %w", err))
+	}
+
 	// The sidecar answers with the parsed text and closes the connection;
 	// cap the read to stay inside the payload ceilings (25 MiB source text
 	// ceiling; the sidecar's markdown output stays below it).
@@ -129,6 +139,3 @@ func trimErrorMarker(text string) string {
 	}
 	return text
 }
-
-// _ keeps filepath referenced for future staging-dir handling.
-var _ = filepath.Join

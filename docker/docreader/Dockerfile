@@ -1,6 +1,10 @@
 # Slim Docreader - Lightweight document parsing sidecar
 # Replaces the 5.53GB wechatopenai/weknora-docreader image with ~200MB
-# Backend communicates via simple TCP protocol: "PARSE <filepath>\n"
+# Backend communicates via simple TCP protocols:
+#   "PARSE <filepath>\n"                       (legacy, same-host paths only)
+#   "PARSEBYTES <size> <ext>\n" + <size> bytes (bounded inline-bytes; the
+#    document is staged inside THIS container's /tmp/docreader, so no shared
+#    volume with the backend is needed)
 # Uses Alpine + pip for smaller image size
 FROM alpine:3.20
 

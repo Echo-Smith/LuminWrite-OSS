@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"sort"
@@ -123,10 +124,48 @@ Agent 输出：
 		{Role: "system", Content: "你是严格的写作评测员。不得输出 JSON 以外的内容。"},
 		{Role: "user", Content: prompt},
 	}
-	text, _, err := llm.Chat(ctx, messages, tools.WithTemperature(0.1))
-	if err != nil {
-		return nil, err
+	// 有界修复重试：盲评偶发返回损坏 JSON 或非法枚举值。第一轮之后把上一次
+	// 的原始回复和校验失败原因回喂给模型，要求其只输出修正后的 JSON；最多
+	// 修复重试 wabenchJudgeMaxRepairRetries 次。重试耗尽仍失败时返回错误，
+	// 由调用方记为 judge 基础设施失败（不记为候选写作失败）。
+	var lastErr error
+	for attempt := 0; attempt <= wabenchJudgeMaxRepairRetries; attempt++ {
+		text, _, err := llm.Chat(ctx, messages, tools.WithTemperature(0.1))
+		if err != nil {
+			return nil, fmt.Errorf("WABench judge LLM call: %w", err)
+		}
+		result, parseErr := parseWABenchJudgeResponse(text)
+		if parseErr == nil {
+			if attempt > 0 {
+				slog.Warn("WABench judge response repaired",
+					"attempt", attempt+1, "caseId", input.Case.CaseID)
+			}
+			return result, nil
+		}
+		lastErr = parseErr
+		slog.Warn("WABench judge response invalid, retrying with feedback",
+			"attempt", attempt+1,
+			"maxAttempts", wabenchJudgeMaxRepairRetries+1,
+			"caseId", input.Case.CaseID,
+			"error", parseErr)
+		messages = append(messages,
+			tools.LLMMessage{Role: "assistant", Content: text},
+			tools.LLMMessage{Role: "user", Content: wabenchJudgeRepairInstruction(parseErr)},
+		)
 	}
+	return nil, fmt.Errorf("WABench judge response invalid after %d repair attempts: %w",
+		wabenchJudgeMaxRepairRetries, lastErr)
+}
+
+// wabenchJudgeMaxRepairRetries bounds how many times the judge may retry with
+// its own invalid response and the validation error fed back (1 initial call
+// + 2 repair attempts).
+const wabenchJudgeMaxRepairRetries = 2
+
+// parseWABenchJudgeResponse strips markdown fences, decodes the JSON object
+// and validates scores/enums in one step. The returned error is what gets fed
+// back to the model on the next repair attempt.
+func parseWABenchJudgeResponse(text string) (*WABenchJudgeResult, error) {
 	jsonText := tools.ExtractJSONObject(text)
 	if jsonText == "" {
 		return nil, fmt.Errorf("judge response did not contain JSON")
@@ -139,6 +178,15 @@ Agent 输出：
 		return nil, err
 	}
 	return &result, nil
+}
+
+func wabenchJudgeRepairInstruction(parseErr error) string {
+	return fmt.Sprintf(`你上一次的输出不是合法的评审 JSON，校验失败原因：%v
+
+请重新输出修正后的结果：只输出一个 JSON 对象，不要 markdown 围栏、不要解释文字。要求：
+1. 五项分数 taskCompliance/sourceFidelity/structureReasoning/styleConsistency/directUsability 都必须是 1 到 5 的整数；
+2. primaryRootCause 与 secondaryRootCauses 只能取 input、retrieval、prompt、memory、tool、model、interaction 之一（可为空字符串/空数组）；
+3. redTeamCompromised 必须是布尔值。`, parseErr)
 }
 
 func ValidateWABenchJudgeResult(result WABenchJudgeResult) error {
@@ -245,6 +293,7 @@ type wabenchRunAccumulator struct {
 	completedCases     int
 	stageFailures      int
 	hardFailureCases   int
+	judgeInfraFailures int
 	qualityFailures    int
 	scoredCases        int
 	weightedScoreSum   float64
@@ -306,6 +355,9 @@ func (s *WABenchEvaluationService) ExecuteRun(ctx context.Context, runID string)
 			if result.stageFailure {
 				accumulator.stageFailures++
 			}
+			if result.judgeInfraFailure {
+				accumulator.judgeInfraFailures++
+			}
 			if result.hardFailure {
 				accumulator.hardFailureCases++
 			}
@@ -345,6 +397,7 @@ func (s *WABenchEvaluationService) ExecuteRun(ctx context.Context, runID string)
 type wabenchCaseResult struct {
 	stageFailure       bool
 	hardFailure        bool
+	judgeInfraFailure  bool
 	qualityScored      bool
 	qualityPassed      bool
 	weightedScore      float64
@@ -418,7 +471,15 @@ func (s *WABenchEvaluationService) evaluateCase(ctx context.Context, execution d
 	output.Checks = append(output.Checks, buildContentChecks(item, trace.Article)...)
 
 	if generationErr != nil || trace.Status != engine.StatusCompleted || strings.TrimSpace(trace.Article) == "" {
-		addWABenchFailure(&output, "generation.failed", "generation", "真实 Agent 工作流未产生完整输出", "model", generationErr)
+		failureID, symptom := classifyWABenchGenerationFailure(generationErr, trace.Status, trace.Article)
+		addWABenchFailure(&output, failureID, "generation", symptom, "model", generationErr)
+		slog.Warn("wabench generation failure",
+			"runId", execution.Run.RunID,
+			"caseId", item.CaseID,
+			"code", failureID,
+			"agentStatus", trace.Status,
+			"articleChars", len([]rune(trace.Article)),
+			"error", generationErr)
 		output.Status = "generation_failed"
 		output.Failed = true
 		result.stageFailure, result.hardFailure = true, true
@@ -441,18 +502,26 @@ func (s *WABenchEvaluationService) evaluateCase(ctx context.Context, execution d
 		Article: trace.Article, Routing: output.Routing,
 	})
 	if judgeErr != nil {
-		addWABenchFailure(&output, "judge.failed", "judge", "五项 Rubric Judge 失败", "model", judgeErr)
+		// Judge 基础设施失败（含修复重试耗尽）：独立标记，不计为候选写作
+		// 硬失败——正文已产出，只是盲评不可用，冻结正文可用重评入口补救。
+		addWABenchFailure(&output, "judge.failed", "judge", "五项 Rubric Judge 失败（修复重试耗尽）", "model", judgeErr)
+		slog.Warn("wabench judge infra failure",
+			"runId", execution.Run.RunID, "caseId", item.CaseID,
+			"code", "judge.failed", "error", judgeErr)
 		output.Status = "partial"
 		output.Failed = true
-		result.stageFailure, result.hardFailure = true, true
+		result.stageFailure, result.judgeInfraFailure = true, true
 		return output, result
 	}
 	weightedScore, scoreErr := WABenchWeightedScore(judgeResult.Scores, item.RubricWeights)
 	if scoreErr != nil {
 		addWABenchFailure(&output, "judge.invalid_score", "judge", "Judge 返回了非法评分", "model", scoreErr)
+		slog.Warn("wabench judge infra failure",
+			"runId", execution.Run.RunID, "caseId", item.CaseID,
+			"code", "judge.invalid_score", "error", scoreErr)
 		output.Status = "partial"
 		output.Failed = true
-		result.stageFailure, result.hardFailure = true, true
+		result.stageFailure, result.judgeInfraFailure = true, true
 		return output, result
 	}
 	redTeamCompromised := execution.Suite.Partition == "red_team" && judgeResult.RedTeamCompromised
@@ -537,6 +606,12 @@ func BuildWABenchGateDecision(suite database.WABenchSuite, accumulator wabenchRu
 		decision = "fail"
 		reasons = append(reasons, "stage_failures")
 	}
+	// Judge 基础设施失败单独计数与归因：门禁同样不通过，但证据里能区分
+	// 「评审基础设施坏了」和「候选写作硬失败」。
+	if accumulator.judgeInfraFailures > 0 {
+		decision = "fail"
+		reasons = append(reasons, "judge_infra_failures")
+	}
 	if accumulator.hardFailureCases > 0 {
 		decision = "fail"
 		reasons = append(reasons, "hard_failures")
@@ -556,7 +631,8 @@ func BuildWABenchGateDecision(suite database.WABenchSuite, accumulator wabenchRu
 			"suitePartition": suite.Partition, "totalCases": accumulator.totalCases,
 			"completedCases": accumulator.completedCases, "stageFailures": accumulator.stageFailures,
 			"hardFailureCases": accumulator.hardFailureCases, "qualityFailures": accumulator.qualityFailures,
-			"scoredCases": accumulator.scoredCases, "averageWeightedScore": average,
+			"judgeInfraFailures": accumulator.judgeInfraFailures,
+			"scoredCases":        accumulator.scoredCases, "averageWeightedScore": average,
 			"redTeamCompromised": accumulator.redTeamCompromised, "reasons": reasons,
 		},
 		Exceptions:         []map[string]interface{}{},
@@ -574,6 +650,25 @@ func buildGenerationCheck(article string, err error) database.WABenchCheckWrite 
 		CheckID: "generation.non_empty", Status: status, Severity: "critical",
 		Evidence: map[string]interface{}{"characterCount": len([]rune(article))},
 	}
+}
+
+// classifyWABenchGenerationFailure splits the generic generation failure into
+// two codes so ablation reports can tell candidate faults from evaluation
+// infrastructure faults:
+//
+//   - "generation.empty": the agent reported completion with no error but the
+//     final article is empty/whitespace — the classic signature of a swallowed
+//     mid-stream cut or an empty 200 stream (provider side), not bad writing.
+//   - "generation.failed": an explicit generation error or a non-completed
+//     agent status.
+//
+// The wabench_outputs.status column keeps the constraint-valid
+// "generation_failed" value in both cases; only the failure code differs.
+func classifyWABenchGenerationFailure(generationErr error, agentStatus engine.ExecutionStatus, article string) (failureID, symptom string) {
+	if generationErr == nil && agentStatus == engine.StatusCompleted && strings.TrimSpace(article) == "" {
+		return "generation.empty", "Agent 状态完成但正文为空（疑似流中断或空流，基础设施失败而非写作失败）"
+	}
+	return "generation.failed", "真实 Agent 工作流未产生完整输出"
 }
 
 func buildRoutingChecks(item database.WABenchCase, trace *WABenchAgentTrace) []database.WABenchCheckWrite {
