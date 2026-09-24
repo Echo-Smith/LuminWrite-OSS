@@ -862,42 +862,71 @@ func (c *LLMClient) doStreamRequest(ctx context.Context, req *LLMRequest) (io.Re
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/chat/completions", bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	// 与 doRequest 一致的退避重试：请求在拿到响应体之前失败是安全的
+	// （尚未消费任何流内容），429/503 退避后重试可自愈——批量评估等
+	// 高并发流式场景下 token 速率限制命中时不再整例报废。
+	maxRetries := 3
+	baseDelay := 500 * time.Millisecond
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("Accept", "text/event-stream")
-	c.applyCustomHeaders(httpReq)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST",
+			c.baseURL+"/chat/completions", bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("LLM API stream request failed: %w", err)
-	}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		httpReq.Header.Set("Accept", "text/event-stream")
+		c.applyCustomHeaders(httpReq)
 
-	if resp.StatusCode != http.StatusOK {
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			if attempt < maxRetries {
+				delay := baseDelay * (1 << attempt)
+				slog.Warn("LLM stream request failed, retrying", "attempt", attempt+1, "delay", delay, "error", err)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, fmt.Errorf("LLM API stream request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			return resp.Body, nil
+		}
+
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// 402 Payment Required — quota exhausted
+		// 402 Payment Required — quota exhausted, no point retrying
 		if resp.StatusCode == http.StatusPaymentRequired {
 			slog.Error("LLM API quota exceeded (stream)", "status", 402, "body", string(body))
 			return nil, fmt.Errorf("LLM API quota exceeded (402): %s", string(body))
 		}
 
-		// 429 rate limit (stream has no retry — treat as quota issue)
-		if resp.StatusCode == http.StatusTooManyRequests {
-			slog.Error("LLM API rate limited (stream)", "status", 429, "body", string(body))
-			return nil, fmt.Errorf("LLM API rate limit exhausted (429): %s", string(body))
+		// 429/503 — 退避后重试（与 doRequest 相同策略）
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attempt < maxRetries {
+			delay := baseDelay * (1 << attempt)
+			slog.Warn("LLM API rate limited (stream), retrying",
+				"status", resp.StatusCode,
+				"attempt", attempt+1,
+				"delay", delay)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 
 		return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return resp.Body, nil
+	return nil, fmt.Errorf("LLM API stream request failed after %d retries", maxRetries)
 }
 
 // ExtractJSONObject extracts a JSON object from a text that may contain markdown fences.

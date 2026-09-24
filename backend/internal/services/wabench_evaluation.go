@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -269,7 +271,14 @@ func (s *WABenchEvaluationService) ExecuteRun(ctx context.Context, runID string)
 		return err
 	}
 	accumulator := wabenchRunAccumulator{totalCases: len(cases)}
+	// 并发默认 16；ABLATION_CONCURRENCY 可按模型端点的速率限制调低
+	// （批量评估打满 4 路流式 run 时总并发 = 4 × 此值）。
 	concurrency := 16
+	if v := os.Getenv("ABLATION_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			concurrency = n
+		}
+	}
 	sem := make(chan struct{}, concurrency)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
