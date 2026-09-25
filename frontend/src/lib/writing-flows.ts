@@ -1,5 +1,5 @@
 /**
- * WP4 三大写作流程映射表 — docs/28-wp4-pilot-scenarios.md 的前端侧唯一映射来源。
+ * WP4 写作流程映射表 — docs/28-wp4-pilot-scenarios.md 的前端侧唯一映射来源。
  *
  * 选择链路：flow-picker → AgentStartPayload.flow → startWritingRun 的
  * contract / intent plan 构建统一从本表取值：
@@ -15,13 +15,22 @@
  *   schema 中没有对应字段（合同 evidence_policy 是 level/unsupported_claims
  *   词表，语义不同，不冒充），落点即本映射表 + plan 节点序列（governed 节点
  *   就是产出 full_draft 的生成步骤）+ intent plan summary 标注。
+ *
+ * 第四流程 research_review（深度研究，WP4 产品化）：服务端按
+ * tpl_research_review_v1（十节点固定模板）编译计划，不走 startWritingRun——
+ * 启动链是 research-settings 表单 → POST /documents/{id}/research-contract-draft
+ * （服务端封存 lcp/1.1 合同）→ 既有 document→contract→confirm→compile→run。
+ * 本表只承载词表（label/description/orchestration/templateId/节点简图）：
+ * steps 是模板主链的简述形式（真实依赖边以服务端模板为权威），evidencePolicy
+ * 在后端 evidence 情景表中刻意没有对应行（研究流的治理点是两个人工门与
+ * citations/fact/quality 验证器，不是 legacy evidence harness 情景）。
  */
 
 // ─── 流程类型 ────────────────────────────────────────────
 
-export type WritingFlowType = "long_form" | "multi_material" | "faithful_rewrite";
+export type WritingFlowType = "long_form" | "multi_material" | "faithful_rewrite" | "research_review";
 
-export const WRITING_FLOW_TYPES = ["long_form", "multi_material", "faithful_rewrite"] as const;
+export const WRITING_FLOW_TYPES = ["long_form", "multi_material", "faithful_rewrite", "research_review"] as const;
 
 /** 缺省流程：与引入选择 UI 之前的行为等价。 */
 export const DEFAULT_WRITING_FLOW: WritingFlowType = "long_form";
@@ -52,9 +61,9 @@ export interface WritingFlowSpec {
   /** UI 一句话说明（中文，docs/28 试点场景文案） */
   description: string;
   /** 合同 collaboration.orchestration_mode（决定服务端计划模板） */
-  orchestration: "outline_first" | "sourced" | "fast";
+  orchestration: "outline_first" | "sourced" | "fast" | "research_review";
   /** 服务端计划模板 id（docs/28；由 orchestration 间接选定） */
-  templateId: "tpl_outline_first_v1" | "tpl_sourced_v1" | "tpl_fast_v1";
+  templateId: "tpl_outline_first_v1" | "tpl_sourced_v1" | "tpl_fast_v1" | "tpl_research_review_v1";
   /** 合同 intent.operation（writingkernel.Operation 枚举值） */
   intentOperation: "create" | "synthesize" | "rewrite";
   /** docs/28 命名 evidence policy + governed 节点索引 */
@@ -67,7 +76,7 @@ export interface WritingFlowSpec {
   summary: string;
 }
 
-// ─── 三大流程 ────────────────────────────────────────────
+// ─── 四大流程 ────────────────────────────────────────────
 
 export const WRITING_FLOW_SPECS: Record<WritingFlowType, WritingFlowSpec> = {
   // 长文创作：contract → outline → draft → quality → finalize → revision_set
@@ -183,6 +192,105 @@ export const WRITING_FLOW_SPECS: Record<WritingFlowType, WritingFlowSpec> = {
         inputs: ["contract", "materials", "article", "full_draft"],
         outputs: ["quality_report"],
         depends_on: ["rewrite"],
+      },
+      {
+        step_id: "finalize",
+        capability: "core.document.finalize",
+        description: "Finalize revision set",
+        inputs: ["full_draft", "quality_report"],
+        outputs: ["revision_set"],
+        depends_on: ["quality"],
+      },
+    ],
+  },
+  // 深度研究（WP4 第四流程，tpl_research_review_v1）：discover → read → 证据门
+  // → outline → 提纲门 → draft → citations → fact → quality → finalize。
+  // steps 是十节点模板主链的简述形式（线性化展示；真实依赖边——如 draft 同时
+  // 依赖 read 与两个人工门、quality 依赖 citations+fact——以服务端模板为权威）。
+  // 启动链不走 startWritingRun（见文件头注释），由 research-settings 表单 +
+  // 服务端 research-contract-draft 封存合同承接。
+  research_review: {
+    type: "research_review",
+    label: "深度研究",
+    description: "围绕研究问题检索与精读文献，逐条引用核查，经两个确认点产出学术综述。",
+    orchestration: "research_review",
+    templateId: "tpl_research_review_v1",
+    intentOperation: "create",
+    evidencePolicy: { name: "research_review", governedIndex: 5, governedNode: "draft" },
+    initialArtifactTypes: ["contract", "materials"],
+    summary:
+      "Deep research pipeline (tpl_research_review_v1): discover → read → evidence gate → outline → outline gate → draft → citations/fact → quality → finalize; human gates at evidence and outline; evidence policy research_review governs draft@index 5",
+    steps: [
+      {
+        step_id: "discover",
+        capability: "core.research.discover",
+        description: "Discover candidate literature",
+        inputs: ["contract", "materials"],
+        outputs: ["research_candidates"],
+      },
+      {
+        step_id: "read",
+        capability: "core.research.read",
+        description: "Rank, fetch and read papers into an evidence pack",
+        inputs: ["contract", "research_candidates", "materials"],
+        outputs: ["research_evidence_pack"],
+        depends_on: ["discover"],
+      },
+      {
+        step_id: "evidence_gate",
+        capability: "core.research.gate.evidence",
+        description: "Human gate: confirm the evidence pack",
+        inputs: ["research_evidence_pack"],
+        outputs: ["evidence_approval"],
+        depends_on: ["read"],
+      },
+      {
+        step_id: "outline",
+        capability: "core.research.outline",
+        description: "Assemble the grounded review outline",
+        inputs: ["contract", "research_evidence_pack", "evidence_approval"],
+        outputs: ["research_outline"],
+        depends_on: ["evidence_gate"],
+      },
+      {
+        step_id: "outline_gate",
+        capability: "core.research.gate.outline",
+        description: "Human gate: confirm the outline",
+        inputs: ["research_outline"],
+        outputs: ["approved_research_outline"],
+        depends_on: ["outline"],
+      },
+      {
+        step_id: "draft",
+        capability: "core.research.draft",
+        description: "Write the cited review draft",
+        inputs: ["contract", "research_evidence_pack", "approved_research_outline"],
+        outputs: ["full_draft"],
+        depends_on: ["outline_gate"],
+      },
+      {
+        step_id: "citations",
+        capability: "core.research.validate.citations",
+        description: "Validate every citation against the evidence pack",
+        inputs: ["research_evidence_pack", "full_draft"],
+        outputs: ["evidence_report"],
+        depends_on: ["draft"],
+      },
+      {
+        step_id: "fact",
+        capability: "core.research.validate.fact",
+        description: "Fact-review the draft claims",
+        inputs: ["research_evidence_pack", "full_draft"],
+        outputs: ["fact_report"],
+        depends_on: ["draft"],
+      },
+      {
+        step_id: "quality",
+        capability: "core.validation.quality",
+        description: "Quality validation",
+        inputs: ["full_draft", "evidence_report", "fact_report"],
+        outputs: ["quality_report"],
+        depends_on: ["draft"],
       },
       {
         step_id: "finalize",

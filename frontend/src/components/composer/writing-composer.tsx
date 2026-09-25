@@ -146,6 +146,25 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
     });
   }, []);
 
+  // 切换写作流程：「深度研究」（research_review）与其他三个流程的启动链不同——
+  // 它需要 research-settings 表单收集参数后走 research-contract-draft 封存合同
+  // 的研究链路，因此选中即同步编排模式并打开悬浮表单；从研究流切回其他流程时
+  // 退出研究编排（面板关闭，配置保留）。
+  const handleFlowChange = useCallback((next: WritingFlowType) => {
+    setFlow(next);
+    if (next === "research_review") {
+      setOrchestrationMode("research_review");
+      setAssuranceLevel("strict");
+      setResearchSettingsOpen(true);
+      return;
+    }
+    setOrchestrationMode((prev) => {
+      if (prev !== "research_review") return prev;
+      setResearchSettingsOpen(false);
+      return "auto";
+    });
+  }, []);
+
   // Update local state when session changes (e.g. new session from topic center)
   useEffect(() => { setMode(sessionMode); }, [sessionMode]);
   useEffect(() => { setStyle(sessionStyle); }, [sessionStyle]);
@@ -232,6 +251,14 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
         });
       editorRef.current?.clear();
       setMessage("");
+      return;
+    }
+
+    // 深度研究流程的启动链在 research-settings 表单（合同封存下沉服务端的
+    // research-contract-draft 端点）；composer 发送无法表达 lcp/1.1 研究合同，
+    // 打开表单让用户确认参数后启动，而不是发出一个必然被服务端拒绝的请求。
+    if (flow === "research_review") {
+      setResearchSettingsOpen(true);
       return;
     }
 
@@ -536,8 +563,9 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
             </PopoverContent>
           </Popover>
 
-          {/* 左侧：写作流程（WP4 三大流程，决定 contract/plan 节点图） */}
-          <FlowPicker value={flow} onChange={setFlow} compact={compact} />
+          {/* 左侧：写作流程（WP4 四大流程，决定 contract/plan 节点图；
+              深度研究选中时打开研究设置表单走专属启动链） */}
+          <FlowPicker value={flow} onChange={handleFlowChange} compact={compact} />
 
           {/* 左侧：引导模式 */}
           <ModePicker

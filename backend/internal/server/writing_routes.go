@@ -11,6 +11,10 @@ func (s *Server) registerWritingRoutes(r chi.Router) {
 		r.Get("/documents/{documentId}", s.handleGetWritingDocument)
 		r.Get("/documents/{documentId}/versions", s.handleListWritingDocumentVersions)
 		r.Post("/documents/{documentId}/contracts", s.handleCreateWritingContract)
+		// Research contract draft (WP4 productization): the 深度研究 flow's
+		// sealed lcp/1.1 contract is built server-side; the frontend posts
+		// the returned versions straight to /contracts and /confirm.
+		r.Post("/documents/{documentId}/research-contract-draft", s.handleCreateWritingResearchContractDraft)
 		r.Post("/contracts/{contractId}/confirm", s.handleConfirmWritingContract)
 		r.Post("/documents/{documentId}/plans", s.handleCompileWritingPlan)
 		r.Post("/runs", s.handleCreateWritingRun)

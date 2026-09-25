@@ -38,6 +38,11 @@ type writingResearchService interface {
 	DecideGate(ctx context.Context, access writingAccess, runID, gateID string, command gateDecisionCommand) (gateDecisionView, bool, error)
 	SaveOutlineRevision(ctx context.Context, access writingAccess, runID, gateID string, command outlineRevisionCommand) (outlineRevisionView, error)
 	ReadRunArtifact(ctx context.Context, access writingAccess, runID, artifactID string) (artifactContentView, error)
+	// DraftResearchContract seals the lcp/1.1 research_review contract the
+	// composer's 深度研究 flow launches with (WP4 productization): the
+	// server builds and hashes both contract versions so the frontend never
+	// hand-writes field-ordered JSON.
+	DraftResearchContract(ctx context.Context, access writingAccess, command researchContractDraftCommand) (researchContractDraftView, error)
 }
 
 type artifactRefView struct {

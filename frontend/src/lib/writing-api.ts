@@ -146,6 +146,13 @@ const DEFAULT_PERMISSIONS = ["model.invoke", "materials.read"];
 // ─── Public API ─────────────────────────────────────────
 
 export async function startWritingRun(payload: AgentStartPayload): Promise<{ run_id: string }> {
+  // 深度研究（research_review）有专属启动链（research-settings 表单 →
+  // research-contract-draft 封存合同 → startResearchRun）：lcp/1.1 合同与
+  // 十节点模板都超出本函数的 v1.0 合同构建能力，提前拒绝而不是让服务端在
+  // compile 阶段才以 RESEARCH_REVIEW_CONTRACT_INVALID 拒绝（还会留下孤儿文档）。
+  if (payload.flow === "research_review") {
+    throw new WritingApiError("RESEARCH_REVIEW_CONTRACT_INVALID", 400, "深度研究流程请通过研究设置面板启动");
+  }
   try {
     const title = payload.message.slice(0, 60) || "新写作";
     const materialRefs = (payload.material_refs ?? []).filter((r) => r.material_id.trim() !== "");

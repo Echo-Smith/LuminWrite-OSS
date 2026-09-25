@@ -134,12 +134,18 @@ cd frontend && npm ci && npm test && npm run build
   质量门（Candidate/Accepted/Verified）的版本化交付协议，fail-closed；REST 命令 +
   SSE 运行事件，断线可续传；默认 `shadow`（baseline 权威 + candidate 影子观测），
   off/shadow/allowlist 灰度与检查点恢复（[docs/19](docs/19-governed-writing-runtime.md)）；
-- **三大核心写作流程**：长文创作 / 多材料综合 / 忠实改写——写作入口的流程选择器
-  贯穿 contract/plan 构建（编排模式、证据策略、节点图按流程切换，
+- **四大核心写作流程**：长文创作 / 多材料综合 / 忠实改写 / 深度研究——写作入口的
+  流程选择器贯穿 contract/plan 构建（编排模式、证据策略、节点图按流程切换，
   [docs/28](docs/28-wp4-pilot-scenarios.md)）；
-- **研究综述路径**（实验性）：学术检索（OpenAlex/CrossRef/Semantic Scholar）→
-  证据门 → 提纲门 → 引用可校验成稿，全链路 fail-closed（默认关闭）。scholar
-  运算在 backend Go 进程内执行（`backend/internal/scholar`），PDF 解析经
+- **深度研究（research_review，第四流程，WP4 产品化）**：学术检索（OpenAlex/
+  CrossRef/Semantic Scholar）→ 精读 → 证据门 → 提纲门 → 引用可校验成稿
+  （`tpl_research_review_v1` 十节点模板），全链路 fail-closed；已从实验室开关
+  升格为流程选择器一等选项。合同封存下沉后端：`research-contract-draft` 端点
+  按 Go 结构体声明序构造并哈希 lcp/1.1 研究合同（draft v1 + confirmed v2），
+  前端不再手写字段序 JSON；`RESEARCH_REVIEW_ENABLED` 代码默认开启，显式
+  `false` 即部署级 kill switch（启动请求得到 503 `RESEARCH_UNAVAILABLE`，
+  绝不静默降级）。scholar 运算在 backend Go 进程内执行
+  （`backend/internal/scholar`），PDF 解析经
   docreader sidecar——`SCHOLAR_WORKER_URL` 仅作为启用信号，无独立 worker 服务；
   上下文闭环（WP1/WP2）：研究证据包随输入引用与传递计划依赖进入下游节点
   （提纲/成稿/质量）的 ContextEnvelope，证据行绑定包内容哈希；
@@ -190,7 +196,7 @@ cd frontend && npm ci && npm test && npm run build
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_DEFAULT_MODEL` | — | LLM 后端（OpenAI 兼容） |
 | `SEARXNG_BASE_URL` | 空 | 唯一开箱可用的搜索源，强烈建议配置 |
 | `WRITING_RUNTIME_MODE` | shadow | 治理运行时：off / shadow / allowlist（shadow = baseline 权威 + candidate 影子观测） |
-| `RESEARCH_REVIEW_ENABLED` | false | 研究综述路径（启用需同时设置 `SCHOLAR_WORKER_URL`（任意非空值，启用信号）与 `SCHOLAR_WORKER_TOKEN`（必填守卫）） |
+| `RESEARCH_REVIEW_ENABLED` | true | 深度研究（第四写作流程）总开关，代码默认开启；显式设为 `false` 即部署级 kill switch（启动请求得到 503 `RESEARCH_UNAVAILABLE`）。启用 scholar 运算需同时设置 `SCHOLAR_WORKER_URL`（任意非空值，启用信号）与 `SCHOLAR_WORKER_TOKEN`（必填守卫） |
 | `AR012_CANDIDATE_ENABLED` | false | AR-012 候选评估端点（需 sidecar） |
 | `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | 空 | 异源 Claim 复核：三项齐备即启用，**必须与生成模型不同供应商**（report-only 二道防线） |
 | `DASHSCOPE_API_KEY` | 空 | Embedding（可选，未配置自动降级） |
@@ -228,7 +234,7 @@ r7 消融结论（WP6 后重跑）：D 变体硬失败 1.4%、工具调用循环
 - [x] WebSocket 退出主架构（REST 命令 + SSE 运行事件，断线续传）
 - [x] 治理运行时成为主干（默认 shadow；Harness 执行核 / 编辑部角色受治理接入）
 - [x] 历史 SoT 迁移（governed documents/runs 为主，`agent_traces` 只读）
-- [x] 三大核心写作流程选择 UI（长文创作 / 多材料综合 / 忠实改写）
+- [x] 四大核心写作流程选择 UI（长文创作 / 多材料综合 / 忠实改写 / 深度研究）
 - [x] 210 用例消融基准 v2（多轮一致性子集 + 真实记忆端口接入）
 - [ ] allowlist 晋升资格链线上验证（policy → evidence → approval → gate）
 - [ ] 编辑部 DAG 生命周期进一步接入统一记忆契约（按角色分槽注入）

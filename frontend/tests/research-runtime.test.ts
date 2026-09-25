@@ -27,7 +27,6 @@ import {
   fetchGate,
   fetchResearchProgress,
   findCitationMarkers,
-  isResearchReviewHardOff,
   pollGateUntilResolved,
   postGateDecision,
   postOutlineRevision,
@@ -365,11 +364,10 @@ test("mock progress restores the pending gate page after a simulated refresh", a
 
 // ─── 功能开关 ───
 
-test("feature gate: deploy kill switch is env-only; lab opt-in lives in settings-store", () => {
-  // 硬开关只读环境变量（本测试进程未配置 → 非 hard-off）；
-  // 实验室勾选状态由 settings-store.enableResearchReview 持有（云端同步），
-  // 不经 research-api 全局变量，二者彻底解耦。
-  assert.equal(isResearchReviewHardOff(), false);
+test("feature gate: the frontend carries no env kill switch; the server flag is authoritative", () => {
+  // WP4 产品化：VITE_RESEARCH_REVIEW_ENABLED 门控已删除（isResearchReviewHardOff
+  // 不复存在），权威开关是服务端 RESEARCH_REVIEW_ENABLED（draft 端点/compile/run
+  // 在关闭时以 503 RESEARCH_UNAVAILABLE 拒绝）。mock 开关保持本模块全局变量。
   assert.doesNotThrow(() => setResearchMockEnabled(true));
   setResearchMockEnabled(false);
 });

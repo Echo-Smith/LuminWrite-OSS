@@ -379,7 +379,7 @@ export interface AgentStartPayload {
   assurance_level?: string;
   approval_mode?: string;
   word_limit?: number;
-  /** WP4 流程类型（docs/28 三大写作流程）；缺省或非法值按 long_form 处理 */
+  /** WP4 流程类型（docs/28 三大写作流程 + WP4 扩展的深度研究）；缺省或非法值按 long_form 处理 */
   flow?: WritingFlowType;
 }
 

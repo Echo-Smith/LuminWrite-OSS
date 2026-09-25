@@ -142,13 +142,20 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
   fail-closed; REST commands + SSE runtime events, resumable on disconnect; default
   `shadow` (baseline authoritative + candidate shadow observation), off/shadow/allowlist
   rollout with checkpoint recovery ([docs/19](docs/19-governed-writing-runtime.md));
-- **Three core writing flows**: long-form creation / multi-material synthesis /
-  faithful rewrite — the flow picker at the writing entry threads through contract/plan
-  construction (orchestration mode, evidence policy and node graph per flow,
-  [docs/28](docs/28-wp4-pilot-scenarios.md));
-- **Research-review path** (experimental): academic search (OpenAlex/CrossRef/
-  Semantic Scholar) → evidence gate → outline gate → citation-verifiable draft,
-  fail-closed end to end (off by default). The scholar operations execute
+- **Four core writing flows**: long-form creation / multi-material synthesis /
+  faithful rewrite / deep research — the flow picker at the writing entry threads
+  through contract/plan construction (orchestration mode, evidence policy and node
+  graph per flow, [docs/28](docs/28-wp4-pilot-scenarios.md));
+- **Deep research (`research_review`, the fourth flow, productized in WP4)**:
+  academic search (OpenAlex/CrossRef/Semantic Scholar) → reading → evidence gate →
+  outline gate → citation-verifiable draft (`tpl_research_review_v1` ten-node
+  template), fail-closed end to end; graduated from a lab toggle into a
+  first-class flow-picker option. Contract sealing moved server-side: the
+  `research-contract-draft` endpoint builds and hashes the lcp/1.1 research
+  contract in Go struct order (draft v1 + confirmed v2) — the frontend no longer
+  hand-writes field-ordered JSON; `RESEARCH_REVIEW_ENABLED` defaults on in code,
+  and an explicit `false` is a deployment kill switch (launch requests get 503
+  `RESEARCH_UNAVAILABLE`, never a silent degrade). The scholar operations execute
   in-process inside the Go backend (`backend/internal/scholar`); PDF parsing
   goes through the docreader sidecar — `SCHOLAR_WORKER_URL` is only the
   enablement signal, there is no separate worker service; context closure
@@ -212,7 +219,7 @@ Full annotated list: [.env.docker.example](.env.docker.example).
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_DEFAULT_MODEL` | — | LLM backend (OpenAI-compatible) |
 | `SEARXNG_BASE_URL` | empty | The only out-of-the-box search source — strongly recommended |
 | `WRITING_RUNTIME_MODE` | shadow | Governed runtime: off / shadow / allowlist (shadow = baseline authoritative + candidate shadow observation) |
-| `RESEARCH_REVIEW_ENABLED` | false | Research-review path (enabling also requires `SCHOLAR_WORKER_URL` (any non-empty value, the enablement signal) and `SCHOLAR_WORKER_TOKEN` (required guard)) |
+| `RESEARCH_REVIEW_ENABLED` | true | Master switch for deep research (the fourth writing flow; code default on since the WP4 productization); an explicit `false` is a deployment kill switch (launch requests get 503 `RESEARCH_UNAVAILABLE`). Enabling the scholar operations also requires `SCHOLAR_WORKER_URL` (any non-empty value, the enablement signal) and `SCHOLAR_WORKER_TOKEN` (required guard) |
 | `AR012_CANDIDATE_ENABLED` | false | AR-012 candidate evaluation endpoint (needs sidecar) |
 | `AR_REVIEW_VERIFY_BASE_URL` / `_API_KEY` / `_MODEL` | empty | Different-vendor claim verifier: enabled once all three are set; **must be a different provider than the generation model** (report-only second line of defense) |
 | `DASHSCOPE_API_KEY` | empty | Embedding (optional, degrades gracefully) |
@@ -250,7 +257,7 @@ pilot onboarding: [docs/29](docs/29-pilot-user-onboarding.md).
 - [x] WebSocket retired from the main architecture (REST commands + SSE runtime events, resumable)
 - [x] Governed runtime as the backbone (default shadow; Harness core / editorial roles governed)
 - [x] History source-of-truth migration (governed documents/runs primary, `agent_traces` read-only)
-- [x] Three-flow selection UI (long-form / multi-material / faithful rewrite)
+- [x] Four-flow selection UI (long-form / multi-material / faithful rewrite / deep research)
 - [x] 210-case ablation benchmark v2 (multi-turn consistency subset + real memory port)
 - [ ] Allowlist promotion qualification verified end to end (policy → evidence → approval → gate)
 - [ ] Editorial DAG on the unified memory contract (role-slotted injection)

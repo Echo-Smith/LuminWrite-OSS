@@ -1,6 +1,9 @@
 /**
  * 写作方式选择器 — 先选择用户意图，再按需展开执行细节。
  * guided 继续作为协议值存在，但在界面上表达为“直接写 + 先确认提纲”。
+ * 研究综述入口（WP4 产品化后不再受前端开关/实验室勾选限制；权威开关是
+ * 服务端 RESEARCH_REVIEW_ENABLED）：主入口是 FlowPicker 的第四流程
+ * 「深度研究」，此处保留等价入口以维持既有使用习惯。
  */
 import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -9,8 +12,6 @@ import { Switch } from "@/components/ui/switch";
 import { BookOpenText, ChevronDown, ChevronRight, PenLine, Sparkles, Zap } from "lucide-react";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
-import { isResearchReviewHardOff } from "@/lib/research-api";
-import { useSettingsStore } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
 
 interface ModePickerProps {
@@ -66,9 +67,9 @@ export function ModePicker({
     : RESEARCH_PRESETS.find((option) => option.orchestration === orchestrationValue && option.assurance === assuranceValue);
   const approvalOption = APPROVAL_OPTIONS.find((option) => option.value === approvalValue) ?? APPROVAL_OPTIONS[0];
   const canConfigureExecution = Boolean(onOrchestrationChange && onAssuranceChange) || Boolean(onApprovalChange);
-  // 研究综述为实验室功能：用户在 设置 → 实验室功能 勾选后开放；
-  // 部署级 VITE_RESEARCH_REVIEW_ENABLED=false 为硬开关（连实验室列表都隐藏）。
-  const researchEnabled = useSettingsStore((s) => s.enableResearchReview) && !isResearchReviewHardOff();
+  // 研究综述不再受前端开关限制（WP4 产品化）；服务端 RESEARCH_REVIEW_ENABLED
+  // 关闭时启动请求得到 503 RESEARCH_UNAVAILABLE 的明确错误。
+  const researchEnabled = Boolean(onOrchestrationChange);
 
   const handleResearchReviewSelect = () => {
     onOrchestrationChange?.("research_review");
@@ -102,7 +103,7 @@ export function ModePicker({
           <Switch checked={value === "guided"} onCheckedChange={(checked) => onChange(checked ? "guided" : "writing")} aria-label="生成前先确认提纲" />
         </label>
 
-        {onOrchestrationChange && researchEnabled && (
+        {researchEnabled && (
           <>
             <div className="mx-2 my-1 border-t" />
             <button

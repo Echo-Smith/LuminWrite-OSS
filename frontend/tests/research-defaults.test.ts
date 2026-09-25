@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isResearchMockEnabled, isResearchReviewHardOff, startResearchRun, buildResearchSpec, defaultResearchSpecDraft } from "../src/lib/research-api.ts";
+import { isResearchMockEnabled, startResearchRun, buildResearchSpec, defaultResearchSpecDraft } from "../src/lib/research-api.ts";
 
 test("an unconfigured build never starts a fabricated research run", async () => {
   assert.equal(isResearchMockEnabled(), false);
-  // 默认非硬关闭：入口交给「实验室功能」的用户勾选（settings-store，
-  // 云端跟随账号）；VITE_RESEARCH_REVIEW_ENABLED=false 仍为部署级 kill switch。
-  assert.equal(isResearchReviewHardOff(), false);
+  // WP4 产品化：前端不再设部署级/VITE 开关；权威开关是服务端
+  // RESEARCH_REVIEW_ENABLED（关闭时启动请求得到 503 RESEARCH_UNAVAILABLE）。
   const { spec } = buildResearchSpec({ ...defaultResearchSpecDraft(), central_question: "测试研究问题" });
   assert.ok(spec);
   // F1 后：mock=false 走真实创建链路。裸 spec（缺少 central_question/audience/length）

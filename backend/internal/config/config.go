@@ -81,10 +81,12 @@ type ServerConfig struct {
 // Mode is off (default) | shadow | allowlist; an unknown value collapses to off.
 type WritingRuntimeConfig struct {
 	Mode string
-	// ResearchReviewEnabled gates the research-review path (R14, default
-	// false): with the flag off, a research_review contract must fail
-	// compile/run creation with an explicit RESEARCH_UNAVAILABLE — never a
-	// silent degrade to a legacy template.
+	// ResearchReviewEnabled gates the research-review path (default on as of
+	// the WP4 productization: 深度研究 is the fourth first-class writing
+	// flow). RESEARCH_REVIEW_ENABLED=false still turns it off explicitly —
+	// with the flag off, a research_review contract must fail compile/run
+	// creation with an explicit RESEARCH_UNAVAILABLE — never a silent
+	// degrade to a legacy template.
 	ResearchReviewEnabled bool
 	// ArReview gates the AR-012 candidate evaluation sidecar (T10, default
 	// off). The sidecar is Proprietary and deployed out-of-band; with the
@@ -457,7 +459,7 @@ func Load() *Config {
 		},
 		WritingRuntime: WritingRuntimeConfig{
 			Mode:                  getEnv("WRITING_RUNTIME_MODE", "shadow"),
-			ResearchReviewEnabled: getEnvBool("RESEARCH_REVIEW_ENABLED", false),
+			ResearchReviewEnabled: getEnvBool("RESEARCH_REVIEW_ENABLED", true),
 			ArReview: ArReviewConfig{
 				Enabled:     getEnvBool("AR012_CANDIDATE_ENABLED", false),
 				SidecarURL:  getEnv("AR_REVIEW_SIDECAR_URL", ""),

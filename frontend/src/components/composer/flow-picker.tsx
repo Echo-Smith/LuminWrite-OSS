@@ -1,10 +1,15 @@
 /**
- * 写作流程选择器 — WP4 三大写作流程入口（docs/28-wp4-pilot-scenarios.md）。
- * 样式与 ModePicker 对齐：图标 + 标签 + 下拉箭头触发器，弹层列出流程与一句话说明。
+ * 写作流程选择器 — WP4 四大写作流程入口（docs/28-wp4-pilot-scenarios.md +
+ * WP4 扩展的第四流程「深度研究」）。样式与 ModePicker 对齐：图标 + 标签 +
+ * 下拉箭头触发器，弹层列出流程与一句话说明。
+ *
+ * 选中「深度研究」时由调用方（writing-composer）接管启动链：打开
+ * research-settings 悬浮表单 → 走 research-contract-draft 封存合同的真实
+ * 研究链路；其余三个流程贯穿 startWritingRun 的 contract/plan 构建。
  */
 import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ChevronDown, Feather, FileText, Layers } from "lucide-react";
+import { ChevronDown, Feather, FileText, Layers, Telescope } from "lucide-react";
 import { DEFAULT_WRITING_FLOW, WRITING_FLOW_SPECS, WRITING_FLOW_TYPES, type WritingFlowType } from "@/lib/writing-flows";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +23,7 @@ const FLOW_ICONS: Record<WritingFlowType, typeof FileText> = {
   long_form: FileText,
   multi_material: Layers,
   faithful_rewrite: Feather,
+  research_review: Telescope,
 };
 
 export function FlowPicker({ value, onChange, compact = false }: FlowPickerProps) {

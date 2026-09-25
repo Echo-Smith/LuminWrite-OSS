@@ -182,11 +182,16 @@ type persistentWritingAPI struct {
 	gateCheckpoints  *writingruntime.PersistentCheckpointRepository
 	gateOrchestrator *writingruntime.Orchestrator
 	// researchReviewEnabled mirrors cfg.WritingRuntime.ResearchReviewEnabled
-	// (RESEARCH_REVIEW_ENABLED, R14 default false): with the flag off, the
-	// research_review entries (compile / run creation) refuse with
-	// errResearchReviewDisabled — read-only research endpoints and legacy
-	// modes keep working for the rollback drill.
+	// (RESEARCH_REVIEW_ENABLED, default on since WP4 productization; the env
+	// var still turns it off explicitly): with the flag off, the
+	// research_review entries (contract draft / compile / run creation)
+	// refuse with errResearchReviewDisabled — read-only research endpoints
+	// and legacy modes keep working for the rollback drill.
 	researchReviewEnabled bool
+	// now is the draft clock for the research contract sealing (attribution
+	// recorded_at). Injectable so the determinism of the sealed contracts is
+	// testable; nil falls back to the wall clock.
+	now func() time.Time
 }
 
 func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {

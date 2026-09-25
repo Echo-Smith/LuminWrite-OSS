@@ -1,10 +1,12 @@
 /**
- * 研究综述设置表单 — ResearchSpec 字段（contracts.md §1）。
+ * 深度研究（research_review）设置表单 — ResearchSpec 字段（contracts.md §1）。
  *
  * 研究问题取现有 central_question 输入、目标读者/语言/长度沿用现有 delivery
  * 字段的语义；数量字段默认值与合同示例逐项一致，均可修改。
  * 提交走 startResearchRun：mock 开启时返回演示运行；mock 关闭时走真实
- * document → contract(v1.1) → confirm → plan → run 创建链路（F1）。
+ * document → research-contract-draft（服务端封存 v1.1 合同）→ contract →
+ * confirm → plan → run 创建链路（WP4 产品化：前端不再有功能开关门控，
+ * 权威开关是服务端 RESEARCH_REVIEW_ENABLED）。
  * 客户端提示约束（如 max_papers ≤ 20），提交仍以服务端校验为准。
  */
 import { BookOpenText, FlaskConical, Globe, Loader2, Palette, X } from "lucide-react";
@@ -17,14 +19,11 @@ import type { EvidenceRequirement } from "@/lib/writing-runtime-types";
 import {
   buildResearchSpec,
   defaultResearchSpecDraft,
-  isResearchReviewHardOff,
   researchLaunchProblems,
-  researchReviewDisabledReason,
   startResearchRun,
   type ResearchMaterialRef,
   type ResearchSpecDraft,
 } from "@/lib/research-api";
-import { useSettingsStore } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
 
 interface ResearchSettingsProps {
@@ -72,10 +71,6 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
   // 「参考文章风格」默认关：综述保持中性学术文风；开启后生成措辞参考
   // composer 当前选中的全局风格（run 级 advisory 配置，不进合同哈希）。
   const [applyStyle, setApplyStyle] = useState(false);
-
-  // 实验室勾选 + 部署硬开关（与 mode-picker 同一可用性判定）。
-  const featureEnabled = useSettingsStore((s) => s.enableResearchReview) && !isResearchReviewHardOff();
-  const disabledReason = researchReviewDisabledReason();
 
   const patch = (key: keyof ResearchSpecDraft, value: string | boolean) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -137,12 +132,6 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
         <span className="flex items-center gap-2 text-sm font-semibold"><BookOpenText className="h-4 w-4" />研究综述</span>
         <button onClick={onClose} aria-label="关闭研究综述设置" className="text-muted-foreground transition-ui hover:text-foreground"><X className="h-4 w-4" /></button>
       </header>
-
-      {!featureEnabled && (
-        <p className="research-settings-disabled" role="note">
-          {disabledReason}：确认后无法启动研究综述运行，普通写作不受影响。
-        </p>
-      )}
 
       <div className="research-settings-grid">
         <label className="research-field research-field-wide">
@@ -232,7 +221,7 @@ export function ResearchSettings({ centralQuestion, audience, language, lengthMi
 
       <footer className="research-settings-footer">
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><FlaskConical className="h-3.5 w-3.5" />默认值与合同示例一致；提交后以服务端合同校验为准。</p>
-        <Button size="sm" disabled={!featureEnabled || submitting} onClick={() => void handleSubmit()}>
+        <Button size="sm" disabled={submitting} onClick={() => void handleSubmit()}>
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {submitting ? "正在启动…" : "启动研究综述运行"}
         </Button>

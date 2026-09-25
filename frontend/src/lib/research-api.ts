@@ -1,11 +1,12 @@
 /**
  * 研究综述（research_review）API 层 — mock 开关集中在本模块。
  *
- * 默认关闭功能与 mock。演示必须显式设置 VITE_RESEARCH_MOCK=on；
+ * 默认关闭 mock。演示必须显式设置 VITE_RESEARCH_MOCK=on；
  * 真实读取/确认/运行创建使用 /api/v2（与生产 server.go:761 的 writing 路由挂载一致；
  * 后端 e2e harness 自挂 /api/v2/writing，与其不同，以生产为准）：
- * startResearchRun 走 document → contract(v1.1) → confirm → compile → run
- * （→ awaiting_approval 时自动 approve）的真实创建链路。
+ * startResearchRun 走 document → research-contract-draft（服务端封存 v1.1 合同）
+ * → contract → confirm → compile → run（→ awaiting_approval 时自动 approve）
+ * 的真实创建链路。
  * 类型与 specs/research-review/contracts.md §2/§3、
  * backend/internal/server/writing_research_api.go 的视图一一对应。
  */
@@ -320,21 +321,13 @@ export function isResearchMockEnabled(): boolean {
 }
 
 /**
- * 部署级硬开关（ops kill switch）：显式 false 时研究综述对所有人隐藏
- * （连实验室功能列表都不出现）；缺省或 true 时入口交给「实验室功能」
- * 的用户勾选（settings-store.enableResearchReview，云端跟随账号）。
- * 服务端另有 RESEARCH_REVIEW_ENABLED 权威 flag：勾选但后端未开启时，
- * 启动请求得到 503 RESEARCH_UNAVAILABLE 的明确错误（R14，不静默降级）。
+ * 深度研究流程已产品化（WP4 扩展）：前端不再设部署级/VITE 开关门控，
+ * 权威开关是服务端 RESEARCH_REVIEW_ENABLED——关闭时启动请求得到
+ * 503 RESEARCH_UNAVAILABLE 的明确错误（R14，不静默降级）。
+ * 合同封存也下沉到服务端：startResearchRun 调
+ * POST /documents/{id}/research-contract-draft 拿到已封存的 lcp/1.1
+ * 合同（draft v1 + confirmed v2），前端不再手写字段序 JSON。
  */
-export function isResearchReviewHardOff(): boolean {
-  return envFlag("VITE_RESEARCH_REVIEW_ENABLED") === "false";
-}
-export function researchReviewDisabledReason(): string | null {
-  if (isResearchReviewHardOff()) {
-    return "研究综述功能未开启（RESEARCH_REVIEW_ENABLED=false）";
-  }
-  return "研究综述为实验功能，请在 设置 → 实验室功能 中开启";
-}
 
 export const MOCK_RESEARCH_RUN_ID = "run_research_demo";
 
@@ -833,12 +826,13 @@ export function researchLaunchProblems(launch: ResearchLaunchInput): string[] {
   return problems;
 }
 
-// ─── Go encoding/json 兼容的规范化序列化（客户端封存合同/意图哈希） ───
+// ─── Go encoding/json 兼容的规范化序列化（客户端封存意图计划哈希） ───
 
 /**
  * 后端 writingkernel 契约哈希是 Go json.Marshal 的 sha256：字符串按 Go 规则
  * 转义（HTML 字符 < > & 与 U+2028/2029 输出 \u00XX），字段顺序由调用方按
- * Go 结构体声明顺序构造。数字仅支持安全整数（研究合同不含浮点字段）。
+ * Go 结构体声明顺序构造。数字仅支持安全整数（意图计划不含浮点字段）。
+ * 合同封存已下沉服务端（research-contract-draft），本序列化只服务意图计划。
  */
 export function canonicalGoJSON(value: unknown): string {
   const escapeString = (text: string): string =>
@@ -868,7 +862,7 @@ export function canonicalGoJSON(value: unknown): string {
 /** sha256 → "sha256:<hex64>"（与后端 hashPattern 一致）。 */
 export async function goContentHash(payload: string): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
-  if (!subtle) throw new ResearchApiError("RESEARCH_UNAVAILABLE", 503, "当前环境缺少 WebCrypto，无法封存合同哈希");
+  if (!subtle) throw new ResearchApiError("RESEARCH_UNAVAILABLE", 503, "当前环境缺少 WebCrypto，无法封存意图计划哈希");
   const digest = await subtle.digest("SHA-256", new TextEncoder().encode(payload));
   return "sha256:" + Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -886,6 +880,29 @@ interface ResearchContractRecordView {
     contract_hash: string;
     status: string;
   };
+}
+
+/**
+ * research-contract-draft 端点响应（WP4 产品化）：服务端构造并封存的
+ * lcp/1.1 研究合同两个版本。contract 直发 POST /documents/{id}/contracts，
+ * confirmed_contract 直发 POST /contracts/{id}/confirm——原样转发，前端
+ * 不再手写字段序 JSON，也不再计算任何合同哈希。
+ */
+export interface ResearchContractDraftView {
+  document_id: string;
+  contract: Record<string, unknown>;
+  confirmed_contract: Record<string, unknown>;
+}
+
+/** research-contract-draft 请求体：用户选择 + research-spec/1。 */
+export interface ResearchContractDraftRequest {
+  central_question: string;
+  audience: string;
+  language: string;
+  length_min: number;
+  length_max: number;
+  allow_external_research: boolean;
+  research: ResearchSpec;
 }
 
 interface ResearchPlanPreviewView {
@@ -911,55 +928,30 @@ const RESEARCH_RUN_BUDGET = { max_cost_usd: 100, max_duration_ms: 7200000, max_c
 const RESEARCH_STYLE_SLUG = "default";
 
 /**
- * 构造 lcp/1.1 研究合同草稿与确认版本（客户端封存哈希：服务端 PutContract/
- * ConfirmContract/ValidateTransition 会重算 canonical sha256 并拒绝不一致）。
- * 字段插入顺序必须与 Go WritingContract/ResearchSpec 结构体声明顺序一致。
+ * 服务端封存（WP4 产品化）：POST /documents/{id}/research-contract-draft
+ * 用「用户选择 + research-spec/1」换回已封存的 lcp/1.1 合同（draft v1 +
+ * confirmed v2）。字段序、source_attributions 与两个合同哈希全部由服务端
+ * 按 Go 结构体声明序构造——前端字段序漂移不再可能导致封存失效。
+ * 非法 spec 得到 400 INVALID_RESEARCH_SPEC（明确到字段），flag 关闭得到
+ * 503 RESEARCH_UNAVAILABLE。
  */
-async function buildResearchContracts(launch: ResearchLaunchInput): Promise<{ draft: Record<string, unknown>; confirmed: Record<string, unknown> }> {
-  const question = String(launch.central_question).trim();
-  const now = rfc3339Seconds(new Date());
-  const contractId = `ctr_${uuidV4()}`;
-  const collaboration = { task_mode: "guided", orchestration_mode: "research_review", assurance_level: "sourced", approval_mode: "conditional" };
-  const attributions = await Promise.all(
-    (["task_mode", "orchestration_mode", "assurance_level", "approval_mode"] as const).map(async (field) => ({
-      field_path: `/collaboration/${field}`,
-      source: "user",
-      value_hash: await goContentHash(canonicalGoJSON(collaboration[field])),
-      recorded_at: now,
-    })),
-  );
-  const base = {
-    schema_version: "lcp/1.1",
-    contract_id: contractId,
-    version: 1,
-    status: "draft",
-    intent: { operation: "create", genre: "literature_review", purpose: question },
-    audience: { role: launch.audience.trim(), knowledge_level: "professional" },
-    content: { topic: question, central_question: question, required_points: [], prohibited_points: [] },
-    voice: { tone: "professional", preserve_user_voice: true },
-    material_policy: {
-      user_material_priority: "highest",
-      allow_external_research: launch.allow_external_research,
-      conflict_handling: "ask_user",
-    },
-    evidence_policy: { level: "sourced", unsupported_claims: "prohibit" },
-    delivery: {
-      format: "markdown",
-      language: launch.language.trim(),
-      length: { min: Number(launch.length_min), max: Number(launch.length_max) },
-    },
-    collaboration,
-    source_attributions: attributions,
-    inferences: [],
+async function fetchResearchContractDraft(
+  documentId: string,
+  launch: ResearchLaunchInput,
+): Promise<ResearchContractDraftView> {
+  const request: ResearchContractDraftRequest = {
+    central_question: String(launch.central_question).trim(),
+    audience: String(launch.audience).trim(),
+    language: String(launch.language).trim(),
+    length_min: Number(launch.length_min),
+    length_max: Number(launch.length_max),
+    allow_external_research: launch.allow_external_research,
     research: launch.spec,
   };
-  const draftHash = await goContentHash(canonicalGoJSON(base));
-  const confirmedBase = { ...base, version: 2, status: "confirmed" };
-  const confirmedHash = await goContentHash(canonicalGoJSON(confirmedBase));
-  return {
-    draft: { ...base, contract_hash: draftHash },
-    confirmed: { ...confirmedBase, contract_hash: confirmedHash },
-  };
+  return researchFetch<ResearchContractDraftView>(
+    `${WRITING_PREFIX}/documents/${encodeURIComponent(documentId)}/research-contract-draft`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) },
+  );
 }
 
 /**
@@ -989,13 +981,16 @@ async function buildResearchIntentPlan(contractRef: { id: string; version: numbe
 export { buildResearchIntentPlan };
 
 /**
- * 真实创建链路（与后端 research_e2e_test.go 驱动的请求序列逐一对齐）：
+ * 真实创建链路（WP4 产品化：合同封存下沉服务端）：
  * 1. POST /documents（Idempotency-Key；metadata.material_refs 透传素材引用）
- * 2. POST /documents/{id}/contracts（lcp/1.1 草稿 + research 字段，客户端封存哈希）
- * 3. POST /contracts/{id}/confirm（previous_version=1，确认版本=2，取服务端返回的合同记录）
- * 4. POST /documents/{id}/plans（intent_plan 持服务端确认合同 ref；base_version_id 取文档当前版本）
- * 5. POST /runs（contract id/version/hash、plan envelope、permissions 全部沿用服务端返回值）
- * 6. 返回 awaiting_approval 时 POST /runs/{id}/approve（计划级放行；证据/提纲 gate 仍由用户确认）
+ * 2. POST /documents/{id}/research-contract-draft（用户选择 + research-spec/1
+ *    → 服务端封存的 lcp/1.1 合同 draft v1 + confirmed v2）
+ * 3. POST /documents/{id}/contracts（原样转发服务端封存的 draft）
+ * 4. POST /contracts/{id}/confirm（previous_version=1，原样转发 confirmed，
+ *    取服务端返回的合同记录）
+ * 5. POST /documents/{id}/plans（intent_plan 持服务端确认合同 ref；base_version_id 取文档当前版本）
+ * 6. POST /runs（contract id/version/hash、plan envelope、permissions 全部沿用服务端返回值）
+ * 7. 返回 awaiting_approval 时 POST /runs/{id}/approve（计划级放行；证据/提纲 gate 仍由用户确认）
  */
 async function startRealResearchRun(launch: ResearchLaunchInput): Promise<{ run_id: string }> {
   const problems = researchLaunchProblems(launch);
@@ -1012,9 +1007,12 @@ async function startRealResearchRun(launch: ResearchLaunchInput): Promise<{ run_
       headers: { "Content-Type": "application/json", "Idempotency-Key": uuidV4() },
       body: JSON.stringify({ title, metadata: { material_refs: materialRefs } }),
     });
-    // 2+3. v1.1 合同草稿 → 确认（confirm 步骤必须显式走，PutContract 只收 draft）；
+    // 2. 服务端封存：拿可直接转发到 /contracts 与 /confirm 的两个合同版本
+    //    （非法 spec 在这里得到 400 INVALID_RESEARCH_SPEC，明确到字段）。
+    const draftView = await fetchResearchContractDraft(document.document_id, launch);
+    const { contract: draft, confirmed_contract: confirmed } = draftView;
+    // 3+4. 合同草稿 → 确认（confirm 步骤必须显式走，PutContract 只收 draft）；
     //      后续步骤的 contract id/version/hash 全部取服务端返回的合同记录。
-    const { draft, confirmed } = await buildResearchContracts(launch);
     const draftRecord = await researchFetch<ResearchContractRecordView>(
       `${WRITING_PREFIX}/documents/${encodeURIComponent(document.document_id)}/contracts`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contract: draft }) },

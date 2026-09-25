@@ -103,13 +103,17 @@ services:
       PROVIDER_PREFLIGHT_ENABLED: ${PROVIDER_PREFLIGHT_ENABLED:-false}
       PROVIDER_PREFLIGHT_INTERVAL: ${PROVIDER_PREFLIGHT_INTERVAL:-30m}
       PROVIDER_PREFLIGHT_TIMEOUT: ${PROVIDER_PREFLIGHT_TIMEOUT:-8s}
-      # Research-review path (T09/R14, default off). The scholar operations
-      # execute in-process inside the Go backend (PDF parsing via the
-      # docreader sidecar) — there is no separate worker service. Uncomment
-      # RESEARCH_REVIEW_ENABLED and set SCHOLAR_WORKER_URL (any non-empty
-      # value is the enablement signal) in .env.docker, where
-      # SCHOLAR_WORKER_TOKEN must also be set (required guard, fail-closed).
-      # RESEARCH_REVIEW_ENABLED: "true"
+      # Research-review path (T09/R14; default on since the WP4
+      # productization of the 深度研究 flow — set RESEARCH_REVIEW_ENABLED
+      # to "false" in .env.docker for an explicit kill switch). The scholar
+      # operations execute in-process inside the Go backend (PDF parsing
+      # via the docreader sidecar) — there is no separate worker service.
+      # SCHOLAR_WORKER_URL is the enablement signal (any non-empty value)
+      # and SCHOLAR_WORKER_TOKEN must be set alongside it (required guard,
+      # fail-closed). SCHOLAR_LLM_* configures the rank/read model
+      # operations (OpenAI-compatible); leave unset for the fail-closed
+      # no-model deployment.
+      # RESEARCH_REVIEW_ENABLED: "false"
       # SCHOLAR_WORKER_URL: enabled
       # SCHOLAR_WORKER_TOKEN: (set in .env.docker)
     ports:
