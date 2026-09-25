@@ -220,6 +220,7 @@ cd frontend && npm ci && npm test && npm run build
 
 试点指标采集：[backend/scripts/pilot-metrics.sql](backend/scripts/pilot-metrics.sql)；
 试点上手文档：[docs/29](docs/29-pilot-user-onboarding.md)。
+r7 消融结论（WP6 后重跑）：D 变体硬失败 1.4%、工具调用循环清零；多轮一致性逐案配对为统计平局；B 维持试点晋级——详见[决策文档 r7 附录](docs/ablation-promotion-decision.md)。
 
 ## 🗺 Roadmap
 
