@@ -548,7 +548,7 @@ func New(cfg *config.Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("initialize governed writing store: %w", err)
 		}
-		s.writingAPI = newPersistentWritingAPI(governedStore)
+		s.writingAPI = newPersistentWritingAPI(governedStore, db)
 		// R14 feature flag: RESEARCH_REVIEW_ENABLED (default on since the
 		// WP4 productization; the env var still turns it off explicitly)
 		// gates the research_review contract-draft/compile/run entries;

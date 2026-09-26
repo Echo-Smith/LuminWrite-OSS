@@ -25,6 +25,13 @@ const (
 	CodeRolloutPromotionDenied         ErrorCode = "ROLLOUT_PROMOTION_DENIED"
 	CodeContextRequiredMissing         ErrorCode = "CONTEXT_REQUIRED_MISSING"
 	CodeExecutionFailed                ErrorCode = "EXECUTION_FAILED"
+
+	// CodeResearchPilotRequired marks a research execution refused by the
+	// deep-research pilot's per-subject entitlement gate (wp-pilot-launch):
+	// the subject holds no unexpired research_pilot_entitlements row for the
+	// requested scope. Fail-node, never a retry — re-executing cannot grant
+	// an entitlement.
+	CodeResearchPilotRequired ErrorCode = "RESEARCH_PILOT_REQUIRED"
 )
 
 var (

@@ -163,6 +163,17 @@ multi-instance scaling) see [DEPLOY.md](DEPLOY.md); backup & restore see
   draft, quality) through input references and transitive plan dependencies
   and lands in their ContextEnvelope, with evidence lines bound to the pack
   content hash;
+- **Deep-research pilot authorization (wp-pilot-launch)**: precise per-subject
+  authorization during the pilot — migration 121 `research_pilot_entitlements`
+  holds unexpired (subject, scope) approval rows (`expires_at` auto-expiry,
+  `granted_by`/`reason` approval trail); the `research-contract-draft` endpoint
+  (403 `RESEARCH_PILOT_REQUIRED`, replays included) and all 8 research direct
+  executors of the governed runtime share one subject policy across both
+  layers, and any entitlement-lookup failure fails closed; contract drafts
+  replay verbatim from the persisted (document_id, input_hash) row (migration
+  121 `research_contract_drafts`), keeping `contract_hash`/`confirmed_hash`
+  byte-identical across seconds, with concurrent first seals converging on one
+  stored row via `INSERT … ON CONFLICT DO NOTHING`;
 - **AR-012 candidate evaluation** (experimental): external review sidecar produces
   isolated candidate drafts and mechanical comparison metrics (sidecar is a private
   component, not distributed here); an optional **different-vendor claim verifier**

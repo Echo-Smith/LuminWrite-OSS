@@ -98,6 +98,16 @@ func New(db *database.DB) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// DB exposes the pool the store was built on, so server-side policy stores
+// (e.g. the research pilot entitlement policy) share the governed store's
+// database — same source, same migration state, same lifecycle.
+func (s *Store) DB() *database.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 type Tx struct {
 	tx *sql.Tx
 }

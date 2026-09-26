@@ -3,14 +3,18 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
@@ -58,11 +62,56 @@ type researchContractDraftCommand struct {
 // researchContractDraftView returns both contract versions the launch chain
 // needs: contract goes to POST /documents/{id}/contracts (draft v1) and
 // confirmed_contract to POST /contracts/{id}/confirm (v2). Both carry a
-// canonical server-computed contract_hash, ready to POST verbatim.
+// canonical server-computed contract_hash, ready to POST verbatim. Replayed
+// reports whether the pair was served verbatim from the persisted
+// research_contract_drafts row (true) or sealed fresh (false).
 type researchContractDraftView struct {
 	DocumentID        string                        `json:"document_id"`
 	Contract          writingkernel.WritingContract `json:"contract"`
 	ConfirmedContract writingkernel.WritingContract `json:"confirmed_contract"`
+	Replayed          bool                          `json:"replayed"`
+}
+
+// researchContractDraftSeed is the canonical input identity of one draft
+// request: the same seed derives the contract id and the persistence
+// input_hash, so a replay row is keyed by exactly the inputs the seal
+// consumed. Trimmed text fields (the seal only sees trimmed values) keep
+// whitespace-only differences replay-compatible.
+type researchContractDraftSeed struct {
+	DocumentID            string                     `json:"document_id"`
+	CentralQuestion       string                     `json:"central_question"`
+	Audience              string                     `json:"audience"`
+	Language              string                     `json:"language"`
+	LengthMin             int                        `json:"length_min"`
+	LengthMax             int                        `json:"length_max"`
+	AllowExternalResearch bool                       `json:"allow_external_research"`
+	Research              writingkernel.ResearchSpec `json:"research"`
+}
+
+func researchContractDraftSeedOf(command researchContractDraftCommand) researchContractDraftSeed {
+	return researchContractDraftSeed{
+		DocumentID:            command.DocumentID,
+		CentralQuestion:       strings.TrimSpace(command.CentralQuestion),
+		Audience:              strings.TrimSpace(command.Audience),
+		Language:              strings.TrimSpace(command.Language),
+		LengthMin:             command.LengthMin,
+		LengthMax:             command.LengthMax,
+		AllowExternalResearch: command.AllowExternalResearch,
+		Research:              command.Research,
+	}
+}
+
+// researchContractDraftInputHash is the persistence key's input half: sha256
+// over the canonical (struct-ordered) JSON of the draft seed — the same
+// deterministic-serialization convention the contract id derivation uses.
+// Same document + same choices => same hash => replay of the stored seal.
+func researchContractDraftInputHash(command researchContractDraftCommand) (string, error) {
+	payload, err := json.Marshal(researchContractDraftSeedOf(command))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // buildResearchContractDrafts is the pure sealing core: same command and same
@@ -197,26 +246,7 @@ func validatedResearchSpec(command researchContractDraftCommand) (writingkernel.
 // owning document. Same document + same choices => same id; two documents
 // never collide because document_id is part of the seed.
 func deriveResearchContractID(command researchContractDraftCommand) (string, error) {
-	seed := struct {
-		DocumentID            string                     `json:"document_id"`
-		CentralQuestion       string                     `json:"central_question"`
-		Audience              string                     `json:"audience"`
-		Language              string                     `json:"language"`
-		LengthMin             int                        `json:"length_min"`
-		LengthMax             int                        `json:"length_max"`
-		AllowExternalResearch bool                       `json:"allow_external_research"`
-		Research              writingkernel.ResearchSpec `json:"research"`
-	}{
-		DocumentID:            command.DocumentID,
-		CentralQuestion:       strings.TrimSpace(command.CentralQuestion),
-		Audience:              strings.TrimSpace(command.Audience),
-		Language:              strings.TrimSpace(command.Language),
-		LengthMin:             command.LengthMin,
-		LengthMax:             command.LengthMax,
-		AllowExternalResearch: command.AllowExternalResearch,
-		Research:              command.Research,
-	}
-	payload, err := json.Marshal(seed)
+	payload, err := json.Marshal(researchContractDraftSeedOf(command))
 	if err != nil {
 		return "", err
 	}
@@ -253,17 +283,158 @@ func collaborationAttributions(contract writingkernel.WritingContract, now time.
 }
 
 // DraftResearchContract authorizes the document owner, honors the R14 flag
-// (fail closed with errResearchReviewDisabled while off) and seals both
-// contract versions. Document authorization first: a non-owner gets the same
-// 404/403 it would get on any other document-scoped endpoint, flag on or off.
+// (fail closed with errResearchReviewDisabled while off), gates the deep
+// -research pilot per subject, and returns the sealed contract pair —
+// verbatim from the persisted research_contract_drafts row when this exact
+// (document, input) was sealed before, so contract_hash/confirmed_hash stay
+// byte-identical across seconds. Order matters: document authorization
+// first (a non-owner gets the same 404/403 as on any other document-scoped
+// endpoint), then the R14 kill switch, then the pilot entitlement (403
+// RESEARCH_PILOT_REQUIRED — an entitled document is not an entitled user,
+// and the gate applies to replays too), and only then the replay lookup.
 func (service *persistentWritingAPI) DraftResearchContract(ctx context.Context, access writingAccess, command researchContractDraftCommand) (researchContractDraftView, error) {
 	if _, err := service.authorizeDocument(ctx, access, command.DocumentID); err != nil {
 		return researchContractDraftView{}, err
 	}
-	if service.now != nil {
-		return draftResearchContractWhenEnabled(service.researchReviewEnabled, service.now(), command)
+	// R14 deployment kill switch dominates: with the flag off everyone gets
+	// 503 RESEARCH_UNAVAILABLE, pilot or not (identical to pre-pilot behavior).
+	if !service.researchReviewEnabled {
+		return researchContractDraftView{}, errResearchReviewDisabled
 	}
-	return draftResearchContractWhenEnabled(service.researchReviewEnabled, time.Now().UTC(), command)
+	if err := service.requireResearchPilot(ctx, access.UserID, ResearchPilotScopeResearchReview); err != nil {
+		return researchContractDraftView{}, err
+	}
+	now := time.Now().UTC()
+	if service.now != nil {
+		now = service.now()
+	}
+	return service.draftResearchContractIdempotent(ctx, now, command)
+}
+
+// draftResearchContractIdempotent serves the sealed pair through the
+// persisted replay store: a stored row for (document_id, input_hash) is
+// returned verbatim (hashes byte-identical to the first seal, replayed=true);
+// a miss seals fresh and best-effort persists the result. Persistence is
+// fail-closed on read (an unreadable replay state must not silently
+// double-seal) and degrade-honestly on write (the sealed pair is still
+// correct for this call; the warn keeps the observability trail).
+func (service *persistentWritingAPI) draftResearchContractIdempotent(ctx context.Context, now time.Time, command researchContractDraftCommand) (researchContractDraftView, error) {
+	inputHash, err := researchContractDraftInputHash(command)
+	if err != nil {
+		return researchContractDraftView{}, fmt.Errorf("%w: hash draft input: %v", errInvalidResearchSpec, err)
+	}
+	if store := service.contractDrafts; store != nil && store.DB != nil {
+		stored, found, err := store.load(ctx, command.DocumentID, inputHash)
+		if err != nil {
+			return researchContractDraftView{}, err
+		}
+		if found {
+			stored.Replayed = true
+			return stored, nil
+		}
+	}
+	view, err := draftResearchContractWhenEnabled(service.researchReviewEnabled, now, command)
+	if err != nil {
+		return researchContractDraftView{}, err
+	}
+	if store := service.contractDrafts; store != nil && store.DB != nil {
+		if stored, replayed, err := store.saveOnce(ctx, command, inputHash, view); err != nil {
+			slog.Warn("research contract draft: persist replay row failed; serving the fresh seal", "document_id", command.DocumentID, "error", err)
+		} else if replayed {
+			// Concurrent first-seal race: another request won the insert, so
+			// its seal is the canonical one for this input — serve it verbatim.
+			stored.Replayed = true
+			return stored, nil
+		}
+	}
+	return view, nil
+}
+
+// researchContractDraftStore persists sealed research contract drafts keyed
+// by (document_id, input_hash) — migration 121's research_contract_drafts
+// table — so repeated draft requests replay the stored seal byte-identically
+// instead of re-sealing against a moving attribution clock.
+type researchContractDraftStore struct {
+	DB *database.DB
+}
+
+// load returns the stored seal for (documentID, inputHash), or found=false
+// when no row exists yet.
+func (store *researchContractDraftStore) load(ctx context.Context, documentID, inputHash string) (researchContractDraftView, bool, error) {
+	var contractPayload, confirmedPayload, contractHash, confirmedHash []byte
+	err := store.DB.QueryRowContext(ctx, `
+		SELECT contract, confirmed_contract, contract_hash, confirmed_hash
+		FROM research_contract_drafts
+		WHERE document_id = $1 AND input_hash = $2
+	`, documentID, inputHash).Scan(&contractPayload, &confirmedPayload, &contractHash, &confirmedHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return researchContractDraftView{}, false, nil
+	}
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: load replay row: %w", err)
+	}
+	contract, err := writingkernel.DecodeWritingContractResearchStrict(contractPayload)
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: decode stored contract %s: %w", contractHash, err)
+	}
+	confirmed, err := writingkernel.DecodeWritingContractResearchStrict(confirmedPayload)
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: decode stored confirmed contract %s: %w", confirmedHash, err)
+	}
+	// The stored hashes must still bind the stored bodies: a drift here means
+	// the row was tampered with, and replaying it would seal a lie.
+	if contract.ContractHash != string(contractHash) || confirmed.ContractHash != string(confirmedHash) {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: stored hash does not bind its body for document %s", documentID)
+	}
+	return researchContractDraftView{
+		DocumentID:        documentID,
+		Contract:          contract,
+		ConfirmedContract: confirmed,
+	}, true, nil
+}
+
+// saveOnce inserts the sealed pair; on a (document_id, input_hash) conflict
+// — a concurrent first seal won the race — it re-loads and returns the
+// winner's stored row with replayed=true. The stored row is authoritative:
+// both concurrent callers must observe the same hashes.
+func (store *researchContractDraftStore) saveOnce(ctx context.Context, command researchContractDraftCommand, inputHash string, view researchContractDraftView) (researchContractDraftView, bool, error) {
+	commandPayload, err := json.Marshal(command)
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: marshal command: %w", err)
+	}
+	contractPayload, err := json.Marshal(view.Contract)
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: marshal contract: %w", err)
+	}
+	confirmedPayload, err := json.Marshal(view.ConfirmedContract)
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: marshal confirmed contract: %w", err)
+	}
+	result, err := store.DB.ExecContext(ctx, `
+		INSERT INTO research_contract_drafts
+			(document_id, input_hash, command, contract, confirmed_contract, contract_hash, confirmed_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (document_id, input_hash) DO NOTHING
+	`, command.DocumentID, inputHash, commandPayload, contractPayload, confirmedPayload,
+		view.Contract.ContractHash, view.ConfirmedContract.ContractHash)
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: persist replay row: %w", err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: inspect replay insert: %w", err)
+	}
+	if inserted == 1 {
+		return view, false, nil
+	}
+	stored, found, err := store.load(ctx, command.DocumentID, inputHash)
+	if err != nil {
+		return researchContractDraftView{}, false, err
+	}
+	if !found {
+		return researchContractDraftView{}, false, fmt.Errorf("research contract draft: insert conflicted but no stored row for document %s input %s", command.DocumentID, inputHash)
+	}
+	return stored, true, nil
 }
 
 // draftResearchContractWhenEnabled splits the feature gate from the pure

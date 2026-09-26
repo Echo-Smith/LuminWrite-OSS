@@ -14,12 +14,13 @@ import (
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/arreview"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/database"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingquality"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
@@ -131,7 +132,7 @@ type controlWritingRunCommand struct {
 
 type writingEventPage struct {
 	Events       []writingtransport.WritingEvent `json:"events"`
-	NextSequence int64                    `json:"next_sequence"`
+	NextSequence int64                           `json:"next_sequence"`
 }
 
 // writingRunListItemView is one governed run in the owner's history listing
@@ -192,10 +193,26 @@ type persistentWritingAPI struct {
 	// recorded_at). Injectable so the determinism of the sealed contracts is
 	// testable; nil falls back to the wall clock.
 	now func() time.Time
+	// researchPilot gates the deep-research pilot per subject
+	// (wp-pilot-launch): the SQL policy over research_pilot_entitlements,
+	// built on the same pool as the governed store. Nil (no database wired)
+	// fails closed in requireResearchPilot.
+	researchPilot *ResearchPilotPolicy
+	// contractDrafts persists sealed research contract drafts for the
+	// endpoint's byte-identical replay (migration 121's
+	// research_contract_drafts). Nil means no persistence (pure sealing).
+	contractDrafts *researchContractDraftStore
 }
 
-func newPersistentWritingAPI(store *writingstore.Store) *persistentWritingAPI {
-	return &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(), templates: writingplan.DefaultTemplateRegistry()}
+func newPersistentWritingAPI(store *writingstore.Store, db *database.DB) *persistentWritingAPI {
+	api := &persistentWritingAPI{store: store, capabilities: writingplan.DefaultCapabilityRegistry(), templates: writingplan.DefaultTemplateRegistry()}
+	if db != nil {
+		// Pilot infra shares the governed store's pool: one migration state,
+		// one lifecycle (wp-pilot-launch).
+		api.researchPilot = NewResearchPilotPolicy(db)
+		api.contractDrafts = &researchContractDraftStore{DB: db}
+	}
+	return api
 }
 
 // errResearchReviewDisabled is R14's explicit refusal: the research_review
@@ -781,7 +798,12 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusConflict, researchErrorCode(err)
 	case errors.Is(err, writingruntime.ErrGateApprovalRequired):
 		status, code = http.StatusConflict, "GATE_APPROVAL_REQUIRED"
-	case errors.Is(err, errResearchUnavailable), errors.Is(err, errResearchReviewDisabled):
+	case errors.Is(err, errResearchPilotRequired):
+		// Deep-research pilot subject gate (wp-pilot-launch): the caller is
+		// authenticated and may see the document, but holds no unexpired
+		// pilot entitlement — 403 with the explicit code, replays included.
+		status, code = http.StatusForbidden, "RESEARCH_PILOT_REQUIRED"
+	case errors.Is(err, errResearchUnavailable), errors.Is(err, errResearchReviewDisabled), errors.Is(err, errResearchPilotUnavailable):
 		status, code = http.StatusServiceUnavailable, "RESEARCH_UNAVAILABLE"
 	case errors.Is(err, errArReviewDisabled):
 		status, code = http.StatusServiceUnavailable, "AR_REVIEW_UNAVAILABLE"

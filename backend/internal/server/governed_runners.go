@@ -29,11 +29,11 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
-	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingkernel"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingplan"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 )
 
 // governedRunnerFactory builds the engine-step runners for one capability at
@@ -306,18 +306,36 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 	if err != nil {
 		slog.Warn("governed runtime: research fact validator construction failed", "error", err)
 	}
+	// Research pilot subject gate (wp-pilot-launch): every research direct
+	// executor dispatches through the per-subject entitlement gate backed by
+	// research_pilot_entitlements (migration 121). The policy rides the same
+	// pool the governed store was built on (same migrations, same lifecycle);
+	// with no pool the gate still wraps and fails closed at dispatch. Lookup
+	// failures refuse the node — the authorization surface never guesses.
+	var pilotPolicy ResearchPilotAuthorizer
+	if db := store.DB(); db != nil {
+		pilotPolicy = NewResearchPilotPolicy(db)
+	} else {
+		slog.Warn("governed runtime: research pilot policy has no database; research nodes refuse dispatch")
+	}
+	wrapPilot := func(executor writingruntime.Executor) writingruntime.Executor {
+		if executor == nil {
+			return nil
+		}
+		return NewResearchPilotGateExecutor(executor, pilotPolicy, ResearchPilotScopeResearchReview)
+	}
 	direct := map[string]writingruntime.Executor{
-		writingplan.CapabilityResearchDiscover:  discover,
-		writingplan.CapabilityResearchRead:      read,
-		writingplan.CapabilityResearchOutline:   outline,
-		writingplan.CapabilityResearchDraft:     draft,
-		writingplan.CapabilityResearchCitations: citations,
-		writingplan.CapabilityResearchFact:      fact,
+		writingplan.CapabilityResearchDiscover:  wrapPilot(discover),
+		writingplan.CapabilityResearchRead:      wrapPilot(read),
+		writingplan.CapabilityResearchOutline:   wrapPilot(outline),
+		writingplan.CapabilityResearchDraft:     wrapPilot(draft),
+		writingplan.CapabilityResearchCitations: wrapPilot(citations),
+		writingplan.CapabilityResearchFact:      wrapPilot(fact),
 		// F5 user-material branch: the material executors carry their own
 		// binding ids, so a plan compiled for a no-external-research contract
 		// can never resolve the external bindings.
-		writingplan.CapabilityResearchDiscoverMaterial: materialDiscover,
-		writingplan.CapabilityResearchReadMaterial:     materialRead,
+		writingplan.CapabilityResearchDiscoverMaterial: wrapPilot(materialDiscover),
+		writingplan.CapabilityResearchReadMaterial:     wrapPilot(materialRead),
 	}
 	specs := []governedCapabilitySpec{}
 	for _, capability := range []string{writingplan.CapabilityResearchDiscover, writingplan.CapabilityResearchRead,

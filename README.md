@@ -149,6 +149,14 @@ cd frontend && npm ci && npm test && npm run build
   docreader sidecar——`SCHOLAR_WORKER_URL` 仅作为启用信号，无独立 worker 服务；
   上下文闭环（WP1/WP2）：研究证据包随输入引用与传递计划依赖进入下游节点
   （提纲/成稿/质量）的 ContextEnvelope，证据行绑定包内容哈希；
+- **深度研究试点授权（wp-pilot-launch）**：试点期按 subject 精确授权——migration 121
+  `research_pilot_entitlements` 记录未过期 (subject, scope) 审批行（`expires_at`
+  自动到期，`granted_by`/`reason` 审批留痕）；`research-contract-draft` 端点（403
+  `RESEARCH_PILOT_REQUIRED`，重放请求同样受限）与治理运行时全部 8 个 research
+  direct executor 双层共用同一 subject policy，授权查询失败一律 fail closed；draft
+  草稿按 (document_id, input_hash) 持久化幂等重放（migration 121
+  `research_contract_drafts`），跨秒重试 `contract_hash`/`confirmed_hash`
+  逐字节稳定，并发首封由 `INSERT … ON CONFLICT DO NOTHING` 收敛到同一条封存；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
   （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
   `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿中带引用的
