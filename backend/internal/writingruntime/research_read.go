@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -36,7 +37,10 @@ const (
 	ResearchReadMaxBlocks      = 24
 	researchFetchSizeLimit     = 25 * 1024 * 1024
 	researchLeaseTTL           = 10 * time.Minute
-	researchCallTimeout        = 120 * time.Second
+	// 480s：必须 ≥ scholar 层 llmReadTimeout（480s），否则外层先掐断把内层
+	// 上限架空（run_78601704 两 attempt 均精确 120.0s 死于此错配）。reasoning
+	// 模型 read 实测 217s→300s+ 波动；节点 bounds（600s）仍在外层兜底。
+	researchCallTimeout = 480 * time.Second
 )
 
 // T05 research runtime error codes (additive; defined here so the shared
@@ -756,6 +760,11 @@ func (executor *ResearchReadExecutor) readBlocks(ctx context.Context, request Ex
 	cancel()
 	if err != nil {
 		return subTaskOutput{}, err
+	}
+	// reader 的自检 warnings（含 evidence 偏移重锚定记录）落在 response 上，
+	// 适配层此前直接丢弃——重锚定等关键自愈行为必须可观测。
+	for _, w := range response.Warnings {
+		slog.Warn("research read worker warning", "paper_id", paperID, "warning", w)
 	}
 	body, err := json.Marshal(outputs)
 	if err != nil {
