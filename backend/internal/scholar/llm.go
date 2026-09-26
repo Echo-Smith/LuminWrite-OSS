@@ -28,7 +28,10 @@ const (
 	envLLMModelKey   = "SCHOLAR_LLM_MODEL"
 	envLLMAPIKeyName = "SCHOLAR_LLM_API_KEY"
 
-	llmTimeout     = 120 * time.Second
+	// 480s：reasoning 模型（MiMo-V2.6-Flash）read 实测 217s→300s+ 波动且仍在
+	// 恶化；300s 上限在第三轮 E2E 直接探针中被击穿（300.3s 无响应）。与
+	// writingruntime 外层 researchCallTimeout（480s）对齐，节点 bounds 600s 兜底。
+	llmTimeout     = 480 * time.Second
 	llmMaxResponse = 8 << 20 // 8 MiB
 )
 
@@ -87,7 +90,7 @@ func chatCall(ctx context.Context, cfg LLMConfig, messages []chatMessage, timeou
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 
-	resp, err := providerHTTPClient.Do(req)
+	resp, err := llmHTTPClient.Do(req)
 	if err != nil {
 		if callCtx.Err() != nil || ctx.Err() != nil {
 			return "", Usage{}, &Error{Kind: joinKinds(ErrOutcomeUnknown, ErrDeadline),

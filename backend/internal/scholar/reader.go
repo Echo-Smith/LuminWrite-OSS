@@ -33,11 +33,13 @@ import (
 const (
 	ReaderVersion = "reader/1"
 
-	MaxReadBlocks       = 24
-	MaxEvidencePerRead  = 48
-	MaxClaimsPerRead    = 24
-	MaxQuoteCodepoints  = 1200
-	llmReadTimeout      = 120 * time.Second
+	MaxReadBlocks      = 24
+	MaxEvidencePerRead = 48
+	MaxClaimsPerRead   = 24
+	MaxQuoteCodepoints = 1200
+	// 480s：read 的证据 JSON 在 reasoning 模型上实测 217s→300s+ 波动；与
+	// writingruntime 外层 researchCallTimeout（480s）对齐，节点 bounds 600s 兜底。
+	llmReadTimeout = 480 * time.Second
 )
 
 // ClaimKind is the tri-state claim taxonomy (contracts.md §2).
@@ -211,6 +213,28 @@ func (v *readValidator) dropf(format string, args ...any) {
 	v.warnings = append(v.warnings, fmt.Sprintf(format, args...))
 }
 
+// warnf 记录一条不丢弃条目的诊断信息（如重锚定说明）。
+func (v *readValidator) warnf(format string, args ...any) {
+	v.warnings = append(v.warnings, fmt.Sprintf(format, args...))
+}
+
+// reanchorQuote 返回 quote 在 block runes 中首次逐字出现的 [start,end)。
+// 证据不变量 =「quote 逐字出现于 block 且 offsets 精确定位该次出现」；模型偶发
+// 整体常数偏移（tokenizer/BOM 伪影）时，从 quote 本身重推 offsets 可同时恢复
+// 不变量的两半，而不是丢弃逐字真实的证据。找不到逐字出现则返回 false。
+func reanchorQuote(runes []rune, quote string, maxCodepoints int) ([2]int64, bool) {
+	q := []rune(quote)
+	if len(q) == 0 || len(q) > maxCodepoints || len(q) > len(runes) {
+		return [2]int64{}, false
+	}
+	for i := 0; i+len(q) <= len(runes); i++ {
+		if string(runes[i:i+len(q)]) == quote {
+			return [2]int64{int64(i), int64(i + len(q))}, true
+		}
+	}
+	return [2]int64{}, false
+}
+
 func (v *readValidator) validateEvidence(index int, item rawEvidence) *ReadEvidence {
 	label := fmt.Sprintf("evidence[%d]", index)
 	if item.EvidenceID == "" || strings.TrimSpace(item.EvidenceID) == "" {
@@ -251,8 +275,18 @@ func (v *readValidator) validateEvidence(index int, item rawEvidence) *ReadEvide
 		return nil
 	}
 	if string(runes[start:end]) != quote {
-		v.dropf("%s dropped: quote does not match block_text[start:end] for block %s", label, item.BlockID)
-		return nil
+		re, ok := reanchorQuote(runes, quote, MaxQuoteCodepoints)
+		if !ok {
+			v.dropf("%s dropped: quote does not match block_text[start:end] for block %s", label, item.BlockID)
+			return nil
+		}
+		// 模型偏移漂移（如整段 +1 的 tokenizer 伪影）但 quote 本身是 block 的
+		// 逐字子串：重锚定到首次出现。证据不变量保持——quote 必须逐字出现，
+		// offsets 必须精确定位该次出现；host 层 VerifyEvidenceQuote 仍按
+		// 持久化 offsets 严格复核。
+		v.warnf("%s re-anchored: model offsets drifted; verbatim quote located at [%d:%d) for block %s",
+			label, re[0], re[1], item.BlockID)
+		start, end = re[0], re[1]
 	}
 	return &ReadEvidence{
 		EvidenceID:    item.EvidenceID,

@@ -45,6 +45,11 @@ var KnownProviders = map[string]bool{
 // downloader keeps the same rule for its SSRF-pinned path).
 var providerHTTPClient = &http.Client{Timeout: providerTimeout}
 
+// llmHTTPClient 是 LLM 调用（rank/read）的专用 client：无固定 Timeout——
+// 请求级 ctx 携带 llmTimeout（120s）。此前复用 15s 的 providerHTTPClient，
+// 长推理（实测 200s+）必然死于 Client.Timeout，read 节点全灭。
+var llmHTTPClient = &http.Client{}
+
 var _ = regexp.MustCompile // keep regexp import if unused by future edits
 
 func checkAllowlist(allowlist []string) error {
