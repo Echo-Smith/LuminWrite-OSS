@@ -2,17 +2,24 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 )
+
+// docreaderMaxInlineBytes 与 scholar 侧对齐的后端预检上限（docreader 容器侧
+// 上限为 32 MiB，见 DOCREADER_MAX_INLINE_BYTES）。
+const docreaderMaxInlineBytes = 25 * 1024 * 1024
+
+// errDocreaderRejected 标记 docreader 拒绝/无法解析该文档（空、超限、ERROR）。
+var errDocreaderRejected = errors.New("docreader rejected document")
 
 // ─── File Parser Service ───────────────────────────────
 // FileParser handles file upload and parsing for the knowledge base.
@@ -129,24 +136,21 @@ func (f *FileParser) readDirect(fileContent io.Reader) (string, error) {
 
 // parseWithDocreader sends the file to the docreader TCP service for parsing.
 // The slim docreader service supports PDF, Word, PPT, Excel, images, etc.
-// Protocol: send "PARSE <filepath>\n" over TCP, receive parsed text.
+// 传输采用有界字节协议（PARSEBYTES）：文件字节内联发送，不依赖跨容器可见的
+// 临时路径——compose 部署下 backend 与 docreader 是不同容器，路径协议不可用。
 func (f *FileParser) parseWithDocreader(ctx context.Context, filename string, fileContent io.Reader) (string, error) {
-	// Save to temporary file (docreader expects file paths)
-	tmpFile, err := os.CreateTemp("", "docreader-*"+filepath.Ext(filename))
+	data, err := io.ReadAll(io.LimitReader(fileContent, docreaderMaxInlineBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
+		return "", fmt.Errorf("failed to read upload: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
-
-	if _, err := io.Copy(tmpFile, fileContent); err != nil {
-		return "", fmt.Errorf("failed to write temp file: %w", err)
+	if len(data) == 0 {
+		return "", fmt.Errorf("%w: empty upload for %s", errDocreaderRejected, filename)
+	}
+	if len(data) > docreaderMaxInlineBytes {
+		return "", fmt.Errorf("%w: %s exceeds %d bytes", errDocreaderRejected, filename, docreaderMaxInlineBytes)
 	}
 
-	// Call docreader via gRPC
-	// The docreader gRPC API is based on WeKnora's docreader service.
-	// We use a simple gRPC client to send the file path and get parsed text.
-	content, err := f.callDocreaderTCP(ctx, tmpFile.Name())
+	content, err := f.callDocreaderTCP(ctx, filepath.Ext(filename), data)
 	if err != nil {
 		return "", fmt.Errorf("docreader parsing failed: %w", err)
 	}
@@ -154,38 +158,43 @@ func (f *FileParser) parseWithDocreader(ctx context.Context, filename string, fi
 	return content, nil
 }
 
-// callDocreaderTCP sends a file to the docreader TCP service and returns parsed text.
-// Protocol: send "PARSE <filepath>\n" over TCP, receive parsed text until connection close.
-func (f *FileParser) callDocreaderTCP(ctx context.Context, filePath string) (string, error) {
-	// Connect to docreader via TCP
-	// The slim docreader service accepts a file path and returns parsed text.
-
-	conn, err := net.DialTimeout("tcp", f.docreaderAddr, 10*time.Second)
+// callDocreaderTCP sends document bytes to the docreader TCP service and returns
+// parsed text. Protocol: "PARSEBYTES <size> <ext>\n" followed by exactly <size>
+// raw bytes; response is parsed text until connection close, or "ERROR ..." on
+// rejection (empty/ERROR both fail the import — ERROR text must not be stored).
+func (f *FileParser) callDocreaderTCP(ctx context.Context, ext string, content []byte) (string, error) {
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", f.docreaderAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to docreader: %w", err)
 	}
 	defer conn.Close()
-
-	// Simple protocol: send file path, receive parsed text
-	// Format: "PARSE <filepath>\n"
-	// Response: text content until connection close
-	cmd := fmt.Sprintf("PARSE %s\n", filePath)
-	if _, err := conn.Write([]byte(cmd)); err != nil {
-		return "", fmt.Errorf("failed to send request to docreader: %w", err)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 
-	// Read response
+	header := fmt.Sprintf("PARSEBYTES %d %s\n", len(content), ext)
+	if _, err := io.WriteString(conn, header); err != nil {
+		return "", fmt.Errorf("failed to send request to docreader: %w", err)
+	}
+	if _, err := conn.Write(content); err != nil {
+		return "", fmt.Errorf("failed to send document bytes to docreader: %w", err)
+	}
+
 	respBytes, err := io.ReadAll(io.LimitReader(conn, 50*1024*1024)) // 50MB limit
 	if err != nil {
 		return "", fmt.Errorf("failed to read docreader response: %w", err)
 	}
 
-	content := string(respBytes)
-	if len(content) == 0 {
-		return "", fmt.Errorf("docreader returned empty content")
+	response := strings.TrimRight(string(respBytes), "\n")
+	if response == "" {
+		return "", fmt.Errorf("%w: docreader returned empty content", errDocreaderRejected)
+	}
+	if strings.HasPrefix(response, "ERROR") {
+		return "", fmt.Errorf("%w: %s", errDocreaderRejected, response)
 	}
 
-	return content, nil
+	return response, nil
 }
 
 // isDirectReadFormat returns true for formats that can be read directly as text.
