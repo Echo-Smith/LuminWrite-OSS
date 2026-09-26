@@ -148,7 +148,15 @@ cd frontend && npm ci && npm test && npm run build
   （`backend/internal/scholar`），PDF 解析经
   docreader sidecar——`SCHOLAR_WORKER_URL` 仅作为启用信号，无独立 worker 服务；
   上下文闭环（WP1/WP2）：研究证据包随输入引用与传递计划依赖进入下游节点
-  （提纲/成稿/质量）的 ContextEnvelope，证据行绑定包内容哈希；
+  （提纲/成稿/质量）的 ContextEnvelope，证据行绑定包内容哈希；稳定性（试点
+  实测修复）：LLM 调用（rank/read）使用无固定 Timeout 的专用 client（曾复用
+  15s 检索 egress client，长推理必死于 Client.Timeout），`llmTimeout` /
+  `llmReadTimeout` 与外层 runtime `researchCallTimeout` 三层对齐 480s（节点
+  bounds 600s 兜底），read 适配层经 slog 透传 reader 自检 warnings，自愈行为
+  可观测；证据偏移重锚定：模型偶发整体常数偏移（tokenizer 伪影）导致 offsets
+  漂移时，只要 quote 仍是 block 的逐字子串，证据门即重锚定到首次出现，保持
+  「quote 逐字出现 + offsets 精确定位该次出现」双不变量，非逐字引用仍一律
+  丢弃，host 层 `VerifyEvidenceQuote` 按持久化 offsets 严格复核；
 - **深度研究试点授权（wp-pilot-launch）**：试点期按 subject 精确授权——migration 121
   `research_pilot_entitlements` 记录未过期 (subject, scope) 审批行（`expires_at`
   自动到期，`granted_by`/`reason` 审批留痕）；`research-contract-draft` 端点（403
@@ -157,6 +165,11 @@ cd frontend && npm ci && npm test && npm run build
   草稿按 (document_id, input_hash) 持久化幂等重放（migration 121
   `research_contract_drafts`），跨秒重试 `contract_hash`/`confirmed_hash`
   逐字节稳定，并发首封由 `INSERT … ON CONFLICT DO NOTHING` 收敛到同一条封存；
+  试点全链验收已在真实 Compose E2E 通过（upload → discover → read → 证据门 →
+  提纲门 → draft → citations → fact → quality → finalize 端到端 8m01s，五轮
+  实测，`WRITING_RUNTIME_MODE=allowlist` 下运行）；read 节点建议使用非长思维链
+  模型（如 DeepSeek-V4-Flash）——reasoning 模型单次 read 延迟 217s→300s+ 波动，
+  不适用于 rank/read；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
   （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
   `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿中带引用的
@@ -178,7 +191,7 @@ cd frontend && npm ci && npm test && npm run build
 |---|---|
 | 后端 | Go 1.25 · chi · SSE（net/http）· pgx/v5 · go-redis（依赖面刻意克制） |
 | 数据库 | PostgreSQL 17（ParadeDB 镜像：pgvector + pg_bm25）· Redis 7 |
-| 文档解析 | docreader sidecar（markitdown，TCP 协议，~150MB）；PDF 解析已升级为有界字节协议——backend 以 `PARSEBYTES` 内联传输文档字节（32 MiB 上限），不再落盘临时路径 |
+| 文档解析 | docreader sidecar（markitdown，TCP 协议，~150MB）；KB/材料上传与 scholar 路径统一走有界字节协议——backend 以 `PARSEBYTES` 内联传输文档字节（backend 预检 25 MiB，docreader 侧上限 32 MiB），不再依赖跨容器可见的临时路径；空/ERROR 响应显式失败导入，不把错误文本当正文入库 |
 | 模型 | OpenAI 兼容 `/chat/completions`（DeepSeek / SenseNova 已验证，[切换指南](docs/provider-configuration.md)） |
 | Embedding | DashScope text-embedding-v3（可选，未配置自动降级） |
 | 前端 | React 19 · Vite 7 · TypeScript · Tailwind · Tiptap/ProseMirror · zustand |
