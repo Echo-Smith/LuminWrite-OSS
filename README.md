@@ -170,6 +170,13 @@ cd frontend && npm ci && npm test && npm run build
   实测，`WRITING_RUNTIME_MODE=allowlist` 下运行）；read 节点建议使用非长思维链
   模型（如 DeepSeek-V4-Flash）——reasoning 模型单次 read 延迟 217s→300s+ 波动，
   不适用于 rank/read；
+- **会话切换加载成稿 + 非 JSON 响应友好错误（试点实测修正）**：侧栏点击 governed
+  会话此前只拉运行元数据——文档版本/质量/成稿正文从不加载，右侧空白；`loadRun`
+  现按 run.document_id 自动触发 `loadDocument`（versions + quality + 审计），
+  URL 直开与侧栏切换行为一致；governed run 正文区不再渲染「欢迎写作」轮播占位；
+  backend 重启窗口期前端轮询会拿到 nginx HTML 错误页，`writingFetch`/
+  `writingRequest` 现在解析前检查 content-type，非 JSON 一律转为「服务暂时不可用，
+  请稍后重试」的明确提示；
 - **AR-012 候选评估**（实验性）：外部综述 sidecar 产出隔离候选稿与机械对比指标
   （sidecar 为私有组件，不随本仓库分发）；宿主侧可启用**异源 Claim 复核**——
   `AR_REVIEW_VERIFY_*` 指向与生成模型不同供应商的验证模型，对成稿中带引用的
