@@ -43,6 +43,10 @@ async function writingFetch<T>(path: string, init: RequestInit = {}): Promise<T>
     ...(init.headers as Record<string, string> ?? {}),
   };
   const response = await fetch(path, { ...init, headers });
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new WritingApiError("WRITING_UNAVAILABLE", response.status, `服务暂时不可用（HTTP ${response.status}），请稍后重试`);
+  }
   if (!response.ok) {
     let code = "WRITING_UNAVAILABLE";
     let message: string | undefined;

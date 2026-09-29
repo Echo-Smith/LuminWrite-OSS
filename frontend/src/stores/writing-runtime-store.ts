@@ -154,6 +154,12 @@ interface APIEnvelope<T> { success?: boolean; data?: T }
 async function writingRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!path.startsWith("/api/v2/")) throw new Error("governed writing store only accepts /api/v2 resources");
   const response = await fetch(path, { ...init, headers: { Accept: "application/json", ...init.headers } });
+  // 非 JSON 响应（nginx 502/503 错误页）在解析前转为友好错误，
+  // 避免 "Unexpected token '<'" 这类无意义异常冒到 UI。
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(`服务暂时不可用（HTTP ${response.status}），请稍后重试`);
+  }
   const body = await response.json() as APIEnvelope<T> & T;
   if (!response.ok) throw new Error(`writing API request failed (${response.status})`);
   return (body.data ?? body) as T;
