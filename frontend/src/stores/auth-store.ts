@@ -157,7 +157,14 @@ async function callGuestAPI(): Promise<{
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // 部署关闭自助建号（DISABLE_REGISTRATION）时返回 403 REGISTRATION_DISABLED，
+      // 记录到模块级标记供 auth-modal 隐藏注册入口，而不是无限重试。
+      if (res.status === 403) {
+        registrationDisabledFlag = true;
+      }
+      return null;
+    }
     const json = await res.json();
     if (!json.success || !json.data?.token) return null;
     return json.data;
@@ -188,6 +195,13 @@ async function callRegisterAPI(body: Record<string, unknown>): Promise<{
 }
 
 // ─── Store ─────────────────────────────────────────────────
+
+/** 模块级标记：部署已关闭自助注册（guest 403 REGISTRATION_DISABLED）。 */
+let registrationDisabledFlag = false;
+
+export function isRegistrationDisabled(): boolean {
+  return registrationDisabledFlag;
+}
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   token: null,

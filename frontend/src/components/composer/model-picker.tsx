@@ -15,6 +15,7 @@ interface ModelOption {
   provider: string;
   is_default: boolean;
   has_api_key: boolean;
+  source?: "user" | "global"; // user = 本人 BYOK 配置，global = 实例默认（回退）
   points_per_k_token: number;
   cost_level: "economy" | "standard" | "premium";
 }
@@ -122,6 +123,11 @@ export function ModelPicker({ value, onChange, compact = false }: ModelPickerPro
                   {m.is_default && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
+                  {m.source === "user" && (
+                    <span className="text-[10px] rounded-sm bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 px-1 py-px">
+                      自定义
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground">{m.provider}</span>
                   {level && (
                     <span className={cn("text-[10px]", level.color)}>

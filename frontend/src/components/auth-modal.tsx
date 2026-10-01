@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { authStore } from "@/stores/auth-store";
+import { authStore, isRegistrationDisabled } from "@/stores/auth-store";
 import {
   isWebAuthnSupported,
   isPlatformAuthenticatorAvailable,
@@ -40,7 +40,9 @@ interface AuthModalProps {
 
 export function AuthModal({ open, onOpenChange, guestToken, defaultTab = "login" }: AuthModalProps) {
   // 根据 guestToken 和 defaultTab 计算初始 Tab
-  const effectiveDefaultTab = guestToken ? "register" : defaultTab;
+  const registrationDisabled = isRegistrationDisabled();
+  // 注册关闭时强制登录 tab（guest_token 升级流程同样不可用）
+  const effectiveDefaultTab = registrationDisabled ? "login" : (guestToken ? "register" : defaultTab);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -95,7 +97,7 @@ export function AuthModal({ open, onOpenChange, guestToken, defaultTab = "login"
   // 弹窗打开时同步 activeTab
   useEffect(() => {
     if (open) {
-      setActiveTab(guestToken ? "register" : (defaultTab || "login"));
+      setActiveTab(registrationDisabled ? "login" : (guestToken ? "register" : (defaultTab || "login")));
     }
   }, [open, guestToken, defaultTab]);
 
@@ -397,7 +399,7 @@ export function AuthModal({ open, onOpenChange, guestToken, defaultTab = "login"
         >
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="login" className="text-xs">登录</TabsTrigger>
-            <TabsTrigger value="register" className="text-xs">注册</TabsTrigger>
+            {!registrationDisabled && <TabsTrigger value="register" className="text-xs">注册</TabsTrigger>}
           </TabsList>
 
           {/* ─── 登录 Tab ──────────────────────────────────── */}

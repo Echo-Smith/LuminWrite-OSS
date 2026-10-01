@@ -259,8 +259,8 @@ export function ModelConfigsPage() {
   return (
       <div className="p-6 space-y-6">
         <AdminPageHeader
-          title="模型配置"
-          description="输入 Base URL 和 API Key，自动发现可用模型。支持自定义供应商名称和 HTTP 请求头。密钥加密存储在模型配置中。"
+          title="全局默认模型（回退）"
+          description="这里的配置是「实例默认」：仅当用户未在个人中心自带密钥（BYOK）时作为回退使用；用户配置了自带密钥的模型优先于这里。输入 Base URL 和 API Key，自动发现可用模型。密钥加密存储。"
           action={
             <Button size="sm" onClick={openAdd}>
               <Plus className="h-4 w-4 mr-2" /> 添加模型
