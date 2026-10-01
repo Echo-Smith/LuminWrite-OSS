@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/engine"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
@@ -59,15 +61,25 @@ import (
 //	    {"from": "auto_fix", "to": "post_review"},
 //	  ]
 //	}
+// llmForContext resolves the caller's LLM client from the request context
+// (BYOK-aware: the authenticated user's own model keys first, global
+// model_configs fallback, env last). Falls back to the static s.llm when no
+// dynamic service is wired.
+func (s *Server) llmForContext(ctx context.Context) *tools.LLMClient {
+	if s.llmSvc != nil {
+		if c := s.llmSvc.GetClient(ctx, ""); c != nil {
+			return c
+		}
+	}
+	return s.llm
+}
+
 func (s *Server) handleToolGraph(w http.ResponseWriter, r *http.Request) {
 	// Build a temporary registry with the same tools used by the pipeline agent.
 	// We use a nil execCtx (mode="auto") to include all default tools.
 	// The guided-only "outline" tool will be included if mode is "guided",
 	// but for the graph endpoint we show the full superset.
-	llmClient := s.llm
-	if s.llmSvc != nil {
-		llmClient = s.llmSvc.GetDefaultClient(r.Context())
-	}
+	llmClient := s.llmForContext(r.Context())
 	if llmClient == nil {
 		response.Err(w, http.StatusServiceUnavailable, "llm_unavailable", "LLM client not available")
 		return

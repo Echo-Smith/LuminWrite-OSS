@@ -98,6 +98,10 @@ type ResearchDraftSectionContext struct {
 // slug injects the user-selected global style as advisory prose guidance —
 // citation discipline stays enforced by the validators regardless of style.
 type ResearchDraftInput struct {
+	// UserID is the run owner (run.OwnerUserID), used by BYOK-aware
+	// generators to resolve the owner's own model keys. Empty resolves the
+	// global layer.
+	UserID           string
 	ResearchQuestion string
 	StyleSlug        string
 	StyleProfile     *profile.StyleProfile
@@ -211,6 +215,7 @@ func (executor *ResearchDraftExecutor) Execute(ctx context.Context, request Exec
 			ErrResearchGeneratorUnavailable)
 	}
 	output, genErr := executor.generator.GenerateResearchDraft(ctx, ResearchDraftInput{
+		UserID:           request.UserID,
 		ResearchQuestion: contract.Content.CentralQuestion,
 		StyleSlug:        request.StyleSlug,
 		StyleProfile:     executor.resolveStyleProfile(request),
@@ -492,6 +497,11 @@ type LLMResearchDraftGenerator struct {
 	// LLM is the model client; nil defers the failure to GenerateResearchDraft
 	// so a deployment without a wired model pauses honestly at the draft node.
 	LLM *tools.LLMClient
+	// LLMForUser, when set, resolves the client per run owner at generate
+	// time (BYOK: the owner's own model keys first, global fallback). It
+	// takes precedence over the static LLM; a nil result fails exactly like
+	// a nil LLM.
+	LLMForUser func(userID string) *tools.LLMClient
 }
 
 // ErrMarkerOnly instruction text shared by the prompt.
@@ -516,7 +526,11 @@ func researchStyleInstruction(profile *profile.StyleProfile) string {
 
 // GenerateResearchDraft calls the model once for the whole bounded draft.
 func (generator LLMResearchDraftGenerator) GenerateResearchDraft(ctx context.Context, input ResearchDraftInput) (ResearchDraftOutput, error) {
-	if generator.LLM == nil {
+	llm := generator.LLM
+	if generator.LLMForUser != nil {
+		llm = generator.LLMForUser(input.UserID)
+	}
+	if llm == nil {
 		return ResearchDraftOutput{}, ErrResearchGeneratorUnavailable
 	}
 	var prompt strings.Builder
@@ -551,7 +565,7 @@ func (generator LLMResearchDraftGenerator) GenerateResearchDraft(ctx context.Con
 		}
 		prompt.WriteString("\n")
 	}
-	response, usage, err := generator.LLM.Chat(ctx, []tools.LLMMessage{{Role: "user", Content: prompt.String()}},
+	response, usage, err := llm.Chat(ctx, []tools.LLMMessage{{Role: "user", Content: prompt.String()}},
 		tools.WithInstructions("你是研究综述撰稿人，只返回 JSON。"), tools.WithTemperature(0.2), tools.WithJSONResponse())
 	if err != nil {
 		return ResearchDraftOutput{}, err

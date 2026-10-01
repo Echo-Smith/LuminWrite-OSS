@@ -33,6 +33,11 @@ type ValidatorRunner struct {
 	// LLM is the model client used for the actual review. Nil means the
 	// deployment has not wired a model for validators (shadow lanes, tests).
 	LLM *tools.LLMClient
+	// LLMForUser, when set, resolves the client per run owner at dispatch
+	// time (BYOK: the owner's own model keys first, global fallback). It
+	// takes precedence over the static LLM; a nil result degrades exactly
+	// like a nil LLM.
+	LLMForUser func(userID string) *tools.LLMClient
 	// Now overrides the wall clock in tests. Zero means time.Now.
 	Now func() time.Time
 }
@@ -90,12 +95,16 @@ func (runner *ValidatorRunner) Run(ctx context.Context, input LegacyNodeInput) (
 			Message: "缺少可解析的 source_pack 输入，评审未执行"})
 		return runner.emit(input, report), LegacyUsage{Measured: true}, nil
 	}
-	if runner.LLM == nil {
+	llm := runner.LLM
+	if runner.LLMForUser != nil {
+		llm = runner.LLMForUser(input.Request.UserID)
+	}
+	if llm == nil {
 		report.Issues = append(report.Issues, validatorIssue{Severity: "medium", Type: "review_skipped",
 			Message: "未接入评审模型，评审未执行"})
 		return runner.emit(input, report), LegacyUsage{Measured: true}, nil
 	}
-	response, usage, err := runner.LLM.Chat(ctx, []tools.LLMMessage{{Role: "user", Content: validatorPrompt(kind, score, draft, sources)}},
+	response, usage, err := llm.Chat(ctx, []tools.LLMMessage{{Role: "user", Content: validatorPrompt(kind, score, draft, sources)}},
 		tools.WithInstructions("你是写作评审员，只返回 JSON。"),
 		tools.WithTemperature(0), tools.WithJSONResponse())
 	if err != nil {

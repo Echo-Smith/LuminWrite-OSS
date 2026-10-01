@@ -41,9 +41,12 @@ import (
 // clients (LLM/search/sensitive/jiaozhen/KB) decide the concrete step.
 type governedRunnerFactory struct {
 	server *Server
-	// llm resolves the LLM client at dispatch time (the server may rebuild
-	// clients after DB-backed configuration loads).
-	llm func() *tools.LLMClient
+	// llm resolves the LLM client for one run owner at dispatch time (BYOK:
+	// the owner's own model keys first, global model_configs fallback, env
+	// last). An empty userID resolves the global layer only. Dispatch-time
+	// resolution is what lets admin/BYOK changes take effect without
+	// rebuilding clients.
+	llm func(userID string) *tools.LLMClient
 	// kb adapts the local knowledge base; nil disables KB-scoped drafting.
 	kb tools.KnowledgeSearcher
 }
@@ -51,7 +54,7 @@ type governedRunnerFactory struct {
 // newGovernedRunnerFactory captures the server's engine clients lazily so
 // runner construction never pins stale clients.
 func newGovernedRunnerFactory(server *Server, kb tools.KnowledgeSearcher) *governedRunnerFactory {
-	return &governedRunnerFactory{server: server, llm: func() *tools.LLMClient { return server.llm }, kb: kb}
+	return &governedRunnerFactory{server: server, llm: server.llmForUser, kb: kb}
 }
 
 // RunnerFor returns the LegacyNodeRunner for one governed capability, or nil
@@ -63,7 +66,7 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 		return writingruntime.EngineStepRunner{
 			Styles: governedStyleResolver{server: server},
 			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
-				return steps.NewWriteStepWithKB(factory.llm(), env.Profile, server.search, factory.kb), nil
+				return steps.NewWriteStepWithKB(factory.llm(env.Request.UserID), env.Profile, server.search, factory.kb), nil
 			},
 			Usage: engineUsage,
 		}
@@ -77,19 +80,19 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 			Inner: writingruntime.EngineStepRunner{
 				Styles: governedStyleResolver{server: server},
 				StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
-					return server.newGovernedPostReviewStep(factory.llm(), env.Profile), nil
+					return server.newGovernedPostReviewStep(factory.llm(env.Request.UserID), env.Profile), nil
 				},
 				Usage: engineUsage,
 			}}
 	case "core.validation.evidence", "core.validation.fact":
 		// Validators degrade honestly when no LLM is wired (docs/22 D2); a
 		// missing factory LLM is exactly that deployment shape.
-		return &writingruntime.ValidatorRunner{LLM: factory.llm()}
+		return &writingruntime.ValidatorRunner{LLMForUser: factory.llm}
 	case "core.outline.generate":
 		return writingruntime.EngineStepRunner{
 			Styles: governedStyleResolver{server: server},
 			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
-				return governedOutlineStep{inner: steps.NewOutlineStepWithProfile(factory.llm(), env.Profile)}, nil
+				return governedOutlineStep{inner: steps.NewOutlineStepWithProfile(factory.llm(env.Request.UserID), env.Profile)}, nil
 			},
 			Usage: engineUsage,
 		}
@@ -99,12 +102,13 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 		// embedding client the relevance step degrades to score-only mode,
 		// mirroring the legacy pipeline's fallback.
 		return writingruntime.EngineStepRunner{
-			StepFactory: func(writingruntime.StepEnv) (engine.Step, error) {
+			StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
+				llm := factory.llm(env.Request.UserID)
 				return governedResearchStep{
-					query:     steps.NewQueryPlanStep(factory.llm()),
+					query:     steps.NewQueryPlanStep(llm),
 					search:    steps.NewSearchStep(nil, server.search), // no LLM-generated search evidence
 					relevance: steps.NewRelevanceStepWithEmbedding(server.embedding),
-					compress:  steps.NewCompressStep(factory.llm()),
+					compress:  steps.NewCompressStep(llm),
 				}, nil
 			},
 			Usage: engineUsage,
@@ -287,7 +291,7 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 	// LLM defers to an honest RESEARCH_UNAVAILABLE pause at dispatch. The
 	// style resolver is optional: a non-empty run style_slug (user opt-in at
 	// the research form) injects the global style as advisory prose guidance.
-	draft, err := writingruntime.NewResearchDraftExecutor(canonical, writingruntime.LLMResearchDraftGenerator{LLM: factoryLLM(s)}, governedStyleResolver{server: s})
+	draft, err := writingruntime.NewResearchDraftExecutor(canonical, writingruntime.LLMResearchDraftGenerator{LLMForUser: s.llmForUser}, governedStyleResolver{server: s})
 	if err != nil {
 		slog.Warn("governed runtime: research draft executor construction failed", "error", err)
 	}
@@ -375,8 +379,24 @@ func (adapter ResearchQualityGateAdapter) Run(ctx context.Context, input writing
 	return writingruntime.ResearchQualityGateRunner{Inner: adapter.Inner}.Run(ctx, input)
 }
 
-// factoryLLM resolves the server's LLM client lazily (the server may rebuild
-// clients after DB-backed configuration loads).
+// llmForUser resolves the writing pipeline's LLM client for one run owner:
+// BYOK user config first, global model_configs fallback, env last. Used at
+// node dispatch, where the only identity available is the run record's owner
+// (governed workers launch with context.Background(), so the request ctx —
+// and its auth principal — does not reach this point). The LLMService's 30s
+// TTL cache keeps the background-context DB lookups negligible.
+func (s *Server) llmForUser(userID string) *tools.LLMClient {
+	if s.llmSvc != nil {
+		if c := s.llmSvc.GetClientForUser(context.Background(), userID, ""); c != nil {
+			return c
+		}
+	}
+	return s.llm
+}
+
+// factoryLLM resolves the server's global LLM client lazily (the server may
+// rebuild it after DB-backed configuration loads). System lanes with no run
+// owner — the research fact reviewer this iteration — resolve here.
 func factoryLLM(s *Server) *tools.LLMClient { return s.llm }
 
 // governedKBSearcher adapts the local knowledge base when configured.

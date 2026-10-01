@@ -49,7 +49,7 @@ func (s *Server) handleTopicDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Generate AI writing angles
 	var writingAngles []map[string]interface{}
-	if s.llm != nil {
+	if s.llmForContext(r.Context()) != nil {
 		angles, err := s.generateWritingAngles(r.Context(), topic)
 		if err != nil {
 			slog.Warn("failed to generate writing angles", "error", err, "topic_id", topicID)
@@ -91,7 +91,7 @@ func (s *Server) generateWritingAngles(ctx context.Context, topic map[string]int
 		{Role: "user", Content: prompt},
 	}
 
-	content, _, err := s.llm.Chat(ctx, messages, tools.WithTemperature(0.7))
+	content, _, err := s.llmForContext(ctx).Chat(ctx, messages, tools.WithTemperature(0.7))
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
@@ -167,7 +167,7 @@ func (s *Server) handleTopicRecommend(w http.ResponseWriter, r *http.Request) {
 
 	// If LLM is available, use it to rank/recommend topics
 	var recommendations []map[string]interface{}
-	if s.llm != nil && len(topics) > 0 {
+	if s.llmForContext(r.Context()) != nil && len(topics) > 0 {
 		recs, err := s.generateTopicRecommendations(r.Context(), topics, recentTitles)
 		if err != nil {
 			slog.Warn("failed to generate recommendations, returning top topics", "error", err)
@@ -253,7 +253,7 @@ func (s *Server) generateTopicRecommendations(ctx context.Context, topics []map[
 		{Role: "user", Content: prompt},
 	}
 
-	content, _, err := s.llm.Chat(ctx, messages, tools.WithTemperature(0.5))
+	content, _, err := s.llmForContext(ctx).Chat(ctx, messages, tools.WithTemperature(0.5))
 	if err != nil {
 		return nil, err
 	}
