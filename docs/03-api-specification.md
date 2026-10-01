@@ -317,6 +317,42 @@ POST   /api/v2/admin/styles/:slug/rollout/preview  // 预览灰度命中情况
 
 ---
 
+#### 6.9 用户模型服务（BYOK，docs/30）
+
+> 注册用户管理自己的模型端点与密钥；解析顺序「用户精确 → 全局精确 → 用户默认 → 全局默认 → env」。
+> 归属控制在 SQL（user_id 过滤），无 RBAC 权限要求；guest 被拒（rejectGuest）。
+> 未配置 `API_KEY_ENCRYPTION_KEY` 的部署一律 503 `byok_unavailable`（不接受明文落库）。
+
+```
+GET    /api/v2/model-keys                    // 列出自己的配置（key 仅掩码）
+POST   /api/v2/model-keys                    // 新增（api_key 必填，加密入库）
+POST   /api/v2/model-keys/discover           // 模型发现（明文 key 仅探活不落库）
+PUT    /api/v2/model-keys/:id                // 更新（api_key 留空保留已存密钥）
+DELETE /api/v2/model-keys/:id                // 删除
+PUT    /api/v2/model-keys/:id/default        // 设为我的默认
+POST   /api/v2/model-keys/:id/test           // 连通测试（GET /models 探活 + 错误分类）
+```
+
+模型选择器合并列表（登录后返回用户条目在前）：
+
+```
+GET /api/v2/models    // { models: [{ id, model_name, display_name, provider, is_default, has_api_key, source: "user"|"global", ... }] }
+```
+
+#### 6.10 个人用量（docs/30）
+
+```
+GET /api/v2/usage?days=30    // 本人 agent_traces 聚合：total_traces / total_tokens / daily[]
+```
+
+#### 6.11 注册开关（docs/30）
+
+```
+DISABLE_REGISTRATION=true 时：
+POST /api/v2/auth/register → 403 REGISTRATION_DISABLED
+POST /api/v2/auth/guest    → 403 REGISTRATION_DISABLED
+```
+
 ## WebSocket API（已移除）
 
 > **v3.0 架构迁移**：Legacy WebSocket 写作通道（`/api/v2/ws/agent`）已删除。

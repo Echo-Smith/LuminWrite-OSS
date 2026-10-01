@@ -30,7 +30,7 @@ memory, with the creator in control at every decision point.
 | ⚙️ **Governed writing runtime as the backbone** | WritingContract → ExecutablePlan → typed Artifact → quality gates (Candidate/Accepted/Verified), fail-closed; REST commands + SSE runtime events with resumable streams; off/shadow/allowlist rollout with checkpoint recovery. The Harness core and editorial roles run as governed Executors — never a second source of truth |
 | 📚 **Self-hosted RAG, zero external vector DB** | BM25 (ParadeDB) + vectors (pgvector) + RRF fusion + GraphRAG, all inside PostgreSQL; user materials always outrank retrieved content (P0) |
 | 🧪 **Evaluation as a first-class citizen** | WABench contract-driven blind-eval/release pipeline + red-team suites; segmented feedback flows back into memory |
-| 🔌 **Model-agnostic** | OpenAI-compatible `/chat/completions` (DeepSeek / SenseNova verified); hot-swap models and keys from the admin console (encrypted at rest) |
+| 🔌 **Model-agnostic + BYOK** | OpenAI-compatible protocol (DeepSeek / Qwen / Kimi, etc.); bring your own API key in the personal center (encrypted at rest, connectivity test, per-user default) — your keys take priority in writing; deployments without a user key fall back to the instance default, hot-swappable from the admin console |
 
 ## 🗺 Architecture
 

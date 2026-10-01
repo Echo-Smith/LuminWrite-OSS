@@ -238,6 +238,7 @@
 | 2026-09-02 | V2.9 M3：交付 Context Compiler MVP | 稳定化分支 | 确定性上下文编译：九块装配、分块预算、驻留层 fail-closed、显式缺省、envelope 落库（迁移 102） | ✅ 双仓字节一致、容器验证全绿；编译器未接入执行路径（M4） |
 | 2026-09-02 | V2.9 M4a：交付 Manifest 上下文契约 + 编译器影子接线 | 稳定化分支 | 编译器成为 Node 执行数据入口（影子）；required 缺块只记录不拒绝 | ✅ 双仓字节一致、容器验证全绿；fail-closed 待 M4b，存量 run 零影响 |
 | 2026-09-02 | V2.9 M4b：激活 required context fail-closed（outline + research） | 稳定化分支 | per-manifest EnforceRequiredContext 开关 + CONTEXT_REQUIRED_MISSING 拒绝语义；draft/quality/finalize 保持影子 | ✅ 双仓字节一致、容器验证全绿；激活面仅两个 capability |
+| 2026-09-30 | BYOK 个人模型服务（单用户化 Phase 1，docs/30） | OSS 线 | user_model_keys（migration 122）+ LLMService 四级解析（用户精确→全局精确→用户默认→全局默认→env）+ 缓存按 userID 隔离（修复原模型名缓存的串号风险）+ 治理管线按 run.OwnerUserID 解析 + /model-keys CRUD·discover·test + /usage 个人聚合 + /models 合并列表 + DISABLE_REGISTRATION + 个人中心「模型服务/用量统计」section + admin 页更名「全局默认模型（回退）」 | ✅ 后端 go test 全量零失败（隔离库）、前端 tsc/lint/build/test 全绿；purpose 路由、embedding per-user、KB 双轨合并列入下轮 |
 
 ---
 
@@ -368,5 +369,5 @@
 
 ---
 
-*最后更新：2026-09-04*
+*最后更新：2026-09-30*
 *维护者：Writing Agent V2 Team*

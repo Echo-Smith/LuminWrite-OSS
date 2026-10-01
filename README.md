@@ -29,7 +29,7 @@
 | ⚙️ **治理写作运行时是主干** | WritingContract → ExecutablePlan → typed Artifact → 质量门（Candidate/Accepted/Verified），fail-closed；REST 命令 + SSE 运行事件，断线可续传；off/shadow/allowlist 灰度与检查点恢复。Harness 执行核与编辑部角色作为受治理 Executor 接入，不构成平行事实源 |
 | 📚 **自托管 RAG，零外部向量库** | PostgreSQL 单库内完成 BM25（ParadeDB）+ 向量（pgvector）+ RRF 融合 + GraphRAG；上传素材永远是你的最高优先级（P0），检索结果不得覆盖用户原始表达 |
 | 🧪 **评测是一等公民** | WABench 契约驱动的盲评/发布流水线 + 红队评估集；分段反馈回流记忆，好坏都有去处 |
-| 🔌 **模型无关** | OpenAI 兼容协议（DeepSeek / SenseNova 已验证）；Admin 后台热切换模型与密钥（加密入库），换 Key 不改文件 |
+| 🔌 **模型无关 + BYOK** | OpenAI 兼容协议（DeepSeek / Qwen / Kimi 等）；用户在个人中心自带 API 密钥（加密入库、连通测试、设默认），写作优先用你的配置；未配置时回退实例默认，管理员热切换不改文件 |
 
 ## 🗺 架构一览
 
