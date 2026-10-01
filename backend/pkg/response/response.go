@@ -34,3 +34,11 @@ func Err(w http.ResponseWriter, status int, code, message string) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: code, Message: message}})
 }
+
+// JSON writes a success envelope with an explicit status code (probes and
+// tests that carry failure semantics in a 200-shaped body).
+func JSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(APIResponse{Success: true, Data: data})
+}

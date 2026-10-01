@@ -290,6 +290,10 @@ func (s *Server) authenticatePassword(username, password string) (userID, role, 
 //
 // POST /api/v2/auth/guest
 func (s *Server) handleGuestLogin(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Server.DisableRegistration {
+		response.Err(w, http.StatusForbidden, "registration_disabled", "guest access is disabled on this deployment")
+		return
+	}
 	if s.adminRepo == nil || s.adminRepo.DB() == nil {
 		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
 		return
@@ -326,6 +330,10 @@ func (s *Server) handleGuestLogin(w http.ResponseWriter, r *http.Request) {
 // (keeping the same user_id, preserving traces and feedback).
 // Otherwise, a new user record is created.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Server.DisableRegistration {
+		response.Err(w, http.StatusForbidden, "registration_disabled", "registration is disabled on this deployment")
+		return
+	}
 	// Peek at the body to determine if this is an email-based registration
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {

@@ -75,6 +75,10 @@ type ServerConfig struct {
 	Port         int
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	// DisableRegistration closes self-serve account creation for
+	// single-user/self-hosted deployments: register and guest endpoints
+	// answer 403 REGISTRATION_DISABLED. Existing accounts keep working.
+	DisableRegistration bool
 }
 
 // WritingRuntimeConfig gates the V3.0 governed writing runtime (docs/20 §20.2).
@@ -326,10 +330,11 @@ func Load() *Config {
 	_ = godotenv.Load()
 	return &Config{
 		Server: ServerConfig{
-			Host:         getEnv("SERVER_HOST", "0.0.0.0"),
-			Port:         getEnvInt("SERVER_PORT", 8080),
-			ReadTimeout:  getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
-			WriteTimeout: getEnvDuration("SERVER_WRITE_TIMEOUT", 120*time.Second),
+			Host:                getEnv("SERVER_HOST", "0.0.0.0"),
+			Port:                getEnvInt("SERVER_PORT", 8080),
+			ReadTimeout:         getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
+			WriteTimeout:        getEnvDuration("SERVER_WRITE_TIMEOUT", 120*time.Second),
+			DisableRegistration: getEnvBool("DISABLE_REGISTRATION", false),
 		},
 		Database: DatabaseConfig{
 			URL:          getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/writing_agent_v2?sslmode=disable"),

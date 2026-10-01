@@ -39,6 +39,7 @@ type Server struct {
 	rateLimiter       *RateLimiter
 	llm               *tools.LLMClient
 	llmSvc            *services.LLMService
+	userKeyRepo       *database.UserModelKeyRepo
 	search            *tools.SearchClient
 	embedding         *tools.EmbeddingClient
 	profiles          *profile.Loader
@@ -349,6 +350,13 @@ func New(cfg *config.Config) (*Server, error) {
 	// This must be created early so all subsystems (Evaluation, Memory, GraphRAG,
 	// StyleBuilder, Editorial) can use the dynamic client instead of static fallback.
 	llmSvc := services.NewLLMService(adminRepo, llm, cfg.DeepSeek.Timeout)
+	// Per-user BYOK repo: only wired when encryption is configured (plaintext
+	// key storage is refused at the write endpoints).
+	var userKeyRepo *database.UserModelKeyRepo
+	if adminRepo != nil && cfg.Admin.EncryptionKey != "" {
+		userKeyRepo = database.NewUserModelKeyRepo(db, crypto.DeriveKey(cfg.Admin.EncryptionKey))
+		llmSvc.WithUserKeys(userKeyRepo)
+	}
 
 	// Resolve the default LLM client from the DB-backed service.
 	// If DB has model configs with API keys, this returns a dynamic client;
@@ -474,6 +482,7 @@ func New(cfg *config.Config) (*Server, error) {
 		rateLimiter:   rateLimiter,
 		llm:           llm,
 		llmSvc:        llmSvc,
+		userKeyRepo:   userKeyRepo,
 		search:        searchClient,
 		embedding:     embeddingClient,
 		profiles:      profileLoader,
@@ -822,8 +831,9 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Post("/style-builder/sessions/{id}/messages", s.handleSendBuilderMessage)
 		r.With(s.jwtAuthMiddleware).Post("/style-builder/sessions/{id}/commit", s.handleCommitBuilderSession)
 
-		// Models (public — list active models for composer)
-		r.Get("/models", s.handleListActiveModels)
+		// Models (public base list; jwtOptional merges the caller's BYOK
+		// entries when a token is present)
+		r.With(s.jwtOptionalMiddleware).Get("/models", s.handleListActiveModels)
 
 		// Billing (user-facing)
 		// /billing/plans is public (no JWT) so unauthenticated users can view pricing
@@ -850,11 +860,13 @@ func (s *Server) Router() http.Handler {
 		r.Post("/topics/hot", s.handleFetchHotTopics)
 		r.Delete("/topics/{id}", s.handleDeleteTopic)
 		r.Put("/topics/{id}", s.handleUpdateTopic)
-		r.Get("/topics/recommend", s.handleTopicRecommend)
+		// jwtOptional: anonymous callers get the global/degraded path;
+		// authenticated callers' BYOK keys resolve through the ctx principal
+		r.With(s.jwtOptionalMiddleware).Get("/topics/recommend", s.handleTopicRecommend)
 		r.Get("/topics/favorites", s.handleListFavoriteTopics)
 		r.Get("/topics/platforms", s.handlePlatformStats)
 		r.Get("/topics/platforms/{platform}", s.handleListTopicsByPlatform)
-		r.Get("/topics/{id}/detail", s.handleTopicDetail)
+		r.With(s.jwtOptionalMiddleware).Get("/topics/{id}/detail", s.handleTopicDetail)
 		r.Get("/topics/{id}/trend", s.handleTopicTrend)
 		r.With(s.jwtAuthMiddleware).Post("/topics/{id}/favorite", s.handleFavoriteTopic)
 		r.With(s.jwtAuthMiddleware).Delete("/topics/{id}/favorite", s.handleUnfavoriteTopic)
@@ -878,6 +890,18 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/memories/file/import", s.handleImportMemoryFile)
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/memories/global", s.handleGetGlobalMemory)
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/memories/global", s.handleUpdateGlobalMemory)
+
+		// User Model Keys (BYOK — registered users only, ownership via SQL)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/model-keys", s.handleListUserModelKeys)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/model-keys", s.handleCreateUserModelKey)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/model-keys/discover", s.handleDiscoverUserModels)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/model-keys/{keyID}", s.handleUpdateUserModelKey)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/model-keys/{keyID}", s.handleDeleteUserModelKey)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/model-keys/{keyID}/default", s.handleSetDefaultUserModelKey)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/model-keys/{keyID}/test", s.handleTestUserModelKey)
+
+		// Per-user usage (own aggregate only)
+		r.With(s.jwtAuthMiddleware).Get("/usage", s.handleGetMyUsage)
 
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
@@ -1948,21 +1972,10 @@ func (s *Server) buildToolRegistry(llmClient *tools.LLMClient, styleProfile *pro
 	return registry
 }
 
-// handleListActiveModels returns active model configs for the composer (public endpoint).
+// handleListActiveModels returns the composer's selectable models: the
+// caller's own BYOK keys first (source="user"), then the deployment's active
+// global configs (source="global") as fallback options.
 func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) {
-	if s.adminRepo == nil {
-		response.OK(w, map[string]interface{}{"models": []interface{}{}})
-		return
-	}
-
-	configs, err := s.adminRepo.ListModelConfigs(r.Context())
-	if err != nil {
-		slog.Warn("failed to list model configs", "error", err)
-		response.OK(w, map[string]interface{}{"models": []interface{}{}})
-		return
-	}
-
-	// Filter to active only and return minimal info
 	type modelInfo struct {
 		ID              string  `json:"id"`
 		ModelName       string  `json:"model_name"`
@@ -1970,11 +1983,60 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 		Provider        string  `json:"provider"`
 		IsDefault       bool    `json:"is_default"`
 		HasAPIKey       bool    `json:"has_api_key"`
+		Source          string  `json:"source"` // "user" | "global"
 		PointsPerKToken float64 `json:"points_per_k_token"`
 		CostLevel       string  `json:"cost_level"`
 	}
 
 	var models []modelInfo
+
+	// ── User's own BYOK keys (highest precedence in the picker) ──
+	if s.userKeyRepo != nil {
+		if user := userFromContext(r.Context()); user != nil && user.Sub != "" {
+			if keys, err := s.userKeyRepo.ListForUser(r.Context(), user.Sub); err == nil {
+				for _, k := range keys {
+					if !k.IsActive {
+						continue
+					}
+					display := k.Name
+					if display == "" {
+						display = k.ModelName
+					}
+					models = append(models, modelInfo{
+						ID:          k.ID,
+						ModelName:   k.ModelName,
+						DisplayName: display,
+						Provider:    k.Provider,
+						IsDefault:   k.IsDefault,
+						HasAPIKey:   k.HasAPIKey,
+						Source:      "user",
+					})
+				}
+			} else {
+				slog.Warn("failed to list user model keys for composer", "error", err)
+			}
+		}
+	}
+
+	// ── Global deployment configs (fallback options) ──
+	if s.adminRepo == nil {
+		if models == nil {
+			models = []modelInfo{}
+		}
+		response.OK(w, map[string]interface{}{"models": models})
+		return
+	}
+
+	configs, err := s.adminRepo.ListModelConfigs(r.Context())
+	if err != nil {
+		slog.Warn("failed to list model configs", "error", err)
+		if models == nil {
+			models = []modelInfo{}
+		}
+		response.OK(w, map[string]interface{}{"models": models})
+		return
+	}
+
 	for _, c := range configs {
 		if c.IsActive {
 			mi := modelInfo{
@@ -1984,6 +2046,7 @@ func (s *Server) handleListActiveModels(w http.ResponseWriter, r *http.Request) 
 				Provider:    c.Provider,
 				IsDefault:   c.IsDefault,
 				HasAPIKey:   c.HasAPIKey,
+				Source:      "global",
 			}
 			// 查询模型的点数费率信息
 			if s.pointCalc != nil {
