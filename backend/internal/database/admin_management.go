@@ -374,14 +374,14 @@ func (r *AdminRepo) GetDefaultModelConfig(ctx context.Context) (*ModelConfig, er
 	var capJSON, metaJSON, hdrJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
 		       capabilities, metadata, custom_headers, created_at, updated_at
 		FROM model_configs
 		WHERE is_default = TRUE AND is_active = TRUE
 		ORDER BY updated_at DESC
 		LIMIT 1
 	`).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.Purpose, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -409,13 +409,13 @@ func (r *AdminRepo) GetModelConfigByName(ctx context.Context, modelName string) 
 	var capJSON, metaJSON, hdrJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id::text, provider, model_name, display_name, base_url,
-		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, is_default, is_active,
+		       api_key_id::text, api_key_encrypted, max_tokens, temperature, reasoning_effort, purpose, is_default, is_active,
 		       capabilities, metadata, custom_headers, created_at, updated_at
 		FROM model_configs
 		WHERE model_name = $1 AND is_active = TRUE
 		LIMIT 1
 	`, modelName).Scan(&c.ID, &c.Provider, &c.ModelName, &c.DisplayName, &c.BaseURL,
-		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.IsDefault, &c.IsActive,
+		&c.APIKeyID, &c.APIKeyEncrypted, &c.MaxTokens, &c.Temperature, &c.ReasoningEffort, &c.Purpose, &c.IsDefault, &c.IsActive,
 		&capJSON, &metaJSON, &hdrJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err

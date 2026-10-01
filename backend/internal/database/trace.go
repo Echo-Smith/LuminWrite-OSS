@@ -504,6 +504,70 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	return result, nil
 }
 
+// UserUsageStats is one caller's aggregate usage over a lookback window,
+// sourced from the same agent_traces.token_usage JSONB the admin dashboard
+// aggregates (no model dimension: agent_traces carries no model column).
+type UserUsageStats struct {
+	TotalTraces int                `json:"total_traces"`
+	TotalTokens int64              `json:"total_tokens"`
+	Daily       []UserDailyUsage   `json:"daily"`
+}
+
+// UserDailyUsage is one day of the window.
+type UserDailyUsage struct {
+	Date   string `json:"date"`
+	Traces int    `json:"traces"`
+	Tokens int64  `json:"tokens"`
+}
+
+// GetUserUsageStats aggregates one user's trace count and token spend over
+// the last `days` days (clamped 1..90). Guest/anonymous ids yield zeroed
+// stats rather than an error so the endpoint degrades gracefully.
+func (r *TraceRepo) GetUserUsageStats(ctx context.Context, userID string, days int) (*UserUsageStats, error) {
+	stats := &UserUsageStats{}
+	if r.db == nil || userID == "" || !isLikelyUUID(userID) {
+		return stats, nil
+	}
+	if days < 1 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM((token_usage->>'total_tokens')::bigint), 0)
+		FROM agent_traces
+		WHERE user_id = $1::uuid AND user_deleted = FALSE
+		  AND created_at >= NOW() - ($2 || ' days')::interval
+	`, userID, days).Scan(&stats.TotalTraces, &stats.TotalTokens); err != nil {
+		return nil, err
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DATE(created_at) as d, COUNT(*) as cnt,
+		       COALESCE(SUM((token_usage->>'total_tokens')::bigint), 0) as tokens
+		FROM agent_traces
+		WHERE user_id = $1::uuid AND user_deleted = FALSE
+		  AND created_at >= NOW() - ($2 || ' days')::interval
+		GROUP BY d ORDER BY d
+	`, userID, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var du UserDailyUsage
+		var d time.Time
+		if err := rows.Scan(&d, &du.Traces, &du.Tokens); err != nil {
+			continue
+		}
+		du.Date = d.Format("2006-01-02")
+		stats.Daily = append(stats.Daily, du)
+	}
+	return stats, nil
+}
+
 // ListTraces lists recent traces with pagination.
 // If userID is non-empty, results are filtered to that user.
 // archived: nil=不过滤（默认行为，向后兼容）；true=仅归档；false=仅未归档。
