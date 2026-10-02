@@ -102,6 +102,12 @@ docker compose -f docker-compose.quickstart.yml up -d
 打开 `http://localhost:3002`，注册即用。镜像发布自 GitHub Packages
 （`ghcr.io/echo-smith/luminbuddy-v2-*`），也可 `docker compose build` 本地构建。
 
+注册后在 **个人中心 → 模型服务** 配置你自己的模型 API Key（BYOK，加密存储、
+连通测试、设默认）：写作时优先使用你的密钥与额度，未配置的模型自动回退到
+实例默认（`DEEPSEEK_API_KEY`）。个人/单用户部署可将 `DISABLE_REGISTRATION=true`
+关闭自助注册，只保留自己的账号。用量统计（写作次数 / token 消耗）见
+**个人中心 → 用量统计**，详见 [docs/30](docs/30-byok-personal-models.md)。
+
 <details>
 <summary>方式二：主 Compose（自构建）· 方式三：本地开发 · 验证 · 生产部署</summary>
 
@@ -264,6 +270,7 @@ r7 消融结论（WP6 后重跑）：D 变体硬失败 1.4%、工具调用循环
 - [x] 历史 SoT 迁移（governed documents/runs 为主，`agent_traces` 只读）
 - [x] 四大核心写作流程选择 UI（长文创作 / 多材料综合 / 忠实改写 / 深度研究）
 - [x] 210 用例消融基准 v2（多轮一致性子集 + 真实记忆端口接入）
+- [x] BYOK 个人模型服务（个人中心自带 API Key 优先、全局回退；per-user 用量统计；`DISABLE_REGISTRATION` 单用户开关，[docs/30](docs/30-byok-personal-models.md)）
 - [ ] allowlist 晋升资格链线上验证（policy → evidence → approval → gate）
 - [ ] 编辑部 DAG 生命周期进一步接入统一记忆契约（按角色分槽注入）
 - [ ] 搜索源适配器社区共建（Tavily 等完整实现）

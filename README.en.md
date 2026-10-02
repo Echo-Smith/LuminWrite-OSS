@@ -107,6 +107,14 @@ docker compose -f docker-compose.quickstart.yml up -d
 Open `http://localhost:3002`, register, write. Images ship to GitHub Packages
 (`ghcr.io/echo-smith/luminbuddy-v2-*`); `docker compose build` works too.
 
+After registering, add your own model API key under **Personal Center → Model
+Service** (BYOK: encrypted at rest, connectivity test, per-user default). Your
+key takes priority when writing; models without a personal key fall back to the
+instance default (`DEEPSEEK_API_KEY`). For single-user deployments set
+`DISABLE_REGISTRATION=true` to close self-serve sign-up. Personal usage stats
+(writes / tokens) live under **Personal Center → Usage** — see
+[docs/30](docs/30-byok-personal-models.md).
+
 <details>
 <summary>Option 2: main compose · Option 3: local dev · Verification · Production</summary>
 
@@ -270,6 +278,7 @@ pilot onboarding: [docs/29](docs/29-pilot-user-onboarding.md).
 - [x] History source-of-truth migration (governed documents/runs primary, `agent_traces` read-only)
 - [x] Four-flow selection UI (long-form / multi-material / faithful rewrite / deep research)
 - [x] 210-case ablation benchmark v2 (multi-turn consistency subset + real memory port)
+- [x] BYOK personal model service (user-supplied keys first with global fallback; per-user usage stats; `DISABLE_REGISTRATION` single-user switch, [docs/30](docs/30-byok-personal-models.md))
 - [ ] Allowlist promotion qualification verified end to end (policy → evidence → approval → gate)
 - [ ] Editorial DAG on the unified memory contract (role-slotted injection)
 - [ ] Community search adapters (full Tavily etc.)
