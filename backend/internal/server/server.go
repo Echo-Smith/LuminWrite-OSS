@@ -872,7 +872,9 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Delete("/topics/{id}/favorite", s.handleUnfavoriteTopic)
 
 		// Feedback
-		r.Post("/feedback", s.handleFeedback)
+		// jwtOptional: guests may still submit; authenticated submissions get
+		// their user_id persisted for the personal feedback history.
+		r.With(s.jwtOptionalMiddleware).Post("/feedback", s.handleFeedback)
 		r.Get("/feedback/aggregation", s.handleListAggregations)
 		r.Get("/feedback/aggregation/{style}/{version}", s.handleGetAggregation)
 		r.Post("/feedback/aggregate", s.handleAggregateFeedback)
@@ -1054,6 +1056,14 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Get("/sessions/{traceId}/plan", s.handleGetSessionPlan)
 		r.With(s.jwtAuthMiddleware).Put("/sessions/{traceId}/plan", s.handleUpdateSessionPlan)
 		r.With(s.jwtAuthMiddleware).Delete("/sessions/{traceId}/plan", s.handleDeleteSessionPlan)
+		// Session organization — folders + batch actions (registered users only)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/session-folders", s.handleListSessionFolders)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/session-folders", s.handleCreateSessionFolder)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/session-folders/{folderId}", s.handleRenameSessionFolder)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/session-folders/{folderId}", s.handleDeleteSessionFolder)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/sessions/batch", s.handleBatchSessions)
+		// Personal feedback history (own rows only)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/feedback/mine", s.handleGetMyFeedback)
 		r.With(s.jwtAuthMiddleware).Post("/auth/change-password", s.handleChangePassword)
 		r.With(s.jwtAuthMiddleware).Post("/auth/update-profile", s.handleUpdateProfile)
 		r.With(s.jwtAuthMiddleware).Post("/auth/deactivate", s.handleDeactivateAccount)
@@ -1580,8 +1590,12 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	feedbackUserID := ""
+	if user := userFromContext(r.Context()); user != nil {
+		feedbackUserID = user.Sub
+	}
 	if s.traces != nil && len(req.Segments) > 0 {
-		s.traces.SaveFeedback(r.Context(), req.TraceID, req.Segments)
+		s.traces.SaveFeedback(r.Context(), req.TraceID, feedbackUserID, req.Segments)
 	}
 
 	// Trigger memory extraction from feedback (async, non-blocking)

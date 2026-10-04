@@ -383,7 +383,7 @@ func (r *TraceRepo) GetTrace(ctx context.Context, traceID string) (map[string]in
 	var estimatedCost *float64
 	var traceSchema *string
 	err := r.db.QueryRowContext(ctx, `
-		SELECT status, current_step, user_input, style_slug, mode,
+		SELECT status, COALESCE(current_step, '') AS current_step, user_input, style_slug, mode,
 		       article, article_title, step_history, review_result, token_usage,
 		       duration_ms, error, created_at, completed_at, reasoning_content,
 		       task_name, custom_title,
@@ -568,6 +568,35 @@ func (r *TraceRepo) GetUserUsageStats(ctx context.Context, userID string, days i
 	return stats, nil
 }
 
+// reviewScoreFromJSON averages the per-dimension scores stored in a
+// review_result JSONB (same semantics as the admin dashboard's list column);
+// nil when no usable scores are present.
+func reviewScoreFromJSON(reviewJSON []byte) *float64 {
+	if len(reviewJSON) == 0 {
+		return nil
+	}
+	var review map[string]interface{}
+	if json.Unmarshal(reviewJSON, &review) != nil {
+		return nil
+	}
+	scores, ok := review["scores"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	total, count := 0.0, 0
+	for _, v := range scores {
+		if f, ok := v.(float64); ok {
+			total += f
+			count++
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	avg := total / float64(count)
+	return &avg
+}
+
 // ListTraces lists recent traces with pagination.
 // If userID is non-empty, results are filtered to that user.
 // archived: nil=不过滤（默认行为，向后兼容）；true=仅归档；false=仅未归档。
@@ -605,7 +634,9 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		rows, err = r.db.QueryContext(ctx, `
 			SELECT trace_id, status, COALESCE(current_step, ''), COALESCE(user_input, ''), style_slug, mode,
 			       created_at, completed_at, duration_ms, article_title, task_name,
-			       COALESCE(folder_id::text, ''), archived_at, updated_at, custom_title
+			       COALESCE(folder_id::text, ''), archived_at, updated_at, custom_title,
+			       review_result,
+			       EXISTS(SELECT 1 FROM feedback_segments fs WHERE fs.trace_id = agent_traces.trace_id) AS has_feedback
 			FROM agent_traces
 			WHERE user_id = $1 AND user_deleted = FALSE `+archivedCond+`
 			ORDER BY COALESCE(updated_at, created_at) DESC
@@ -617,7 +648,9 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 		rows, err = r.db.QueryContext(ctx, `
 			SELECT trace_id, status, COALESCE(current_step, ''), COALESCE(user_input, ''), style_slug, mode,
 			       created_at, completed_at, duration_ms, article_title, task_name,
-			       COALESCE(folder_id::text, ''), archived_at, updated_at, custom_title
+			       COALESCE(folder_id::text, ''), archived_at, updated_at, custom_title,
+			       review_result,
+			       EXISTS(SELECT 1 FROM feedback_segments fs WHERE fs.trace_id = agent_traces.trace_id) AS has_feedback
 			FROM agent_traces
 			WHERE user_deleted = FALSE `+archivedCond+`
 			ORDER BY COALESCE(updated_at, created_at) DESC
@@ -649,11 +682,13 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 			archivedAt    *time.Time
 			updatedAt     *time.Time
 			customTitle   *string
+			reviewJSON    []byte
+			hasFeedback   bool
 		)
 
 		if err := rows.Scan(&traceID, &status, &currentStep, &userInput, &styleSlug, &mode,
 			&createdAt, &completedAt, &durationMs, &articleTitle, &taskName,
-			&folderID, &archivedAt, &updatedAt, &customTitle); err != nil {
+			&folderID, &archivedAt, &updatedAt, &customTitle, &reviewJSON, &hasFeedback); err != nil {
 			continue
 		}
 
@@ -665,6 +700,10 @@ func (r *TraceRepo) ListTraces(ctx context.Context, userID string, page, pageSiz
 			"mode":         mode,
 			"created_at":   createdAt,
 			"folder_id":    folderID,
+			"has_feedback": hasFeedback,
+		}
+		if score := reviewScoreFromJSON(reviewJSON); score != nil {
+			trace["review_score"] = *score
 		}
 		if styleSlug != nil {
 			trace["style_slug"] = *styleSlug
@@ -748,7 +787,9 @@ func (r *TraceRepo) HasFeedback(ctx context.Context, traceID string) (bool, erro
 }
 
 // SaveFeedback saves feedback segments for a trace.
-func (r *TraceRepo) SaveFeedback(ctx context.Context, traceID string, segments []map[string]interface{}) error {
+// userID may be "" (unauthenticated/guest submission): the column stays NULL
+// and the row remains reachable through the agent_traces JOIN.
+func (r *TraceRepo) SaveFeedback(ctx context.Context, traceID, userID string, segments []map[string]interface{}) error {
 	if r.db == nil {
 		return nil
 	}
@@ -762,10 +803,10 @@ func (r *TraceRepo) SaveFeedback(ctx context.Context, traceID string, segments [
 		comment, _ := seg["comment"].(string)
 
 		_, err := r.db.ExecContext(ctx, `
-			INSERT INTO feedback_segments (trace_id, segment_type, segment_index, segment_text, rating, feedback_type, comment, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+			INSERT INTO feedback_segments (user_id, trace_id, segment_type, segment_index, segment_text, rating, feedback_type, comment, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		`,
-			traceID, segmentType, int(segmentIndex), segmentText, int(rating), feedbackType, comment,
+			userID, traceID, segmentType, int(segmentIndex), segmentText, int(rating), feedbackType, comment,
 		)
 		if err != nil {
 			slog.Warn("failed to save feedback segment", "error", err)
@@ -773,6 +814,222 @@ func (r *TraceRepo) SaveFeedback(ctx context.Context, traceID string, segments [
 	}
 
 	return nil
+}
+
+// MyFeedbackRow is one feedback segment the requesting user can see, joined
+// back to its writing trace for context.
+type MyFeedbackRow struct {
+	TraceID      string    `json:"trace_id"`
+	TraceTitle   string    `json:"trace_title"`
+	SegmentType  string    `json:"segment_type"`
+	SegmentIndex *int      `json:"segment_index"`
+	SegmentText  string    `json:"segment_text"`
+	Rating       int       `json:"rating"`
+	FeedbackType string    `json:"feedback_type"`
+	Comment      string    `json:"comment"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// GetMyFeedback lists the user's own feedback segments, resolved through the
+// owning trace (agent_traces.user_id) so historical rows written before
+// feedback_segments.user_id was populated are covered without a backfill.
+func (r *TraceRepo) GetMyFeedback(ctx context.Context, userID string, limit int) ([]*MyFeedbackRow, error) {
+	if r.db == nil || userID == "" || !isLikelyUUID(userID) {
+		return []*MyFeedbackRow{}, nil
+	}
+	if limit < 1 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT fs.trace_id,
+		       COALESCE(t.custom_title, t.article_title, LEFT(t.user_input, 40), '') AS trace_title,
+		       fs.segment_type, fs.segment_index, COALESCE(fs.segment_text, ''),
+		       fs.rating, fs.feedback_type, COALESCE(fs.comment, ''), fs.created_at
+		FROM feedback_segments fs
+		JOIN agent_traces t ON t.trace_id = fs.trace_id
+		WHERE t.user_id = $1::uuid AND t.user_deleted = FALSE
+		ORDER BY fs.created_at DESC
+		LIMIT $2
+	`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*MyFeedbackRow
+	for rows.Next() {
+		row := &MyFeedbackRow{}
+		var segIndex sql.NullInt64
+		var traceTitle string
+		if err := rows.Scan(&row.TraceID, &traceTitle, &row.SegmentType, &segIndex, &row.SegmentText,
+			&row.Rating, &row.FeedbackType, &row.Comment, &row.CreatedAt); err != nil {
+			continue
+		}
+		if segIndex.Valid {
+			v := int(segIndex.Int64)
+			row.SegmentIndex = &v
+		}
+		row.TraceTitle = traceTitle
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// ─── Session folders + batch organization ────────────────
+// The session_folders table and its indexes have existed since migration 109;
+// these repo methods (and their handlers) are the API the sidebar's
+// folder/batch UI has always expected.
+
+// ListSessionFolders returns the user's folders in sidebar order.
+func (r *TraceRepo) ListSessionFolders(ctx context.Context, userID string) ([]map[string]interface{}, error) {
+	if r.db == nil || userID == "" || !isLikelyUUID(userID) {
+		return []map[string]interface{}{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id::text, user_id::text, name, sort_order, created_at, updated_at
+		FROM session_folders
+		WHERE user_id = $1::uuid
+		ORDER BY sort_order ASC, created_at ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []map[string]interface{}
+	for rows.Next() {
+		var id, owner, name string
+		var sortOrder int
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&id, &owner, &name, &sortOrder, &createdAt, &updatedAt); err != nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"id": id, "user_id": owner, "name": name,
+			"sort_order": sortOrder, "created_at": createdAt, "updated_at": updatedAt,
+		})
+	}
+	return out, nil
+}
+
+// CreateSessionFolder inserts one folder owned by userID.
+func (r *TraceRepo) CreateSessionFolder(ctx context.Context, userID, name string) (map[string]interface{}, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	if userID == "" || !isLikelyUUID(userID) {
+		return nil, fmt.Errorf("invalid user")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 {
+		return nil, fmt.Errorf("folder name must be 1-64 characters")
+	}
+	var id string
+	err := r.db.QueryRowContext(ctx, `
+		INSERT INTO session_folders (user_id, name)
+		VALUES ($1::uuid, $2)
+		RETURNING id::text
+	`, userID, name).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"id": id, "user_id": userID, "name": name, "sort_order": 0}, nil
+}
+
+// RenameSessionFolder renames one folder owned by userID.
+func (r *TraceRepo) RenameSessionFolder(ctx context.Context, userID, folderID, name string) error {
+	if r.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 {
+		return fmt.Errorf("folder name must be 1-64 characters")
+	}
+	tag, err := r.db.ExecContext(ctx, `
+		UPDATE session_folders SET name = $3, updated_at = NOW()
+		WHERE id = $2::uuid AND user_id = $1::uuid
+	`, userID, folderID, name)
+	if err != nil {
+		return err
+	}
+	if n, _ := tag.RowsAffected(); n == 0 {
+		return fmt.Errorf("folder not found")
+	}
+	return nil
+}
+
+// DeleteSessionFolder removes one folder owned by userID. Member sessions
+// survive (folder_id SET NULL via the FK).
+func (r *TraceRepo) DeleteSessionFolder(ctx context.Context, userID, folderID string) error {
+	if r.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	tag, err := r.db.ExecContext(ctx, `
+		DELETE FROM session_folders WHERE id = $2::uuid AND user_id = $1::uuid
+	`, userID, folderID)
+	if err != nil {
+		return err
+	}
+	if n, _ := tag.RowsAffected(); n == 0 {
+		return fmt.Errorf("folder not found")
+	}
+	return nil
+}
+
+// BatchUpdateTraces applies one organization action to a set of the user's
+// traces. Ownership is enforced row-by-row in the WHERE clause; returns how
+// many rows the caller's own set actually matched.
+func (r *TraceRepo) BatchUpdateTraces(ctx context.Context, userID string, traceIDs []string, action, folderID string) (int, error) {
+	if r.db == nil {
+		return 0, fmt.Errorf("database not available")
+	}
+	if userID == "" || !isLikelyUUID(userID) || len(traceIDs) == 0 {
+		return 0, fmt.Errorf("invalid request")
+	}
+	if len(traceIDs) > 100 {
+		return 0, fmt.Errorf("too many trace ids (max 100)")
+	}
+
+	var query string
+	args := []interface{}{userID}
+	switch action {
+	case "delete":
+		query = `UPDATE agent_traces SET user_deleted = TRUE, updated_at = NOW()
+		         WHERE user_id = $1::uuid AND trace_id = ANY($2)`
+		args = append(args, traceIDs)
+	case "archive":
+		query = `UPDATE agent_traces SET archived_at = NOW(), updated_at = NOW()
+		         WHERE user_id = $1::uuid AND trace_id = ANY($2)`
+		args = append(args, traceIDs)
+	case "unarchive":
+		query = `UPDATE agent_traces SET archived_at = NULL, updated_at = NOW()
+		         WHERE user_id = $1::uuid AND trace_id = ANY($2)`
+		args = append(args, traceIDs)
+	case "move":
+		if folderID == "" {
+			query = `UPDATE agent_traces SET folder_id = NULL, updated_at = NOW()
+			         WHERE user_id = $1::uuid AND trace_id = ANY($2)`
+			args = append(args, traceIDs)
+		} else {
+			// The folder must belong to the caller: scope the membership check
+			// into the same statement instead of trusting the client id.
+			query = `UPDATE agent_traces t
+			         SET folder_id = f.id, updated_at = NOW()
+			         FROM session_folders f
+			         WHERE t.user_id = $1::uuid AND t.trace_id = ANY($2)
+			           AND f.id = $3::uuid AND f.user_id = $1::uuid`
+			args = append(args, traceIDs, folderID)
+		}
+	default:
+		return 0, fmt.Errorf("unsupported action %q", action)
+	}
+
+	tag, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := tag.RowsAffected()
+	return int(n), nil
 }
 
 // GetFeedbackByTrace retrieves feedback segments for a trace as FeedbackInfo.

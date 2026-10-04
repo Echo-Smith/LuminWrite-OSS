@@ -89,6 +89,13 @@ func (s *Server) handleGetUserSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership gate: a session is readable only by its owner (404, not 403,
+	// so existence is not disclosed across accounts).
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+
 	detail, err := s.traces.GetTrace(r.Context(), traceID)
 	if err != nil {
 		slog.Warn("failed to get user session", "error", err, "trace_id", traceID)
@@ -203,6 +210,12 @@ func (s *Server) handleGetSessionArtifacts(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Ownership gate (see handleGetUserSession)
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+
 	// Look up the editorial task ID linked to this trace
 	taskID, err := s.traces.GetEditorialTaskID(r.Context(), traceID)
 	if err != nil || taskID == "" {
@@ -283,6 +296,12 @@ func (s *Server) handleGetSessionEvents(w http.ResponseWriter, r *http.Request) 
 				eventTypes = append(eventTypes, t)
 			}
 		}
+	}
+
+	// Ownership gate (see handleGetUserSession)
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
+		return
 	}
 
 	events, err := s.sessionEvents.GetEvents(r.Context(), traceID, eventTypes...)
@@ -378,6 +397,12 @@ func (s *Server) handleListArticleVersions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Ownership gate (see handleGetUserSession)
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+
 	versions, err := s.traces.ListArticleVersions(r.Context(), traceID)
 	if err != nil {
 		slog.Warn("failed to list article versions", "error", err, "trace_id", traceID)
@@ -419,6 +444,12 @@ func (s *Server) handleGetArticleVersion(w http.ResponseWriter, r *http.Request)
 
 	version, err := s.traces.GetArticleVersion(r.Context(), versionID)
 	if err != nil {
+		response.Err(w, http.StatusNotFound, "not_found", "version not found")
+		return
+	}
+
+	// Ownership gate via the version's owning trace
+	if traceID, _ := version["trace_id"].(string); !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
 		response.Err(w, http.StatusNotFound, "not_found", "version not found")
 		return
 	}
@@ -584,6 +615,12 @@ func (s *Server) handleGetSessionPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership gate (see handleGetUserSession)
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+
 	plan, err := s.editorialSvc.Store().GetPlan(r.Context(), traceID)
 	if err != nil {
 		if err == editorial.ErrTaskNotFound {
@@ -623,6 +660,12 @@ func (s *Server) handleUpdateSessionPlan(w http.ResponseWriter, r *http.Request)
 
 	if s.editorialSvc == nil {
 		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "editorial service not available")
+		return
+	}
+
+	// Ownership gate (see handleGetUserSession)
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
 		return
 	}
 
@@ -681,6 +724,12 @@ func (s *Server) handleDeleteSessionPlan(w http.ResponseWriter, r *http.Request)
 
 	if s.editorialSvc == nil {
 		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "editorial service not available")
+		return
+	}
+
+	// Ownership gate (see handleGetUserSession)
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "session not found")
 		return
 	}
 
