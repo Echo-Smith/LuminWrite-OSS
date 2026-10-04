@@ -134,7 +134,6 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   const renameFolder = useWritingRuntimeStore((s) => s.renameFolder);
   const deleteFolder = useWritingRuntimeStore((s) => s.deleteFolder);
   const batchSessions = useWritingRuntimeStore((s) => s.batchSessions);
-  const duplicateSession = useWritingRuntimeStore((s) => s.duplicateSession);
 
   // ── 侧栏本地 UI 状态 ──
   const [batchMode, setBatchMode] = useState(false);
@@ -426,7 +425,6 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                               folders={folders}
                               onDelete={() => setDeleteTarget({ ids: session.traceId ? [session.traceId] : [], title: session.title })}
                               onArchive={() => session.traceId && handleBatch("archive", [session.traceId])}
-                              onDuplicate={async () => { await duplicateSession(session.id); }}
                               onMove={(fid) => session.traceId && void handleSingleMove(session.traceId, fid)}
                             />
                           ))
@@ -470,7 +468,6 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                             folders={folders}
                             onDelete={() => setDeleteTarget({ ids: session.traceId ? [session.traceId] : [], title: session.title })}
                             onArchive={() => session.traceId && handleBatch("archive", [session.traceId])}
-                            onDuplicate={async () => { await duplicateSession(session.id); }}
                             onMove={(fid) => session.traceId && void handleSingleMove(session.traceId, fid)}
                           />
                         ))}
@@ -751,14 +748,13 @@ interface SessionItemProps {
   onDelete: () => void;
   onArchive?: () => void;
   onUnarchive?: () => void;
-  onDuplicate?: () => Promise<void>;
   onMove?: (folderId: string) => void;
 }
 
 function SessionItem({
   session, index = 0, active, archived, batchMode, selected, folders,
   onToggleSelect, onOpen, menuOpen, onMenuOpenChange,
-  onDelete, onArchive, onUnarchive, onDuplicate, onMove,
+  onDelete, onArchive, onUnarchive, onMove,
 }: SessionItemProps) {
   const statusLabel = STATUS_LABEL[session.status];
 
@@ -835,13 +831,6 @@ function SessionItem({
             </button>
           </PopoverTrigger>
           <PopoverContent side="right" align="start" className="w-44 p-1" onClick={(e) => e.stopPropagation()}>
-            {onDuplicate && (
-              <SessionMenuRow
-                icon={<Copy className="h-3.5 w-3.5" />}
-                label="复制会话"
-                onClick={() => { onMenuOpenChange(false); void onDuplicate(); }}
-              />
-            )}
             {onArchive && (
               <SessionMenuRow
                 icon={<Archive className="h-3.5 w-3.5" />}

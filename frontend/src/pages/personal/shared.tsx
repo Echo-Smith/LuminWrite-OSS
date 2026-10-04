@@ -6,14 +6,14 @@
 import { type ReactNode } from "react";
 import {
   Brain, User, KeyRound, Palette, Settings, Wallet,
-  Bell, Monitor, Info, FlaskConical, SlidersHorizontal, Cpu, BarChart3, type LucideIcon,
+  Bell, Monitor, Info, FlaskConical, SlidersHorizontal, Cpu, BarChart3, History, type LucideIcon,
   X, Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "profile" | "styles" | "memory" | "models" | "usage" | "settings" | "customization" | "notifications" | "account" | "devices" | "wallet" | "labs" | "about";
+export type MenuKey = "profile" | "history" | "styles" | "memory" | "models" | "usage" | "settings" | "customization" | "notifications" | "account" | "devices" | "wallet" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -23,6 +23,7 @@ export interface MenuItem {
 
 export const MENU_ITEMS: MenuItem[] = [
   { key: "profile", label: "个人信息", icon: User },
+  { key: "history", label: "写作记录", icon: History },
   { key: "styles", label: "写作风格", icon: Palette },
   { key: "memory", label: "记忆管理", icon: Brain },
   { key: "models", label: "模型服务", icon: Cpu },
@@ -39,6 +40,7 @@ export const MENU_ITEMS: MenuItem[] = [
 
 export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> = {
   profile: { title: "个人信息", subtitle: "查看和修改你的账号信息" },
+  history: { title: "写作记录", subtitle: "回看写作历史、评分与你的反馈" },
   styles: { title: "写作风格", subtitle: "管理你的自定义写作风格" },
   memory: { title: "记忆管理", subtitle: "管理 AI 学习到的写作偏好" },
   models: { title: "模型服务", subtitle: "自带 API 密钥（BYOK），写作优先使用你的模型" },

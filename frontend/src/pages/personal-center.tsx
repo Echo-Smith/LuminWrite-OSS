@@ -15,6 +15,7 @@ import {
   type MenuKey, MENU_ITEMS, SECTION_META, FloatingAddButton,
 } from "@/pages/personal/shared";
 import { ProfileSection } from "@/pages/personal/profile-section";
+import { HistorySection } from "@/pages/personal/history-section";
 import { StyleSection } from "@/pages/personal/styles-section";
 import { MemorySection } from "@/pages/personal/memory-section";
 import { ModelServiceSection } from "@/pages/personal/model-service-section";
@@ -115,6 +116,7 @@ export function PersonalCenter() {
             {/* 可滚动内容区 */}
             <div className="flex-1 overflow-y-auto relative scrollbar-hide">
             {activeMenu === "profile" && <ProfileSection />}
+            {activeMenu === "history" && <HistorySection />}
             {activeMenu === "styles" && <StyleSection />}
             {activeMenu === "memory" && <MemorySection />}
             {activeMenu === "models" && <ModelServiceSection />}

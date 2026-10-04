@@ -256,7 +256,6 @@ interface WritingRuntimeState extends WritingRuntimeProjection {
   renameFolder: (folderId: string, name: string) => Promise<boolean>;
   deleteFolder: (folderId: string) => Promise<void>;
   batchSessions: (action: "delete" | "archive" | "unarchive" | "move", traceIds: string[], folderId?: string) => Promise<number>;
-  duplicateSession: (id: string) => Promise<boolean>;
   loadSessionDetail: (traceId: string) => Promise<void>;
   loadSessionArtifacts: (traceId: string) => Promise<void>;
 
@@ -786,23 +785,6 @@ export const useWritingRuntimeStore = create<WritingRuntimeState>((set, get) => 
       }).filter((s) => !(action === "delete" && s.traceId && idSet.has(s.traceId))),
     }));
     return json.data?.affected ?? 0;
-  },
-
-  duplicateSession: async (id) => {
-    const session = get().sessions.find((s) => s.id === id);
-    if (!session?.traceId) return false;
-    try {
-      const res = await fetch(`/api/v2/sessions/${session.traceId}/duplicate`, {
-        method: "POST",
-      });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error?.message || "复制失败");
-      await get().loadSessions(1, false);
-      return true;
-    } catch (e) {
-      console.error("Failed to duplicate session:", e);
-      return false;
-    }
   },
 
   // ── Session Detail ──
