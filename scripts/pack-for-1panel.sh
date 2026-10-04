@@ -286,15 +286,15 @@ if [ "$EXPORT_IMAGES" = true ]; then
     info "检查本地 Docker 镜像..."
 
     # 构建（如果不存在）
-    if ! docker image inspect luminbuddy-v2-frontend:latest >/dev/null 2>&1; then
+    if ! docker image inspect luminbuddy-v2-oss-frontend:latest >/dev/null 2>&1; then
         warn "前端镜像不存在，正在构建..."
         docker compose build frontend
     fi
-    if ! docker image inspect luminbuddy-v2-backend:latest >/dev/null 2>&1; then
+    if ! docker image inspect luminbuddy-v2-oss-backend:latest >/dev/null 2>&1; then
         warn "后端镜像不存在，正在构建..."
         docker compose build backend
     fi
-    if ! docker image inspect luminbuddy-v2-docreader:latest >/dev/null 2>&1; then
+    if ! docker image inspect luminbuddy-v2-oss-docreader:latest >/dev/null 2>&1; then
         warn "Docreader 镜像不存在，正在构建..."
         docker compose build docreader
     fi
@@ -334,7 +334,7 @@ if [ "$EXPORT_IMAGES" = true ]; then
     info "导出镜像（frontend + backend + docreader + postgres）..."
     # 导出四个镜像到单个 tar
     # 服务器端 docker load 后需要 docker tag ...-amd64 ... 来恢复原始 tag
-    docker save luminbuddy-v2-frontend:latest luminbuddy-v2-backend:latest luminbuddy-v2-docreader:latest "$PG_AMD64_TAG" \
+    docker save luminbuddy-v2-oss-frontend:latest luminbuddy-v2-oss-backend:latest luminbuddy-v2-oss-docreader:latest "$PG_AMD64_TAG" \
         | gzip > "$IMAGES_PATH"
 
     if [ "$(uname)" = "Darwin" ]; then

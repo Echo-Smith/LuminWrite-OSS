@@ -44,9 +44,9 @@
 5. **验证启动**
    - 1Panel 容器列表可看到 4 个容器：
      - `luminbuddy-v2-pg` — PostgreSQL 数据库
-     - `luminbuddy-v2-docreader` — 文档解析
-     - `luminbuddy-v2-backend` — 后端 API + WebSocket
-     - `luminbuddy-v2-frontend` — 前端 Nginx
+     - `luminbuddy-v2-oss-docreader` — 文档解析
+     - `luminbuddy-v2-oss-backend` — 后端 API + WebSocket
+     - `luminbuddy-v2-oss-frontend` — 前端 Nginx
 
 6. **访问**
    - 本地：`http://your-server-ip:3002`
