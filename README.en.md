@@ -279,6 +279,7 @@ pilot onboarding: [docs/29](docs/29-pilot-user-onboarding.md).
 - [x] Four-flow selection UI (long-form / multi-material / faithful rewrite / deep research)
 - [x] 210-case ablation benchmark v2 (multi-turn consistency subset + real memory port)
 - [x] BYOK personal model service (user-supplied keys first with global fallback; per-user usage stats; `DISABLE_REGISTRATION` single-user switch, [docs/30](docs/30-byok-personal-models.md))
+- [x] Personal writing history & feedback (review scores/steps/article replay + read-only feedback history in the personal center; ownership hardening on the sessions API; folders/batch completion, [docs/31](docs/31-personal-history-feedback.md))
 - [ ] Allowlist promotion qualification verified end to end (policy → evidence → approval → gate)
 - [ ] Editorial DAG on the unified memory contract (role-slotted injection)
 - [ ] Community search adapters (full Tavily etc.)

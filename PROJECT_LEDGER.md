@@ -240,6 +240,7 @@
 | 2026-09-02 | V2.9 M4b：激活 required context fail-closed（outline + research） | 稳定化分支 | per-manifest EnforceRequiredContext 开关 + CONTEXT_REQUIRED_MISSING 拒绝语义；draft/quality/finalize 保持影子 | ✅ 双仓字节一致、容器验证全绿；激活面仅两个 capability |
 | 2026-09-30 | BYOK 个人模型服务（单用户化 Phase 1，docs/30） | OSS 线 | user_model_keys（migration 122）+ LLMService 四级解析（用户精确→全局精确→用户默认→全局默认→env）+ 缓存按 userID 隔离（修复原模型名缓存的串号风险）+ 治理管线按 run.OwnerUserID 解析 + /model-keys CRUD·discover·test + /usage 个人聚合 + /models 合并列表 + DISABLE_REGISTRATION + 个人中心「模型服务/用量统计」section + admin 页更名「全局默认模型（回退）」 | ✅ 后端 go test 全量零失败（隔离库）、前端 tsc/lint/build/test 全绿；purpose 路由、embedding per-user、KB 双轨合并列入下轮 |
 | 2026-10-02 | 镜像/项目名分线隔离（edition isolation） | OSS 线 | 本地镜像 tag 加 -oss 后缀（luminbuddy-v2-oss-{backend,frontend,docreader}）+ compose 顶层 name: luminbuddy-v2-oss + pack-for-1panel/DEPLOY.md 同步；商业线对应 -com。ghcr 对外包名不变 | ✅ 与商业线镜像互踩根除；dev 栈以全新数据卷从 OSS 迁移链重新初始化，旧卷保留备份 |
+| 2026-10-05 | 个人写作记录与反馈历史（单用户化 Phase 2，docs/31） | OSS 线 | sessions 组 7 处横向越权修复（assertTraceOwner，含 artifacts/events/versions/plan）+ GetTrace NULL current_step 修复 + POST /feedback jwtOptional 且 user_id 落库 + folders/batch 半成品补齐（migration 109 表首次接线）+ ListTraces 补 review_score/has_feedback + GET /feedback/mine（JOIN 覆盖历史行）+ 个人中心「写作记录」section（记录回放/我的反馈两 tab）+ 前端 duplicate 幽灵动作清理 | ✅ 后端 go test 全量零失败（隔离库），前端 tsc/lint/build/test 全绿；purpose 分流、KB 合并留待下轮 |
 
 ---
 
@@ -370,5 +371,5 @@
 
 ---
 
-*最后更新：2026-10-02*
+*最后更新：2026-10-05*
 *维护者：Writing Agent V2 Team*

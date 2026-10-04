@@ -152,6 +152,20 @@ GET /api/v2/topics?source=hotlist&page=1&page_size=20
 
 ### 4. 反馈
 
+#### 写作记录与反馈历史（单用户化 Phase 2，docs/31）
+
+```
+GET    /api/v2/sessions                          # 既有；列表新增 review_score / has_feedback
+GET    /api/v2/sessions/:traceId                 # 既有；已加归属校验（非本人 404）
+GET    /api/v2/session-folders                   # 新增（本人文件夹）
+POST   /api/v2/session-folders                   # 新增 { name }
+PUT    /api/v2/session-folders/:folderId         # 新增 { name }
+DELETE /api/v2/session-folders/:folderId         # 新增（成员会话存活，folder_id 置空）
+POST   /api/v2/sessions/batch                    # 新增 { action: delete|archive|unarchive|move, trace_ids, folder_id } → { affected }
+GET    /api/v2/feedback/mine                     # 新增（本人反馈历史，JOIN 覆盖历史 NULL user_id 行）
+POST   /api/v2/feedback                          # 既有；jwtOptional + 提交者 user_id 落库
+```
+
 #### POST `/api/v2/feedback`
 
 提交分段反馈。

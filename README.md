@@ -271,6 +271,7 @@ r7 消融结论（WP6 后重跑）：D 变体硬失败 1.4%、工具调用循环
 - [x] 四大核心写作流程选择 UI（长文创作 / 多材料综合 / 忠实改写 / 深度研究）
 - [x] 210 用例消融基准 v2（多轮一致性子集 + 真实记忆端口接入）
 - [x] BYOK 个人模型服务（个人中心自带 API Key 优先、全局回退；per-user 用量统计；`DISABLE_REGISTRATION` 单用户开关，[docs/30](docs/30-byok-personal-models.md)）
+- [x] 个人写作记录与反馈历史（个人中心回看评分/步骤/文章 + 只读反馈历史；sessions 组归属校验修复；folders/batch 补齐，[docs/31](docs/31-personal-history-feedback.md)）
 - [ ] allowlist 晋升资格链线上验证（policy → evidence → approval → gate）
 - [ ] 编辑部 DAG 生命周期进一步接入统一记忆契约（按角色分槽注入）
 - [ ] 搜索源适配器社区共建（Tavily 等完整实现）
