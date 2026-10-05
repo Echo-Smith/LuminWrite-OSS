@@ -9,7 +9,9 @@
  */
 export type Edition = "oss" | "commercial";
 
-export const EDITION: Edition = "oss";
-
-// 断言回联合类型：EDITION 在单条代码线内会被 TS 收窄为字面量，直接比较会触发 TS2367
-export const IS_COMMERCIAL: boolean = (EDITION as Edition) === "commercial";
+// IS_COMMERCIAL 必须是字面量（true/false），不能写成
+// `(EDITION as Edition) === "commercial"` 这类派生表达式：Rollup 的跨模块
+// 内联只作用于字面量本身，派生常量不会被折叠，minifier 也就无法剔除
+// 商业死分支——此前 747 行 billing.tsx 因此一直被打进 OSS bundle。
+export const EDITION = "oss" as const;
+export const IS_COMMERCIAL = false;

@@ -25,7 +25,6 @@ import { CustomizationSection } from "@/pages/personal/customization-section";
 import { WalletSection } from "@/pages/personal/wallet-section";
 import { NotificationsSection } from "@/pages/personal/notifications-section";
 import { AccountSection } from "@/pages/personal/account-section";
-import { DevicesSection } from "@/pages/personal/devices-section";
 import { LabsSection } from "@/pages/personal/labs-section";
 import { AboutSection } from "@/pages/personal/about-section";
 
@@ -126,7 +125,6 @@ export function PersonalCenter() {
             {activeMenu === "wallet" && <WalletSection />}
             {activeMenu === "notifications" && <NotificationsSection />}
             {activeMenu === "account" && <AccountSection />}
-            {activeMenu === "devices" && <DevicesSection />}
             {activeMenu === "labs" && <LabsSection />}
             {activeMenu === "about" && <AboutSection />}
 

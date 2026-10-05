@@ -6,14 +6,14 @@
 import { type ReactNode } from "react";
 import {
   Brain, User, KeyRound, Palette, Settings, Wallet,
-  Bell, Monitor, Info, FlaskConical, SlidersHorizontal, Cpu, BarChart3, History, type LucideIcon,
+  Bell, Info, FlaskConical, SlidersHorizontal, Cpu, BarChart3, History, type LucideIcon,
   X, Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "profile" | "history" | "styles" | "memory" | "models" | "usage" | "settings" | "customization" | "notifications" | "account" | "devices" | "wallet" | "labs" | "about";
+export type MenuKey = "profile" | "history" | "styles" | "memory" | "models" | "usage" | "settings" | "customization" | "notifications" | "account" | "wallet" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -33,7 +33,6 @@ export const MENU_ITEMS: MenuItem[] = [
   { key: "wallet", label: "积分管理", icon: Wallet },
   { key: "notifications", label: "通知设置", icon: Bell },
   { key: "account", label: "账号管理", icon: KeyRound },
-  { key: "devices", label: "设备管理", icon: Monitor },
   { key: "labs", label: "实验室", icon: FlaskConical },
   { key: "about", label: "关于笔润智谈", icon: Info },
 ];
@@ -50,7 +49,6 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   wallet: { title: "积分管理", subtitle: "查看余额、消费记录和套餐" },
   notifications: { title: "通知设置", subtitle: "管理在线通知偏好" },
   account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },
-  devices: { title: "设备管理", subtitle: "查看在线设备和管理会话" },
   labs: { title: "实验室", subtitle: "体验正在测试中的实验性功能" },
   about: { title: "关于笔润智谈", subtitle: "版本信息与产品介绍" },
 };

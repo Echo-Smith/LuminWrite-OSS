@@ -1,7 +1,7 @@
 # ─── Writing Agent V2 — Root Makefile ───────────────────
 # Common Docker commands for development and deployment.
 
-.PHONY: help up down build rebuild logs ps shell clean dev weknora sync-env env-check verify verify-backend verify-frontend evidence-accumulate evidence-gate
+.PHONY: help up down build rebuild logs ps shell clean weknora sync-env env-check verify verify-backend verify-frontend evidence-accumulate evidence-gate
 
 # Default: show available commands
 help: ## Show this help
@@ -41,9 +41,6 @@ shell: ## Shell into backend container
 	docker compose exec backend /bin/sh
 
 # ── Development (hot reload) ────────────────────────────
-
-dev: ## Start with dev overrides (hot reload)
-	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 # ── Validation ──────────────────────────────────────────
 

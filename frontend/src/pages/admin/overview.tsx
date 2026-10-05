@@ -3,7 +3,7 @@
  * 调用 /api/v2/admin/stats 获取统计数据 + /api/v2/admin/traces 获取最近 trace 列表
  */
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, TrendingUp, FileText, Users, Award, Activity, Clock, AlertTriangle, ShieldAlert } from "lucide-react";
+import { RefreshCw, TrendingUp, FileText, Award, Activity, Clock, AlertTriangle, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -160,11 +160,6 @@ export function OverviewPage() {
           label="今日 Token"
           value={stats ? formatTokenCount(stats.today_tokens) : "—"}
           sub={stats ? `总计 ${formatTokenCount(stats.total_tokens)}` : ""}
-        />
-        <MetricCard
-          icon={<Users className="h-4 w-4" />}
-          label="活跃用户 (24h)"
-          value={stats ? String(stats.active_users) : "—"}
         />
         <MetricCard
           icon={<Award className="h-4 w-4" />}

@@ -6,9 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,60 +39,6 @@ type ModelConfig struct {
 	CustomHeaders   map[string]string      `json:"custom_headers"`        // custom HTTP headers for API requests
 	CreatedAt       time.Time              `json:"created_at"`
 	UpdatedAt       time.Time              `json:"updated_at"`
-}
-
-// EnsureEnvDefaultModelKey 把环境变量默认密钥绑定到默认模型配置行。
-//
-// 迁移播种的默认模型（如 deepseek-v4-flash）不带密钥，环境变量 AI_API_KEY
-// 不会自动出现在任何界面——表现为"默认配置的密钥没办法加载，必须到 admin
-// 重新配置才出现"。启动时按 admin 录入同样的加密方式把 env 密钥绑定到默认行：
-//   - 行不存在（种子被清空/删除）：按 env 配置补建默认行
-//   - 行存在且无密钥：绑定 env 密钥
-//   - 行已有密钥：不覆盖（admin 录入值优先）
-func (r *AdminRepo) EnsureEnvDefaultModelKey(ctx context.Context, provider, modelName, displayName, baseURL, apiKeyPlain string) error {
-	if r.db == nil || apiKeyPlain == "" || modelName == "" {
-		return nil
-	}
-	stored := apiKeyPlain
-	if len(r.encKey) > 0 {
-		encrypted, err := crypto.Encrypt(apiKeyPlain, r.encKey)
-		if err != nil {
-			return fmt.Errorf("encrypt env api key: %w", err)
-		}
-		stored = encrypted
-	}
-
-	var id, existingKey string
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id::text, COALESCE(api_key_encrypted, '')
-		FROM model_configs
-		WHERE provider = $1 AND model_name = $2
-		ORDER BY is_default DESC, created_at ASC
-		LIMIT 1
-	`, provider, modelName).Scan(&id, &existingKey)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, iErr := r.db.ExecContext(ctx, `
-			INSERT INTO model_configs (provider, model_name, display_name, base_url, api_key_encrypted, max_tokens, temperature, is_default, is_active)
-			VALUES ($1, $2, $3, NULLIF($4, ''), $5, 131072, 0.7, TRUE, TRUE)
-		`, provider, modelName, displayName, baseURL, stored); iErr != nil {
-			return iErr
-		}
-		slog.Info("model config: recreated default row from env config", "model", modelName)
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if existingKey != "" {
-		return nil
-	}
-	if _, err := r.db.ExecContext(ctx, `
-		UPDATE model_configs SET api_key_encrypted = $2, updated_at = NOW() WHERE id = $1
-	`, id, stored); err != nil {
-		return err
-	}
-	slog.Info("model config: bound env api key to default model", "model", modelName)
-	return nil
 }
 
 // ListModelConfigs returns all model configs.
