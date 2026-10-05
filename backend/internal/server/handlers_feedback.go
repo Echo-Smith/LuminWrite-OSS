@@ -4,12 +4,38 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
 
 // ─── Workbuddy Adoption Callback ─────────────────────────
+
+// workbuddyCallbackGate guards the external workbuddy adoption callback — an
+// unauthenticated mutate-on-feedback endpoint whose consumer does not exist
+// in the OSS ecosystem. The callback is disabled (403) unless
+// WORKBUDDY_CALLBACK_TOKEN is configured; when configured, callers must
+// present it via X-Callback-Token or a Bearer header.
+func (s *Server) workbuddyCallbackGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := s.cfg.Server.WorkbuddyCallbackToken
+		if token == "" {
+			response.Err(w, http.StatusForbidden, "workbuddy_disabled",
+				"adoption callback is disabled (WORKBUDDY_CALLBACK_TOKEN not configured)")
+			return
+		}
+		presented := r.Header.Get("X-Callback-Token")
+		if presented == "" {
+			presented = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		if presented != token {
+			response.Err(w, http.StatusUnauthorized, "unauthorized", "valid callback token required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // WorkbuddyAdoptionRequest is the payload for the adoption callback.
 type WorkbuddyAdoptionRequest struct {
@@ -85,6 +111,17 @@ func (s *Server) handleWorkbuddyAdoption(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAdoptionHistory(w http.ResponseWriter, r *http.Request) {
 	traceID := chi.URLParam(r, "traceId")
+
+	// Adoption state is per-trace user data: only the trace owner may read it.
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	if !s.assertTraceOwner(r.Context(), traceID, user.Sub) {
+		response.Err(w, http.StatusNotFound, "not_found", "trace not found")
+		return
+	}
 
 	if s.reputationSvc == nil {
 		response.OK(w, map[string]interface{}{"adoptions": []interface{}{}})

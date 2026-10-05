@@ -688,11 +688,12 @@ func (s *Server) adminAuthMiddleware(next http.Handler) http.Handler {
 			token = r.URL.Query().Get("admin_token")
 		}
 
-		// In dev mode, allow without token if ADMIN_TOKEN is default
-		if s.cfg.Admin.Token == "dev-admin-token" && token == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
+		// No anonymous access, even with the default ADMIN_TOKEN: the default
+		// value is publicly known, so an empty-token bypass would leave every
+		// admin API open on any deployment that never configured it. Local dev
+		// authenticates with the seeded admin account (JWT channel) or the
+		// configured token itself. New() logs a loud warning when the default
+		// token is in use.
 
 		// 1. Try JWT validation first (for logged-in admin users)
 		if token != "" {

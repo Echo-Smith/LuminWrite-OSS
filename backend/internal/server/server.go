@@ -147,6 +147,14 @@ func New(cfg *config.Config) (*Server, error) {
 		slog.Warn("AI_API_KEY not set, LLM features will be limited")
 	}
 
+	// Security posture: the default ADMIN_TOKEN is publicly known (docs,
+	// examples, this repository). Admin APIs never accept anonymous access,
+	// but a deployment keeping the default token still authenticates with a
+	// credential any reader of this repo knows — warn loudly.
+	if cfg.Admin.Token == "dev-admin-token" {
+		slog.Warn("ADMIN_TOKEN is the default development token — set a strong ADMIN_TOKEN before exposing this deployment beyond localhost")
+	}
+
 	// Create embedding client (OpenAI-compatible — supports DashScope MaaS, SiliconFlow, Ollama, etc.)
 	embeddingClient := tools.NewEmbeddingClient(
 		cfg.Dashscope.APIKey,
@@ -909,47 +917,56 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
 		r.With(s.jwtAuthMiddleware).Put("/preferences", s.handleUpdatePreferences)
 
-		// Workbuddy Adoption Callback
-		r.Post("/workbuddy/adopt", s.handleWorkbuddyAdoption)
-		r.Get("/workbuddy/adoptions/{traceId}", s.handleAdoptionHistory)
+		// Workbuddy Adoption Callback — external consumer; disabled unless
+		// WORKBUDDY_CALLBACK_TOKEN is configured, token-checked when it is.
+		r.With(s.workbuddyCallbackGate).Post("/workbuddy/adopt", s.handleWorkbuddyAdoption)
+		r.With(s.jwtAuthMiddleware).Get("/workbuddy/adoptions/{traceId}", s.handleAdoptionHistory)
 
-		// User Reputation
-		r.Get("/reputation/{userId}", s.handleGetReputation)
-		r.Post("/reputation/{userId}/recalculate", s.handleRecalculateReputation)
-		r.Get("/reputation/{userId}/history", s.handleReputationHistory)
+		// User Reputation — reads require login; recalculate is admin-only
+		// maintenance (it rewrites feedback reputation state).
+		r.With(s.jwtAuthMiddleware).Get("/reputation/{userId}", s.handleGetReputation)
+		r.With(s.jwtAuthMiddleware, s.adminAuthMiddleware).Post("/reputation/{userId}/recalculate", s.handleRecalculateReputation)
+		r.With(s.jwtAuthMiddleware).Get("/reputation/{userId}/history", s.handleReputationHistory)
 
-		// Knowledge Base (legacy simple KB — list/add/delete on knowledge_base table)
-		r.Get("/kb", s.handleKBList)
-		r.Post("/kb", s.handleKBAdd)
-		r.Delete("/kb/{id}", s.handleKBDelete)
+		// Knowledge Base — authenticated as a whole: handlers resolve the
+		// caller from the JWT (own + global documents). Anonymous KB access
+		// previously leaked the global corpus and allowed unowned writes.
+		r.With(s.jwtAuthMiddleware).Route("/kb", func(r chi.Router) {
+			// Legacy simple KB — list/add/delete on knowledge_base table
+			r.Get("/", s.handleKBList)
+			r.Post("/", s.handleKBAdd)
+			r.Delete("/{id}", s.handleKBDelete)
 
-		// Knowledge Base (Hybrid Search + Document Management)
-		// Primary paths: /kb/* (new — operates on knowledge_chunks with BM25+Dense+RRF)
-		r.Get("/kb/kbs", s.handleKBListKBs)
-		r.Post("/kb/manage", s.handleKBCreate)
-		r.Put("/kb/manage/{id}", s.handleKBUpdate)
-		r.Delete("/kb/manage/{id}", s.handleKBDeleteKB)
-		r.Get("/kb/knowledge", s.handleKBListKnowledge)
-		r.Post("/kb/knowledge", s.handleKBAddKnowledge)
-		r.Post("/kb/knowledge/url", s.handleKBAddFromURL)
-		r.Post("/kb/knowledge/upload", s.handleKBUploadFile)
-		r.Delete("/kb/knowledge/{id}", s.handleKBDeleteKnowledge)
-		r.Post("/kb/search", s.handleKBSearch)
-		r.Get("/kb/status", s.handleKBStatus)
-		r.Get("/kb/stats", s.handleKBStats)
-		r.Get("/kb/documents/{id}/chunks", s.handleKBGetDocumentChunks)
-		r.Get("/kb/documents/{id}/entities", s.handleKBGetDocumentEntities)
-		r.Get("/kb/graph", s.handleKBGetGraph)
+			// Hybrid Search + Document Management
+			// (knowledge_chunks with BM25+Dense+RRF)
+			r.Get("/kbs", s.handleKBListKBs)
+			r.Post("/manage", s.handleKBCreate)
+			r.Put("/manage/{id}", s.handleKBUpdate)
+			r.Delete("/manage/{id}", s.handleKBDeleteKB)
+			r.Get("/knowledge", s.handleKBListKnowledge)
+			r.Post("/knowledge", s.handleKBAddKnowledge)
+			r.Post("/knowledge/url", s.handleKBAddFromURL)
+			r.Post("/knowledge/upload", s.handleKBUploadFile)
+			r.Delete("/knowledge/{id}", s.handleKBDeleteKnowledge)
+			r.Post("/search", s.handleKBSearch)
+			r.Get("/status", s.handleKBStatus)
+			r.Get("/stats", s.handleKBStats)
+			r.Get("/documents/{id}/chunks", s.handleKBGetDocumentChunks)
+			r.Get("/documents/{id}/entities", s.handleKBGetDocumentEntities)
+			r.Get("/graph", s.handleKBGetGraph)
+		})
 
 		// Compat alias: /weknora/* (kept for frontend transition)
-		r.Get("/weknora/kbs", s.handleKBListKBs)
-		r.Get("/weknora/knowledge", s.handleKBListKnowledge)
-		r.Post("/weknora/knowledge", s.handleKBAddKnowledge)
-		r.Post("/weknora/knowledge/url", s.handleKBAddFromURL)
-		r.Post("/weknora/knowledge/upload", s.handleKBUploadFile)
-		r.Delete("/weknora/knowledge/{id}", s.handleKBDeleteKnowledge)
-		r.Post("/weknora/search", s.handleKBSearch)
-		r.Get("/weknora/status", s.handleKBStatus)
+		r.With(s.jwtAuthMiddleware).Route("/weknora", func(r chi.Router) {
+			r.Get("/kbs", s.handleKBListKBs)
+			r.Get("/knowledge", s.handleKBListKnowledge)
+			r.Post("/knowledge", s.handleKBAddKnowledge)
+			r.Post("/knowledge/url", s.handleKBAddFromURL)
+			r.Post("/knowledge/upload", s.handleKBUploadFile)
+			r.Delete("/knowledge/{id}", s.handleKBDeleteKnowledge)
+			r.Post("/search", s.handleKBSearch)
+			r.Get("/status", s.handleKBStatus)
+		})
 
 		// User Materials (Scheme B: per-user WeKnora KB)
 		r.With(s.jwtAuthMiddleware).Get("/materials", s.handleUserMaterialList)

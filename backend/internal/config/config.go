@@ -79,6 +79,11 @@ type ServerConfig struct {
 	// single-user/self-hosted deployments: register and guest endpoints
 	// answer 403 REGISTRATION_DISABLED. Existing accounts keep working.
 	DisableRegistration bool
+	// WorkbuddyCallbackToken guards the external workbuddy adoption
+	// callback (POST /api/v2/workbuddy/adopt). Empty disables the callback
+	// entirely (the OSS default — the consumer is not part of the OSS
+	// ecosystem); when set, callers must present it via X-Callback-Token.
+	WorkbuddyCallbackToken string
 }
 
 // WritingRuntimeConfig gates the V3.0 governed writing runtime (docs/20 §20.2).
@@ -334,7 +339,8 @@ func Load() *Config {
 			Port:                getEnvInt("SERVER_PORT", 8080),
 			ReadTimeout:         getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
 			WriteTimeout:        getEnvDuration("SERVER_WRITE_TIMEOUT", 120*time.Second),
-			DisableRegistration: getEnvBool("DISABLE_REGISTRATION", false),
+			DisableRegistration:    getEnvBool("DISABLE_REGISTRATION", false),
+			WorkbuddyCallbackToken: getEnv("WORKBUDDY_CALLBACK_TOKEN", ""),
 		},
 		Database: DatabaseConfig{
 			URL:          getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/writing_agent_v2?sslmode=disable"),

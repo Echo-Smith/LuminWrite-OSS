@@ -241,6 +241,7 @@
 | 2026-09-30 | BYOK 个人模型服务（单用户化 Phase 1，docs/30） | OSS 线 | user_model_keys（migration 122）+ LLMService 四级解析（用户精确→全局精确→用户默认→全局默认→env）+ 缓存按 userID 隔离（修复原模型名缓存的串号风险）+ 治理管线按 run.OwnerUserID 解析 + /model-keys CRUD·discover·test + /usage 个人聚合 + /models 合并列表 + DISABLE_REGISTRATION + 个人中心「模型服务/用量统计」section + admin 页更名「全局默认模型（回退）」 | ✅ 后端 go test 全量零失败（隔离库）、前端 tsc/lint/build/test 全绿；purpose 路由、embedding per-user、KB 双轨合并列入下轮 |
 | 2026-10-02 | 镜像/项目名分线隔离（edition isolation） | OSS 线 | 本地镜像 tag 加 -oss 后缀（luminbuddy-v2-oss-{backend,frontend,docreader}）+ compose 顶层 name: luminbuddy-v2-oss + pack-for-1panel/DEPLOY.md 同步；商业线对应 -com。ghcr 对外包名不变 | ✅ 与商业线镜像互踩根除；dev 栈以全新数据卷从 OSS 迁移链重新初始化，旧卷保留备份 |
 | 2026-10-05 | 个人写作记录与反馈历史（单用户化 Phase 2，docs/31） | OSS 线 | sessions 组 7 处横向越权修复（assertTraceOwner，含 artifacts/events/versions/plan）+ GetTrace NULL current_step 修复 + POST /feedback jwtOptional 且 user_id 落库 + folders/batch 半成品补齐（migration 109 表首次接线）+ ListTraces 补 review_score/has_feedback + GET /feedback/mine（JOIN 覆盖历史行）+ 个人中心「写作记录」section（记录回放/我的反馈两 tab）+ 前端 duplicate 幽灵动作清理 | ✅ 后端 go test 全量零失败（隔离库），前端 tsc/lint/build/test 全绿；purpose 分流、KB 合并留待下轮 |
+| 2026-10-05 | 安全收口（Phase 3-1） | OSS 线 | 移除 ADMIN_TOKEN 默认值的匿名访问后门（默认值时启动告警保留静态令牌通道）+ /api/v2/kb、/weknora 全组挂 jwtAuth（原匿名可搜全局语料、可无主写入）+ /workbuddy/adopt 回调默认禁用（WORKBUDDY_CALLBACK_TOKEN 令牌门）+ adoption history 归属校验 + reputation 读挂登录、recalculate 挂 admin | ✅ 后端全量零失败；管理台 JWT 主通道不受影响 |
 
 ---
 
