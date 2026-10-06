@@ -160,6 +160,66 @@ func (s *LLMService) GetClientForUser(ctx context.Context, userID, modelName str
 	return client
 }
 
+// GetClientForPurpose is the purpose-routed form: for non-generation
+// purposes (today: "verification" — post-review, validators, fact check) the
+// user's purpose-flagged key takes precedence, then the ordinary resolution
+// order applies. generation requests and explicit model names resolve via
+// GetClientForUser unchanged. Zero-config deployments behave exactly as
+// before (no purpose row → ordinary order → global default → env).
+func (s *LLMService) GetClientForPurpose(ctx context.Context, userID, purpose, modelName string) *tools.LLMClient {
+	if s == nil {
+		return nil
+	}
+	if purpose == "" || purpose == "generation" || modelName != "" {
+		return s.GetClientForUser(ctx, userID, modelName)
+	}
+	if s.adminRepo == nil {
+		return s.fallback
+	}
+
+	cacheID := userID + "|" + purpose + "|default"
+	s.mu.RLock()
+	if entry, ok := s.cache[cacheID]; ok && time.Now().Before(entry.expires) {
+		s.mu.RUnlock()
+		return entry.client
+	}
+	s.mu.RUnlock()
+
+	// Layer 1: the user's purpose-flagged key.
+	if userID != "" && s.userKeys != nil {
+		if uk, _ := s.userKeys.GetForUserByPurpose(ctx, userID, purpose); uk != nil {
+			if client := s.clientFromUserKey(userID, uk); client != nil {
+				s.storeCache(cacheID, client)
+				return client
+			}
+		}
+	}
+
+	// Layer 2: the user's default (BYOK philosophy — own keys first).
+	if userID != "" && s.userKeys != nil {
+		if uk, _ := s.userKeys.GetDefaultForUser(ctx, userID); uk != nil {
+			if client := s.clientFromUserKey(userID, uk); client != nil {
+				s.storeCache(cacheID, client)
+				return client
+			}
+		}
+	}
+
+	// Layer 3: the global default, then env.
+	cfg, err := s.adminRepo.GetDefaultModelConfig(ctx)
+	if err != nil || cfg == nil {
+		s.storeCache(cacheID, s.fallback)
+		return s.fallback
+	}
+	client := s.clientFromGlobalConfig(ctx, cfg)
+	if client == nil {
+		s.storeCache(cacheID, s.fallback)
+		return s.fallback
+	}
+	s.storeCache(cacheID, client)
+	return client
+}
+
 // clientFromUserKey assembles a client from one BYOK entry; nil when the
 // entry carries no usable key (the caller falls through to the next layer).
 func (s *LLMService) clientFromUserKey(userID string, uk *database.UserModelKey) *tools.LLMClient {

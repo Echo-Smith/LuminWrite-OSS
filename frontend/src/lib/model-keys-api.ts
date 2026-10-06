@@ -61,9 +61,16 @@ export interface UserModelKeyInput {
   max_tokens?: number;
   temperature?: number;
   reasoning_effort?: string;
+  purpose?: "generation" | "verification";
   is_default?: boolean;
   custom_headers?: Record<string, string>;
 }
+
+/** purpose 取值与文案；embedding 仅入库预留，UI 不提供 */
+export const PURPOSE_OPTIONS = [
+  { value: "generation", label: "写作模型（默认）" },
+  { value: "verification", label: "评审专用（写后自检/校验，可用便宜模型）" },
+] as const;
 
 export interface ProbeResult {
   ok: boolean;

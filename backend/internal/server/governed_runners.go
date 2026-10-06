@@ -47,6 +47,9 @@ type governedRunnerFactory struct {
 	// resolution is what lets admin/BYOK changes take effect without
 	// rebuilding clients.
 	llm func(userID string) *tools.LLMClient
+	// llmForVerification is the purpose-routed variant for review/validation
+	// lanes: the owner may designate a cheaper verification-only model.
+	llmForVerification func(userID string) *tools.LLMClient
 	// kb adapts the local knowledge base; nil disables KB-scoped drafting.
 	kb tools.KnowledgeSearcher
 }
@@ -54,7 +57,12 @@ type governedRunnerFactory struct {
 // newGovernedRunnerFactory captures the server's engine clients lazily so
 // runner construction never pins stale clients.
 func newGovernedRunnerFactory(server *Server, kb tools.KnowledgeSearcher) *governedRunnerFactory {
-	return &governedRunnerFactory{server: server, llm: server.llmForUser, kb: kb}
+	return &governedRunnerFactory{
+		server:             server,
+		llm:                server.llmForUser,
+		llmForVerification: server.llmForVerification,
+		kb:                 kb,
+	}
 }
 
 // RunnerFor returns the LegacyNodeRunner for one governed capability, or nil
@@ -80,14 +88,14 @@ func (factory *governedRunnerFactory) RunnerFor(capability string) writingruntim
 			Inner: writingruntime.EngineStepRunner{
 				Styles: governedStyleResolver{server: server},
 				StepFactory: func(env writingruntime.StepEnv) (engine.Step, error) {
-					return server.newGovernedPostReviewStep(factory.llm(env.Request.UserID), env.Profile), nil
+					return server.newGovernedPostReviewStep(factory.llmForVerification(env.Request.UserID), env.Profile), nil
 				},
 				Usage: engineUsage,
 			}}
 	case "core.validation.evidence", "core.validation.fact":
 		// Validators degrade honestly when no LLM is wired (docs/22 D2); a
 		// missing factory LLM is exactly that deployment shape.
-		return &writingruntime.ValidatorRunner{LLMForUser: factory.llm}
+		return &writingruntime.ValidatorRunner{LLMForUser: factory.llmForVerification}
 	case "core.outline.generate":
 		return writingruntime.EngineStepRunner{
 			Styles: governedStyleResolver{server: server},
@@ -306,7 +314,7 @@ func (s *Server) governedResearchSpecs(store *writingstore.Store, canonical writ
 	// a nil reviewer degrades honestly (no-model deployment). The reviewer is
 	// resolved lazily through the factory closure so DB-backed config reloads
 	// are picked up per dispatch.
-	fact, err := writingruntime.NewResearchFactValidator(canonical, writingruntime.LLMResearchFactReviewer{LLM: factoryLLM(s)})
+	fact, err := writingruntime.NewResearchFactValidator(canonical, writingruntime.LLMResearchFactReviewer{LLMForUser: s.llmForVerification})
 	if err != nil {
 		slog.Warn("governed runtime: research fact validator construction failed", "error", err)
 	}
@@ -394,9 +402,22 @@ func (s *Server) llmForUser(userID string) *tools.LLMClient {
 	return s.llm
 }
 
+// llmForVerification resolves the review/validation lanes' client for one
+// run owner: a purpose-flagged verification key first, then the ordinary
+// order (owner default → global default → env). Deployments without a
+// verification key behave identically to llmForUser.
+func (s *Server) llmForVerification(userID string) *tools.LLMClient {
+	if s.llmSvc != nil {
+		if c := s.llmSvc.GetClientForPurpose(context.Background(), userID, "verification", ""); c != nil {
+			return c
+		}
+	}
+	return s.llm
+}
+
 // factoryLLM resolves the server's global LLM client lazily (the server may
 // rebuild it after DB-backed configuration loads). System lanes with no run
-// owner — the research fact reviewer this iteration — resolve here.
+// owner resolve here.
 func factoryLLM(s *Server) *tools.LLMClient { return s.llm }
 
 // governedKBSearcher adapts the local knowledge base when configured.

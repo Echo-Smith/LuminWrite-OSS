@@ -213,6 +213,12 @@ func (r *UserModelKeyRepo) Create(ctx context.Context, k *UserModelKey) (*UserMo
 	// IsActive has no user-facing toggle: creates are always active (the Go
 	// zero value false must not override the column's intended TRUE).
 	k.IsActive = true
+	// Only the user's primary (generation) model may hold the default slot:
+	// GetDefaultForUser does not filter by purpose, so a default-marked
+	// verification row would otherwise become the default writing model.
+	if k.Purpose != "generation" {
+		k.IsDefault = false
+	}
 	if k.IsDefault {
 		if err := r.clearUserDefault(ctx, nil, k.UserID); err != nil {
 			return nil, err
@@ -347,6 +353,30 @@ func (r *UserModelKeyRepo) GetForUserByName(ctx context.Context, userID, modelNa
 		WHERE user_id = $1::uuid AND model_name = $2 AND is_active
 		LIMIT 1
 	`, userID, modelName).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, sql.ErrNoRows
+	}
+	return k, err
+}
+
+// GetForUserByPurpose returns the user's active key flagged for the given
+// purpose (e.g. "verification"), default-marked rows first. Read path for
+// purpose-routed resolution; when no such row exists the caller falls back
+// to the ordinary resolution order.
+func (r *UserModelKeyRepo) GetForUserByPurpose(ctx context.Context, userID, purpose string) (*UserModelKey, error) {
+	if r.db == nil || userID == "" || purpose == "" {
+		return nil, sql.ErrNoRows
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		return nil, sql.ErrNoRows
+	}
+	k, err := scanUserModelKey(r.db.QueryRowContext(ctx, `
+		SELECT `+userModelKeyColumns+`
+		FROM user_model_keys
+		WHERE user_id = $1::uuid AND purpose = $2 AND is_active
+		ORDER BY is_default DESC, created_at ASC
+		LIMIT 1
+	`, userID, purpose).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, sql.ErrNoRows
 	}

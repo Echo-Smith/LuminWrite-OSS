@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { SimpleModal, formatDate } from "./shared";
 import {
   type UserModelKey, type UserModelKeyInput, type ProbeResult,
+  PURPOSE_OPTIONS,
   listModelKeys, createModelKey, updateModelKey, deleteModelKey,
   setDefaultModelKey, testModelKey, discoverModels, PROBE_ERROR_LABELS,
 } from "@/lib/model-keys-api";
@@ -44,6 +45,7 @@ const EMPTY_FORM = {
   model_name: "",
   max_tokens: "8192",
   temperature: "0.7",
+  purpose: "generation" as "generation" | "verification",
   is_default: false,
 };
 
@@ -108,6 +110,7 @@ export function ModelServiceSection() {
       model_name: k.model_name,
       max_tokens: String(k.max_tokens || 8192),
       temperature: String(k.temperature ?? 0.7),
+      purpose: (k.purpose === "verification" ? "verification" : "generation"),
       is_default: k.is_default,
     });
     setDiscovered([]);
@@ -160,6 +163,7 @@ export function ModelServiceSection() {
       base_url: form.base_url,
       max_tokens: Number(form.max_tokens) || 8192,
       temperature: Number(form.temperature) || 0.7,
+      purpose: form.purpose,
       is_default: form.is_default,
     };
     if (form.api_key) input.api_key = form.api_key;
@@ -279,6 +283,9 @@ export function ModelServiceSection() {
                         </Badge>
                       )}
                       <Badge variant="secondary" className="text-xs">{k.provider}</Badge>
+                      {k.purpose === "verification" && (
+                        <Badge variant="outline" className="text-[10px] text-purple-600 border-purple-300">评审专用</Badge>
+                      )}
                       {probe && (
                         probe.ok
                           ? <Badge variant="outline" className="text-xs text-green-600 border-green-300"><CheckCircle2 className="mr-0.5 h-3 w-3" /> {probe.latency_ms}ms</Badge>
@@ -433,12 +440,30 @@ export function ModelServiceSection() {
             </div>
           </div>
 
+          <div>
+            <Label>用途</Label>
+            <Select value={form.purpose} onValueChange={(v) => setForm((f) => ({ ...f, purpose: v as "generation" | "verification", is_default: v === "generation" ? f.is_default : false }))}>
+              <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {PURPOSE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">
             <div>
               <p className="text-sm font-medium">设为我的默认模型</p>
-              <p className="text-xs text-muted-foreground">写作未指定模型时使用</p>
+              <p className="text-xs text-muted-foreground">
+                {form.purpose === "verification" ? "仅写作模型可设默认" : "写作未指定模型时使用"}
+              </p>
             </div>
-            <Switch checked={form.is_default} onCheckedChange={(v) => setForm((f) => ({ ...f, is_default: v }))} />
+            <Switch
+              checked={form.is_default}
+              disabled={form.purpose === "verification"}
+              onCheckedChange={(v) => setForm((f) => ({ ...f, is_default: v }))}
+            />
           </div>
 
           <Button
