@@ -133,6 +133,20 @@ export async function createMaterial(
   return json.data?.id ?? "";
 }
 
+/** 从 URL 导入网页为素材（抓取正文、分块、入个人知识库） */
+export async function importMaterialFromURL(
+  url: string,
+  title?: string,
+  folderId?: string,
+): Promise<string> {
+  const json = await postJSON<{ id: string }>(`${BASE}/materials/url`, {
+    url,
+    title: title ?? "",
+    folder_id: folderId ?? "",
+  });
+  return json.data?.id ?? "";
+}
+
 /** 上传文件创建素材 */
 export async function uploadMaterial(
   file: File,

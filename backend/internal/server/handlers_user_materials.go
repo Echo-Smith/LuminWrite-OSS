@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -340,6 +341,84 @@ func (s *Server) handleUserMaterialDelete(w http.ResponseWriter, r *http.Request
 	}
 
 	response.OK(w, map[string]any{"message": "material deleted", "id": materialID})
+}
+
+// handleUserMaterialImportURL imports a web page as a personal material.
+// Parity with the admin KB's URL import (handleKBAddFromURL): the content is
+// fetched, extracted, chunked and stored in knowledge_base (user-owned), and
+// a user_materials metadata row makes it visible in the materials center.
+//
+// POST /api/v2/materials/url
+// Body: { "url": "...", "title": "...", "folder_id": "..." }
+func (s *Server) handleUserMaterialImportURL(w http.ResponseWriter, r *http.Request) {
+	if s.kbMgr == nil {
+		response.Err(w, http.StatusServiceUnavailable, "kb_not_configured", "Knowledge base is not configured")
+		return
+	}
+
+	userID := s.getUserID(r)
+	if userID == "" {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	var req struct {
+		URL      string `json:"url"`
+		Title    string `json:"title"`
+		FolderID string `json:"folder_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	if req.URL == "" {
+		response.Err(w, http.StatusBadRequest, "bad_request", "url is required")
+		return
+	}
+
+	// kb_id stays empty: personal materials live in the unscoped personal
+	// corpus, searchable by the user's own hybrid search and the pipeline.
+	importer := services.NewURLImporter(s.kbMgr, services.DefaultChunkConfig())
+	docID, err := importer.ImportURLToKB(r.Context(), userID, "", req.URL, req.Title)
+	if err != nil {
+		slog.Warn("material URL import failed", "error", err, "url", req.URL, "user_id", userID)
+		if strings.Contains(err.Error(), "too short") || strings.Contains(err.Error(), "failed to fetch") {
+			response.Err(w, http.StatusBadGateway, "url_import_failed", err.Error())
+			return
+		}
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to import URL")
+		return
+	}
+
+	// Pull the stored document for title/preview/chunk count.
+	doc, err := s.kbMgr.GetDocument(r.Context(), userID, docID)
+	if err != nil {
+		slog.Warn("imported URL document unreadable", "error", err, "doc_id", docID)
+		response.Err(w, http.StatusInternalServerError, "internal_error", "imported but failed to read document")
+		return
+	}
+
+	mat := &services.UserMaterial{
+		ID:             uuid.NewString(),
+		UserID:         userID,
+		Title:          doc.Title,
+		ContentPreview: doc.ContentPreview,
+		SourceType:     "url",
+		SourceURL:      req.URL,
+		DocID:          doc.ID,
+		ChunkCount:     doc.ChunkCount,
+		FolderID:       req.FolderID,
+		Status:         "active",
+	}
+	if err := s.kbMgr.SaveMaterial(r.Context(), mat); err != nil {
+		slog.Warn("save material metadata failed", "error", err, "user_id", userID)
+	}
+
+	response.Created(w, map[string]any{
+		"id":     mat.ID,
+		"doc_id": doc.ID,
+		"title":  doc.Title,
+	})
 }
 
 // handleUserMaterialSearch searches the user's knowledge base using hybrid search.

@@ -1,11 +1,10 @@
 /**
  * AddMaterialDialog — 添加素材弹窗
  *
- * 从 my-materials.tsx 和 materials-tab.tsx 中提取的共享组件。
- * 支持「文本/Markdown」和「上传文件」两种模式。
+ * 支持「文本/Markdown」「网页 URL」「上传文件」三种模式。
  */
 import { useState, useRef } from "react";
-import { FileText, Upload, Loader2, File } from "lucide-react";
+import { FileText, Upload, Loader2, File, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +17,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { createMaterial, uploadMaterial } from "@/lib/material-api";
+import { createMaterial, importMaterialFromURL, uploadMaterial } from "@/lib/material-api";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "—";
@@ -42,7 +41,8 @@ export function AddMaterialDialog({
   onError,
   folderId,
 }: AddMaterialDialogProps) {
-  const [addMode, setAddMode] = useState<"text" | "file">("text");
+  const [addMode, setAddMode] = useState<"text" | "url" | "file">("text");
+  const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -53,6 +53,7 @@ export function AddMaterialDialog({
     setTitle("");
     setContent("");
     setFile(null);
+    setUrl("");
     setAddMode("text");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -78,6 +79,18 @@ export function AddMaterialDialog({
       } finally {
         setUploading(false);
       }
+    } else if (addMode === "url" && url.trim()) {
+      setUploading(true);
+      try {
+        await importMaterialFromURL(url.trim(), title || undefined, folderId);
+        reset();
+        onOpenChange(false);
+        onAdded?.();
+      } catch (e) {
+        onError?.(e instanceof Error ? e.message : "URL 导入失败");
+      } finally {
+        setUploading(false);
+      }
     } else if (addMode === "file" && file) {
       setUploading(true);
       try {
@@ -96,7 +109,9 @@ export function AddMaterialDialog({
   const canSubmit =
     addMode === "text"
       ? title.trim().length > 0 && content.trim().length > 0
-      : file !== null;
+      : addMode === "url"
+        ? url.trim().length > 0
+        : file !== null;
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -104,7 +119,7 @@ export function AddMaterialDialog({
         <DialogHeader>
           <DialogTitle>添加素材</DialogTitle>
           <DialogDescription>
-            支持文本/Markdown 或上传文件，素材将存入个人知识库供写作时检索使用。
+            支持文本/Markdown、网页 URL 或上传文件，素材将存入个人知识库供写作时检索使用。
           </DialogDescription>
         </DialogHeader>
 
@@ -117,6 +132,13 @@ export function AddMaterialDialog({
               onClick={() => setAddMode("text")}
             >
               <FileText className="h-4 w-4 mr-1" /> 文本/Markdown
+            </Button>
+            <Button
+              size="sm"
+              variant={addMode === "url" ? "default" : "outline"}
+              onClick={() => setAddMode("url")}
+            >
+              <Link className="h-4 w-4 mr-1" /> 网页 URL
             </Button>
             <Button
               size="sm"
@@ -148,6 +170,20 @@ export function AddMaterialDialog({
                 placeholder="输入文本或 Markdown 内容..."
                 className="mt-1 min-h-[200px] font-mono text-sm"
               />
+            </div>
+          ) : addMode === "url" ? (
+            <div>
+              <Label>网页地址</Label>
+              <Input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://example.com/article"
+                className="mt-1 font-mono text-sm"
+              />
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                抓取网页正文并分块入库（10MB 上限），标题留空将自动取自页面。
+              </p>
             </div>
           ) : (
             <div>

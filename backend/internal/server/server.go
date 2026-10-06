@@ -932,11 +932,6 @@ func (s *Server) Router() http.Handler {
 		// caller from the JWT (own + global documents). Anonymous KB access
 		// previously leaked the global corpus and allowed unowned writes.
 		r.With(s.jwtAuthMiddleware).Route("/kb", func(r chi.Router) {
-			// Legacy simple KB — list/add/delete on knowledge_base table
-			r.Get("/", s.handleKBList)
-			r.Post("/", s.handleKBAdd)
-			r.Delete("/{id}", s.handleKBDelete)
-
 			// Hybrid Search + Document Management
 			// (knowledge_chunks with BM25+Dense+RRF)
 			r.Get("/kbs", s.handleKBListKBs)
@@ -956,18 +951,6 @@ func (s *Server) Router() http.Handler {
 			r.Get("/graph", s.handleKBGetGraph)
 		})
 
-		// Compat alias: /weknora/* (kept for frontend transition)
-		r.With(s.jwtAuthMiddleware).Route("/weknora", func(r chi.Router) {
-			r.Get("/kbs", s.handleKBListKBs)
-			r.Get("/knowledge", s.handleKBListKnowledge)
-			r.Post("/knowledge", s.handleKBAddKnowledge)
-			r.Post("/knowledge/url", s.handleKBAddFromURL)
-			r.Post("/knowledge/upload", s.handleKBUploadFile)
-			r.Delete("/knowledge/{id}", s.handleKBDeleteKnowledge)
-			r.Post("/search", s.handleKBSearch)
-			r.Get("/status", s.handleKBStatus)
-		})
-
 		// User Materials (Scheme B: per-user WeKnora KB)
 		r.With(s.jwtAuthMiddleware).Get("/materials", s.handleUserMaterialList)
 		r.With(s.jwtAuthMiddleware).Get("/materials/{id}", s.handleUserMaterialGet)
@@ -975,6 +958,7 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware).Post("/materials/upload", s.handleUserMaterialUpload)
 		r.With(s.jwtAuthMiddleware).Delete("/materials/{id}", s.handleUserMaterialDelete)
 		r.With(s.jwtAuthMiddleware).Post("/materials/search", s.handleUserMaterialSearch)
+		r.With(s.jwtAuthMiddleware).Post("/materials/url", s.handleUserMaterialImportURL)
 		r.With(s.jwtAuthMiddleware).Put("/materials/{id}/move", s.handleMaterialMove)
 
 		// Material Folders
