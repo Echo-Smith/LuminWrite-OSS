@@ -812,6 +812,11 @@ func (s *Server) Router() http.Handler {
 	r.Get("/health", s.handleHealth)
 	r.Get("/ready", s.handleReady)
 
+	// Public deployment metadata — lets the frontend hide registration entry
+	// points and single-user-irrelevant surfaces at startup instead of probing
+	// auth failures. Non-sensitive flags only.
+	r.Get("/api/v2/meta/deployment", s.handleDeploymentMeta)
+
 	// Prometheus metrics
 	r.Get("/metrics", s.handleMetrics)
 

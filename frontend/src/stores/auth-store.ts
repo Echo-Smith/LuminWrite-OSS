@@ -34,6 +34,8 @@ interface AuthState {
   user: AuthUser | null;
   expiresAt: number | null; // unix seconds
   initialized: boolean;
+  /** 部署已关闭自助注册（/meta/deployment 或 guest 403 探测）。 */
+  registrationDisabled: boolean;
 
   // Actions
   init: () => Promise<void>;
@@ -161,7 +163,7 @@ async function callGuestAPI(): Promise<{
       // 部署关闭自助建号（DISABLE_REGISTRATION）时返回 403 REGISTRATION_DISABLED，
       // 记录到模块级标记供 auth-modal 隐藏注册入口，而不是无限重试。
       if (res.status === 403) {
-        registrationDisabledFlag = true;
+        setRegistrationDisabled();
       }
       return null;
     }
@@ -196,11 +198,32 @@ async function callRegisterAPI(body: Record<string, unknown>): Promise<{
 
 // ─── Store ─────────────────────────────────────────────────
 
-/** 模块级标记：部署已关闭自助注册（guest 403 REGISTRATION_DISABLED）。 */
+/** 模块级标记：部署已关闭自助注册（来自 /meta/deployment 或 guest 403）。
+ *  同步进 store（registrationDisabled）供 selector 消费；模块标记供
+ *  auth-modal 等非 hook 场景读取。 */
 let registrationDisabledFlag = false;
 
 export function isRegistrationDisabled(): boolean {
   return registrationDisabledFlag;
+}
+
+function setRegistrationDisabled(): void {
+  registrationDisabledFlag = true;
+  useAuthStore.setState({ registrationDisabled: true });
+}
+
+/** 启动时拉取部署元数据（公开端点），让注册开关在「已有账号登录」状态下同样生效。 */
+async function loadDeploymentMeta(): Promise<void> {
+  if (registrationDisabledFlag) return;
+  try {
+    const res = await fetch("/api/v2/meta/deployment");
+    const json = await res.json();
+    if (json?.success && json.data?.registration_disabled) {
+      setRegistrationDisabled();
+    }
+  } catch {
+    // silent — meta 不可得时保持默认（注册开放）
+  }
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -208,9 +231,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   expiresAt: null,
   initialized: false,
+  registrationDisabled: false,
 
   init: async () => {
     if (get().initialized) return;
+
+    void loadDeploymentMeta();
 
     const stored = loadFromStorage();
     if (stored) {
