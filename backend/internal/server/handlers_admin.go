@@ -695,26 +695,23 @@ func (s *Server) adminAuthMiddleware(next http.Handler) http.Handler {
 		// configured token itself. New() logs a loud warning when the default
 		// token is in use.
 
-		// 1. Try JWT validation first (for logged-in admin users)
+		// 1. JWT channel: any authenticated non-guest user passes. The admin
+		// surface is deployment management shared by all registered members
+		// (single-user / family semantics, docs/31 direction) — guests are
+		// the only rejected role, with 403 so callers can prompt registration.
 		if token != "" {
 			if payload, err := s.ValidateJWT(token); err == nil {
-				// Admin role from legacy users.role column
-				if payload.Role == "admin" {
-					ctx := withUser(r.Context(), payload)
-					next.ServeHTTP(w, r.WithContext(ctx))
+				if payload.Role == "guest" {
+					response.Err(w, http.StatusForbidden, "forbidden", "guests cannot access admin surfaces")
 					return
 				}
-				// RBAC: user has any assigned roles with permissions
-				perms, permErr := s.userPermissions(r.Context(), payload.Sub, payload.Role)
-				if permErr == nil && len(perms) > 0 {
-					ctx := withUser(r.Context(), payload)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
+				ctx := withUser(r.Context(), payload)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
 			}
 		}
 
-		// 2. Fallback: check against static admin token
+		// 2. Fallback: static deployment credential
 		if token == s.cfg.Admin.Token && token != "" {
 			next.ServeHTTP(w, r)
 			return

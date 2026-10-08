@@ -59,6 +59,38 @@ func TestAdminAnonymousRejected(t *testing.T) {
 	}
 }
 
+// TestAdminOpenToRegisteredUsers: 管理面下放 — any authenticated
+// non-guest user passes the admin surface; guests get 403.
+func TestAdminOpenToRegisteredUsers(t *testing.T) {
+	s, router := newSecurityGateFixture(t)
+
+	// Regular user JWT → passes (handler deps may 5xx but never 401/403).
+	token, err := s.GenerateJWT("00000000-0000-0000-0000-00000000user", "user", "open_sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/admin/models", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("registered user blocked from admin surface: got %d", rec.Code)
+	}
+
+	// Guest JWT → explicit 403.
+	guestToken, err := s.GenerateJWT("00000000-0000-0000-0000-00000000guest", "guest", "guest_sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v2/admin/models", nil)
+	req.Header.Set("Authorization", "Bearer "+guestToken)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("guest on admin surface: got %d, want 403", rec.Code)
+	}
+}
+
 // TestKBAnonymousRejected: the KB group requires a JWT.
 func TestKBAnonymousRejected(t *testing.T) {
 	_, router := newSecurityGateFixture(t)

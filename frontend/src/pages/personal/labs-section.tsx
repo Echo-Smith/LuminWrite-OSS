@@ -21,7 +21,6 @@ export function LabsSection() {
   const labsKbMaintenance = useSettingsStore((s) => s.labsKbMaintenance);
   const setLabsKbMaintenance = useSettingsStore((s) => s.setLabsKbMaintenance);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
-  const isAdmin = useAuthStore((s) => s.user?.role === "admin");
 
   return (
     <div className="px-6 pt-6 pb-12 space-y-6">
@@ -91,7 +90,7 @@ export function LabsSection() {
         </div>
 
         {/* 定时任务面板（仅 admin 可开） */}
-        {isAdmin && (
+        {!isGuest && (
           <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
               <Clock className="h-5 w-5 text-primary" />
@@ -116,7 +115,7 @@ export function LabsSection() {
         )}
 
         {/* 知识库维护面板（仅 admin 可开） */}
-        {isAdmin && (
+        {!isGuest && (
           <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
               <Database className="h-5 w-5 text-primary" />
@@ -141,7 +140,7 @@ export function LabsSection() {
         )}
 
         {/* 敏感词库面板（仅 admin 可开） */}
-        {isAdmin && (
+        {!isGuest && (
           <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
               <Shield className="h-5 w-5 text-primary" />

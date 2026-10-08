@@ -10,12 +10,27 @@
  */
 import { Puzzle } from "lucide-react";
 import { AdminTabbedPage } from "@/components/admin-ui";
+import { useAuthStore } from "@/stores/auth-store";
 import { APIKeysPage as McpKeysPage } from "./mcp-keys-page";
 import { MCPSandboxPage } from "./mcp-sandbox-page";
 import { SkillsSection } from "./skills-section";
 import { ModelConfigsPage } from "./global-models-page";
 
 export function PluginsPage() {
+  const isGuest = useAuthStore((s) => s.user?.role === "guest");
+
+  if (isGuest) {
+    return (
+      <div className="p-6">
+        <div className="mx-auto max-w-md rounded-lg border border-amber-200 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-950/30 p-6 text-center space-y-2 mt-10">
+          <Puzzle className="mx-auto h-10 w-10 text-amber-500/60" />
+          <p className="text-sm font-medium text-amber-900 dark:text-amber-200">游客模式无法管理插件</p>
+          <p className="text-xs text-amber-700 dark:text-amber-400">注册并登录后可管理服务密钥、MCP 沙箱与写作技能。</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-start gap-3">

@@ -82,7 +82,7 @@ export function PersonalCenter() {
             {/* 菜单列表 */}
             <div className="flex-1 p-2 space-y-0.5">
               {((): MenuItem[] => {
-                const isAdmin = user?.role === "admin";
+                const isAdmin = !!user && user.role !== "guest"; // 管理面对所有注册成员开放
                 const labsCronPanel = useSettingsStore.getState().labsCronPanel;
                 const labsSensitivePanel = useSettingsStore.getState().labsSensitivePanel;
                 const labsKbMaintenance = useSettingsStore.getState().labsKbMaintenance;

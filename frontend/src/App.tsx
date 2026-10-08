@@ -112,11 +112,11 @@ export function App() {
             }
           />
 
-          {/* 插件 — 需管理员 */}
+          {/* 插件 — 需登录（guest 页内提示） */}
           <Route
             path="/plugins"
             element={
-              <ProtectedRoute requireAdmin>
+              <ProtectedRoute>
                 <PageTransition>
                   <PluginsPage />
                 </PageTransition>
@@ -124,11 +124,11 @@ export function App() {
             }
           />
 
-          {/* 审计与治理控制台 — 需管理员 */}
+          {/* 审计与治理控制台 — 需登录（guest 页内提示） */}
           <Route
             path="/console"
             element={
-              <ProtectedRoute requireAdmin>
+              <ProtectedRoute>
                 <PageTransition>
                   <WritingWorkspace />
                   <ConsoleDialog />

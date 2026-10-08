@@ -279,7 +279,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   const { theme, toggle: toggleTheme } = useTheme();
 
   const isGuest = user?.role === "guest";
-  const isAdmin = useAuthStore((s) => s.hasAdminAccess());
+  const isAdmin = !!user && user.role !== "guest"; // 管理面对所有注册成员开放
 
   const handleRegister = () => {
     const token = useAuthStore.getState().token;

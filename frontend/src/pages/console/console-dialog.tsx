@@ -18,6 +18,7 @@ import {
 import { DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth-store";
 import { AuditLogsPage } from "./sections/audit-logs";
 import { SecurityAuditPage } from "./sections/security-audit";
 import { EvaluationPage } from "./sections/evaluation-panel";
@@ -60,6 +61,7 @@ export function ConsoleDialog() {
   const navigate = useNavigate();
   const [active, setActive] = useState<ConsoleKey>("audit-logs");
   const [open, setOpen] = useState(true);
+  const isGuest = useAuthStore((s) => s.user?.role === "guest");
 
   const handleClose = () => {
     setOpen(false);
@@ -112,6 +114,13 @@ export function ConsoleDialog() {
           </div>
 
           {/* ── 右侧内容区 ── */}
+          {isGuest ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 p-10 text-center">
+              <ScrollText className="h-10 w-10 text-amber-500/60" />
+              <p className="text-sm font-medium text-amber-900 dark:text-amber-200">游客模式无法查看审计中心</p>
+              <p className="text-xs text-amber-700 dark:text-amber-400">注册并登录后可查看审计、评测、自演进与权限管理。</p>
+            </div>
+          ) : (
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex h-[60px] shrink-0 items-center justify-between px-6 bg-background border-b">
               <div className="min-w-0">
@@ -138,6 +147,7 @@ export function ConsoleDialog() {
               {active === "usage" && <UsageBillingPage />}
             </div>
           </div>
+          )}
         </DialogPrimitive.Content>
       </DialogPortal>
     </DialogPrimitive.Root>
