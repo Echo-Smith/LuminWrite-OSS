@@ -17,6 +17,7 @@ import {
   ChevronRight, ChevronDown, User, AlertTriangle, Newspaper,
   CreditCard, Folder, FolderPlus, Archive, ArchiveRestore,
   Copy, MoreHorizontal, Pencil, X, CheckSquare,
+  Puzzle, ScrollText,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
@@ -987,6 +988,24 @@ function UserMenuContent({
         label="套餐定价"
         onClick={() => onNavigate("/pricing")}
       />
+
+      {/* 插件（仅管理员） */}
+      {isAdmin && (
+        <MenuRow
+          icon={Puzzle}
+          label="插件"
+          onClick={() => onNavigate("/plugins")}
+        />
+      )}
+
+      {/* 审计中心（仅管理员） */}
+      {isAdmin && (
+        <MenuRow
+          icon={ScrollText}
+          label="审计中心"
+          onClick={() => onNavigate("/console")}
+        />
+      )}
 
       {/* 管理后台（仅管理员） */}
       {isAdmin && (

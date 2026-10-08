@@ -40,12 +40,16 @@ interface SettingsState {
   agentMode: AgentMode;
   enableEditorial: boolean;  // 是否显示工作台入口（实验功能）
   enableResearchReview: boolean;  // 是否开启研究综述路径（实验功能）
+  labsCronPanel: boolean;  // 个人中心显示「定时任务」面板（admin 实验开关）
+  labsSensitivePanel: boolean;  // 个人中心显示「敏感词库」面板（admin 实验开关）
   enablePaperMode: boolean;  // 稿纸模式（A4 纸面视觉），默认关闭
   lastStyle: string;        // 上次写作使用的风格 slug
   loaded: boolean;          // 是否已从后端加载
   setAgentMode: (mode: AgentMode) => void;
   setEnableEditorial: (enabled: boolean) => void;
   setEnableResearchReview: (enabled: boolean) => void;
+  setLabsCronPanel: (enabled: boolean) => void;
+  setLabsSensitivePanel: (enabled: boolean) => void;
   setEnablePaperMode: (enabled: boolean) => void;
   setLastStyle: (style: string) => void;
   loadFromServer: () => Promise<void>;
@@ -56,6 +60,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentMode: "harness",
   enableEditorial: false,
   enableResearchReview: false,
+  labsCronPanel: false,
+  labsSensitivePanel: false,
   enablePaperMode: false,
   lastStyle: "yinyue",
   loaded: false,
@@ -74,6 +80,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setEnableResearchReview: (enabled) => {
     set({ enableResearchReview: enabled });
     get().syncToServer({ enable_research_review: enabled });
+  },
+
+  setLabsCronPanel: (enabled) => {
+    set({ labsCronPanel: enabled });
+    get().syncToServer({ labs_cron_panel: enabled });
+  },
+
+  setLabsSensitivePanel: (enabled) => {
+    set({ labsSensitivePanel: enabled });
+    get().syncToServer({ labs_sensitive_panel: enabled });
   },
 
   setEnablePaperMode: (enabled) => {
@@ -106,6 +122,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const enableResearchReview = json.data.enable_research_review;
         if (typeof enableResearchReview === "boolean") {
           set({ enableResearchReview });
+        }
+        const labsCronPanel = json.data.labs_cron_panel;
+        if (typeof labsCronPanel === "boolean") {
+          set({ labsCronPanel });
+        }
+        const labsSensitivePanel = json.data.labs_sensitive_panel;
+        if (typeof labsSensitivePanel === "boolean") {
+          set({ labsSensitivePanel });
         }
         const enablePaperMode = json.data.enable_paper_mode;
         // 稿纸模式已暂停并改为默认关闭：账号里遗留的开启值只重置一次（打标记），

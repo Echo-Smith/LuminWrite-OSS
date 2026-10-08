@@ -12,6 +12,8 @@ import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { MaterialsCenter } from "@/pages/materials-center";
 import { AdminDashboard } from "@/pages/admin-dashboard";
+import { PluginsPage } from "@/pages/plugins/plugins-page";
+import { ConsoleDialog } from "@/pages/console/console-dialog";
 import { PersonalCenter } from "@/pages/personal-center";
 import { WritingProjectsPage } from "@/pages/writing-projects"; // 新的轻量级写作项目管理器
 // import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 已废弃，保留用于迁移参考
@@ -106,6 +108,31 @@ export function App() {
               <ProtectedRoute>
                 <PageTransition>
                   <MaterialsCenter />
+                </PageTransition>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 插件 — 需管理员 */}
+          <Route
+            path="/plugins"
+            element={
+              <ProtectedRoute requireAdmin>
+                <PageTransition>
+                  <PluginsPage />
+                </PageTransition>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 审计与治理控制台 — 需管理员 */}
+          <Route
+            path="/console"
+            element={
+              <ProtectedRoute requireAdmin>
+                <PageTransition>
+                  <WritingWorkspace />
+                  <ConsoleDialog />
                 </PageTransition>
               </ProtectedRoute>
             }

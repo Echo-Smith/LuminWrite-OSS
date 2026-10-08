@@ -4,7 +4,7 @@
  * 展示正在测试中的功能，用户可自主决定是否启用。
  * 所有开关均通过 settings-store 云端同步。
  */
-import { BookOpenText, FlaskConical, Newspaper, AlertTriangle } from "lucide-react";
+import { BookOpenText, FlaskConical, Newspaper, AlertTriangle, Clock, Shield } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -14,7 +14,12 @@ export function LabsSection() {
   const setEnableEditorial = useSettingsStore((s) => s.setEnableEditorial);
   const enableResearchReview = useSettingsStore((s) => s.enableResearchReview);
   const setEnableResearchReview = useSettingsStore((s) => s.setEnableResearchReview);
+  const labsCronPanel = useSettingsStore((s) => s.labsCronPanel);
+  const setLabsCronPanel = useSettingsStore((s) => s.setLabsCronPanel);
+  const labsSensitivePanel = useSettingsStore((s) => s.labsSensitivePanel);
+  const setLabsSensitivePanel = useSettingsStore((s) => s.setLabsSensitivePanel);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
+  const isAdmin = useAuthStore((s) => s.user?.role === "admin");
 
   return (
     <div className="px-6 pt-6 pb-12 space-y-6">
@@ -82,6 +87,56 @@ export function LabsSection() {
             onCheckedChange={(checked) => setEnableResearchReview(checked)}
           />
         </div>
+
+        {/* 定时任务面板（仅 admin 可开） */}
+        {isAdmin && (
+          <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+              <Clock className="h-5 w-5 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold">定时任务面板</span>
+                <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
+                  Admin
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                在个人中心显示「定时任务」面板：查看与手动触发部署的定时任务（热点抓取、
+                知识库维护等）。属于部署级功能，个人部署即本人管理。
+              </p>
+            </div>
+            <Switch
+              checked={labsCronPanel}
+              onCheckedChange={(checked) => setLabsCronPanel(checked)}
+            />
+          </div>
+        )}
+
+        {/* 敏感词库面板（仅 admin 可开） */}
+        {isAdmin && (
+          <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+              <Shield className="h-5 w-5 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold">敏感词库面板</span>
+                <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
+                  Admin
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                在个人中心显示「敏感词库」面板：维护内容安全词库（新增/批量导入/启停），
+                写后自检将按词库做内容安全检查。
+              </p>
+            </div>
+            <Switch
+              checked={labsSensitivePanel}
+              onCheckedChange={(checked) => setLabsSensitivePanel(checked)}
+            />
+          </div>
+        )}
       </div>
 
       {/* 底部说明 */}

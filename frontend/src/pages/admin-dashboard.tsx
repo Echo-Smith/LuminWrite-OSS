@@ -13,16 +13,9 @@ import { ShieldX } from "lucide-react";
 import { OverviewPage } from "./admin/overview";
 import { StyleCenterPage } from "./admin/style-center";
 import { TraceHistoryPage } from "./admin/trace-history";
-import { SensitiveWordsPage } from "./admin/sensitive-words";
 import { FeedbackAnalysisPage } from "./admin/feedback-analysis";
-import { EvaluationPage } from "./admin/evaluation-panel";
 import { ModelConfigsPage } from "./admin/model-configs";
-import { MCPManagementPage } from "./admin/mcp-management";
-import { CronJobsPage } from "./admin/cron-jobs";
 import { KnowledgeBasePage } from "./admin/knowledge-base";
-import { AuditCenterPage } from "./admin/audit-center";
-import { EvolutionPage } from "./admin/evolution";
-import { RbacPage } from "./admin/rbac";
 import { UsageBillingPage } from "./admin/usage-billing";
 
 // localStorage key for sidebar collapsed state
@@ -87,16 +80,9 @@ export function AdminDashboard() {
       {activePage === "styles" && <GuardedPage page="styles"><StyleCenterPage /></GuardedPage>}
       {activePage === "traces" && <GuardedPage page="traces"><TraceHistoryPage /></GuardedPage>}
       {activePage === "models" && <GuardedPage page="models"><ModelConfigsPage /></GuardedPage>}
-      {activePage === "mcp" && <GuardedPage page="mcp"><MCPManagementPage /></GuardedPage>}
-      {activePage === "cron" && <GuardedPage page="cron"><CronJobsPage /></GuardedPage>}
       {activePage === "feedback" && <GuardedPage page="feedback"><FeedbackAnalysisPage /></GuardedPage>}
-      {activePage === "evaluation" && <GuardedPage page="evaluation"><EvaluationPage /></GuardedPage>}
       {activePage === "usage" && <GuardedPage page="usage"><UsageBillingPage /></GuardedPage>}
-      {activePage === "sensitive" && <GuardedPage page="sensitive"><SensitiveWordsPage /></GuardedPage>}
       {activePage === "kb" && <GuardedPage page="kb"><KnowledgeBasePage /></GuardedPage>}
-      {activePage === "audit" && <GuardedPage page="audit"><AuditCenterPage /></GuardedPage>}
-      {activePage === "evolution" && <GuardedPage page="evolution"><EvolutionPage /></GuardedPage>}
-      {activePage === "rbac" && <GuardedPage page="rbac"><RbacPage /></GuardedPage>}
     </AdminLayout>
   );
 }

@@ -13,7 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
-import { AdminConfirmDialog, AdminPageHeader, AdminBulkActions } from "@/components/admin";
+import { AdminConfirmDialog, AdminBulkActions } from "@/components/admin";
 
 interface CronJob {
   id: string;
@@ -130,14 +130,11 @@ export function CronJobsPage() {
   return (
       <div className="p-6 space-y-6">
         <AdminBulkActions selectedIds={selectedIds} onClear={() => setSelectedIds([])} onBatchAction={handleBatchAction} />
-        <AdminPageHeader
-          title="定时任务"
-          action={
-            <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", description: "", schedule: "", task_type: "topic_fetch", is_active: true }); }}>
-              <Plus className="h-4 w-4 mr-2" /> 添加任务
-            </Button>
-          }
-        />
+        <div className="flex justify-end">
+          <Button variant="outline" size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", description: "", schedule: "", task_type: "topic_fetch", is_active: true }); }}>
+            <Plus className="h-4 w-4 mr-2" /> 添加任务
+          </Button>
+        </div>
 
       {/* Add/Edit Task Dialog */}
       <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) { setShowAdd(false); setEditing(null); } }}>

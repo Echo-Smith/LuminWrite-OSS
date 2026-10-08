@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader, AdminBulkActions } from "@/components/admin";
+import { AdminBulkActions } from "@/components/admin";
 
 interface APIKey {
   id: string;
@@ -210,15 +210,11 @@ export function APIKeysPage() {
   return (
     <div className="p-6 space-y-6">
       <AdminBulkActions selectedIds={selectedIds} onClear={() => setSelectedIds([])} onBatchAction={handleBatchAction} />
-      <AdminPageHeader
-        title="MCP 服务密钥"
-        description="通用服务密钥管理：服务标识可自由填写。已知服务（tavily、zhihu、dashscope 等）会接入运行时，其他条目仅保存。LLM 密钥请在「模型配置」中管理。"
-        action={
-          <Button size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", provider: "", key_value: "", base_url: "", is_active: true }); }}>
-            <Plus className="h-4 w-4 mr-2" /> 添加密钥
-          </Button>
-        }
-      />
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={() => { setShowAdd(true); setEditing(null); setForm({ name: "", provider: "", key_value: "", base_url: "", is_active: true }); }}>
+          <Plus className="h-4 w-4 mr-2" /> 添加密钥
+        </Button>
+      </div>
 
       {/* Add/Edit Key Dialog */}
       <Dialog open={showAdd} onOpenChange={(v) => { if (!v && !saving) { setShowAdd(false); setEditing(null); } }}>

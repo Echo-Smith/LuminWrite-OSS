@@ -6,16 +6,21 @@
  */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { X } from "lucide-react";
+import { X, Server, Clock, Shield } from "lucide-react";
 import { DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 import {
-  type MenuKey, MENU_ITEMS, SECTION_META, FloatingAddButton,
+  type MenuKey, type MenuItem, MENU_ITEMS, SECTION_META, FloatingAddButton,
 } from "@/pages/personal/shared";
 import { ProfileSection } from "@/pages/personal/profile-section";
 import { HistorySection } from "@/pages/personal/history-section";
+import { McpSection } from "@/pages/personal/mcp-section";
+import { CronJobsPage as CronSection } from "@/pages/personal/cron-section";
+import { SensitiveWordsPage as SensitiveSection } from "@/pages/personal/sensitive-section";
+import { useSettingsStore } from "@/stores/settings-store";
+
 import { StyleSection } from "@/pages/personal/styles-section";
 import { MemorySection } from "@/pages/personal/memory-section";
 import { ModelServiceSection } from "@/pages/personal/model-service-section";
@@ -36,6 +41,7 @@ export function PersonalCenter() {
   const user = useAuthStore((s) => s.user);
 
   const isGuest = user?.role === "guest";
+
 
   const handleClose = () => {
     setOpen(false);
@@ -74,7 +80,21 @@ export function PersonalCenter() {
 
             {/* 菜单列表 */}
             <div className="flex-1 p-2 space-y-0.5">
-              {MENU_ITEMS.map((item) => {
+              {((): MenuItem[] => {
+                const isAdmin = user?.role === "admin";
+                const labsCronPanel = useSettingsStore.getState().labsCronPanel;
+                const labsSensitivePanel = useSettingsStore.getState().labsSensitivePanel;
+                const extras: MenuItem[] = [];
+                if (isAdmin) {
+                  extras.push({ key: "mcp", label: "MCP 服务", icon: Server });
+                  if (labsCronPanel) extras.push({ key: "cron", label: "定时任务", icon: Clock });
+                  if (labsSensitivePanel) extras.push({ key: "sensitive", label: "敏感词库", icon: Shield });
+                }
+                const base = [...MENU_ITEMS];
+                const labsIdx = base.findIndex((i) => i.key === "labs");
+                base.splice(labsIdx + 1, 0, ...extras);
+                return base;
+              })().map((item) => {
                 const Icon = item.icon;
                 const isActive = activeMenu === item.key;
                 return (
@@ -116,6 +136,9 @@ export function PersonalCenter() {
             <div className="flex-1 overflow-y-auto relative scrollbar-hide">
             {activeMenu === "profile" && <ProfileSection />}
             {activeMenu === "history" && <HistorySection />}
+            {activeMenu === "mcp" && <McpSection />}
+            {activeMenu === "cron" && <CronSection />}
+            {activeMenu === "sensitive" && <SensitiveSection />}
             {activeMenu === "styles" && <StyleSection />}
             {activeMenu === "memory" && <MemorySection />}
             {activeMenu === "models" && <ModelServiceSection />}

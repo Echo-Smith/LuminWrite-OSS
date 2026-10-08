@@ -11,7 +11,7 @@ import {
   Shield, Users, Key, Plus, Trash2, Check, Loader2, RefreshCw, ChevronRight,
 } from "lucide-react";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader, AdminLoading, AdminEmptyState } from "@/components/admin";
+import { AdminLoading, AdminEmptyState } from "@/components/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -140,10 +140,6 @@ interface UserRoleAssignment {
 export function RbacPage() {
   return (
     <div className="p-6 space-y-6">
-      <AdminPageHeader
-        title="角色权限管理"
-        description="RBAC — 细粒度权限控制、角色分配、用户管理"
-      />
       <Tabs defaultValue="roles">
         <TabsList>
           <TabsTrigger value="roles" className="gap-2">

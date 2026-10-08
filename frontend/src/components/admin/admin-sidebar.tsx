@@ -30,16 +30,9 @@ export type AdminPageKey =
   | "styles"
   | "traces"
   | "models"
-  | "mcp"
-  | "cron"
-  | "evaluation"
   | "feedback"
   | "usage"
-  | "sensitive"
-  | "kb"
-  | "audit"
-  | "evolution"
-  | "rbac";
+  | "kb";
 
 interface NavItem {
   key: AdminPageKey;
@@ -54,16 +47,9 @@ import {
   PenLine,
   ListTree,
   Cpu,
-  Server,
-  Clock,
-  ClipboardCheck,
   MessageSquareText,
   TrendingUp,
-  Shield,
   BookOpen,
-  ScrollText,
-  GitBranch,
-  Users,
 } from "lucide-react";
 
 export const NAV_ITEMS: NavItem[] = [
@@ -71,9 +57,6 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "styles", label: "风格管理", icon: PenLine, permissions: ["style.create", "style.review"] },
   { key: "traces", label: "Trace 历史", icon: ListTree, permissions: ["audit.view"] },
   { key: "models", label: "模型配置", icon: Cpu, permissions: ["model.manage"] },
-  { key: "mcp", label: "MCP 管理", icon: Server, permissions: ["apikey.manage", "sandbox.manage"] },
-  { key: "cron", label: "定时任务", icon: Clock, permissions: ["cron.manage"] },
-  { key: "evaluation", label: "评测面板", icon: ClipboardCheck, permissions: ["eval.view"] },
   { key: "feedback", label: "反馈分析", icon: MessageSquareText, permissions: ["audit.view"] },
   {
     key: "usage",
@@ -81,11 +64,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: TrendingUp,
     permissions: IS_COMMERCIAL ? ["audit.view", "billing.view"] : ["audit.view"],
   },
-  { key: "sensitive", label: "敏感词库", icon: Shield, permissions: ["sensitive.manage"] },
   { key: "kb", label: "知识库", icon: BookOpen, permissions: ["kb.view"] },
-  { key: "audit", label: "审计中心", icon: ScrollText, permissions: ["audit.view", "security.view"] },
-  { key: "evolution", label: "自演进", icon: GitBranch, permissions: ["evolution.manage"] },
-  { key: "rbac", label: "角色权限", icon: Users, permissions: ["rbac.manage"] },
 ];
 
 /** 每个页面入口对应的 RBAC 权限（任一命中即可访问），直接取自 NAV_ITEMS，避免两处漂移 */

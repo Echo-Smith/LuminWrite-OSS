@@ -12,6 +12,7 @@ import {
   Plus, Trash2, FileText, Link as LinkIcon, Search, PenLine,
   Loader2, File, ChevronLeft, ChevronRight, AlertCircle, Database,
   FolderPlus, Folder, MoreVertical, Pencil, ChevronRight as ChevronRightIcon,
+  Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +26,7 @@ import {
   listFolders, createFolder, updateFolder, deleteFolder, moveMaterial,
 } from "@/lib/material-api";
 import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
+import { KbSearchDebug, KbInspectDialog } from "@/components/materials/kb-inspect";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
 
@@ -77,6 +79,8 @@ export function MaterialsTab() {
 
   // Add dialog
   const [showAdd, setShowAdd] = useState(false);
+  const [inspectDoc, setInspectDoc] = useState<{ docId: string; title: string } | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -351,6 +355,15 @@ export function MaterialsTab() {
             folderId={activeFolder !== "all" && activeFolder !== "" ? activeFolder : undefined}
           />
 
+      {inspectDoc && (
+        <KbInspectDialog
+          docId={inspectDoc.docId}
+          title={inspectDoc.title}
+          open={!!inspectDoc}
+          onOpenChange={(next) => { if (!next) setInspectDoc(null); }}
+        />
+      )}
+
           {/* Error */}
           {error && (
             <Card className="border-destructive">
@@ -394,7 +407,23 @@ export function MaterialsTab() {
             <Button onClick={handleSearch} disabled={searching}>
               {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
             </Button>
+            <Button
+              variant={showDebug ? "default" : "outline"}
+              onClick={() => setShowDebug((v) => !v)}
+              title="检索调试（模式与权重）"
+            >
+              调试
+            </Button>
           </div>
+
+          {/* 检索调试（下沉自 admin 知识库页） */}
+          {showDebug && (
+            <Card>
+              <CardContent className="p-4">
+                <KbSearchDebug />
+              </CardContent>
+            </Card>
+          )}
 
           {/* Search Results */}
           {showSearch && (
@@ -477,6 +506,17 @@ export function MaterialsTab() {
                           </div>
                         </div>
                         <div className="flex flex-shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-ui">
+                          {mat.doc_id && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setInspectDoc({ docId: mat.doc_id!, title: mat.title })}
+                              title="查看分块/实体"
+                              className="text-muted-foreground hover:text-foreground"
+                            >
+                              <Layers className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"

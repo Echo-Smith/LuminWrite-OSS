@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "profile" | "history" | "styles" | "memory" | "models" | "usage" | "settings" | "customization" | "notifications" | "account" | "wallet" | "labs" | "about";
+export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "styles" | "memory" | "models" | "mcp" | "usage" | "settings" | "customization" | "notifications" | "account" | "wallet" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -43,6 +43,9 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   styles: { title: "写作风格", subtitle: "管理你的自定义写作风格" },
   memory: { title: "记忆管理", subtitle: "管理 AI 学习到的写作偏好" },
   models: { title: "模型服务", subtitle: "自带 API 密钥（BYOK），写作优先使用你的模型" },
+  mcp: { title: "MCP 服务", subtitle: "已安装的 MCP 服务与工具状态" },
+  cron: { title: "定时任务", subtitle: "查看与触发部署的定时任务（实验室开启）" },
+  sensitive: { title: "敏感词库", subtitle: "内容安全词库管理（实验室开启）" },
   usage: { title: "用量统计", subtitle: "查看你的写作次数与 token 消耗" },
   settings: { title: "偏好设置", subtitle: "配置默认写作风格和编排模式" },
   customization: { title: "自定义", subtitle: "个性化写作区的外观" },

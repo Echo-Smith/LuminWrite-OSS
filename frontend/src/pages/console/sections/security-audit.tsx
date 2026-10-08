@@ -4,7 +4,7 @@ import {
   TrendingUp, Activity, User, FileSearch, Lock, Eye,
 } from "lucide-react";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader, AdminLoading, AdminEmptyState } from "@/components/admin";
+import { AdminLoading, AdminEmptyState } from "@/components/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -252,14 +252,12 @@ export function SecurityAuditPage() {
     : 1;
 
   return (
-    <div className="p-6 space-y-6">
-      <AdminPageHeader
-        title="安全审计"
-        description="Prompt Injection 拦截统计 · MCP 沙箱违规 · 安全防御状态"
-        action={<Button variant="outline" size="sm" onClick={loadData} disabled={loading}>
+    <div className="space-y-6">
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={loadData} disabled={loading}>
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> 刷新
-        </Button>}
-      />
+        </Button>
+      </div>
 
       {loading ? <AdminLoading /> : !data ? (
         <AdminEmptyState icon={ShieldAlert} title="无法加载安全审计数据" description="请检查后端服务状态" />

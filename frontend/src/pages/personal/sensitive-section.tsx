@@ -16,7 +16,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin";
 import { AdminConfirmDialog } from "@/components/admin";
 
 interface SensitiveWord {
@@ -140,15 +139,12 @@ export function SensitiveWordsPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <AdminPageHeader
-        title="敏感词库"
-        action={
-          <Button size="sm" onClick={() => setShowAdd(true)}>
-            <Plus className="h-4 w-4 mr-2" />
-            添加敏感词
-          </Button>
-        }
-      />
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
+          <Plus className="h-4 w-4 mr-2" />
+          添加敏感词
+        </Button>
+      </div>
 
       {/* 生效说明 */}
       <p className="text-xs text-muted-foreground">

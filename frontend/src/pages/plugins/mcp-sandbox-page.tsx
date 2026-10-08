@@ -1,6 +1,8 @@
 /**
  * MCP 安全沙箱管理 — Admin Dashboard
  *
+ * （已迁移至 src/pages/plugins/mcp-sandbox-page.tsx）
+ *
  * 完整的安全沙箱管理 UI：
  * 1. 统计概览（策略数、24h 违规数、违规类型分布）
  * 2. 策略列表（allow/deny/conditional + 域名黑白名单 + 资源限制）

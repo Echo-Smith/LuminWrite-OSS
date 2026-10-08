@@ -19,7 +19,7 @@ import {
   Clock, User, Zap, type LucideIcon,
 } from "lucide-react";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader, AdminLoading, AdminEmptyState } from "@/components/admin";
+import { AdminLoading, AdminEmptyState } from "@/components/admin";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -326,15 +326,11 @@ export function EvolutionPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <AdminPageHeader
-        title="自演进管理"
-        description="风格 Profile 迭代候选 — 从反馈生成，经评测门控，到灰度发布与自动回滚"
-        action={
-          <Button variant="outline" size="sm" onClick={loadCandidates} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> 刷新
-          </Button>
-        }
-      />
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={loadCandidates} disabled={loading}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> 刷新
+        </Button>
+      </div>
 
       {/* Flow Diagram */}
       <Card>
