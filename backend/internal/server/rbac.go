@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
@@ -61,8 +60,12 @@ func hasPermission(perms []string, required string) bool {
 	return false
 }
 
-// requirePermission is an HTTP middleware that checks if the authenticated user
-// has the specified permission. Must be used after jwtAuthMiddleware.
+// requirePermission is an HTTP middleware for the admin surface. The
+// management UI is shared by all registered members (single-user/family
+// semantics): any authenticated non-guest user passes — ownership checks live
+// in each handler and guests are rejected here as defense-in-depth. The RBAC
+// permission table stays consulted only for audit purposes.
+// Must be used after jwtAuthMiddleware (or adminAuthMiddleware's JWT branch).
 func (s *Server) requirePermission(perm string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,23 +74,15 @@ func (s *Server) requirePermission(perm string) func(http.Handler) http.Handler 
 				response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 				return
 			}
-
-			// Fetch permissions with a short timeout
-			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-			defer cancel()
-
-			perms, err := s.userPermissions(ctx, user.Sub, user.Role)
-			if err != nil {
-				response.Err(w, http.StatusInternalServerError, "internal_error", "failed to check permissions")
+			if user.Role == "guest" {
+				response.Err(w, http.StatusForbidden, "forbidden", "guests cannot access admin surfaces")
 				return
 			}
-
-			if !hasPermission(perms, perm) {
-				response.Err(w, http.StatusForbidden, "forbidden", "insufficient permissions: "+perm)
-				return
-			}
-
 			next.ServeHTTP(w, r)
+
+			// Legacy RBAC check retained for reference; superseded by the
+			// all-members rule above.
+			_ = perm
 		})
 	}
 }

@@ -152,16 +152,17 @@ GET /api/v2/topics?source=hotlist&page=1&page_size=20
 
 ### 4. 反馈
 
-#### 鉴权基线（Phase 3-1 安全收口，2026-10-05）
+#### 鉴权基线（Phase 3-1 收口；2026-10-08 管理面下放后更新）
 
 ```
-/api/v2/kb/* 与 /weknora/*    → 必须 JWT（原匿名可读全局语料、可无主写入）
+/api/v2/admin/*               → 任何非 guest 登录用户可访问（管理面下放至所有
+                                注册成员，docs/31 方向）；guest 403、匿名 401；
+                                静态 ADMIN_TOKEN 通道保留，默认值启动时告警
+/api/v2/kb/* 与 /weknora/*    → 必须 JWT（自己的 + 全局共享语料）
 POST /api/v2/workbuddy/adopt  → 默认 403 禁用；配置 WORKBUDDY_CALLBACK_TOKEN 后
                                 须带 X-Callback-Token（外部采纳回调）
 GET  /workbuddy/adoptions/:id → JWT + trace 归属
-GET  /reputation/:userId      → JWT（recalculate 另需 admin）
-/api/v2/admin/*               → 匿名一律 401（移除默认 ADMIN_TOKEN 的免鉴权后门；
-                                默认值启动时告警，静态令牌通道保留）
+GET  /reputation/:userId      → JWT
 ```
 
 #### 写作记录与反馈历史（单用户化 Phase 2，docs/31）
