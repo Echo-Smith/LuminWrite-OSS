@@ -46,7 +46,11 @@ export function SkillsSection() {
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (refresh = false) => {
-    refresh ? setRefreshing(true) : setLoading(true);
+    if (refresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const { success, data } = await adminFetch<{ plugins: PluginEntry[]; total: number }>(
         "/api/v2/admin/tool-plugins",

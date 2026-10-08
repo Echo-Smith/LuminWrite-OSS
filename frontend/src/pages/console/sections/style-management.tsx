@@ -19,7 +19,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { RolloutConfigDialog } from "./rollout-config";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
 import { toast } from "@/stores/toast-store";
-import { AdminPageHeader } from "@/components/admin-ui";
 
 interface AdminStyle {
   slug: string;
@@ -164,16 +163,12 @@ export function StyleManagementPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <AdminPageHeader
-        title="风格管理"
-        action={
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            <Plus className="h-4 w-4 mr-2" />
-            新建风格
-          </Button>
-        }
-      />
+      <div className="flex justify-end">
+        <Button size="sm" onClick={() => setShowCreate(true)}>
+          <Plus className="h-4 w-4 mr-2" />
+          新建风格
+        </Button>
+      </div>
 
       {/* Style List */}
       <div className="rounded-lg border">

@@ -15,7 +15,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin-ui";
 import { toast } from "@/stores/toast-store";
 
 interface TraceSummary {
@@ -146,17 +145,6 @@ export function TraceHistoryPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <AdminPageHeader
-        title="Trace 历史"
-        action={
-          <Button variant="outline" size="sm" onClick={loadTraces} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-            刷新
-          </Button>
-        }
-      />
-
       {/* Filters */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">

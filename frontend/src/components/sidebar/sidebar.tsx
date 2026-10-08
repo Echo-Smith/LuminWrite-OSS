@@ -13,7 +13,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Plus, Trash2, Compass, Database,
-  Settings, Sun, Moon, Monitor, LogOut, UserPlus,
+  Sun, Moon, Monitor, LogOut, UserPlus,
   ChevronRight, ChevronDown, User, AlertTriangle, Newspaper,
   CreditCard, Folder, FolderPlus, Archive, ArchiveRestore,
   Copy, MoreHorizontal, Pencil, X, CheckSquare,
@@ -1004,15 +1004,6 @@ function UserMenuContent({
           icon={ScrollText}
           label="审计中心"
           onClick={() => onNavigate("/console")}
-        />
-      )}
-
-      {/* 管理后台（仅管理员） */}
-      {isAdmin && (
-        <MenuRow
-          icon={Settings}
-          label="管理后台"
-          onClick={() => onNavigate("/admin")}
         />
       )}
 

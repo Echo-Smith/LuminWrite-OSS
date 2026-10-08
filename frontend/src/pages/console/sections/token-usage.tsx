@@ -1,5 +1,5 @@
 /**
- * 用量统计 — Admin Dashboard
+ * 用量统计 — 审计中心 sections（全站视角）
  */
 import { useState, useEffect, useCallback } from "react";
 import { TrendingUp, Coins, Calendar, Loader2 } from "lucide-react";
@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin-ui";
+import { Button } from "@/components/ui/button";
 
 interface TokenUsageStats {
   total_tokens: number;
@@ -43,20 +43,17 @@ export function TokenUsagePage() {
   const maxDaily = Math.max(...(stats?.daily_tokens?.map((d) => d.count) ?? [1]), 1);
 
   return (
-    <div className="p-6 space-y-6">
-      <AdminPageHeader
-        title="用量统计"
-        action={
-          <Select value={days} onValueChange={setDays}>
-            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7">近 7 天</SelectItem>
-              <SelectItem value="30">近 30 天</SelectItem>
-              <SelectItem value="90">近 90 天</SelectItem>
-            </SelectContent>
-          </Select>
-        }
-      />
+    <div className="space-y-6">
+      <div className="flex justify-end">
+        <Select value={days} onValueChange={setDays}>
+          <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7">近 7 天</SelectItem>
+            <SelectItem value="30">近 30 天</SelectItem>
+            <SelectItem value="90">近 90 天</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       {loading ? (
         <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin" /></div>

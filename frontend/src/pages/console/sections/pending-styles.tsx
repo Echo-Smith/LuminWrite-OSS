@@ -1,5 +1,5 @@
 /**
- * 社区风格审核 — Admin Dashboard
+ * 社区风格审核 — 审计中心 sections
  * 审核用户提交的自定义风格
  */
 import { useState, useEffect, useCallback } from "react";
@@ -12,7 +12,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin-ui";
+import { Badge as CountBadge } from "@/components/ui/badge";
 
 interface PendingReview {
   id: string;
@@ -87,19 +87,15 @@ export function PendingStylesPage() {
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <AdminPageHeader
-        title="社区风格审核"
-        description="审核用户提交的自定义风格"
-        action={
-          reviews.length > 0 ? (
-            <Badge variant="secondary" className="gap-1.5">
-              <Clock className="h-3 w-3" />
-              {reviews.length} 待审核
-            </Badge>
-          ) : undefined
-        }
-      />
+    <div className="space-y-6">
+      {reviews.length > 0 && (
+        <div className="flex justify-end">
+          <CountBadge variant="secondary" className="gap-1.5">
+            <Clock className="h-3 w-3" />
+            {reviews.length} 待审核
+          </CountBadge>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">

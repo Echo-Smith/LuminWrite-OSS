@@ -11,7 +11,10 @@
  */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ScrollText, ShieldAlert, ClipboardCheck, GitBranch, Users, X } from "lucide-react";
+import {
+  ScrollText, ShieldAlert, ClipboardCheck, GitBranch, Users, X,
+  ListTree, MessageSquareText, TrendingUp, PenLine,
+} from "lucide-react";
 import { DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
@@ -20,8 +23,14 @@ import { SecurityAuditPage } from "./sections/security-audit";
 import { EvaluationPage } from "./sections/evaluation-panel";
 import { EvolutionPage } from "./sections/evolution";
 import { RbacPage } from "./sections/rbac";
+import { StyleCenterPage } from "./sections/style-center";
+import { TraceHistoryPage } from "./sections/trace-history";
+import { FeedbackAnalysisPage } from "./sections/feedback-analysis";
+import { UsageBillingPage } from "./sections/usage-billing";
 
-type ConsoleKey = "audit-logs" | "security-audit" | "evaluation" | "evolution" | "rbac";
+type ConsoleKey =
+  | "audit-logs" | "security-audit" | "evaluation" | "evolution" | "rbac"
+  | "styles" | "traces" | "feedback" | "usage";
 
 const CONSOLE_ITEMS: Array<{ key: ConsoleKey; label: string; icon: typeof ScrollText }> = [
   { key: "audit-logs", label: "操作日志", icon: ScrollText },
@@ -29,6 +38,10 @@ const CONSOLE_ITEMS: Array<{ key: ConsoleKey; label: string; icon: typeof Scroll
   { key: "evaluation", label: "评测中心", icon: ClipboardCheck },
   { key: "evolution", label: "自演进", icon: GitBranch },
   { key: "rbac", label: "角色权限", icon: Users },
+  { key: "styles", label: "风格管理", icon: PenLine },
+  { key: "traces", label: "Trace 历史", icon: ListTree },
+  { key: "feedback", label: "反馈分析", icon: MessageSquareText },
+  { key: "usage", label: "全站用量", icon: TrendingUp },
 ];
 
 const CONSOLE_META: Record<ConsoleKey, { title: string; subtitle: string }> = {
@@ -37,6 +50,10 @@ const CONSOLE_META: Record<ConsoleKey, { title: string; subtitle: string }> = {
   evaluation: { title: "评测中心", subtitle: "WABench 盲评流水线与红队评估" },
   evolution: { title: "自演进", subtitle: "候选审批、灰度与回滚" },
   rbac: { title: "角色权限", subtitle: "角色与权限管理（家庭/小团队部署）" },
+  styles: { title: "风格管理", subtitle: "官方风格 CRUD、发布与社区审核" },
+  traces: { title: "Trace 历史", subtitle: "全站写作记录与评分回看" },
+  feedback: { title: "反馈分析", subtitle: "风格级反馈聚合与改进建议" },
+  usage: { title: "全站用量", subtitle: "全站 Token 与成本分布" },
 };
 
 export function ConsoleDialog() {
@@ -115,6 +132,10 @@ export function ConsoleDialog() {
               {active === "evaluation" && <EvaluationPage />}
               {active === "evolution" && <EvolutionPage />}
               {active === "rbac" && <RbacPage />}
+              {active === "styles" && <StyleCenterPage />}
+              {active === "traces" && <TraceHistoryPage />}
+              {active === "feedback" && <FeedbackAnalysisPage />}
+              {active === "usage" && <UsageBillingPage />}
             </div>
           </div>
         </DialogPrimitive.Content>

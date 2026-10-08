@@ -11,7 +11,6 @@ import { useAuthModal } from "@/stores/auth-modal-store";
 import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { MaterialsCenter } from "@/pages/materials-center";
-import { AdminDashboard } from "@/pages/admin-dashboard";
 import { PluginsPage } from "@/pages/plugins/plugins-page";
 import { ConsoleDialog } from "@/pages/console/console-dialog";
 import { PersonalCenter } from "@/pages/personal-center";
@@ -138,15 +137,7 @@ export function App() {
             }
           />
 
-          {/* Admin — 需管理员 */}
-          <Route
-            path="/admin/*"
-            element={
-              <ProtectedRoute requireAdmin>
-                <AdminDashboard />
-              </ProtectedRoute>
-            }
-          />
+          {/* Admin dashboard 已删除 — 面板分线至 /plugins 与 /console */}
 
           {/* 工作台 — 需登录 */}
           <Route

@@ -8,7 +8,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin-ui";
 import { toast } from "@/stores/toast-store";
 
 interface Aggregation {
@@ -99,15 +98,12 @@ export function FeedbackAnalysisPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <AdminPageHeader
-        title="反馈分析"
-        action={
-          <Button variant="outline" size="sm" onClick={handleAggregate} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-            重新聚合
-          </Button>
-        }
-      />
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={handleAggregate} disabled={loading}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+          重新聚合
+        </Button>
+      </div>
 
       {/* 指标卡片 */}
       <div className="grid grid-cols-4 gap-4">
