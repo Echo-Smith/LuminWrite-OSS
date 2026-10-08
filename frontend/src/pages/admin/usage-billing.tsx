@@ -5,7 +5,7 @@
  * - 计费管理：收入 / 积分 / 订阅 / 套餐管理（billing.view，仅商业版；
  *   开源版后端为 stub，不渲染该标签）
  */
-import { AdminTabbedPage } from "@/components/admin";
+import { AdminTabbedPage } from "@/components/admin-ui";
 import { IS_COMMERCIAL } from "@/lib/edition";
 import { TokenUsagePage } from "./token-usage";
 import { BillingPage } from "./billing";

@@ -1,21 +1,12 @@
 /**
- * Admin 组件统一导出
+ * 部署级管理面组件（概览页专属 + 布局壳）
  *
- * 使用方式：
- *   import { AdminTable, AdminFormDialog, AdminConfirmDialog, AdminEmptyState, AdminLoading } from "@/components/admin";
+ * 通用 UI 原语（表格/对话框/加载/空态/标签页等）已迁移至
+ * @/components/admin-ui；本目录仅保留概览页专属卡片与
+ * AdminDashboard 的布局壳（随 admin dashboard 生命周期走）。
  */
 
-export { AdminTable, type AdminColumn } from "./admin-table";
-export { AdminConfirmDialog } from "./admin-confirm-dialog";
-export { AdminFormDialog } from "./admin-form-dialog";
-export { AdminEmptyState, AdminErrorState } from "./admin-empty-state";
-export { AdminLoading, AdminTableSkeleton } from "./admin-loading-skeleton";
 export { AdminLayout } from "./admin-layout";
 export { AdminSidebar, CollapseToggle, getPageLabel, hasPagePermission, type AdminPageKey } from "./admin-sidebar";
-export { AdminPageHeader } from "./admin-page-header";
-export { AdminBulkActions } from "./admin-bulk-actions";
-export { AdminPermissionGuard } from "./admin-permission-guard";
-export { AdminTabbedPage, type AdminTabDef } from "./admin-tabbed-page";
-export { AgentArchitectureCard } from "./agent-architecture";
 export { AdminAlertsCard } from "./admin-alerts-card";
-export { ArReviewPanelPage } from "./ar-review-panel";
+export { AgentArchitectureCard } from "./agent-architecture";

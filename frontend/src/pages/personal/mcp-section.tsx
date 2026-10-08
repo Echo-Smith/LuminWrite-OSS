@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw, Server, Wrench, Unplug, Loader2 } from "lucide-react";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminLoading, AdminEmptyState } from "@/components/admin";
+import { AdminLoading, AdminEmptyState } from "@/components/admin-ui";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToastStore } from "@/stores/toast-store";

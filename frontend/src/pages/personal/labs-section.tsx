@@ -4,7 +4,7 @@
  * 展示正在测试中的功能，用户可自主决定是否启用。
  * 所有开关均通过 settings-store 云端同步。
  */
-import { BookOpenText, FlaskConical, Newspaper, AlertTriangle, Clock, Shield } from "lucide-react";
+import { BookOpenText, FlaskConical, Newspaper, AlertTriangle, Clock, Shield, Database } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -18,6 +18,8 @@ export function LabsSection() {
   const setLabsCronPanel = useSettingsStore((s) => s.setLabsCronPanel);
   const labsSensitivePanel = useSettingsStore((s) => s.labsSensitivePanel);
   const setLabsSensitivePanel = useSettingsStore((s) => s.setLabsSensitivePanel);
+  const labsKbMaintenance = useSettingsStore((s) => s.labsKbMaintenance);
+  const setLabsKbMaintenance = useSettingsStore((s) => s.setLabsKbMaintenance);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
   const isAdmin = useAuthStore((s) => s.user?.role === "admin");
 
@@ -109,6 +111,31 @@ export function LabsSection() {
             <Switch
               checked={labsCronPanel}
               onCheckedChange={(checked) => setLabsCronPanel(checked)}
+            />
+          </div>
+        )}
+
+        {/* 知识库维护面板（仅 admin 可开） */}
+        {isAdmin && (
+          <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+              <Database className="h-5 w-5 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold">知识库维护面板</span>
+                <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
+                  Admin
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                在个人中心显示「知识库维护」面板：全局语料的多库管理、实体图谱、
+                统计与重建操作（embeddings 生成 / 重分块 / URL 重导入）。
+              </p>
+            </div>
+            <Switch
+              checked={labsKbMaintenance}
+              onCheckedChange={(checked) => setLabsKbMaintenance(checked)}
             />
           </div>
         )}

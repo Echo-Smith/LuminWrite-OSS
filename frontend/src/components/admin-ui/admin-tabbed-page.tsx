@@ -1,10 +1,10 @@
 /**
  * AdminTabbedPage — 合并型管理页的标签容器
  *
- * 用途：将多个相关性高的管理页合并为一个侧边栏入口（如「审计中心」= 操作日志 + 安全审计），
+ * 用途：将多个相关性高的管理页合并为一个入口（如「插件」= 服务密钥 + 沙箱 + 技能），
  * 各子页面保持独立组件，通过权限控制每个标签是否可见：
  * - 仅一个标签可见时不渲染标签栏，直接呈现该子页面
- * - 页面级入口权限（任一标签权限命中）由 admin-sidebar 的 PAGE_PERMISSIONS 把关
+ * - 页面级入口权限（任一标签权限命中）由导航层把关
  */
 import type { ReactNode } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";

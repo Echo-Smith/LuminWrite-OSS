@@ -15,7 +15,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin";
+import { AdminPageHeader } from "@/components/admin-ui";
 import { toast } from "@/stores/toast-store";
 
 interface TraceSummary {

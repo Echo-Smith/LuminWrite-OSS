@@ -14,8 +14,6 @@ import { OverviewPage } from "./admin/overview";
 import { StyleCenterPage } from "./admin/style-center";
 import { TraceHistoryPage } from "./admin/trace-history";
 import { FeedbackAnalysisPage } from "./admin/feedback-analysis";
-import { ModelConfigsPage } from "./admin/model-configs";
-import { KnowledgeBasePage } from "./admin/knowledge-base";
 import { UsageBillingPage } from "./admin/usage-billing";
 
 // localStorage key for sidebar collapsed state
@@ -79,10 +77,8 @@ export function AdminDashboard() {
       {activePage === "overview" && <GuardedPage page="overview"><OverviewPage /></GuardedPage>}
       {activePage === "styles" && <GuardedPage page="styles"><StyleCenterPage /></GuardedPage>}
       {activePage === "traces" && <GuardedPage page="traces"><TraceHistoryPage /></GuardedPage>}
-      {activePage === "models" && <GuardedPage page="models"><ModelConfigsPage /></GuardedPage>}
       {activePage === "feedback" && <GuardedPage page="feedback"><FeedbackAnalysisPage /></GuardedPage>}
       {activePage === "usage" && <GuardedPage page="usage"><UsageBillingPage /></GuardedPage>}
-      {activePage === "kb" && <GuardedPage page="kb"><KnowledgeBasePage /></GuardedPage>}
     </AdminLayout>
   );
 }

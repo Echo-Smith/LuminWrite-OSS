@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin";
+import { AdminPageHeader } from "@/components/admin-ui";
 import { toast } from "@/stores/toast-store";
 
 interface Aggregation {

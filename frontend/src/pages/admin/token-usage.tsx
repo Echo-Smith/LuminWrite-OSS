@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin";
+import { AdminPageHeader } from "@/components/admin-ui";
 
 interface TokenUsageStats {
   total_tokens: number;

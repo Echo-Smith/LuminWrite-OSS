@@ -5,7 +5,7 @@
  * - 社区审核：用户提交的社区风格审核（style.review）；关注册的
  *   单人部署没有投稿来源，该 tab 经 deployment meta 隐藏。
  */
-import { AdminTabbedPage } from "@/components/admin";
+import { AdminTabbedPage } from "@/components/admin-ui";
 import { StyleManagementPage } from "./style-management";
 import { PendingStylesPage } from "./pending-styles";
 import { useAuthStore } from "@/stores/auth-store";

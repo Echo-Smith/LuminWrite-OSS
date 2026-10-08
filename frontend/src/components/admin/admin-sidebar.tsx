@@ -29,10 +29,9 @@ export type AdminPageKey =
   | "overview"
   | "styles"
   | "traces"
-  | "models"
   | "feedback"
   | "usage"
-  | "kb";
+;
 
 interface NavItem {
   key: AdminPageKey;
@@ -46,17 +45,14 @@ import {
   LayoutDashboard,
   PenLine,
   ListTree,
-  Cpu,
   MessageSquareText,
   TrendingUp,
-  BookOpen,
 } from "lucide-react";
 
 export const NAV_ITEMS: NavItem[] = [
   { key: "overview", label: "概览", icon: LayoutDashboard, permissions: null },
   { key: "styles", label: "风格管理", icon: PenLine, permissions: ["style.create", "style.review"] },
   { key: "traces", label: "Trace 历史", icon: ListTree, permissions: ["audit.view"] },
-  { key: "models", label: "模型配置", icon: Cpu, permissions: ["model.manage"] },
   { key: "feedback", label: "反馈分析", icon: MessageSquareText, permissions: ["audit.view"] },
   {
     key: "usage",
@@ -64,7 +60,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: TrendingUp,
     permissions: IS_COMMERCIAL ? ["audit.view", "billing.view"] : ["audit.view"],
   },
-  { key: "kb", label: "知识库", icon: BookOpen, permissions: ["kb.view"] },
 ];
 
 /** 每个页面入口对应的 RBAC 权限（任一命中即可访问），直接取自 NAV_ITEMS，避免两处漂移 */

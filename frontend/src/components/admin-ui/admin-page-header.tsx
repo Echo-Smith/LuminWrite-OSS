@@ -1,5 +1,5 @@
 /**
- * AdminPageHeader — Admin 页面统一头部
+ * AdminPageHeader — 页面统一头部
  *
  * 功能：
  * - 标题 + 描述（可选）

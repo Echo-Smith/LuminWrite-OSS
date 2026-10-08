@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminPageHeader, AdminAlertsCard, AgentArchitectureCard } from "@/components/admin";
+import { AdminPageHeader } from "@/components/admin-ui";
+import { AdminAlertsCard, AgentArchitectureCard } from "@/components/admin";
 
 interface DashboardStats {
   today_writes: number;

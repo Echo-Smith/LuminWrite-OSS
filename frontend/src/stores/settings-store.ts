@@ -42,6 +42,7 @@ interface SettingsState {
   enableResearchReview: boolean;  // 是否开启研究综述路径（实验功能）
   labsCronPanel: boolean;  // 个人中心显示「定时任务」面板（admin 实验开关）
   labsSensitivePanel: boolean;  // 个人中心显示「敏感词库」面板（admin 实验开关）
+  labsKbMaintenance: boolean;  // 个人中心显示「知识库维护」面板（admin 实验开关）
   enablePaperMode: boolean;  // 稿纸模式（A4 纸面视觉），默认关闭
   lastStyle: string;        // 上次写作使用的风格 slug
   loaded: boolean;          // 是否已从后端加载
@@ -50,6 +51,7 @@ interface SettingsState {
   setEnableResearchReview: (enabled: boolean) => void;
   setLabsCronPanel: (enabled: boolean) => void;
   setLabsSensitivePanel: (enabled: boolean) => void;
+  setLabsKbMaintenance: (enabled: boolean) => void;
   setEnablePaperMode: (enabled: boolean) => void;
   setLastStyle: (style: string) => void;
   loadFromServer: () => Promise<void>;
@@ -62,6 +64,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enableResearchReview: false,
   labsCronPanel: false,
   labsSensitivePanel: false,
+  labsKbMaintenance: false,
   enablePaperMode: false,
   lastStyle: "yinyue",
   loaded: false,
@@ -90,6 +93,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setLabsSensitivePanel: (enabled) => {
     set({ labsSensitivePanel: enabled });
     get().syncToServer({ labs_sensitive_panel: enabled });
+  },
+
+  setLabsKbMaintenance: (enabled) => {
+    set({ labsKbMaintenance: enabled });
+    get().syncToServer({ labs_kb_maintenance: enabled });
   },
 
   setEnablePaperMode: (enabled) => {
@@ -130,6 +138,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const labsSensitivePanel = json.data.labs_sensitive_panel;
         if (typeof labsSensitivePanel === "boolean") {
           set({ labsSensitivePanel });
+        }
+        const labsKbMaintenance = json.data.labs_kb_maintenance;
+        if (typeof labsKbMaintenance === "boolean") {
+          set({ labsKbMaintenance });
         }
         const enablePaperMode = json.data.enable_paper_mode;
         // 稿纸模式已暂停并改为默认关闭：账号里遗留的开启值只重置一次（打标记），

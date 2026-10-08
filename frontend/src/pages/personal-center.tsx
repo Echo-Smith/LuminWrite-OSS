@@ -6,7 +6,7 @@
  */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { X, Server, Clock, Shield } from "lucide-react";
+import { X, Server, Clock, Shield, Database } from "lucide-react";
 import { DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useAuthStore } from "@/stores/auth-store";
@@ -19,6 +19,7 @@ import { HistorySection } from "@/pages/personal/history-section";
 import { McpSection } from "@/pages/personal/mcp-section";
 import { CronJobsPage as CronSection } from "@/pages/personal/cron-section";
 import { SensitiveWordsPage as SensitiveSection } from "@/pages/personal/sensitive-section";
+import { KnowledgeBasePage } from "@/pages/personal/kb-maintenance";
 import { useSettingsStore } from "@/stores/settings-store";
 
 import { StyleSection } from "@/pages/personal/styles-section";
@@ -84,11 +85,13 @@ export function PersonalCenter() {
                 const isAdmin = user?.role === "admin";
                 const labsCronPanel = useSettingsStore.getState().labsCronPanel;
                 const labsSensitivePanel = useSettingsStore.getState().labsSensitivePanel;
+                const labsKbMaintenance = useSettingsStore.getState().labsKbMaintenance;
                 const extras: MenuItem[] = [];
                 if (isAdmin) {
                   extras.push({ key: "mcp", label: "MCP 服务", icon: Server });
                   if (labsCronPanel) extras.push({ key: "cron", label: "定时任务", icon: Clock });
                   if (labsSensitivePanel) extras.push({ key: "sensitive", label: "敏感词库", icon: Shield });
+                  if (labsKbMaintenance) extras.push({ key: "kb-maintenance", label: "知识库维护", icon: Database });
                 }
                 const base = [...MENU_ITEMS];
                 const labsIdx = base.findIndex((i) => i.key === "labs");
@@ -139,6 +142,7 @@ export function PersonalCenter() {
             {activeMenu === "mcp" && <McpSection />}
             {activeMenu === "cron" && <CronSection />}
             {activeMenu === "sensitive" && <SensitiveSection />}
+            {activeMenu === "kb-maintenance" && <KnowledgeBasePage />}
             {activeMenu === "styles" && <StyleSection />}
             {activeMenu === "memory" && <MemorySection />}
             {activeMenu === "models" && <ModelServiceSection />}

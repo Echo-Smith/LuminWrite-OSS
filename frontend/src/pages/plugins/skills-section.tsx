@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Puzzle, RefreshCw, Wrench } from "lucide-react";
 import { adminFetch } from "@/lib/admin-api";
-import { AdminLoading, AdminEmptyState } from "@/components/admin";
+import { AdminLoading, AdminEmptyState } from "@/components/admin-ui";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

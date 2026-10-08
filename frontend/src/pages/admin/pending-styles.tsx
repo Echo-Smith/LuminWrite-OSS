@@ -12,7 +12,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader } from "@/components/admin";
+import { AdminPageHeader } from "@/components/admin-ui";
 
 interface PendingReview {
   id: string;

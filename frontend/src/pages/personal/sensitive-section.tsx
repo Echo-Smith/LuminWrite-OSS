@@ -16,7 +16,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
-import { AdminConfirmDialog } from "@/components/admin";
+import { AdminConfirmDialog } from "@/components/admin-ui";
 
 interface SensitiveWord {
   id: string;

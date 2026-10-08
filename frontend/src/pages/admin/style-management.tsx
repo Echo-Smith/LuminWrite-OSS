@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { RolloutConfigDialog } from "./rollout-config";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
 import { toast } from "@/stores/toast-store";
-import { AdminPageHeader } from "@/components/admin";
+import { AdminPageHeader } from "@/components/admin-ui";
 
 interface AdminStyle {
   slug: string;

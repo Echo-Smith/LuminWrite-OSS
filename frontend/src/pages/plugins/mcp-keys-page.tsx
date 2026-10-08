@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { adminMutate } from "@/lib/admin-api";
-import { AdminBulkActions } from "@/components/admin";
+import { AdminBulkActions } from "@/components/admin-ui";
 
 interface APIKey {
   id: string;

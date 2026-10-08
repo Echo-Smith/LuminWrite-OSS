@@ -1,7 +1,7 @@
 /**
  * AdminLoadingSkeleton — 统一的加载骨架屏
  *
- * 用于 Admin 列表页面的加载状态展示
+ * 用于列表页面的加载状态展示
  */
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";

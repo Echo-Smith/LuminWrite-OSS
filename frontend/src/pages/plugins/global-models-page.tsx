@@ -1,5 +1,5 @@
 /**
- * 模型配置 — Admin Dashboard
+ * 全局默认模型（回退）— 插件页 tab
  * 通用接口：任意 OpenAI 兼容端点（base_url + api_key）→ 自动发现模型列表 → 选择启用
  * 无内置供应商模板：供应商名称与 Base URL 均自由填写，支持自定义 HTTP 请求头
  * API Key 内聚在模型配置中，不再关联独立密钥
@@ -16,7 +16,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
-import { AdminConfirmDialog, AdminPageHeader, AdminBulkActions } from "@/components/admin";
+import { AdminConfirmDialog, AdminPageHeader, AdminBulkActions } from "@/components/admin-ui";
 import { cn } from "@/lib/utils";
 
 interface ModelConfig {
@@ -257,7 +257,7 @@ export function ModelConfigsPage() {
   };
 
   return (
-      <div className="p-6 space-y-6">
+      <div className="space-y-6">
         <AdminPageHeader
           title="全局默认模型（回退）"
           description="这里的配置是「实例默认」：仅当用户未在个人中心自带密钥（BYOK）时作为回退使用；用户配置了自带密钥的模型优先于这里。输入 Base URL 和 API Key，自动发现可用模型。密钥加密存储。"

@@ -17,7 +17,7 @@ import {
   Clock, Zap, Gauge, type LucideIcon,
 } from "lucide-react";
 import { adminFetch, adminMutate } from "@/lib/admin-api";
-import { AdminPageHeader, AdminLoading, AdminEmptyState } from "@/components/admin";
+import { AdminPageHeader, AdminLoading, AdminEmptyState } from "@/components/admin-ui";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

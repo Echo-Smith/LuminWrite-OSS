@@ -9,10 +9,11 @@
  * 仅 admin 可见（侧边栏按 isAdmin 渲染入口；API 侧由 admin 鉴权兜底）。
  */
 import { Puzzle } from "lucide-react";
-import { AdminTabbedPage } from "@/components/admin";
+import { AdminTabbedPage } from "@/components/admin-ui";
 import { APIKeysPage as McpKeysPage } from "./mcp-keys-page";
 import { MCPSandboxPage } from "./mcp-sandbox-page";
 import { SkillsSection } from "./skills-section";
+import { ModelConfigsPage } from "./global-models-page";
 
 export function PluginsPage() {
   return (
@@ -34,6 +35,7 @@ export function PluginsPage() {
           { key: "keys", label: "服务密钥", permission: "apikey.manage", content: <McpKeysPage /> },
           { key: "sandbox", label: "安全沙箱", permission: "sandbox.manage", content: <MCPSandboxPage /> },
           { key: "skills", label: "写作技能", permission: null, content: <SkillsSection /> },
+          { key: "global-models", label: "全局默认模型", permission: "model.manage", content: <ModelConfigsPage /> },
         ]}
       />
     </div>

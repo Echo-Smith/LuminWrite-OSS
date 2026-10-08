@@ -13,7 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { adminFetch, adminMutate, adminDelete } from "@/lib/admin-api";
-import { AdminConfirmDialog, AdminBulkActions } from "@/components/admin";
+import { AdminConfirmDialog, AdminBulkActions } from "@/components/admin-ui";
 
 interface CronJob {
   id: string;

@@ -1,6 +1,7 @@
 /**
  * 知识库管理 — Admin Dashboard 主页面
  * 组合子组件：未配置提示 / 添加知识面板 / 知识列表表格 / 检索面板 / 系统信息
+ * （已迁移至 src/pages/personal/kb-maintenance/，作为个人中心实验室开关面板）
  */
 import { useState, useEffect, useCallback } from "react";
 import { Plus, Database, CheckCircle, RefreshCw, FolderPlus, Trash2 } from "lucide-react";
@@ -10,7 +11,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/stores/toast-store";
 import { Label } from "@/components/ui/label";
-import { AdminPageHeader } from "@/components/admin";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
@@ -145,7 +145,6 @@ export function KnowledgeBasePage() {
   if (configured === false) {
     return (
       <div className="p-6 space-y-6">
-      <AdminPageHeader title="知识库" />
       <KBNotConfigured onRetry={doCheckConfig} />
       </div>
     );
@@ -154,28 +153,28 @@ export function KnowledgeBasePage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <AdminPageHeader
-        title="知识库"
-        description="混合检索（BM25 + Dense + GraphRAG）· 多知识库 · 多格式文档解析"
-        action={
-          <div className="flex items-center gap-2">
-            {configured && (
-              <Badge className="bg-green-100 text-green-700">
-                <CheckCircle className="h-3 w-3 mr-1" /> 已连接
-              </Badge>
-            )}
-            {localKb && (
-              <Badge className="bg-blue-100 text-blue-700">本地引擎</Badge>
-            )}
-            <Button size="sm" variant="outline" onClick={doCheckConfig} title="刷新状态">
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-            <Button size="sm" onClick={() => setShowAdd(true)}>
-              <Plus className="h-4 w-4 mr-2" /> 添加知识
-            </Button>
-          </div>
-        }
-      />
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-xl font-semibold tracking-tight">知识库</h2>
+          <p className="text-sm text-muted-foreground mt-1">混合检索（BM25 + Dense + GraphRAG）· 多知识库 · 多格式文档解析</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {configured && (
+            <Badge className="bg-green-100 text-green-700">
+              <CheckCircle className="h-3 w-3 mr-1" /> 已连接
+            </Badge>
+          )}
+          {localKb && (
+            <Badge className="bg-blue-100 text-blue-700">本地引擎</Badge>
+          )}
+          <Button variant="outline" size="sm" onClick={doCheckConfig} title="刷新状态">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
+            <Plus className="h-4 w-4 mr-2" /> 添加知识
+          </Button>
+        </div>
+      </div>
 
       {/* KB Selector */}
       <div className="flex items-center gap-3">
