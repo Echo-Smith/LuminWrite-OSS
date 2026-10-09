@@ -298,6 +298,7 @@ r7 消融结论（WP6 后重跑）：D 变体硬失败 1.4%、工具调用循环
 | [docs/30-byok-personal-models.md](docs/30-byok-personal-models.md) | BYOK 个人模型服务 |
 | [docs/33-materials-ia.md](docs/33-materials-ia.md) | 素材信息架构（选题/订阅/知识库） |
 | [docs/34-package-install.md](docs/34-package-install.md) | 下载安装体系（风格/技能/服务） |
+| [docs/35-dual-line-sync.md](docs/35-dual-line-sync.md) | 双线同步策略（cherry-pick + 适配） |
 | [docs/search-provider-adapter.md](docs/search-provider-adapter.md) | 搜索源适配器开发 |
 | [docs/provider-configuration.md](docs/provider-configuration.md) | 模型提供方切换 |
 | [docs/ops-backup-restore.md](docs/ops-backup-restore.md) | 备份与恢复 |
