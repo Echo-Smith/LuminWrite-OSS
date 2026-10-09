@@ -97,13 +97,12 @@ export function App() {
           {/* 插件 — 已合并进「风格和技能」悬浮窗 */}
           <Route path="/plugins" element={<Navigate to="/styles" replace />} />
 
-          {/* 写作风格 — 需登录（guest 页内提示） */}
+          {/* 风格和技能 — 页面形态（让出侧边栏），需登录（guest 页内提示） */}
           <Route
             path="/styles"
             element={
               <ProtectedRoute>
                 <PageTransition>
-                  <WritingWorkspace />
                   <StyleMarketDialog />
                 </PageTransition>
               </ProtectedRoute>
