@@ -1,5 +1,8 @@
 /**
- * 写作风格子页面
+ * 我的风格 — 写作风格悬浮窗的「我的风格」区
+ *
+ * 自个人中心 styles-section 迁入；创建/编辑/投稿/删除全量在此管理。
+ * 创建入口由悬浮窗头部「新建风格」按钮派发 personal-center-add 事件触发。
  */
 import { useState, useEffect, useCallback } from "react";
 import {
@@ -17,7 +20,7 @@ import {
 } from "@/components/ui/select";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
-import { SimpleModal, SimpleModalFooter, formatDate } from "./shared";
+import { SimpleModal, SimpleModalFooter, formatDate } from "@/pages/personal/shared";
 
 const BUILTIN_STYLE_SLUGS = new Set<string>([]);
 

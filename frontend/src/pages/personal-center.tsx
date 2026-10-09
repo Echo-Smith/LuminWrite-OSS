@@ -25,7 +25,6 @@ import { McpSection } from "@/pages/personal/mcp-section";
 import { CronJobsPage as CronSection } from "@/pages/personal/cron-section";
 import { SensitiveWordsPage as SensitiveSection } from "@/pages/personal/sensitive-section";
 import { KnowledgeBasePage } from "@/pages/personal/kb-maintenance";
-import { StyleSection } from "@/pages/personal/styles-section";
 import { MemorySection } from "@/pages/personal/memory-section";
 import { ModelServiceSection } from "@/pages/personal/model-service-section";
 import { UsageSection } from "@/pages/personal/usage-section";
@@ -64,7 +63,6 @@ export function PersonalCenter() {
     item("about", "关于笔润智谈", Info),
     { group: "创作" },
     item("history", "写作记录", History),
-    item("styles", "写作风格", Palette),
     item("memory", "记忆管理", Brain),
     item("models", "模型服务", Cpu),
     item("mcp", "MCP 服务", Server),
@@ -108,7 +106,6 @@ export function PersonalCenter() {
     >
       {activeMenu === "profile" && <ProfileSection />}
       {activeMenu === "history" && <HistorySection />}
-      {activeMenu === "styles" && <StyleSection />}
       {activeMenu === "memory" && <MemorySection />}
       {activeMenu === "models" && <ModelServiceSection />}
       {activeMenu === "mcp" && <McpSection />}
@@ -124,7 +121,7 @@ export function PersonalCenter() {
       {activeMenu === "about" && <AboutSection />}
 
       {/* ── 右下角圆形 + 按钮（写作风格/记忆管理用） ── */}
-      {(activeMenu === "styles" || activeMenu === "memory") && (
+      {(activeMenu === "memory") && (
         <FloatingAddButton
           disabled={isGuest}
           onClick={() => {

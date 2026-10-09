@@ -1,14 +1,13 @@
 /**
- * 风格选择器 — Popover 下拉选择
- * 支持全局风格 + 用户自定义风格 + Lumi 对话创建入口
+ * 风格选择器 — Popover 下拉选择（技能加载）
+ * 支持全局风格 + 用户自定义风格；创建/管理请到左侧栏「写作风格」
  */
 import { useState, useEffect, useCallback } from "react";
-import { Palette, ChevronDown, Sparkles } from "lucide-react";
+import { Palette, ChevronDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { useAuthStore } from "@/stores/auth-store";
 import { useStyleListStore } from "@/stores/style-list-store";
-import { useStyleChatStore } from "@/stores/style-chat-store";
 import type { StyleOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -22,8 +21,6 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
   const [styles, setStyles] = useState<StyleOption[]>([]);
   const [open, setOpen] = useState(false);
   const listVersion = useStyleListStore((s) => s.version);
-  const openAssistant = useStyleChatStore((s) => s.setOpen);
-  const unappliedReady = useStyleChatStore((s) => s.unappliedReady);
   const token = useAuthStore((s) => s.token);
 
   const loadStyles = useCallback(() => {
@@ -158,21 +155,6 @@ export function StylePicker({ value, onChange, compact = false }: StylePickerPro
               </>
             )}
 
-            <div className="border-t pt-2 mt-2">
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  openAssistant(true);
-                }}
-                className="relative flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
-              >
-                <Sparkles className="h-4 w-4" />
-                使用 Lumi 创建写作风格
-                {unappliedReady && (
-                  <span className="absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-[color:var(--desk-brass)]" />
-                )}
-              </button>
-            </div>
           </div>
         </PopoverContent>
       </Popover>

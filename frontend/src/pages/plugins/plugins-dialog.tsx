@@ -1,50 +1,53 @@
 /**
  * 插件（悬浮窗，/plugins）
  *
- * FloatingShell 统一骨架，合并外部服务与扩展能力：
- * - 服务密钥：MCP / 第三方服务 API Key（含搜索源密钥）
- * - 安全沙箱：MCP 沙箱策略与违规记录
- * - 写作技能：运行时技能/工具插件
- * - 全局默认模型：BYOK 回退用的实例级模型配置
- *
- * 仅 admin 可见（侧边栏按非 guest 渲染入口；API 侧由后端鉴权兜底）。
+ * FloatingShell 统一骨架，外部服务与模型配置管理：
+ * - MCP 服务：服务密钥 + 安全沙箱（内嵌两个子页）
+ * - 第三方服务：待接入的第三方能力（搜索源 / TTS 等）
+ * - 全局默认模型：实例级模型端点与密钥（用户 BYOK 回退）
  */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Puzzle, KeyRound, Shield, Wrench, Cpu,
+  Puzzle, KeyRound, Shield, Cpu, Plug2,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
+import { cn } from "@/lib/utils";
 import { closeOverlayAndBack } from "@/lib/close-overlay";
 import {
   FloatingShell, type FloatingShellEntry,
 } from "@/components/shell/floating-shell";
-import { APIKeysPage as McpKeysPage } from "./mcp-keys-page";
+import { APIKeysPage } from "./mcp-keys-page";
 import { MCPSandboxPage } from "./mcp-sandbox-page";
-import { SkillsSection } from "./skills-section";
 import { ModelConfigsPage } from "./global-models-page";
+import { ThirdPartySection } from "./third-party-section";
 
-type PluginKey = "keys" | "sandbox" | "skills" | "global-models";
+type PluginKey = "mcp" | "third-party" | "global-models"
+type McpSubKey = "keys" | "sandbox"
 
-const item = (key: PluginKey, label: string, icon: typeof KeyRound): FloatingShellEntry => ({ key, label, icon });
+const item = (key: PluginKey, label: string, icon: typeof KeyRound): FloatingShellEntry => ({ key, label, icon })
 
 const PLUGIN_ITEMS: FloatingShellEntry[] = [
-  item("keys", "服务密钥", KeyRound),
-  item("sandbox", "安全沙箱", Shield),
-  item("skills", "写作技能", Wrench),
+  item("mcp", "MCP 服务", Puzzle),
+  item("third-party", "第三方服务", Plug2),
   item("global-models", "全局默认模型", Cpu),
-];
+]
 
 const PLUGIN_META: Record<PluginKey, { title: string; subtitle: string }> = {
-  keys: { title: "服务密钥", subtitle: "MCP / 第三方服务的 API Key 与已安装服务端点" },
-  sandbox: { title: "安全沙箱", subtitle: "MCP 沙箱策略与违规记录" },
-  skills: { title: "写作技能", subtitle: "运行时技能/工具插件" },
-  "global-models": { title: "全局默认模型", subtitle: "BYOK 回退用的实例级模型配置" },
-};
+  mcp: { title: "MCP 服务", subtitle: "MCP / 第三方服务的 API Key 与沙箱策略" },
+  "third-party": { title: "第三方服务", subtitle: "搜索源、语音等第三方能力（待接入）" },
+  "global-models": { title: "全局默认模型", subtitle: "实例级模型端点与密钥（用户自带 key 的回退）" },
+}
+
+const MCP_SUBS: Array<{ key: McpSubKey; label: string; icon: typeof KeyRound }> = [
+  { key: "keys", label: "服务密钥", icon: KeyRound },
+  { key: "sandbox", label: "安全沙箱", icon: Shield },
+]
 
 export function PluginsDialog() {
   const navigate = useNavigate();
-  const [active, setActive] = useState<PluginKey>("keys");
+  const [active, setActive] = useState<PluginKey>("mcp");
+  const [mcpSub, setMcpSub] = useState<McpSubKey>("keys");
   const [open, setOpen] = useState(true);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
 
@@ -77,13 +80,39 @@ export function PluginsDialog() {
       guestNotice={{
         icon: Puzzle,
         title: "游客模式无法管理插件",
-        description: "注册并登录后可管理服务密钥、MCP 沙箱与写作技能。",
+        description: "注册并登录后可管理服务密钥、MCP 沙箱与模型配置。",
       }}
       contentClassName="p-6"
     >
-      {active === "keys" && <McpKeysPage />}
-      {active === "sandbox" && <MCPSandboxPage />}
-      {active === "skills" && <SkillsSection />}
+      {active === "mcp" && (
+        <div className="space-y-4">
+          {/* 内嵌子页切换 */}
+          <div className="flex gap-1.5 border-b pb-2">
+            {MCP_SUBS.map((sub) => {
+              const Icon = sub.icon;
+              const isActive = mcpSub === sub.key;
+              return (
+                <button
+                  key={sub.key}
+                  onClick={() => setMcpSub(sub.key)}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-ui",
+                    isActive
+                      ? "bg-accent text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/50",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {sub.label}
+                </button>
+              );
+            })}
+          </div>
+          {mcpSub === "keys" && <APIKeysPage />}
+          {mcpSub === "sandbox" && <MCPSandboxPage />}
+        </div>
+      )}
+      {active === "third-party" && <ThirdPartySection />}
       {active === "global-models" && <ModelConfigsPage />}
     </FloatingShell>
   );

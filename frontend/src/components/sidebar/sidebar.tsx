@@ -17,7 +17,7 @@ import {
   ChevronRight, ChevronDown, User, AlertTriangle, Newspaper,
   Folder, FolderPlus, Archive, ArchiveRestore,
   Copy, MoreHorizontal, Pencil, X, CheckSquare,
-  Puzzle, ScrollText,
+  Puzzle, ScrollText, Palette,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
@@ -311,7 +311,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           onClick={() => { navigate("/topics"); onNavigate?.(); }}
         >
           <Compass className="h-4 w-4" />
-          选题与知识库
+          素材和知识库
         </Button>
         {enableEditorial && (
           <Button
@@ -948,6 +948,15 @@ function UserMenuContent({
         label="个人中心"
         onClick={() => onNavigate("/profile")}
       />
+
+      {/* 写作风格（注册用户） */}
+      {isAdmin && (
+        <MenuRow
+          icon={Palette}
+          label="写作风格"
+          onClick={() => onNavigate("/styles")}
+        />
+      )}
 
       {/* 插件（注册用户） */}
       {isAdmin && (

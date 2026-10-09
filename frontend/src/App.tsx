@@ -12,10 +12,10 @@ import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { PluginsDialog } from "@/pages/plugins/plugins-dialog";
 import { ConsoleDialog } from "@/pages/console/console-dialog";
+import { StyleMarketDialog } from "@/styles/style-market-dialog";
 import { PersonalCenter } from "@/pages/personal-center";
 import { WritingProjectsPage } from "@/pages/writing-projects"; // 新的轻量级写作项目管理器
 // import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 已废弃，保留用于迁移参考
-import { MyStylesPage } from "@/pages/my-styles";
 import { ToastContainer } from "@/components/ui/toast";
 import { useSSENotifications } from "@/hooks/use-sse-notifications";
 import { useWorkflowSSE } from "@/hooks/use-workflow-sse";
@@ -87,16 +87,7 @@ export function App() {
             }
           />
 
-          <Route
-            path="/my-styles"
-            element={
-              <ProtectedRoute>
-                <PageTransition>
-                  <MyStylesPage />
-                </PageTransition>
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/my-styles" element={<Navigate to="/styles" replace />} />
 
           {/* 知识库 — 合并进选题悬浮窗的「知识库」tab */}
           <Route
@@ -112,6 +103,19 @@ export function App() {
                 <PageTransition>
                   <WritingWorkspace />
                   <PluginsDialog />
+                </PageTransition>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 写作风格 — 需登录（guest 页内提示） */}
+          <Route
+            path="/styles"
+            element={
+              <ProtectedRoute>
+                <PageTransition>
+                  <WritingWorkspace />
+                  <StyleMarketDialog />
                 </PageTransition>
               </ProtectedRoute>
             }

@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "styles" | "memory" | "models" | "mcp" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "account" | "labs" | "about";
+export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "memory" | "models" | "mcp" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "account" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -24,7 +24,6 @@ export interface MenuItem {
 export const MENU_ITEMS: MenuItem[] = [
   { key: "profile", label: "个人信息", icon: User },
   { key: "history", label: "写作记录", icon: History },
-  { key: "styles", label: "写作风格", icon: Palette },
   { key: "memory", label: "记忆管理", icon: Brain },
   { key: "models", label: "模型服务", icon: Cpu },
   { key: "usage", label: "用量统计", icon: BarChart3 },
@@ -39,7 +38,6 @@ export const MENU_ITEMS: MenuItem[] = [
 export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> = {
   profile: { title: "个人信息", subtitle: "查看和修改你的账号信息" },
   history: { title: "写作记录", subtitle: "回看写作历史、评分与你的反馈" },
-  styles: { title: "写作风格", subtitle: "管理你的自定义写作风格" },
   memory: { title: "记忆管理", subtitle: "管理 AI 学习到的写作偏好" },
   models: { title: "模型服务", subtitle: "自带 API 密钥（BYOK），写作优先使用你的模型" },
   mcp: { title: "MCP 服务", subtitle: "已安装的 MCP 服务与工具状态" },
