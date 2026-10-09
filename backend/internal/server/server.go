@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/memoryport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/profile"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services"
+	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services/packages"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/tools"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingtransport"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
@@ -40,6 +42,8 @@ type Server struct {
 	llm               *tools.LLMClient
 	llmSvc            *services.LLMService
 	userKeyRepo       *database.UserModelKeyRepo
+	packageRepo       *database.InstalledPackageRepo
+	packageInstaller  *packages.Installer
 	// articleFetcher overrides the full-text article import path (tests).
 	articleFetcher    rssArticleFetcher
 	search            *tools.SearchClient
@@ -368,6 +372,14 @@ func New(cfg *config.Config) (*Server, error) {
 		llmSvc.WithUserKeys(userKeyRepo)
 	}
 
+	// Package install registry (download-install model, docs/34). The
+	// installer itself is wired after the user-style store exists (styles
+	// install through it); the repo is safe to create here.
+	var packageRepo *database.InstalledPackageRepo
+	if dbAvail && db != nil {
+		packageRepo = database.NewInstalledPackageRepo(db)
+	}
+
 	// Resolve the default LLM client from the DB-backed service.
 	// If DB has model configs with API keys, this returns a dynamic client;
 	// otherwise it falls back to the static env-based llm.
@@ -529,6 +541,21 @@ func New(cfg *config.Config) (*Server, error) {
 	if dbAvail && adminRepo != nil && adminRepo.DB() != nil {
 		s.userStyleStore = database.NewUserStyleStore(db)
 		s.db = db
+	}
+
+	// ── Package installer (download-install model, docs/34) ──
+	// Wired here because style packages install through the user-style
+	// store created just above; services register mcp_servers through the
+	// admin repo. A missing style store degrades style installs to an
+	// explicit error rather than a half-registration.
+	if packageRepo != nil {
+		s.packageRepo = packageRepo
+		s.packageInstaller = packages.NewInstaller(cfg.Packages.Dir, packageRepo, s.userStyleStore, adminRepo)
+		if err := os.MkdirAll(cfg.Packages.Dir, 0o755); err != nil {
+			slog.Warn("package install root not writable", "dir", cfg.Packages.Dir, "error", err)
+		} else {
+			slog.Info("package install root ready", "dir", cfg.Packages.Dir)
+		}
 	}
 
 	// ── Billing ──
@@ -930,6 +957,12 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/rss/subscriptions/{id}/refresh", s.handleRefreshRSSSubscription)
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/rss/subscriptions/opml", s.handleExportRSSOPML)
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/rss/subscriptions/import", s.handleImportRSSOPML)
+
+		// Package install (download-install model, docs/34) — per-user
+		r.Get("/packages/catalog", s.handleListPackageCatalog)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/packages", s.handleListInstalledPackages)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/packages/install", s.handleInstallPackage)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/packages/{id}", s.handleUninstallPackage)
 
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)

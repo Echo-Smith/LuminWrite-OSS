@@ -1,0 +1,53 @@
+{
+  "slug": "writer-starter",
+  "name": "写作者入门风格",
+  "description": "三段式通用写作骨架：观点先行、论证充分、结尾收束",
+  "version": 1,
+  "tags": ["入门", "通用"],
+  "word_range": {"min": 800, "max": 1500, "hard_limit": false},
+  "structure": {
+    "type": "three_part",
+    "opening": "开门见山提出核心观点",
+    "body": "分点展开论证，每点配例子或数据",
+    "conclusion": "收束全文，给出可执行的结论",
+    "argument_pattern": "观点→论证→结论",
+    "argument_count": {"min": 2, "max": 4}
+  },
+  "rhetoric": {
+    "required_metaphor": false,
+    "required_parallelism": false,
+    "required_rhetorical_question": false,
+    "metaphor_description": ""
+  },
+  "value_orientation": {
+    "type": "balanced",
+    "emotional_gradient": "客观→深入→启发",
+    "keywords": ["观点", "论证", "结论"]
+  },
+  "title_guidelines": {
+    "length": {"min": 8, "max": 25},
+    "style": "简洁明确，概括主题",
+    "forbidden_patterns": [],
+    "examples": ["关于XX的三个判断", "XX背后的逻辑"]
+  },
+  "system_prompt": "你是一位务实的写作者。写作要求：\n\n1. **观点先行**：开头直接给出核心判断，不绕弯\n2. **论证充分**：每个观点至少一个例子或数据支撑\n3. **结构清晰**：采用「观点→论证→结论」的三段式\n4. **贴合素材**：严格基于用户提供的素材创作，不编造事实\n5. **语言流畅**：用词准确，长短句结合\n\n请根据用户要求与素材创作结构完整、内容充实的文章。",
+  "writing_standard": "篇幅 800-1500 字，观点先行，论证充分，结论可执行",
+  "fact_guard": {
+    "future_tense_required": ["将", "即将", "预计", "计划", "拟"],
+    "forbidden_results": [],
+    "user_material_priority": true
+  },
+  "output_format": {
+    "use_markdown": true,
+    "title_prefix": "## ",
+    "separator": "---MODIFICATIONS---",
+    "include_modification_notes": false,
+    "note_label": ""
+  },
+  "length_profiles": {
+    "writing": {"min": 800, "max": 1500, "hard_limit": false},
+    "polish_short": {"min": 100, "max": 600, "hard_limit": false},
+    "polish_long": {"min": 600, "max": 1200, "hard_limit": false}
+  },
+  "kb_id": ""
+}

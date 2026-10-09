@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Store, Library, Palette, Wrench, Puzzle, KeyRound, Shield, Cpu, Plug2, Plus,
+  Store, Library, Palette, Wrench, Puzzle, KeyRound, Shield, Cpu, Plug2, Plus, Package,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
@@ -23,6 +23,7 @@ import { APIKeysPage } from "@/pages/plugins/mcp-keys-page";
 import { MCPSandboxPage } from "@/pages/plugins/mcp-sandbox-page";
 import { ModelConfigsPage } from "@/pages/plugins/global-models-page";
 import { ThirdPartySection } from "@/pages/plugins/third-party-section";
+import { PackageInstallDialog } from "@/components/styles/package-install-dialog";
 
 type MarketKey =
   | "library" | "mine" | "skills"
@@ -61,6 +62,7 @@ export function StyleMarketDialog() {
   const [active, setActive] = useState<MarketKey>("library");
   const [mcpSub, setMcpSub] = useState<McpSubKey>("keys");
   const [open, setOpen] = useState(true);
+  const [showServicePackages, setShowServicePackages] = useState(false);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
 
   const handleClose = () => {
@@ -136,12 +138,30 @@ export function StyleMarketDialog() {
               );
             })}
           </div>
-          {mcpSub === "keys" && <APIKeysPage />}
+          {mcpSub === "keys" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">
+                  服务密钥与服务器管理；也可从服务包一键注册 MCP 服务器（密钥需单独配置）。
+                </p>
+                <Button size="sm" variant="outline" className="shrink-0 gap-1.5" onClick={() => setShowServicePackages(true)}>
+                  <Package className="h-3.5 w-3.5" /> 安装服务包
+                </Button>
+              </div>
+              <APIKeysPage />
+            </div>
+          )}
           {mcpSub === "sandbox" && <MCPSandboxPage />}
         </div>
       )}
       {active === "third-party" && <ThirdPartySection />}
       {active === "global-models" && <ModelConfigsPage />}
+
+      <PackageInstallDialog
+        open={showServicePackages}
+        onClose={() => setShowServicePackages(false)}
+        kind="service"
+      />
     </FloatingShell>
   );
 }

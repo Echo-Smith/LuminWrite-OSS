@@ -1,0 +1,18 @@
+{
+  "packages": [
+    {
+      "kind": "style",
+      "slug": "writer-starter",
+      "version": "1.0.0",
+      "title": "写作者入门风格",
+      "description": "三段式通用写作骨架：观点先行、论证充分、结尾收束。安装后出现在「我的风格」。"
+    },
+    {
+      "kind": "skill",
+      "slug": "knowledge-base",
+      "version": "1.0.0",
+      "title": "知识库技能",
+      "description": "把知识库文档上传到远端存储的技能包示例（SKILL.md + 脚本约定）。"
+    }
+  ]
+}

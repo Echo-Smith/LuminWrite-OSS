@@ -16,6 +16,7 @@ import (
 type Config struct {
 	Server         ServerConfig
 	Database       DatabaseConfig
+	Packages       PackagesConfig
 	Redis          RedisConfig
 	JWT            JWTConfig
 	Admin          AdminConfig
@@ -84,6 +85,12 @@ type ServerConfig struct {
 	// entirely (the OSS default — the consumer is not part of the OSS
 	// ecosystem); when set, callers must present it via X-Callback-Token.
 	WorkbuddyCallbackToken string
+}
+
+// PackagesConfig locates the download-install root (docs/34): styles, skills
+// and services install as versioned packages under <Dir>/<kind>/<slug>/<version>/.
+type PackagesConfig struct {
+	Dir string
 }
 
 // WritingRuntimeConfig gates the V3.0 governed writing runtime (docs/20 §20.2).
@@ -346,6 +353,9 @@ func Load() *Config {
 			URL:          getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/writing_agent_v2?sslmode=disable"),
 			MaxOpenConns: getEnvInt("DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns: getEnvInt("DB_MAX_IDLE_CONNS", 5),
+		},
+		Packages: PackagesConfig{
+			Dir: getEnv("PACKAGES_DIR", "data/packages"),
 		},
 		Evaluation: EvaluationConfig{
 			WABenchPrivateInputJSONL: getEnv("WABENCH_PRIVATE_INPUT_JSONL", ""),

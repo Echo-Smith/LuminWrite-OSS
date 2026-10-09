@@ -1,0 +1,8 @@
+{
+  "kind": "style",
+  "slug": "writer-starter",
+  "version": "1.0.0",
+  "title": "写作者入门风格",
+  "description": "三段式通用写作骨架，安装后可在「我的风格」编辑",
+  "entry": "style.json"
+}

@@ -1,12 +1,13 @@
 /**
- * 风格库 Section — 内置/全局风格浏览与一键导入
+ * 风格库 Section — 内置/全局风格浏览与安装
  *
  * 数据来自 GET /api/v2/styles（全局 + 用户自定义）；本区只展示全局部分
- * （不带「自定义」标签），支持一键导入为「我的风格」（POST /api/v2/my-styles，
- * 优先携带完整 config；slug 冲突时自动加后缀）。
+ * （不带「自定义」标签），支持一键安装为「我的风格」（POST /api/v2/my-styles，
+ * 优先携带完整 config；slug 冲突时自动加后缀）。版本化风格包走下载安装
+ * （PackageInstallDialog，docs/34）。
  */
 import { useState, useEffect, useCallback } from "react";
-import { Library, Download, Loader2, Check } from "lucide-react";
+import { Library, Download, Loader2, Check, Package } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,9 +15,10 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useStyleListStore } from "@/stores/style-list-store";
 import { toast } from "@/stores/toast-store";
 import type { StyleOption } from "@/lib/types";
+import { PackageInstallDialog } from "@/components/styles/package-install-dialog";
 
 interface StyleLibrarySectionProps {
-  /** 导入成功后刷新「我的风格」区 */
+  /** 安装成功后刷新「我的风格」区 */
   onImported?: () => void;
 }
 
@@ -29,6 +31,7 @@ export function StyleLibrarySection({ onImported }: StyleLibrarySectionProps) {
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState<string | null>(null);
   const [imported, setImported] = useState<Set<string>>(new Set());
+  const [showPackages, setShowPackages] = useState(false);
 
   const load = useCallback(() => {
     const headers: Record<string, string> = {};
@@ -86,13 +89,13 @@ export function StyleLibrarySection({ onImported }: StyleLibrarySectionProps) {
       if (json.success) {
         setImported((prev) => new Set(prev).add(style.slug));
         useStyleListStore.getState().requestRefresh();
-        toast.success("已导入到我的风格", style.name);
+        toast.success("已安装到我的风格", style.name);
         onImported?.();
       } else {
-        toast.error("导入失败", json.error?.message ?? "请稍后重试");
+        toast.error("安装失败", json.error?.message ?? "请稍后重试");
       }
     } catch {
-      toast.error("导入失败", "网络错误");
+      toast.error("安装失败", "网络错误");
     } finally {
       setImporting(null);
     }
@@ -117,9 +120,14 @@ export function StyleLibrarySection({ onImported }: StyleLibrarySectionProps) {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">
-        内置风格开箱即用；点击「导入」可复制到我的风格后自由改造。
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          内置风格开箱即用；点击「安装」可装入我的风格后自由改造。
+        </p>
+        <Button size="sm" variant="outline" className="shrink-0 gap-1.5" onClick={() => setShowPackages(true)}>
+          <Package className="h-3.5 w-3.5" /> 安装风格包
+        </Button>
+      </div>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {styles.map((style) => {
           const done = imported.has(style.slug);
@@ -150,7 +158,7 @@ export function StyleLibrarySection({ onImported }: StyleLibrarySectionProps) {
                     ) : (
                       <Download className="h-3.5 w-3.5" />
                     )}
-                    {done ? "已导入" : "导入"}
+                    {done ? "已安装" : "安装"}
                   </Button>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -167,8 +175,18 @@ export function StyleLibrarySection({ onImported }: StyleLibrarySectionProps) {
         })}
       </div>
       {isGuest && (
-        <p className="text-center text-xs text-amber-600">注册账号后可导入风格</p>
+        <p className="text-center text-xs text-amber-600">注册账号后可安装风格</p>
       )}
+
+      <PackageInstallDialog
+        open={showPackages}
+        onClose={() => setShowPackages(false)}
+        kind="style"
+        onChanged={() => {
+          useStyleListStore.getState().requestRefresh();
+          onImported?.();
+        }}
+      />
     </div>
   );
 }

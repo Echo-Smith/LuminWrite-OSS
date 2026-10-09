@@ -1,0 +1,8 @@
+{
+  "kind": "skill",
+  "slug": "knowledge-base",
+  "version": "1.0.0",
+  "title": "知识库技能",
+  "description": "把知识库文档上传到远端存储的技能包示例",
+  "entry": "SKILL.md"
+}
