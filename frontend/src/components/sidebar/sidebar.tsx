@@ -322,6 +322,28 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           <Palette className="h-4 w-4" />
           写作风格
         </Button>
+        {isAdmin && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-muted-foreground"
+            onClick={() => { navigate("/plugins"); onNavigate?.(); }}
+          >
+            <Puzzle className="h-4 w-4" />
+            插件
+          </Button>
+        )}
+        {isAdmin && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-muted-foreground"
+            onClick={() => { navigate("/console"); onNavigate?.(); }}
+          >
+            <ScrollText className="h-4 w-4" />
+            审计中心
+          </Button>
+        )}
         {enableEditorial && (
           <Button
             variant="ghost"
@@ -957,24 +979,6 @@ function UserMenuContent({
         label="个人中心"
         onClick={() => onNavigate("/profile")}
       />
-
-      {/* 插件（注册用户） */}
-      {isAdmin && (
-        <MenuRow
-          icon={Puzzle}
-          label="插件"
-          onClick={() => onNavigate("/plugins")}
-        />
-      )}
-
-      {/* 审计中心（仅管理员） */}
-      {isAdmin && (
-        <MenuRow
-          icon={ScrollText}
-          label="审计中心"
-          onClick={() => onNavigate("/console")}
-        />
-      )}
 
       <div className="h-px bg-border/60 my-1" />
 
