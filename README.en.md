@@ -115,6 +115,14 @@ instance default (`DEEPSEEK_API_KEY`). For single-user deployments set
 (writes / tokens) live under **Personal Center → Usage** — see
 [docs/30](docs/30-byok-personal-models.md).
 
+The sidebar's 素材 entry gathers three tabs: **选题** (hot topics, AI angles,
+custom topics, one-click save-to-knowledge-base), **订阅** (RSS source
+management with automatic ingest), and **知识库** (material library, search
+debug, stats and entity graph) — see [docs/33](docs/33-materials-ia.md).
+Styles, skills and services in **风格和技能** install as packages into a fixed
+directory (`data/packages/<kind>/<slug>/<version>/`) and can be uninstalled —
+see [docs/34](docs/34-package-install.md).
+
 <details>
 <summary>Option 2: main compose · Option 3: local dev · Verification · Production</summary>
 
