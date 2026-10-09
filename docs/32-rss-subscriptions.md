@@ -60,3 +60,6 @@ POST   /api/v2/rss/subscriptions/{id}/refresh  # 立即更新（与 cron 同一�
 2. 纯摘要 feed 暂不做原文抓取回退（P3 候选项：对 description-only 条目
    回退 `URLImporter`）。
 3. 无 OPML 导入导出（P3 候选）。
+4. 检索质量取决于部署的 embedding 配置与 BM25 中文分词（存量特性，非 RSS
+   特有）：未配置 embedding 时降级纯 BM25，中文连续词可能切分不开；配置
+   `DASHSCOPE_API_KEY` 后 dense 检索自动参与 RRF 融合。
