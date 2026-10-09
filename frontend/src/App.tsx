@@ -10,7 +10,6 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
-import { MaterialsCenter } from "@/pages/materials-center";
 import { PluginsDialog } from "@/pages/plugins/plugins-dialog";
 import { ConsoleDialog } from "@/pages/console/console-dialog";
 import { PersonalCenter } from "@/pages/personal-center";
@@ -70,6 +69,7 @@ export function App() {
             element={
               <ProtectedRoute>
                 <PageTransition>
+                  <WritingWorkspace />
                   <TopicCenter />
                 </PageTransition>
               </ProtectedRoute>
@@ -98,16 +98,10 @@ export function App() {
             }
           />
 
-          {/* 知识库 — 独立访问域（原素材库，不再重定向到 /topics） */}
+          {/* 知识库 — 合并进选题悬浮窗的「知识库」tab */}
           <Route
             path="/materials"
-            element={
-              <ProtectedRoute>
-                <PageTransition>
-                  <MaterialsCenter />
-                </PageTransition>
-              </ProtectedRoute>
-            }
+            element={<Navigate to="/topics?tab=materials" replace />}
           />
 
           {/* 插件 — 需登录（guest 页内提示） */}

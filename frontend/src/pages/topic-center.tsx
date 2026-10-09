@@ -1,25 +1,17 @@
 /**
- * 选题中心 — 热搜选题 + 自定义选题 + 知识库（Tab 切换）
+ * 选题与知识库（悬浮窗，/topics）
  *
- * 合并了原「选题中心」和「我的知识库」两个页面，
- * 通过顶部 Tab 切换「选题」和「素材」视图。
+ * 与个人中心/审计中心/插件同款的 FloatingShell 骨架：左侧菜单
+ * 「选题 / 知识库」两个 tab（合并原 /topics 独立页与 /materials），
+ * 选题视图自带二级侧栏（热搜/自定义/收藏）与 AI 推荐横幅。
  *
- * 职责分层：
- * - useTopics hook      → 选题数据获取与状态管理
- * - TopicSidebar        → 左侧导航（全部 / 热搜汇总[可展开] / 自定义 / 收藏）
- * - RecommendationStrip → AI 推荐横幅（仅"全部"视图）
- * - TopicCard           → 单个选题卡片
- * - MaterialsTab        → 知识库 Tab 内容
- * - AddTopicDialog      → 自定义选题弹窗
- * - TopicDetailDialog   → 详情弹窗（AI 写作角度 / 趋势图 / 相关文章 / 关联素材）
+ * 路由：/topics（含 ?tab=materials 直达知识库；旧 /materials 重定向至此）。
  */
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, Flame, Wifi, WifiOff, Loader2, RefreshCw, Compass, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-
 import { useTopics } from "@/hooks/use-topics";
 import { TopicSidebar } from "@/components/topic/topic-sidebar";
 import { RecommendationStrip } from "@/components/topic/recommendation-strip";
@@ -33,6 +25,20 @@ import { listTopicMaterials, searchMaterials } from "@/lib/material-api";
 import { toast } from "@/stores/toast-store";
 import type { Topic, WritingAngle } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { closeOverlayAndBack } from "@/lib/close-overlay";
+import { FloatingShell, type FloatingShellEntry } from "@/components/shell/floating-shell";
+
+type TabKey = "topics" | "materials";
+
+const ITEMS: FloatingShellEntry[] = [
+  { key: "topics", label: "选题", icon: Compass },
+  { key: "materials", label: "知识库", icon: Database },
+];
+
+const META: Record<TabKey, { title: string; subtitle: string }> = {
+  topics: { title: "选题", subtitle: "热搜选题 · AI 写作角度 · 自定义选题" },
+  materials: { title: "知识库", subtitle: "上传/导入素材，写作时自动检索引用" },
+};
 
 export function TopicCenter() {
   const navigate = useNavigate();
@@ -41,12 +47,13 @@ export function TopicCenter() {
   const [hotExpanded, setHotExpanded] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editTopic, setEditTopic] = useState<Topic | null>(null);
+
   // Tab 状态与 URL 同步（?tab=materials）：侧边栏「知识库」入口可直达素材页签
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<"topics" | "materials">(
+  const [activeTab, setActiveTab] = useState<TabKey>(
     searchParams.get("tab") === "materials" ? "materials" : "topics",
   );
-  const switchTab = (tab: "topics" | "materials") => {
+  const switchTab = (tab: TabKey) => {
     setActiveTab(tab);
     setSearchParams(tab === "materials" ? { tab: "materials" } : {}, { replace: true });
   };
@@ -144,73 +151,30 @@ export function TopicCenter() {
     }, 200);
   };
 
+  const header = (
+    <div className="flex items-center gap-2.5 w-full">
+      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+        <Compass className="h-4 w-4 text-primary" />
+      </div>
+      <div>
+        <p className="text-sm font-medium">选题与知识库</p>
+        <p className="text-[11px] text-muted-foreground">topics &amp; knowledge</p>
+      </div>
+    </div>
+  );
+
   return (
-    <div className="flex h-screen flex-col">
-      {/* ─── Header ─── */}
-      <header className="flex items-center justify-between border-b px-6 py-3">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => navigate("/write")}>← 返回</Button>
-          <Separator orientation="vertical" className="h-5" />
-
-          {/* Tab 切换 */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => switchTab("topics")}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-ui",
-                activeTab === "topics"
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-              )}
-            >
-              <Compass className="h-4 w-4" />
-              选题
-            </button>
-            <button
-              onClick={() => switchTab("materials")}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-ui",
-                activeTab === "materials"
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-              )}
-            >
-              <Database className="h-4 w-4" />
-              知识库
-            </button>
-          </div>
-
-          {activeTab === "topics" && (
-            <span className={cn(
-              "flex items-center gap-1 text-xs ml-1",
-              t.sseConnected ? "text-green-600" : "text-muted-foreground"
-            )}>
-              {t.sseConnected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-              {t.sseConnected ? "实时" : "离线"}
-            </span>
-          )}
-        </div>
-
-        {/* 右侧操作按钮 — 根据 filter 状态切换 */}
-        <div className="flex items-center gap-2">
-          {activeTab === "topics" && (t.filter === "hot" || t.filter.startsWith("platform:")) && (
-            <Button variant="outline" size="sm" onClick={t.fetchHotTopics} disabled={t.fetchingHot} className="gap-1.5">
-              <RefreshCw className={cn("h-4 w-4", t.fetchingHot && "animate-spin")} />
-              {t.fetchingHot ? "抓取中..." : "刷新热搜"}
-            </Button>
-          )}
-          {activeTab === "topics" && t.filter === "user" && (
-            <Button onClick={() => setShowAddDialog(true)} className="gap-1.5">
-              <Plus className="h-4 w-4" />
-              自定义选题
-            </Button>
-          )}
-        </div>
-      </header>
-
-      {/* ─── Main ─── */}
+    <FloatingShell
+      header={header}
+      items={ITEMS}
+      active={activeTab}
+      onItemChange={(k) => switchTab(k as TabKey)}
+      meta={META}
+      onClose={() => closeOverlayAndBack(navigate)}
+    >
       {activeTab === "topics" ? (
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex h-full min-h-0">
+          {/* ── 二级侧栏（热搜/自定义/收藏过滤） ── */}
           <TopicSidebar
             filter={t.filter}
             setFilter={t.setFilter}
@@ -219,8 +183,33 @@ export function TopicCenter() {
             platformStats={t.platformStats}
           />
 
-          <ScrollArea className="flex-1">
-            <div className="p-6">
+          <div className="flex-1 min-w-0 overflow-y-auto scrollbar-hide">
+            {/* 操作条：实时状态 + 刷新热搜 + 自定义选题 */}
+            <div className="flex items-center justify-between gap-2 border-b px-5 py-2.5">
+              <span className={cn(
+                "flex items-center gap-1 text-xs",
+                t.sseConnected ? "text-green-600" : "text-muted-foreground"
+              )}>
+                {t.sseConnected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+                {t.sseConnected ? "实时" : "离线"}
+              </span>
+              <div className="flex items-center gap-2">
+                {(t.filter === "hot" || t.filter.startsWith("platform:")) && (
+                  <Button variant="outline" size="sm" onClick={t.fetchHotTopics} disabled={t.fetchingHot} className="gap-1.5">
+                    <RefreshCw className={cn("h-4 w-4", t.fetchingHot && "animate-spin")} />
+                    {t.fetchingHot ? "抓取中..." : "刷新热搜"}
+                  </Button>
+                )}
+                {t.filter === "user" && (
+                  <Button size="sm" onClick={() => setShowAddDialog(true)} className="gap-1.5">
+                    <Plus className="h-4 w-4" />
+                    自定义选题
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="p-5">
               {(t.filter === "all" || t.filter === "hot") && (
                 <RecommendationStrip
                   recommendations={t.recommendations}
@@ -241,7 +230,7 @@ export function TopicCenter() {
                   <p className="mt-1 text-xs">点击右上角添加自定义选题</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {t.topics.map((topic) => (
                     <TopicCard
                       key={topic.id ?? topic.title}
@@ -255,15 +244,13 @@ export function TopicCenter() {
                 </div>
               )}
             </div>
-          </ScrollArea>
+          </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
-          <MaterialsTab />
-        </div>
+        <MaterialsTab />
       )}
 
-      {/* ─── Add/Edit Topic Dialog ─── */}
+      {/* ── Add/Edit Topic Dialog ── */}
       <TopicEditDialog
         open={showAddDialog}
         topic={null}
@@ -277,7 +264,7 @@ export function TopicCenter() {
         onSubmit={(title, desc) => editTopic && t.updateTopic(editTopic.id, title, desc)}
       />
 
-      {/* ─── Topic Detail Dialog ─── */}
+      {/* ── Topic Detail Dialog ── */}
       <TopicDetailDialog
         topic={t.detailTopic}
         loading={t.detailLoading}
@@ -292,6 +279,6 @@ export function TopicCenter() {
         onFavoriteAngle={handleFavoriteAngle}
         favoritedAngles={favoritedAngles}
       />
-    </div>
+    </FloatingShell>
   );
 }

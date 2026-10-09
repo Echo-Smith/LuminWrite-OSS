@@ -317,7 +317,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           variant="ghost"
           size="sm"
           className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => { navigate("/materials"); onNavigate?.(); }}
+          onClick={() => { navigate("/topics?tab=materials"); onNavigate?.(); }}
         >
           <Database className="h-4 w-4" />
           知识库
