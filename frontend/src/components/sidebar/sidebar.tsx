@@ -320,7 +320,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           onClick={() => { navigate("/topics"); onNavigate?.(); }}
         >
           <Compass className="h-4 w-4" />
-          素材和知识库
+          素材
         </Button>
         {enableEditorial && (
           <Button

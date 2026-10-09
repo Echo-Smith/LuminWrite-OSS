@@ -1,8 +1,9 @@
 /**
- * RSS 订阅管理面板 — 素材中心左侧「RSS 订阅」入口
+ * RSS 订阅管理 — 素材壳「订阅」页签的主体
  *
  * 订阅源 = 自动更新的素材文件夹：新条目由后端周期性抓取（默认 15 分钟，
  * 每源 3 条、全局 20 条/次），以素材形式落入目标文件夹，可被写作检索。
+ * 由弹窗升级为页签：组件自取文件夹列表，挂载即加载。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -27,6 +28,7 @@ import {
   deleteRSSSubscription, refreshRSSSubscription, exportRSSOPML, importRSSOPML,
   RSS_ERROR_LABELS,
 } from "@/lib/rss-api";
+import { listFolders } from "@/lib/material-api";
 
 export interface MaterialFolderOption {
   id: string;
@@ -34,9 +36,8 @@ export interface MaterialFolderOption {
 }
 
 interface RSSSubscriptionsPanelProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  folders: MaterialFolderOption[];
+  /** 文件夹选项；缺省时组件自行拉取（页签内独立使用） */
+  folders?: MaterialFolderOption[];
   onSubscriptionsChanged?: () => void;
 }
 
@@ -46,7 +47,7 @@ function formatTime(ts?: string): string {
   return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscriptionsChanged }: RSSSubscriptionsPanelProps) {
+export function RSSSubscriptionsPanel({ folders: foldersProp, onSubscriptionsChanged }: RSSSubscriptionsPanelProps) {
   const token = useAuthStore((s) => s.token);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
   const notify = (
@@ -56,6 +57,7 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
   ) => useToastStore.getState().add({ type, title, description, duration: 3000 });
 
   const [subs, setSubs] = useState<RSSSubscription[]>([]);
+  const [folders, setFolders] = useState<MaterialFolderOption[]>(foldersProp ?? []);
   const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<RSSSubscription | null>(null);
@@ -85,8 +87,13 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
   }, [token, isGuest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
+    void load();
+    if (!foldersProp) {
+      void listFolders()
+        .then((list) => setFolders(list.map((f) => ({ id: f.id, name: f.name }))))
+        .catch(() => {});
+    }
+  }, [load, foldersProp]);
 
   const resetForm = () => {
     setFeedUrl(""); setTitle(""); setFolderId(""); setMaxItems("3");
@@ -172,14 +179,24 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
 
   if (isGuest) {
     return (
-      <SimpleModal open={open} onClose={() => onOpenChange(false)} title="RSS 订阅" maxWidth="max-w-lg">
-        <p className="text-sm text-muted-foreground text-center py-6">注册账号后可订阅 RSS 源，新文章自动进入你的知识库。</p>
-      </SimpleModal>
+      <div className="px-6 pt-6 pb-12">
+        <Card className="border-amber-200/60 bg-amber-50/50 dark:bg-amber-950/20">
+          <CardContent className="py-6 text-center">
+            <Rss className="mx-auto h-10 w-10 text-amber-500/50" />
+            <p className="mt-3 text-sm text-amber-900 dark:text-amber-200 font-medium">
+              游客模式无法管理订阅
+            </p>
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              注册账号后可订阅 RSS 源，新文章自动进入你的知识库。
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
   return (
-    <SimpleModal open={open} onClose={() => onOpenChange(false)} title="RSS 订阅" maxWidth="max-w-2xl">
+    <div className="px-6 pt-6 pb-12">
       <div className="space-y-4">
         <div className="flex items-start justify-between gap-3">
           <p className="text-xs text-muted-foreground">
@@ -395,6 +412,6 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
           </div>
         </DialogContent>
       </Dialog>
-    </SimpleModal>
+    </div>
   );
 }

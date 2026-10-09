@@ -1,15 +1,16 @@
 /**
- * 选题与知识库（悬浮窗，/topics）
+ * 素材（悬浮窗，/topics）
  *
- * 与个人中心/审计中心/插件同款的 FloatingShell 骨架：左侧菜单
- * 「选题 / 知识库」两个 tab（合并原 /topics 独立页与 /materials），
- * 选题视图自带二级侧栏（热搜/自定义/收藏）与 AI 推荐横幅。
+ * 与个人中心/审计中心/风格和技能同款的 FloatingShell 骨架：左侧菜单
+ * 「选题 / 订阅 / 知识库」三个 tab——选题（热搜/自定义/收藏 + AI 推荐）、
+ * 订阅（RSS 源管理，由弹窗升级为页签）、知识库（上传/导入的素材库）。
  *
- * 路由：/topics（含 ?tab=materials 直达知识库；旧 /materials 重定向至此）。
+ * 路由：/topics（含 ?tab=materials 直达知识库、?tab=rss 直达订阅；
+ * 旧 /materials 重定向至此）。
  */
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Flame, Wifi, WifiOff, Loader2, RefreshCw, Compass, Database } from "lucide-react";
+import { Plus, Flame, Wifi, WifiOff, Loader2, RefreshCw, Compass, Database, Rss } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useTopics } from "@/hooks/use-topics";
@@ -19,6 +20,7 @@ import { TopicCard } from "@/components/topic/topic-card";
 import { TopicEditDialog } from "@/components/topic/topic-edit-dialog";
 import { TopicDetailDialog } from "@/components/topic/topic-detail-dialog";
 import { MaterialsTab } from "@/components/topic/materials-tab";
+import { RSSSubscriptionsPanel } from "@/components/materials/rss-subscriptions-panel";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { buildWritingMessage } from "@/stores/topic-draft-store";
 import { listTopicMaterials, searchMaterials } from "@/lib/material-api";
@@ -28,15 +30,17 @@ import { cn } from "@/lib/utils";
 import { closeOverlayAndBack } from "@/lib/close-overlay";
 import { FloatingShell, type FloatingShellEntry } from "@/components/shell/floating-shell";
 
-type TabKey = "topics" | "materials";
+type TabKey = "topics" | "rss" | "materials";
 
 const ITEMS: FloatingShellEntry[] = [
   { key: "topics", label: "选题", icon: Compass },
+  { key: "rss", label: "订阅", icon: Rss },
   { key: "materials", label: "知识库", icon: Database },
 ];
 
 const META: Record<TabKey, { title: string; subtitle: string }> = {
   topics: { title: "选题", subtitle: "热搜选题 · AI 写作角度 · 自定义选题" },
+  rss: { title: "订阅", subtitle: "RSS 源管理：新文章自动抓取入库为素材" },
   materials: { title: "知识库", subtitle: "上传/导入素材，写作时自动检索引用" },
 };
 
@@ -48,14 +52,16 @@ export function TopicCenter() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editTopic, setEditTopic] = useState<Topic | null>(null);
 
-  // Tab 状态与 URL 同步（?tab=materials）：侧边栏「知识库」入口可直达素材页签
+  // Tab 状态与 URL 同步（?tab=materials / ?tab=rss）：侧边栏入口可直达对应页签
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<TabKey>(
-    searchParams.get("tab") === "materials" ? "materials" : "topics",
-  );
+  const initialTab = (): TabKey => {
+    const tab = searchParams.get("tab");
+    return tab === "materials" || tab === "rss" ? tab : "topics";
+  };
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const switchTab = (tab: TabKey) => {
     setActiveTab(tab);
-    setSearchParams(tab === "materials" ? { tab: "materials" } : {}, { replace: true });
+    setSearchParams(tab === "topics" ? {} : { tab }, { replace: true });
   };
   const [favoritedAngles, setFavoritedAngles] = useState<Set<string>>(new Set());
 
@@ -157,8 +163,8 @@ export function TopicCenter() {
         <Compass className="h-4 w-4 text-primary" />
       </div>
       <div>
-        <p className="text-sm font-medium">选题与知识库</p>
-        <p className="text-[11px] text-muted-foreground">topics &amp; knowledge</p>
+        <p className="text-sm font-medium">素材</p>
+        <p className="text-[11px] text-muted-foreground">topics &amp; materials</p>
       </div>
     </div>
   );
@@ -172,7 +178,9 @@ export function TopicCenter() {
       meta={META}
       onClose={() => closeOverlayAndBack(navigate)}
     >
-      {activeTab === "topics" ? (
+      {activeTab === "rss" ? (
+        <RSSSubscriptionsPanel />
+      ) : activeTab === "topics" ? (
         <div className="flex h-full min-h-0">
           {/* ── 二级侧栏（热搜/自定义/收藏过滤） ── */}
           <TopicSidebar
