@@ -17,7 +17,7 @@ import {
   ChevronRight, ChevronDown, User, AlertTriangle, Newspaper,
   Folder, FolderPlus, Archive, ArchiveRestore,
   Copy, MoreHorizontal, Pencil, X, CheckSquare,
-  Puzzle, ScrollText, Palette,
+  Store, ScrollText,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icon";
 import { Button } from "@/components/ui/button";
@@ -308,31 +308,20 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           variant="ghost"
           size="sm"
           className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => { navigate("/topics"); onNavigate?.(); }}
+          onClick={() => { navigate("/styles"); onNavigate?.(); }}
         >
-          <Compass className="h-4 w-4" />
-          素材和知识库
+          <Store className="h-4 w-4" />
+          风格与插件
         </Button>
         <Button
           variant="ghost"
           size="sm"
           className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => { navigate("/styles"); onNavigate?.(); }}
+          onClick={() => { navigate("/topics"); onNavigate?.(); }}
         >
-          <Palette className="h-4 w-4" />
-          写作风格
+          <Compass className="h-4 w-4" />
+          素材和知识库
         </Button>
-        {isAdmin && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-2 text-muted-foreground"
-            onClick={() => { navigate("/plugins"); onNavigate?.(); }}
-          >
-            <Puzzle className="h-4 w-4" />
-            插件
-          </Button>
-        )}
         {isAdmin && (
           <Button
             variant="ghost"

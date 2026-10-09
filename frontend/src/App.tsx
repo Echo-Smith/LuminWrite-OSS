@@ -10,7 +10,6 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
 import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
-import { PluginsDialog } from "@/pages/plugins/plugins-dialog";
 import { ConsoleDialog } from "@/pages/console/console-dialog";
 import { StyleMarketDialog } from "@/styles/style-market-dialog";
 import { PersonalCenter } from "@/pages/personal-center";
@@ -95,18 +94,8 @@ export function App() {
             element={<Navigate to="/topics?tab=materials" replace />}
           />
 
-          {/* 插件 — 需登录（guest 页内提示） */}
-          <Route
-            path="/plugins"
-            element={
-              <ProtectedRoute>
-                <PageTransition>
-                  <WritingWorkspace />
-                  <PluginsDialog />
-                </PageTransition>
-              </ProtectedRoute>
-            }
-          />
+          {/* 插件 — 已合并进「风格与插件」悬浮窗 */}
+          <Route path="/plugins" element={<Navigate to="/styles" replace />} />
 
           {/* 写作风格 — 需登录（guest 页内提示） */}
           <Route

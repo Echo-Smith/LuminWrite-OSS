@@ -1,41 +1,65 @@
 /**
- * 写作风格（悬浮窗，/styles）
+ * 风格与插件（悬浮窗，/styles）
  *
- * 与个人中心/审计中心/插件同款的 FloatingShell 骨架，应用市场式三区：
- * - 风格库：内置/全局风格浏览与一键导入
- * - 我的风格：自建/导入风格的管理（创建、编辑、投稿、删除）
- * - 技能：运行时技能/工具插件（OSS）
- *
- * 「创建写作风格」入口已从输入区与个人中心统一收敛到本窗。
+ * 应用市场式统一面板：写作风格与外部服务插件合并为一个入口。
+ * FloatingShell 分组菜单：
+ * - 风格：风格库（内置/全局 + 一键导入）、我的风格（创建/编辑/投稿）、技能（运行时工具插件）
+ * - 服务：MCP 服务（服务密钥 + 安全沙箱）、第三方服务（待接入）、全局默认模型（BYOK 回退）
  */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Palette, Library, Wrench, Plus } from "lucide-react";
+import {
+  Store, Library, Palette, Wrench, Puzzle, KeyRound, Shield, Cpu, Plug2, Plus,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
+import { cn } from "@/lib/utils";
 import { closeOverlayAndBack } from "@/lib/close-overlay";
 import { FloatingShell, type FloatingShellEntry } from "@/components/shell/floating-shell";
 import { StyleLibrarySection } from "./style-library-section";
 import { StyleSection } from "./my-styles-section";
 import { SkillsSection } from "./skills-section";
+import { APIKeysPage } from "@/pages/plugins/mcp-keys-page";
+import { MCPSandboxPage } from "@/pages/plugins/mcp-sandbox-page";
+import { ModelConfigsPage } from "@/pages/plugins/global-models-page";
+import { ThirdPartySection } from "@/pages/plugins/third-party-section";
 
-type StyleKey = "library" | "mine" | "skills";
+type MarketKey =
+  | "library" | "mine" | "skills"
+  | "mcp" | "third-party" | "global-models"
+type McpSubKey = "keys" | "sandbox"
+
+const item = (key: MarketKey, label: string, icon: typeof Library): FloatingShellEntry => ({ key, label, icon })
 
 const ITEMS: FloatingShellEntry[] = [
-  { key: "library", label: "风格库", icon: Library },
-  { key: "mine", label: "我的风格", icon: Palette },
-  { key: "skills", label: "技能", icon: Wrench },
-];
+  { group: "风格" },
+  item("library", "风格库", Library),
+  item("mine", "我的风格", Palette),
+  item("skills", "技能", Wrench),
+  { group: "服务" },
+  item("mcp", "MCP 服务", Puzzle),
+  item("third-party", "第三方服务", Plug2),
+  item("global-models", "全局默认模型", Cpu),
+]
 
-const META: Record<StyleKey, { title: string; subtitle: string }> = {
+const META: Record<MarketKey, { title: string; subtitle: string }> = {
   library: { title: "风格库", subtitle: "内置风格开箱即用，可一键导入改造" },
   mine: { title: "我的风格", subtitle: "创建、编辑与管理你的写作风格" },
   skills: { title: "技能", subtitle: "运行时技能/工具插件" },
-};
+  mcp: { title: "MCP 服务", subtitle: "MCP / 第三方服务的 API Key 与沙箱策略" },
+  "third-party": { title: "第三方服务", subtitle: "搜索源、语音等第三方能力（待接入）" },
+  "global-models": { title: "全局默认模型", subtitle: "实例级模型端点与密钥（用户自带 key 的回退）" },
+}
+
+const MCP_SUBS: Array<{ key: McpSubKey; label: string; icon: typeof KeyRound }> = [
+  { key: "keys", label: "服务密钥", icon: KeyRound },
+  { key: "sandbox", label: "安全沙箱", icon: Shield },
+]
 
 export function StyleMarketDialog() {
   const navigate = useNavigate();
-  const [active, setActive] = useState<StyleKey>("library");
+  const [active, setActive] = useState<MarketKey>("library");
+  const [mcpSub, setMcpSub] = useState<McpSubKey>("keys");
   const [open, setOpen] = useState(true);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
 
@@ -47,16 +71,16 @@ export function StyleMarketDialog() {
   const header = (
     <div className="flex items-center gap-2.5 w-full">
       <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
-        <Palette className="h-4 w-4 text-primary" />
+        <Store className="h-4 w-4 text-primary" />
       </div>
       <div>
-        <p className="text-sm font-medium">写作风格</p>
-        <p className="text-[11px] text-muted-foreground">styles &amp; skills</p>
+        <p className="text-sm font-medium">风格与插件</p>
+        <p className="text-[11px] text-muted-foreground">styles &amp; plugins</p>
       </div>
     </div>
   );
 
-  // 「我的风格」区的创建入口：派发个人中心同款事件，my-styles-section 监听打开创建弹窗
+  // 「我的风格」区的创建入口：派发事件，my-styles-section 监听打开创建弹窗
   const triggerCreate = () => {
     window.dispatchEvent(new CustomEvent("personal-center-add"));
   };
@@ -71,9 +95,9 @@ export function StyleMarketDialog() {
       onClose={handleClose}
       isGuest={isGuest}
       guestNotice={{
-        icon: Palette,
-        title: "游客模式无法管理写作风格",
-        description: "注册并登录后可导入风格、创建自己的写作风格。",
+        icon: Store,
+        title: "游客模式无法管理风格与插件",
+        description: "注册并登录后可导入风格、创建自己的写作风格并管理服务插件。",
       }}
       contentClassName="p-6"
     >
@@ -88,6 +112,36 @@ export function StyleMarketDialog() {
       {active === "library" && <StyleLibrarySection />}
       {active === "mine" && <StyleSection />}
       {active === "skills" && <SkillsSection />}
+      {active === "mcp" && (
+        <div className="space-y-4">
+          {/* 内嵌子页切换 */}
+          <div className="flex gap-1.5 border-b pb-2">
+            {MCP_SUBS.map((sub) => {
+              const Icon = sub.icon;
+              const isActive = mcpSub === sub.key;
+              return (
+                <button
+                  key={sub.key}
+                  onClick={() => setMcpSub(sub.key)}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-ui",
+                    isActive
+                      ? "bg-accent text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/50",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {sub.label}
+                </button>
+              );
+            })}
+          </div>
+          {mcpSub === "keys" && <APIKeysPage />}
+          {mcpSub === "sandbox" && <MCPSandboxPage />}
+        </div>
+      )}
+      {active === "third-party" && <ThirdPartySection />}
+      {active === "global-models" && <ModelConfigsPage />}
     </FloatingShell>
   );
 }
