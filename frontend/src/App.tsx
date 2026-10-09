@@ -17,8 +17,6 @@ import { PersonalCenter } from "@/pages/personal-center";
 import { WritingProjectsPage } from "@/pages/writing-projects"; // 新的轻量级写作项目管理器
 // import { EditorialBoard } from "@/pages/editorial/editorial-board"; // 已废弃，保留用于迁移参考
 import { MyStylesPage } from "@/pages/my-styles";
-import PricingPage from "@/pages/pricing";
-import BillingResultPage from "@/pages/billing-result";
 import { ToastContainer } from "@/components/ui/toast";
 import { useSSENotifications } from "@/hooks/use-sse-notifications";
 import { useWorkflowSSE } from "@/hooks/use-workflow-sse";
@@ -157,10 +155,8 @@ export function App() {
           <Route path="/workflow" element={<Navigate to="/write" replace />} />
 
           {/* 定价页 — 公开访问 */}
-          <Route path="/pricing" element={<PageTransition><PricingPage /></PageTransition>} />
 
           {/* 支付结果页 — 支付宝 return_url 回跳 */}
-          <Route path="/billing/result" element={<BillingResultPage />} />
 
           {/* 默认重定向 */}
           <Route path="/" element={<Navigate to="/write" replace />} />

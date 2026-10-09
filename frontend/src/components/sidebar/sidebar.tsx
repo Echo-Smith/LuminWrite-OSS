@@ -15,7 +15,7 @@ import {
   Plus, Trash2, Compass, Database,
   Sun, Moon, Monitor, LogOut, UserPlus,
   ChevronRight, ChevronDown, User, AlertTriangle, Newspaper,
-  CreditCard, Folder, FolderPlus, Archive, ArchiveRestore,
+  Folder, FolderPlus, Archive, ArchiveRestore,
   Copy, MoreHorizontal, Pencil, X, CheckSquare,
   Puzzle, ScrollText,
 } from "lucide-react";
@@ -35,7 +35,6 @@ import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import type { WritingSession } from "@/lib/writing-runtime-types";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAuthModal } from "@/stores/auth-modal-store";
-import { useBillingStore } from "@/stores/billing-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useTheme, type Theme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
@@ -267,10 +266,6 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const openAuth = useAuthModal((s) => s.openAuth);
-  const billingBalance = useBillingStore((s) => s.balance);
-  const loadBalance = useBillingStore((s) => s.loadBalance);
-
-  useEffect(() => { void loadBalance(); }, [loadBalance]);
 
   // 实验功能偏好
   const enableEditorial = useSettingsStore((s) => s.enableEditorial);
@@ -646,8 +641,6 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                 navigate("/write", { replace: true });
               }}
               onRegister={handleRegister}
-              pointBalance={billingBalance?.point_balance}
-              planName={billingBalance?.plan_display_name}
             />
           </PopoverContent>
         </Popover>
@@ -945,8 +938,6 @@ interface UserMenuContentProps {
   onNavigate: (path: string) => void;
   onLogout: () => void;
   onRegister: () => void;
-  pointBalance?: number;
-  planName?: string;
 }
 
 function UserMenuContent({
@@ -957,24 +948,9 @@ function UserMenuContent({
   onNavigate,
   onLogout,
   onRegister,
-  pointBalance,
-  planName,
 }: UserMenuContentProps) {
   return (
     <div className="space-y-0.5">
-      {!isGuest && typeof pointBalance === "number" && (
-        <button
-          className="mb-1 flex w-full items-center justify-between rounded-lg bg-accent/55 px-3 py-2.5 text-left transition-ui hover:bg-accent"
-          onClick={() => onNavigate("/profile")}
-        >
-          <span>
-            <span className="block text-[11px] text-muted-foreground">可用积分</span>
-            <span className="block text-sm font-semibold tabular-nums">{Math.floor(pointBalance).toLocaleString()} 积分</span>
-          </span>
-          {planName && <span className="max-w-20 truncate text-[10px] text-muted-foreground">{planName}</span>}
-        </button>
-      )}
-
       {/* 个人中心 */}
       <MenuRow
         icon={User}
@@ -982,14 +958,7 @@ function UserMenuContent({
         onClick={() => onNavigate("/profile")}
       />
 
-      {/* 套餐定价 */}
-      <MenuRow
-        icon={CreditCard}
-        label="套餐定价"
-        onClick={() => onNavigate("/pricing")}
-      />
-
-      {/* 插件（仅管理员） */}
+      {/* 插件（注册用户） */}
       {isAdmin && (
         <MenuRow
           icon={Puzzle}

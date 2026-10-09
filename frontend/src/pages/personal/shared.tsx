@@ -5,7 +5,7 @@
  */
 import { type ReactNode } from "react";
 import {
-  Brain, User, KeyRound, Palette, Settings, Wallet,
+  Brain, User, KeyRound, Palette, Settings,
   Bell, Info, FlaskConical, SlidersHorizontal, Cpu, BarChart3, History, type LucideIcon,
   X, Plus,
 } from "lucide-react";
@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
-export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "styles" | "memory" | "models" | "mcp" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "account" | "wallet" | "labs" | "about";
+export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "styles" | "memory" | "models" | "mcp" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "account" | "labs" | "about";
 
 export interface MenuItem {
   key: MenuKey;
@@ -30,7 +30,6 @@ export const MENU_ITEMS: MenuItem[] = [
   { key: "usage", label: "用量统计", icon: BarChart3 },
   { key: "settings", label: "偏好设置", icon: Settings },
   { key: "customization", label: "自定义", icon: SlidersHorizontal },
-  { key: "wallet", label: "积分管理", icon: Wallet },
   { key: "notifications", label: "通知设置", icon: Bell },
   { key: "account", label: "账号管理", icon: KeyRound },
   { key: "labs", label: "实验室", icon: FlaskConical },
@@ -50,7 +49,6 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   usage: { title: "用量统计", subtitle: "查看你的写作次数与 token 消耗" },
   settings: { title: "偏好设置", subtitle: "配置默认写作风格和编排模式" },
   customization: { title: "自定义", subtitle: "个性化写作区的外观" },
-  wallet: { title: "积分管理", subtitle: "查看余额、消费记录和套餐" },
   notifications: { title: "通知设置", subtitle: "管理在线通知偏好" },
   account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },
   labs: { title: "实验室", subtitle: "体验正在测试中的实验性功能" },

@@ -28,7 +28,6 @@ import { ModelServiceSection } from "@/pages/personal/model-service-section";
 import { UsageSection } from "@/pages/personal/usage-section";
 import { SettingsSection } from "@/pages/personal/settings-section";
 import { CustomizationSection } from "@/pages/personal/customization-section";
-import { WalletSection } from "@/pages/personal/wallet-section";
 import { NotificationsSection } from "@/pages/personal/notifications-section";
 import { AccountSection } from "@/pages/personal/account-section";
 import { LabsSection } from "@/pages/personal/labs-section";
@@ -149,7 +148,6 @@ export function PersonalCenter() {
             {activeMenu === "usage" && <UsageSection />}
             {activeMenu === "settings" && <SettingsSection onClosePanel={() => { navigate("/write", { replace: true }); setOpen(false); }} />}
             {activeMenu === "customization" && <CustomizationSection />}
-            {activeMenu === "wallet" && <WalletSection />}
             {activeMenu === "notifications" && <NotificationsSection />}
             {activeMenu === "account" && <AccountSection />}
             {activeMenu === "labs" && <LabsSection />}
