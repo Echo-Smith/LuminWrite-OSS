@@ -313,6 +313,15 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           <Compass className="h-4 w-4" />
           素材和知识库
         </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-start gap-2 text-muted-foreground"
+          onClick={() => { navigate("/styles"); onNavigate?.(); }}
+        >
+          <Palette className="h-4 w-4" />
+          写作风格
+        </Button>
         {enableEditorial && (
           <Button
             variant="ghost"
@@ -948,15 +957,6 @@ function UserMenuContent({
         label="个人中心"
         onClick={() => onNavigate("/profile")}
       />
-
-      {/* 写作风格（注册用户） */}
-      {isAdmin && (
-        <MenuRow
-          icon={Palette}
-          label="写作风格"
-          onClick={() => onNavigate("/styles")}
-        />
-      )}
 
       {/* 插件（注册用户） */}
       {isAdmin && (
