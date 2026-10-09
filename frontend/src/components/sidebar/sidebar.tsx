@@ -322,17 +322,6 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           <Compass className="h-4 w-4" />
           素材和知识库
         </Button>
-        {isAdmin && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-2 text-muted-foreground"
-            onClick={() => { navigate("/console"); onNavigate?.(); }}
-          >
-            <ScrollText className="h-4 w-4" />
-            审计中心
-          </Button>
-        )}
         {enableEditorial && (
           <Button
             variant="ghost"
@@ -968,6 +957,15 @@ function UserMenuContent({
         label="个人中心"
         onClick={() => onNavigate("/profile")}
       />
+
+      {/* 审计中心（注册用户） */}
+      {isAdmin && (
+        <MenuRow
+          icon={ScrollText}
+          label="审计中心"
+          onClick={() => onNavigate("/console")}
+        />
+      )}
 
       <div className="h-px bg-border/60 my-1" />
 
