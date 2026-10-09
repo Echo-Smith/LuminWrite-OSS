@@ -9,6 +9,14 @@ import { Switch } from "@/components/ui/switch";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAuthStore } from "@/stores/auth-store";
 
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide pt-2">
+      {children}
+    </p>
+  );
+}
+
 export function LabsSection() {
   const enableEditorial = useSettingsStore((s) => s.enableEditorial);
   const setEnableEditorial = useSettingsStore((s) => s.setEnableEditorial);
@@ -38,6 +46,8 @@ export function LabsSection() {
 
       {/* 实验功能列表 */}
       <div className="space-y-3">
+        <GroupLabel>功能开关（Beta）</GroupLabel>
+
         {/* 工作台入口 */}
         <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
@@ -61,6 +71,8 @@ export function LabsSection() {
             onCheckedChange={(checked) => setEnableEditorial(checked)}
           />
         </div>
+
+        <GroupLabel>管理面板（进阶）</GroupLabel>
 
         {/* 定时任务面板（仅 admin 可开） */}
         {!isGuest && (

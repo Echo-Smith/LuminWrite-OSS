@@ -1,8 +1,11 @@
 /**
- * 模型服务子页面 — BYOK（自带密钥）
+ * 模型服务子页面 — BYOK（自带密钥）+ 实例默认（回退）
  *
- * 用户在此维护自己的模型端点与密钥；解析语义是「用户配置优先、
- * 实例默认（管理员配置）回退」。密钥只显示掩码，明文仅写入时提交。
+ * 两组结构：
+ *   1. 我的模型：用户自带的模型端点与密钥，写作时优先使用；
+ *   2. 实例默认：部署级全局模型配置（原「风格和技能」窗的全局默认模型
+ *      页迁入），仅当用户未配置对应模型时作为回退。
+ * 密钥只显示掩码，明文仅写入时提交。
  */
 import { useEffect, useState } from "react";
 import {
@@ -27,6 +30,7 @@ import {
   listModelKeys, createModelKey, updateModelKey, deleteModelKey,
   setDefaultModelKey, testModelKey, discoverModels, PROBE_ERROR_LABELS,
 } from "@/lib/model-keys-api";
+import { ModelConfigsPage } from "@/pages/plugins/global-models-page";
 
 const PROVIDERS = [
   { value: "deepseek", label: "DeepSeek" },
@@ -340,6 +344,19 @@ export function ModelServiceSection() {
           </Button>
         </div>
       )}
+
+      {/* ─── 实例默认（回退）─── */}
+      <div className="space-y-3 pt-2">
+        <div className="flex items-center gap-2">
+          <Cpu className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">实例默认（回退）</h3>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          部署级模型配置：仅当用户未在「我的模型」配置对应模型时作为回退使用。
+          支持任意 OpenAI 兼容端点、模型发现、思考深度与自定义请求头；密钥加密存储。
+        </p>
+        <ModelConfigsPage />
+      </div>
 
       {/* 新增/编辑弹窗 */}
       <SimpleModal open={showForm} onClose={() => setShowForm(false)} title={editing ? "编辑模型配置" : "添加模型配置"} maxWidth="max-w-xl">

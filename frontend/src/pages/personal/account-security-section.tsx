@@ -1,37 +1,60 @@
 /**
- * 账号管理子页面
+ * 账号与安全子页面 — 个人信息 + 账号管理合并
+ *
+ * 一个入口涵盖四组：身份信息（用户名 / ID / 角色）、邮箱（账号恢复凭证，
+ * 归安全域）、登录凭证（密码 + Passkey）、危险区（注销）。
+ * 游客态只展示升级卡片。
  */
 import { useState, useEffect, useRef } from "react";
 import {
-  KeyRound, Fingerprint, Trash2, Shield, AlertCircle,
-  Check, Loader2, Clock, Plus,
+  User, Pencil, AlertCircle, Check, Loader2, Mail,
+  KeyRound, Fingerprint, Trash2, Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { useAuthStore } from "@/stores/auth-store";
 import { useBillingStore } from "@/stores/billing-store";
 import { cn } from "@/lib/utils";
 import { registerPasskey, getPasskeyErrorMessage } from "@/lib/passkey";
 import { SimpleModal, SimpleModalFooter, formatDate } from "./shared";
 
-export function AccountSection() {
+export function AccountSecuritySection() {
   const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
+  const login = useAuthStore((s) => s.login);
   const isGuest = user?.role === "guest";
 
+  // ── 身份信息 ──
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(user?.username ?? "");
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [nameSuccess, setNameSuccess] = useState(false);
+
+  // ── 邮箱 ──
+  const [boundEmail, setBoundEmail] = useState("");
+  const [emailLoading, setEmailLoading] = useState(true);
+  const [emailEditing, setEmailEditing] = useState(false);
+  const [emailInput, setEmailInput] = useState("");
+  const [emailCode, setEmailCode] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailSuccess, setEmailSuccess] = useState(false);
+  const [codeCountdown, setCodeCountdown] = useState(0);
+  const [codeSending, setCodeSending] = useState(false);
+
+  // ── 密码 ──
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [changing, setChanging] = useState(false);
   const [changeMsg, setChangeMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Passkey state
+  // ── Passkey ──
   const [passkeys, setPasskeys] = useState<Array<{ id: string; name: string; created_at: string; last_used_at?: string }>>([]);
   const [loadingPasskeys, setLoadingPasskeys] = useState(true);
-
-  // Passkey 注册状态
   const [pkRegOpen, setPkRegOpen] = useState(false);
   const [pkRegName, setPkRegName] = useState("");
   const [pkRegLoading, setPkRegLoading] = useState(false);
@@ -39,26 +62,142 @@ export function AccountSection() {
 
   useEffect(() => {
     if (!isGuest) {
+      fetchEmail();
       fetchPasskeys();
     }
-  }, [isGuest]);
+  }, [isGuest]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchPasskeys = async () => {
+  // 验证码倒计时
+  useEffect(() => {
+    if (codeCountdown > 0) {
+      const timer = setTimeout(() => setCodeCountdown(codeCountdown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [codeCountdown]);
+
+  // ─── 邮箱 handlers ───────────────────────────────────────
+
+  const fetchEmail = async () => {
     try {
-      const token = useAuthStore.getState().token;
-      const res = await fetch("/api/v2/auth/passkey/list", {
+      const res = await fetch("/api/v2/auth/my-email", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const json = await res.json();
-      if (json.success && json.data?.passkeys) {
-        setPasskeys(json.data.passkeys);
+      if (json.success && json.data?.email) {
+        setBoundEmail(json.data.email);
       }
     } catch {
       // ignore
     } finally {
-      setLoadingPasskeys(false);
+      setEmailLoading(false);
     }
   };
+
+  const handleSendCode = async () => {
+    if (!emailInput.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput.trim())) {
+      setEmailError("邮箱格式不正确");
+      return;
+    }
+    setCodeSending(true);
+    setEmailError(null);
+    try {
+      const res = await fetch("/api/v2/auth/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput.trim(), purpose: "bind" }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setCodeCountdown(60);
+      } else {
+        const code = json.error?.code || "send_failed";
+        setEmailError(
+          code === "email_taken" ? "该邮箱已被其他账号绑定" :
+          code === "rate_limited" ? "请等待 60 秒后再试" :
+          json.error?.message || "验证码发送失败"
+        );
+      }
+    } catch {
+      setEmailError("网络错误");
+    } finally {
+      setCodeSending(false);
+    }
+  };
+
+  const handleBindEmail = async () => {
+    if (!emailInput.trim() || !emailCode.trim()) return;
+    setEmailSaving(true);
+    setEmailError(null);
+    try {
+      const res = await fetch("/api/v2/auth/bind-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ email: emailInput.trim(), code: emailCode.trim() }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setBoundEmail(emailInput.trim());
+        setEmailEditing(false);
+        setEmailInput("");
+        setEmailCode("");
+        setEmailSuccess(true);
+        setTimeout(() => setEmailSuccess(false), 3000);
+      } else {
+        setEmailError(json.error?.message || "绑定失败");
+      }
+    } catch {
+      setEmailError("网络错误");
+    } finally {
+      setEmailSaving(false);
+    }
+  };
+
+  // ─── 用户名 handlers ─────────────────────────────────────
+
+  const handleSaveName = async () => {
+    if (newName.length < 2 || newName.length > 64) {
+      setNameError("用户名长度需要 2-64 个字符");
+      return;
+    }
+    if (newName === (user?.username ?? "")) {
+      setEditingName(false);
+      setNameError(null);
+      return;
+    }
+    setSavingName(true);
+    setNameError(null);
+    try {
+      const res = await fetch("/api/v2/auth/update-profile", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ username: newName }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        if (user && token) {
+          const expiresAt = useAuthStore.getState().expiresAt ?? Math.floor(Date.now() / 1000) + 3600;
+          login(token, user.userId, newName, user.role, expiresAt - Math.floor(Date.now() / 1000));
+        }
+        setEditingName(false);
+        setNameSuccess(true);
+        setTimeout(() => setNameSuccess(false), 3000);
+      } else {
+        setNameError(json.error?.message ?? "修改失败");
+      }
+    } catch {
+      setNameError("网络错误");
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  // ─── 密码 handlers ───────────────────────────────────────
 
   const handleChangePassword = async () => {
     setChangeMsg(null);
@@ -70,10 +209,8 @@ export function AccountSection() {
       setChangeMsg({ type: "error", text: "新密码至少需要 6 个字符" });
       return;
     }
-
     setChanging(true);
     try {
-      const token = useAuthStore.getState().token;
       const res = await fetch("/api/v2/auth/change-password", {
         method: "POST",
         headers: {
@@ -98,9 +235,26 @@ export function AccountSection() {
     }
   };
 
+  // ─── Passkey handlers ────────────────────────────────────
+
+  const fetchPasskeys = async () => {
+    try {
+      const res = await fetch("/api/v2/auth/passkey/list", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const json = await res.json();
+      if (json.success && json.data?.passkeys) {
+        setPasskeys(json.data.passkeys);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoadingPasskeys(false);
+    }
+  };
+
   const handleDeletePasskey = async (id: string) => {
     try {
-      const token = useAuthStore.getState().token;
       await fetch(`/api/v2/auth/passkey/${id}`, {
         method: "DELETE",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -122,7 +276,6 @@ export function AccountSection() {
       });
       setPkRegMsg({ type: "success", text: result.message || "Passkey 注册成功" });
       setPkRegName("");
-      // 刷新列表
       fetchPasskeys();
     } catch (e) {
       setPkRegMsg({ type: "error", text: getPasskeyErrorMessage(e) });
@@ -131,21 +284,22 @@ export function AccountSection() {
     }
   };
 
+  // ─── 游客态 ──────────────────────────────────────────────
+
   if (isGuest) {
     return (
       <div className="px-6 pt-6 pb-12 space-y-6">
         <Card className="border-amber-200/60 bg-amber-50/50 dark:bg-amber-950/20">
           <CardContent className="py-6 text-center">
-            <KeyRound className="mx-auto h-10 w-10 text-amber-500/50" />
+            <User className="mx-auto h-10 w-10 text-amber-500/50" />
             <p className="mt-3 text-sm text-amber-900 dark:text-amber-200 font-medium">
               游客模式无法管理账号
             </p>
             <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              注册账号后可修改密码和绑定 Passkey
+              注册账号后可修改用户名、绑定邮箱、修改密码与 Passkey，并保留所有历史记录。
             </p>
           </CardContent>
         </Card>
-        <DeactivateSection />
       </div>
     );
   }
@@ -153,7 +307,182 @@ export function AccountSection() {
   return (
     <div className="px-6 pt-6 pb-12 space-y-6">
 
-      {/* 密码修改 */}
+      {/* ── 身份信息 ── */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <User className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">身份信息</h3>
+        </div>
+        <div className="space-y-4">
+          {editingName ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">用户名</span>
+                <div className="flex items-center gap-2 max-w-[200px]">
+                  <Input
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="输入新用户名"
+                    autoFocus
+                    disabled={savingName}
+                    className="h-7 text-sm"
+                    onBlur={() => {
+                      if (newName.length >= 2 && newName !== (user?.username ?? "")) {
+                        handleSaveName();
+                      } else {
+                        setEditingName(false);
+                        setNameError(null);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !savingName) handleSaveName();
+                      if (e.key === "Escape") { setEditingName(false); setNameError(null); }
+                    }}
+                  />
+                  <Button
+                    size="icon"
+                    className="h-7 w-7 shrink-0"
+                    onClick={handleSaveName}
+                    onMouseDown={(e) => e.preventDefault()}
+                    disabled={savingName || newName.length < 2}
+                    title="确认修改"
+                  >
+                    {savingName ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              </div>
+              {nameError && (
+                <div className="flex items-center gap-2 text-xs text-red-600">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  {nameError}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div
+              className="flex items-center justify-between rounded-md -mx-1 px-1 py-0.5 transition-ui cursor-pointer hover:bg-accent/50"
+              onClick={() => {
+                setEditingName(true);
+                setNewName(user?.username ?? "");
+                setNameError(null);
+              }}
+            >
+              <span className="text-sm text-muted-foreground">用户名</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">{user?.username ?? "-"}</span>
+                <Pencil className="h-3 w-3 text-muted-foreground/50" />
+                {nameSuccess && (
+                  <span className="flex items-center gap-1 text-xs text-green-600">
+                    <Check className="h-3 w-3" />
+                    已更新
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          <InfoRow label="用户 ID" value={user?.userId ?? "-"} mono />
+          <InfoRow label="角色" value={user?.role === "admin" ? "管理员" : "注册用户"} />
+          <InfoRow label="状态" value="正常" />
+        </div>
+      </div>
+
+      {/* ── 邮箱（账号恢复凭证）── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Mail className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">邮箱</h3>
+        </div>
+        {emailLoading ? (
+          <div className="text-sm text-muted-foreground">加载中...</div>
+        ) : emailEditing ? (
+          <div className="space-y-2 max-w-sm">
+            <Input
+              type="email"
+              className="text-sm"
+              placeholder="your@email.com"
+              value={emailInput}
+              onChange={(e) => setEmailInput(e.target.value)}
+            />
+            {emailInput.trim() && (
+              <div className="flex gap-2">
+                <Input
+                  className="text-sm flex-1"
+                  placeholder="验证码"
+                  value={emailCode}
+                  onChange={(e) => setEmailCode(e.target.value)}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={handleSendCode}
+                  disabled={codeSending || codeCountdown > 0}
+                >
+                  {codeSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+                   codeCountdown > 0 ? `${codeCountdown}s` : "发送验证码"}
+                </Button>
+              </div>
+            )}
+            {emailError && (
+              <div className="flex items-center gap-2 text-xs text-red-600">
+                <AlertCircle className="h-3.5 w-3.5" /> {emailError}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={handleBindEmail}
+                disabled={emailSaving || !emailInput.trim() || !emailCode.trim()}
+              >
+                {emailSaving ? "绑定中..." : "确认绑定"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setEmailEditing(false); setEmailInput(""); setEmailCode(""); setEmailError(null); }}
+              >
+                取消
+              </Button>
+            </div>
+          </div>
+        ) : boundEmail ? (
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">{boundEmail}</span>
+            {emailSuccess ? (
+              <span className="flex items-center gap-1 text-xs text-green-600">
+                <Check className="h-3 w-3" /> 已绑定
+              </span>
+            ) : (
+              <button
+                onClick={() => { setEmailEditing(true); setEmailInput(""); setEmailCode(""); setEmailError(null); }}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">未绑定</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { setEmailEditing(true); setEmailInput(""); setEmailCode(""); setEmailError(null); }}
+            >
+              绑定邮箱
+            </Button>
+          </div>
+        )}
+        {!boundEmail && !emailEditing && (
+          <p className="text-xs text-amber-600 flex items-start gap-1.5">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            绑定邮箱后可使用“忘记密码”功能。如未绑定邮箱且忘记密码，请联系管理员重置。
+          </p>
+        )}
+      </div>
+
+      {/* ── 修改密码 ── */}
       <div className="space-y-4">
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-muted-foreground" />
@@ -209,9 +538,7 @@ export function AccountSection() {
         </div>
       </div>
 
-      
-
-      {/* Passkey 管理 */}
+      {/* ── Passkey 认证 ── */}
       <div className="space-y-4">
         <div className="flex items-center gap-2">
           <Fingerprint className="h-4 w-4 text-muted-foreground" />
@@ -256,7 +583,6 @@ export function AccountSection() {
                   ))}
                 </div>
               )}
-              {/* 绑定新 Passkey 按钮 — 直接放在内框中 */}
               <Button
                 variant="outline"
                 size="sm"
@@ -335,12 +661,25 @@ export function AccountSection() {
   );
 }
 
+function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className={cn(
+        "text-sm font-medium",
+        mono && "font-mono-sm text-muted-foreground"
+      )}>
+        {value.length > 20 ? value.slice(0, 20) + "..." : value}
+      </span>
+    </div>
+  );
+}
+
 // ─── 注销账号 ────────────────────────────────────────────
 
 function DeactivateSection() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const isGuest = user?.role === "guest";
 
   // billing balance
   const balanceInfo = useBillingStore((s) => s.balance);
@@ -358,8 +697,8 @@ function DeactivateSection() {
 
   // load balance on mount
   useEffect(() => {
-    if (!isGuest) loadBalance();
-  }, [isGuest, loadBalance]);
+    loadBalance();
+  }, [loadBalance]);
 
   // cleanup
   useEffect(() => {
@@ -368,8 +707,8 @@ function DeactivateSection() {
     };
   }, []);
 
-  const hasPoints = !isGuest && pointBalance > 0;
-  const canSubmit = isGuest || (password.length > 0 && (!hasPoints || confirmForfeit));
+  const hasPoints = pointBalance > 0;
+  const canSubmit = password.length > 0 && (!hasPoints || confirmForfeit);
   const countdownActive = countdown > 0;
 
   const startCountdown = () => {
@@ -405,19 +744,16 @@ function DeactivateSection() {
   const handleDeactivate = async () => {
     setErrorMsg(null);
 
-    // If has points and hasn't confirmed forfeiture, start countdown
     if (hasPoints && !confirmForfeit) {
       setErrorMsg("请先确认放弃剩余点数");
       return;
     }
 
-    // Start 5-second countdown on first click
     if (!countdownActive) {
       startCountdown();
       return;
     }
 
-    // After countdown reaches 0, actual deactivate
     setDeactivating(true);
     try {
       const token = useAuthStore.getState().token;
@@ -448,11 +784,9 @@ function DeactivateSection() {
         return;
       }
 
-      // Success — clear state and redirect
       logout();
       setOpen(false);
       resetDialog();
-      // Reload to create a new guest session
       window.location.href = "/";
     } catch {
       setErrorMsg("网络错误，请检查连接");
@@ -506,7 +840,6 @@ function DeactivateSection() {
         maxWidth="max-w-md"
       >
         <div className="space-y-5">
-          {/* 警告 */}
           <div className="flex items-start gap-2.5 rounded-lg bg-destructive/5 p-3.5">
             <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="space-y-1">
@@ -520,12 +853,11 @@ function DeactivateSection() {
                 <li>• AI 记忆和偏好设置</li>
                 <li>• 自定义写作风格</li>
                 <li>• 已绑定的 Passkey</li>
-                {!isGuest && <li>• 积分余额和消费记录</li>}
+                <li>• 积分余额和消费记录</li>
               </ul>
             </div>
           </div>
 
-          {/* 点数警告 */}
           {hasPoints && (
             <div className="space-y-2">
               <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 p-3">
@@ -554,21 +886,17 @@ function DeactivateSection() {
             </div>
           )}
 
-          {/* 密码输入（非 guest）*/}
-          {!isGuest && (
-            <div className="space-y-2">
-              <Label className="text-xs">输入密码确认身份</Label>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="输入你的登录密码"
-                disabled={deactivating || countdownActive}
-              />
-            </div>
-          )}
+          <div className="space-y-2">
+            <Label className="text-xs">输入密码确认身份</Label>
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="输入你的登录密码"
+              disabled={deactivating || countdownActive}
+            />
+          </div>
 
-          {/* 错误信息 */}
           {errorMsg && (
             <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -576,7 +904,6 @@ function DeactivateSection() {
             </div>
           )}
 
-          {/* 倒计时提示 */}
           {countdownActive && (
             <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -616,4 +943,3 @@ function DeactivateSection() {
     </>
   );
 }
-

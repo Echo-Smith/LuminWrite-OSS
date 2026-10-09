@@ -10,14 +10,13 @@ import { cn } from "@/lib/utils";
 // ─── 菜单类型 ──────────────────────────────────────────
 
 // 个人中心各 section 的键（菜单由 personal-center.tsx 自建，此处仅类型与元数据）
-export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "memory" | "models" | "mcp" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "account" | "labs" | "about";
+export type MenuKey = "cron" | "sensitive" | "account-security" | "history" | "memory" | "models" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "labs" | "about";
 
 export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> = {
-  profile: { title: "个人信息", subtitle: "查看和修改你的账号信息" },
+  "account-security": { title: "账号与安全", subtitle: "身份信息、邮箱、密码、Passkey 与注销" },
   history: { title: "写作记录", subtitle: "回看写作历史、评分与你的反馈" },
   memory: { title: "记忆管理", subtitle: "管理 AI 学习到的写作偏好" },
-  models: { title: "模型服务", subtitle: "自带 API 密钥（BYOK），写作优先使用你的模型" },
-  mcp: { title: "MCP 服务", subtitle: "已安装的 MCP 服务与工具状态" },
+  models: { title: "模型服务", subtitle: "我的模型（BYOK，优先使用）与实例默认（回退）" },
   "kb-maintenance": { title: "知识库拓展管理", subtitle: "全局语料拓展：多库管理与重建操作（实验室开启）" },
   cron: { title: "定时任务", subtitle: "查看与触发部署的定时任务（实验室开启）" },
   sensitive: { title: "敏感词库", subtitle: "内容安全词库管理（实验室开启）" },
@@ -25,7 +24,6 @@ export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> 
   settings: { title: "偏好设置", subtitle: "配置默认写作风格和编排模式" },
   customization: { title: "自定义", subtitle: "个性化写作区的外观" },
   notifications: { title: "通知设置", subtitle: "管理在线通知偏好" },
-  account: { title: "账号管理", subtitle: "管理密码和 Passkey 认证" },
   labs: { title: "实验室", subtitle: "体验正在测试中的实验性功能" },
   about: { title: "关于笔润智谈", subtitle: "版本信息与产品介绍" },
 };

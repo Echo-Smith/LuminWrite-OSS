@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Store, Library, Palette, Wrench, Puzzle, KeyRound, Shield, Cpu, Plug2, Plus, Package,
+  Store, Library, Palette, Wrench, Puzzle, KeyRound, Shield, Plug2, Plus, Package,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
@@ -21,13 +21,12 @@ import { StyleSection } from "./my-styles-section";
 import { SkillsSection } from "./skills-section";
 import { APIKeysPage } from "@/pages/plugins/mcp-keys-page";
 import { MCPSandboxPage } from "@/pages/plugins/mcp-sandbox-page";
-import { ModelConfigsPage } from "@/pages/plugins/global-models-page";
 import { ThirdPartySection } from "@/pages/plugins/third-party-section";
 import { PackageInstallDialog } from "@/components/styles/package-install-dialog";
 
 type MarketKey =
   | "library" | "mine" | "skills"
-  | "mcp" | "third-party" | "global-models"
+  | "mcp" | "third-party"
 type McpSubKey = "keys" | "sandbox"
 
 const item = (key: MarketKey, label: string, icon: typeof Library): FloatingShellEntry => ({ key, label, icon })
@@ -40,7 +39,6 @@ const ITEMS: FloatingShellEntry[] = [
   { group: "服务" },
   item("mcp", "MCP 服务", Puzzle),
   item("third-party", "第三方服务", Plug2),
-  item("global-models", "全局默认模型", Cpu),
 ]
 
 const META: Record<MarketKey, { title: string; subtitle: string }> = {
@@ -49,7 +47,6 @@ const META: Record<MarketKey, { title: string; subtitle: string }> = {
   skills: { title: "技能", subtitle: "运行时技能/工具插件" },
   mcp: { title: "MCP 服务", subtitle: "MCP / 第三方服务的 API Key 与沙箱策略" },
   "third-party": { title: "第三方服务", subtitle: "搜索源、语音等第三方能力（待接入）" },
-  "global-models": { title: "全局默认模型", subtitle: "实例级模型端点与密钥（用户自带 key 的回退）" },
 }
 
 const MCP_SUBS: Array<{ key: McpSubKey; label: string; icon: typeof KeyRound }> = [
@@ -155,7 +152,6 @@ export function StyleMarketDialog() {
         </div>
       )}
       {active === "third-party" && <ThirdPartySection />}
-      {active === "global-models" && <ModelConfigsPage />}
 
       <PackageInstallDialog
         open={showServicePackages}

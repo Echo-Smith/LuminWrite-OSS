@@ -7,8 +7,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Server, Clock, Shield, Database, User, KeyRound, History,
-  Palette, Brain, Cpu, BarChart3, Settings, SlidersHorizontal,
+  Clock, Shield, ShieldCheck, Database, History,
+  Brain, Cpu, BarChart3, Settings, SlidersHorizontal,
   Bell, FlaskConical, Info, type LucideIcon,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
@@ -19,9 +19,8 @@ import { type MenuKey, SECTION_META, FloatingAddButton } from "@/pages/personal/
 import {
   FloatingShell, type FloatingShellEntry,
 } from "@/components/shell/floating-shell";
-import { ProfileSection } from "@/pages/personal/profile-section";
+import { AccountSecuritySection } from "@/pages/personal/account-security-section";
 import { HistorySection } from "@/pages/personal/history-section";
-import { McpSection } from "@/pages/personal/mcp-section";
 import { CronJobsPage as CronSection } from "@/pages/personal/cron-section";
 import { SensitiveWordsPage as SensitiveSection } from "@/pages/personal/sensitive-section";
 import { KnowledgeBasePage } from "@/pages/personal/kb-maintenance";
@@ -31,7 +30,6 @@ import { UsageSection } from "@/pages/personal/usage-section";
 import { SettingsSection } from "@/pages/personal/settings-section";
 import { CustomizationSection } from "@/pages/personal/customization-section";
 import { NotificationsSection } from "@/pages/personal/notifications-section";
-import { AccountSection } from "@/pages/personal/account-section";
 import { LabsSection } from "@/pages/personal/labs-section";
 import { AboutSection } from "@/pages/personal/about-section";
 
@@ -39,7 +37,7 @@ const item = (key: MenuKey, label: string, icon: LucideIcon): FloatingShellEntry
 
 export function PersonalCenter() {
   const navigate = useNavigate();
-  const [activeMenu, setActiveMenu] = useState<MenuKey>("profile");
+  const [activeMenu, setActiveMenu] = useState<MenuKey>("account-security");
   const [open, setOpen] = useState(true);
 
   const user = useAuthStore((s) => s.user);
@@ -57,15 +55,13 @@ export function PersonalCenter() {
   // 分组菜单：账号 / 创作 / 系统（Labs 面板跟随开关出现在「系统」组）
   const menu: FloatingShellEntry[] = [
     { group: "账号" },
-    item("profile", "个人信息", User),
+    item("account-security", "账号与安全", ShieldCheck),
     item("notifications", "通知设置", Bell),
-    item("account", "账号管理", KeyRound),
     item("about", "关于笔润智谈", Info),
     { group: "创作" },
     item("history", "写作记录", History),
     item("memory", "记忆管理", Brain),
     item("models", "模型服务", Cpu),
-    item("mcp", "MCP 服务", Server),
     item("usage", "用量统计", BarChart3),
     { group: "系统" },
     item("settings", "偏好设置", Settings),
@@ -104,16 +100,14 @@ export function PersonalCenter() {
       meta={SECTION_META}
       onClose={handleClose}
     >
-      {activeMenu === "profile" && <ProfileSection />}
+      {activeMenu === "account-security" && <AccountSecuritySection />}
       {activeMenu === "history" && <HistorySection />}
       {activeMenu === "memory" && <MemorySection />}
       {activeMenu === "models" && <ModelServiceSection />}
-      {activeMenu === "mcp" && <McpSection />}
       {activeMenu === "usage" && <UsageSection />}
       {activeMenu === "settings" && <SettingsSection onClosePanel={() => { navigate("/write", { replace: true }); setOpen(false); }} />}
       {activeMenu === "customization" && <CustomizationSection />}
       {activeMenu === "notifications" && <NotificationsSection />}
-      {activeMenu === "account" && <AccountSection />}
       {activeMenu === "labs" && <LabsSection />}
       {activeMenu === "cron" && <CronSection />}
       {activeMenu === "sensitive" && <SensitiveSection />}
