@@ -19,8 +19,9 @@ import {
   type TopicMaterialAssociation,
   type UserMaterial,
   listTopicMaterials, removeMaterialAssociation, autoAssociateMaterials,
-  listMaterials, associateMaterial,
+  listMaterials, associateMaterial, saveTopicToKnowledge,
 } from "@/lib/material-api";
+import { useToastStore } from "@/stores/toast-store";
 
 interface TopicDetailDialogProps {
   topic: Topic | null;
@@ -235,6 +236,39 @@ export function TopicDetailDialog({
   isFavorited, onToggleFavorite, onClose, onStartWriting, onRefreshAngles,
   onFavoriteAngle, favoritedAngles,
 }: TopicDetailDialogProps) {
+  const [savingKB, setSavingKB] = useState(false);
+  const [savedKB, setSavedKB] = useState(false);
+
+  // 切换选题时重置保存状态（组件实例随弹窗保留）
+  useEffect(() => { setSavedKB(false); }, [topic?.id]);
+
+  // 保存至知识库：优先存选题描述（text 模式）；无描述但有原文链接时
+  // 走 url 模式抓取原文（服务端 URLImporter 管线）。
+  const handleSaveToKnowledge = async () => {
+    if (!topic?.id || savingKB || savedKB) return;
+    setSavingKB(true);
+    try {
+      const useURL = !topic.description?.trim() && !!topic.url;
+      await saveTopicToKnowledge(topic.id, useURL ? { mode: "url" } : { mode: "text" });
+      setSavedKB(true);
+      useToastStore.getState().add({
+        type: "success",
+        title: "已保存至知识库",
+        description: useURL ? "原文已抓取入库，写作时可被检索引用" : "选题描述已入库，写作时可被检索引用",
+        duration: 3000,
+      });
+    } catch (e) {
+      useToastStore.getState().add({
+        type: "error",
+        title: "保存失败",
+        description: (e as Error).message,
+        duration: 3000,
+      });
+    } finally {
+      setSavingKB(false);
+    }
+  };
+
   if (!topic) return null;
 
   return (
@@ -374,7 +408,17 @@ export function TopicDetailDialog({
           </div>
         </ScrollArea>
 
-        <div className="flex justify-end border-t pt-3">
+        <div className="flex justify-end border-t pt-3 gap-2">
+          <Button
+            variant="outline"
+            className="gap-1.5"
+            disabled={savingKB || savedKB}
+            onClick={() => void handleSaveToKnowledge()}
+            title={topic.url ? "将选题描述（或原文链接抓取）存入知识库" : "将选题描述存入知识库"}
+          >
+            {savingKB ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+            {savedKB ? "已存入知识库" : "保存至知识库"}
+          </Button>
           <Button onClick={() => onStartWriting()} className="gap-1.5">
             直接写作 <ArrowRight className="h-4 w-4" />
           </Button>

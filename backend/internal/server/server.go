@@ -885,6 +885,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/topics/{id}/trend", s.handleTopicTrend)
 		r.With(s.jwtAuthMiddleware).Post("/topics/{id}/favorite", s.handleFavoriteTopic)
 		r.With(s.jwtAuthMiddleware).Delete("/topics/{id}/favorite", s.handleUnfavoriteTopic)
+		// Save a topic into the caller's knowledge base (registered users only)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/topics/{id}/knowledge", s.handleSaveTopicToKnowledge)
 
 		// Feedback
 		// jwtOptional: guests may still submit; authenticated submissions get

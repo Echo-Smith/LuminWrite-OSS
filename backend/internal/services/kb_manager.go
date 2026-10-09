@@ -134,16 +134,19 @@ func (m *KbManager) AddDocument(ctx context.Context, userID, title, content, sou
 		}
 	}
 
+	// kb_id defaults to the seeded 'default' KB so material-family writes
+	// (materials, RSS ingest, file parse) are visible in the KB view —
+	// AddDocumentToKB overrides it for explicit non-default KBs.
 	query := `
-		INSERT INTO knowledge_base (user_id, source, source_type, title, content, content_hash, metadata, status, embedding_model, embedding_dim, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, NOW(), NOW())
+		INSERT INTO knowledge_base (user_id, kb_id, source, source_type, title, content, content_hash, metadata, status, embedding_model, embedding_dim, created_at, updated_at)
+		VALUES ($1, 'default', $2, $3, $4, $5, $6, $7, 'active', $8, $9, NOW(), NOW())
 	`
 	args := []interface{}{nullIfEmpty(userID), sourceType, sourceType, title, content, contentHash, string(metaJSON), embeddingModel, embeddingDim}
 
 	if embeddingVec != "" {
 		query = `
-			INSERT INTO knowledge_base (user_id, source, source_type, title, content, content_hash, metadata, status, embedding, embedding_model, embedding_dim, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, NOW(), NOW())
+			INSERT INTO knowledge_base (user_id, kb_id, source, source_type, title, content, content_hash, metadata, status, embedding, embedding_model, embedding_dim, created_at, updated_at)
+			VALUES ($1, 'default', $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, NOW(), NOW())
 		`
 		args = []interface{}{nullIfEmpty(userID), sourceType, sourceType, title, content, contentHash, string(metaJSON), embeddingVec, embeddingModel, embeddingDim}
 	}

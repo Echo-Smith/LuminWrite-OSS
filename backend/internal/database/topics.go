@@ -28,12 +28,14 @@ func (r *TraceRepo) GetTopicByID(ctx context.Context, id string) (map[string]int
 		fetchedAt   *time.Time
 		createdAt   time.Time
 		status      string
+		url         *string
 	)
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id::text, title, description, source, platform, hot_rank, raw_data, fetched_at, created_at, status
+		SELECT id::text, title, description, source, platform, hot_rank, raw_data, fetched_at, created_at, status,
+		       raw_data->>'url' AS url
 		FROM topics WHERE id = $1
-	`, id).Scan(&titleID, &title, &description, &source, &platform, &hotRank, &rawData, &fetchedAt, &createdAt, &status)
+	`, id).Scan(&titleID, &title, &description, &source, &platform, &hotRank, &rawData, &fetchedAt, &createdAt, &status, &url)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +46,9 @@ func (r *TraceRepo) GetTopicByID(ctx context.Context, id string) (map[string]int
 		"source":     source,
 		"created_at": createdAt,
 		"status":     status,
+	}
+	if url != nil && *url != "" {
+		topic["url"] = *url
 	}
 	if description != nil {
 		topic["description"] = *description

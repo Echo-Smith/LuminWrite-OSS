@@ -1,0 +1,9 @@
+-- 125 回滚：无可回滚动作。
+-- 125 rollback: nothing to undo.
+--
+-- The backfill only assigned the pre-existing 'default' KB to rows that
+-- had no KB assignment; reverting would orphan those documents from every
+-- KB view again, which is the bug this migration fixes.
+--
+-- 回滚只会让这些文档重新从所有知识库视图中消失（即本迁移修复的问题），
+-- 因此不做反向操作。

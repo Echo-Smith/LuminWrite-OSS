@@ -279,3 +279,15 @@ export async function autoAssociateMaterials(
     results: json.data?.results ?? [],
   };
 }
+
+/** 将选题保存至知识库（成为可检索素材） */
+export async function saveTopicToKnowledge(
+  topicId: string,
+  payload: { mode?: "text" | "url"; content?: string; folder_id?: string } = {},
+): Promise<{ id: string; doc_id: string; title: string }> {
+  const json = await postJSON<{ id: string; doc_id: string; title: string }>(
+    `${BASE}/topics/${topicId}/knowledge`,
+    payload,
+  );
+  return json.data ?? { id: "", doc_id: "", title: "" };
+}
