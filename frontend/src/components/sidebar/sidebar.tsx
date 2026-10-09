@@ -12,7 +12,7 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  Plus, Trash2, Compass, Database,
+  Plus, Trash2, Compass,
   Sun, Moon, Monitor, LogOut, UserPlus,
   ChevronRight, ChevronDown, User, AlertTriangle, Newspaper,
   Folder, FolderPlus, Archive, ArchiveRestore,
@@ -311,16 +311,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           onClick={() => { navigate("/topics"); onNavigate?.(); }}
         >
           <Compass className="h-4 w-4" />
-          选题
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-2 text-muted-foreground"
-          onClick={() => { navigate("/topics?tab=materials"); onNavigate?.(); }}
-        >
-          <Database className="h-4 w-4" />
-          知识库
+          选题与知识库
         </Button>
         {enableEditorial && (
           <Button
