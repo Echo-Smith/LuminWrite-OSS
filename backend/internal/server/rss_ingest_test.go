@@ -155,3 +155,141 @@ func TestIngestRSSSubscription(t *testing.T) {
 		t.Fatalf("failure not recorded: %+v", afterFail)
 	}
 }
+
+// fakeArticleFetcher scripts the full-text import path (summary-only feeds).
+type fakeArticleFetcher struct {
+	docID string
+	title string
+	err   error
+	calls int
+}
+
+func (f *fakeArticleFetcher) fetch(_ context.Context, _, _, _ string) (string, string, error) {
+	f.calls++
+	if f.err != nil {
+		return "", "", f.err
+	}
+	return f.docID, f.title, nil
+}
+
+func uniqueHash() string {
+	return "h" + time.Now().Format("150405.000000000")
+}
+
+// fakeDocSeeder inserts a knowledge_base document for the fetched-article
+// path so importRSSFetchedItem can read it back.
+func fakeDocSeeder(t *testing.T, db *database.DB, userID, title string) string {
+	t.Helper()
+	var docID string
+	if err := db.QueryRowContext(context.Background(), `
+		INSERT INTO knowledge_base (user_id, source, source_type, title, content, content_hash, status)
+		VALUES ($1, 'url', 'url', $2, $3, $4, 'active') RETURNING id::text
+	`, userID, title,
+		"全文正文：这是通过原文抓取获得的长内容，用于验证摘要回退路径可以正常写入素材并可被检索到。"+uniqueHash(),
+		uniqueHash()).Scan(&docID); err != nil {
+		t.Fatal(err)
+	}
+	return docID
+}
+
+func TestIngestRSSFullTextFallback(t *testing.T) {
+	db, cleanup, err := dbtest.Open(os.Getenv("TEST_DATABASE_URL"), 4, 2)
+	if err != nil {
+		if err == dbtest.ErrNoDatabaseURL {
+			t.Skip("TEST_DATABASE_URL not set")
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	var userID string
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO users (uid, name, role) VALUES ('rss-fulltext', 'rss-fulltext', 'user') RETURNING id::text`,
+	).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+
+	adminRepo := database.NewAdminRepo(db)
+	kbMgr := services.NewKbManager(db.DB, nil)
+	s := &Server{db: db, adminRepo: adminRepo, kbMgr: kbMgr}
+
+	// fetch_full_text = true 的订阅
+	sub, err := adminRepo.CreateRSSSubscription(ctx, &database.RSSSubscription{
+		UserID: userID, FeedURL: "https://summary.example.com/feed",
+		MaxItemsPerTick: 3, FetchFullText: true, IsActive: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	reloaded, err := adminRepo.GetRSSSubscription(ctx, userID, sub.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.FetchFullText {
+		t.Fatal("fetch_full_text not persisted")
+	}
+
+	docID := fakeDocSeeder(t, db, userID, "原文标题")
+	article := &fakeArticleFetcher{docID: docID, title: "原文标题"}
+	s.articleFetcher = article.fetch
+
+	// 摘要条目（内容 < 400 runes）→ 应走全文抓取
+	feed := &rss.Feed{Title: "摘要源", Items: []rss.Item{{
+		GUID: "g1", Title: "摘要条目", Link: "https://summary.example.com/a",
+		Content:     "<p>这是一段摘要，远不到全文长度阈值。</p>",
+		PublishedAt: time.Now(),
+	}}}
+	result := s.ingestRSSSubscription(ctx, sub, (&fakeFeedFetcher{feed: feed, result: &rss.FetchResult{}}).fetch, 3)
+	if result.Error != "" {
+		t.Fatalf("tick: %v", result.Error)
+	}
+	if article.calls != 1 {
+		t.Fatalf("article fetcher calls = %d, want 1 (summary must trigger full-text fetch)", article.calls)
+	}
+	if result.Imported != 1 || result.FullText != 1 {
+		t.Fatalf("imported=%d full_text=%d, want 1/1", result.Imported, result.FullText)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM user_materials WHERE user_id = $1 AND source_type = 'rss' AND source_url = 'https://summary.example.com/a'`,
+		userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("full-text material rows = %d, want 1", count)
+	}
+
+	// 关闭全文开关后，同样的摘要条目应被跳过（不足最小区间）
+	sub.FetchFullText = false
+	feed2 := &rss.Feed{Title: "摘要源", Items: []rss.Item{{
+		GUID: "g2", Title: "摘要条目2", Link: "https://summary.example.com/b",
+		Content:     "<p>另一段摘要，同样不到全文长度阈值。</p>",
+		PublishedAt: time.Now(),
+	}}}
+	result2 := s.ingestRSSSubscription(ctx, sub, (&fakeFeedFetcher{feed: feed2, result: &rss.FetchResult{}}).fetch, 3)
+	if result2.Imported != 0 || result2.Skipped != 1 {
+		t.Fatalf("no-fulltext tick: imported=%d skipped=%d, want 0/1", result2.Imported, result2.Skipped)
+	}
+
+	// 全文抓取失败 → 降级摘要（摘要够长则导入，且不计 full_text）
+	sub.FetchFullText = true
+	failing := &fakeArticleFetcher{err: context.DeadlineExceeded}
+	s.articleFetcher = failing.fetch
+	feed3 := &rss.Feed{Title: "摘要源", Items: []rss.Item{{
+		GUID: "g3", Title: "长摘要", Link: "https://summary.example.com/c",
+		Content:     "<p>这是一段较长的摘要内容，虽然触发了全文抓取阈值，但在抓取失败时应当降级使用摘要本身，只要摘要长度超过最小入库区间即可成功写入知识库成为素材。</p>",
+		PublishedAt: time.Now(),
+	}}}
+	result3 := s.ingestRSSSubscription(ctx, sub, (&fakeFeedFetcher{feed: feed3, result: &rss.FetchResult{}}).fetch, 3)
+	if result3.Error != "" {
+		t.Fatalf("degrade tick: %v", result3.Error)
+	}
+	if result3.Imported != 1 || result3.FullText != 0 {
+		t.Fatalf("degrade: imported=%d full_text=%d, want 1/0", result3.Imported, result3.FullText)
+	}
+	if failing.calls != 1 {
+		t.Fatalf("failing fetcher calls = %d, want 1", failing.calls)
+	}
+}

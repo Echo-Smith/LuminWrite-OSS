@@ -40,6 +40,8 @@ type Server struct {
 	llm               *tools.LLMClient
 	llmSvc            *services.LLMService
 	userKeyRepo       *database.UserModelKeyRepo
+	// articleFetcher overrides the full-text article import path (tests).
+	articleFetcher    rssArticleFetcher
 	search            *tools.SearchClient
 	embedding         *tools.EmbeddingClient
 	profiles          *profile.Loader
@@ -924,6 +926,8 @@ func (s *Server) Router() http.Handler {
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/rss/subscriptions/{id}", s.handleUpdateRSSSubscription)
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/rss/subscriptions/{id}", s.handleDeleteRSSSubscription)
 		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/rss/subscriptions/{id}/refresh", s.handleRefreshRSSSubscription)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/rss/subscriptions/opml", s.handleExportRSSOPML)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/rss/subscriptions/import", s.handleImportRSSOPML)
 
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)

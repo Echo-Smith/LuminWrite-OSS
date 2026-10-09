@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -13,6 +15,124 @@ import (
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/services/rss"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/pkg/response"
 )
+
+// ─── OPML import/export ────────────────────────────────
+
+const (
+	opmlMaxImportBytes = 1 << 20 // 1 MiB
+	opmlMaxImportFeeds = 200
+)
+
+// handleExportRSSOPML exports the caller's subscriptions as OPML 2.0.
+// GET /api/v2/rss/subscriptions/opml
+func (s *Server) handleExportRSSOPML(w http.ResponseWriter, r *http.Request) {
+	if s.adminRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	subs, err := s.adminRepo.ListRSSSubscriptions(r.Context(), user.Sub)
+	if err != nil {
+		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to list subscriptions")
+		return
+	}
+	feeds := make([]rss.OPMLFeed, 0, len(subs))
+	for _, sub := range subs {
+		feeds = append(feeds, rss.OPMLFeed{Title: sub.Title, FeedURL: sub.FeedURL, SiteURL: sub.SiteURL})
+	}
+	body := rss.BuildOPML("LuminBuddy RSS 订阅", feeds)
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="luminbuddy-subscriptions.opml"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// handleImportRSSOPML imports subscriptions from an OPML 2.0 document.
+// POST /api/v2/rss/subscriptions/import (raw XML body, ≤1 MiB, ≤200 feeds)
+//
+// Per-feed outcomes: imported / skipped (duplicate or invalid URL) /
+// failed (unreachable). One bad feed never aborts the batch.
+func (s *Server) handleImportRSSOPML(w http.ResponseWriter, r *http.Request) {
+	if s.adminRepo == nil {
+		response.Err(w, http.StatusServiceUnavailable, "db_unavailable", "database not available")
+		return
+	}
+	user := userFromContext(r.Context())
+	if user == nil {
+		response.Err(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, opmlMaxImportBytes+1))
+	if err != nil || len(body) > opmlMaxImportBytes {
+		response.Err(w, http.StatusBadRequest, "bad_request", "OPML file too large (max 1 MiB)")
+		return
+	}
+	feeds, err := rss.ParseOPML(body)
+	if err != nil {
+		response.Err(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if len(feeds) > opmlMaxImportFeeds {
+		response.Err(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("OPML contains too many feeds (max %d)", opmlMaxImportFeeds))
+		return
+	}
+
+	imported, skipped, failed := 0, 0, 0
+	var feedErrors []string
+	for _, f := range feeds {
+		if verr := rss.ValidateFeedURL(f.FeedURL); verr != nil {
+			skipped++
+			feedErrors = append(feedErrors, f.FeedURL+": "+verr.Error())
+			continue
+		}
+		feed, _, ferr := rss.FetchFeed(r.Context(), f.FeedURL, rss.FetchOptions{})
+		if ferr != nil {
+			failed++
+			feedErrors = append(feedErrors, f.FeedURL+": "+ferr.Error())
+			continue
+		}
+		_, cerr := s.adminRepo.CreateRSSSubscription(r.Context(), &database.RSSSubscription{
+			UserID:          user.Sub,
+			FeedURL:         f.FeedURL,
+			Title:           firstNonEmptyString(f.Title, feed.Title),
+			SiteURL:         firstNonEmptyString(f.SiteURL, feed.SiteURL),
+			Description:     feed.Description,
+			MaxItemsPerTick: 3,
+			IsActive:        true,
+		})
+		if cerr != nil {
+			if strings.Contains(cerr.Error(), "duplicate key") || strings.Contains(cerr.Error(), "unique") {
+				skipped++
+				continue
+			}
+			failed++
+			feedErrors = append(feedErrors, f.FeedURL+": "+cerr.Error())
+			continue
+		}
+		imported++
+	}
+	response.OK(w, map[string]interface{}{
+		"total":    len(feeds),
+		"imported": imported,
+		"skipped":  skipped,
+		"failed":   failed,
+		"errors":   feedErrors,
+	})
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // ─── RSS Subscription Handlers ──────────────────────────
 //
@@ -62,6 +182,7 @@ func (s *Server) handleCreateRSSSubscription(w http.ResponseWriter, r *http.Requ
 		FeedURL         string `json:"feed_url"`
 		TargetFolderID  string `json:"target_folder_id"`
 		MaxItemsPerTick int    `json:"max_items_per_tick"`
+		FetchFullText   bool   `json:"fetch_full_text"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Err(w, http.StatusBadRequest, "bad_request", "invalid request body")
@@ -97,6 +218,7 @@ func (s *Server) handleCreateRSSSubscription(w http.ResponseWriter, r *http.Requ
 		Description:     feed.Description,
 		TargetFolderID:  req.TargetFolderID,
 		MaxItemsPerTick: req.MaxItemsPerTick,
+		FetchFullText:   req.FetchFullText,
 		IsActive:        true,
 	})
 	if err != nil {
@@ -142,6 +264,7 @@ func (s *Server) handleUpdateRSSSubscription(w http.ResponseWriter, r *http.Requ
 		Title           string `json:"title"`
 		TargetFolderID  string `json:"target_folder_id"`
 		MaxItemsPerTick int    `json:"max_items_per_tick"`
+		FetchFullText   *bool  `json:"fetch_full_text"`
 		IsActive        *bool  `json:"is_active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -158,6 +281,9 @@ func (s *Server) handleUpdateRSSSubscription(w http.ResponseWriter, r *http.Requ
 	next.TargetFolderID = req.TargetFolderID
 	if req.MaxItemsPerTick >= 1 && req.MaxItemsPerTick <= 20 {
 		next.MaxItemsPerTick = req.MaxItemsPerTick
+	}
+	if req.FetchFullText != nil {
+		next.FetchFullText = *req.FetchFullText
 	}
 	if req.IsActive != nil {
 		next.IsActive = *req.IsActive

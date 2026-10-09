@@ -4,9 +4,9 @@
  * 订阅源 = 自动更新的素材文件夹：新条目由后端周期性抓取（默认 15 分钟，
  * 每源 3 条、全局 20 条/次），以素材形式落入目标文件夹，可被写作检索。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Rss, Plus, Trash2, RefreshCw, Loader2, AlertTriangle, CheckCircle2, FolderOpen, Pencil,
+  Rss, Plus, Trash2, RefreshCw, Loader2, AlertTriangle, FolderOpen, Pencil, Upload, Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,7 +24,8 @@ import { cn } from "@/lib/utils";
 import {
   type RSSSubscription,
   listRSSSubscriptions, createRSSSubscription, updateRSSSubscription,
-  deleteRSSSubscription, refreshRSSSubscription, RSS_ERROR_LABELS,
+  deleteRSSSubscription, refreshRSSSubscription, exportRSSOPML, importRSSOPML,
+  RSS_ERROR_LABELS,
 } from "@/lib/rss-api";
 
 export interface MaterialFolderOption {
@@ -60,12 +61,14 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
   const [editing, setEditing] = useState<RSSSubscription | null>(null);
   const [deleting, setDeleting] = useState<RSSSubscription | null>(null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
+  const opmlInputRef = useRef<HTMLInputElement>(null);
 
   // 表单状态
   const [feedUrl, setFeedUrl] = useState("");
   const [title, setTitle] = useState("");
   const [folderId, setFolderId] = useState("");
   const [maxItems, setMaxItems] = useState("3");
+  const [fetchFullText, setFetchFullText] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -86,7 +89,8 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
   }, [open, load]);
 
   const resetForm = () => {
-    setFeedUrl(""); setTitle(""); setFolderId(""); setMaxItems("3"); setIsActive(true);
+    setFeedUrl(""); setTitle(""); setFolderId(""); setMaxItems("3");
+    setFetchFullText(false); setIsActive(true);
     setEditing(null);
   };
 
@@ -97,6 +101,7 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
     setTitle(sub.title);
     setFolderId(sub.target_folder_id ?? "");
     setMaxItems(String(sub.max_items_per_tick || 3));
+    setFetchFullText(sub.fetch_full_text ?? false);
     setIsActive(sub.is_active);
     setShowAdd(true);
   };
@@ -107,7 +112,8 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
       if (editing) {
         await updateRSSSubscription(editing.id, {
           title, target_folder_id: folderId,
-          max_items_per_tick: Number(maxItems) || 3, is_active: isActive,
+          max_items_per_tick: Number(maxItems) || 3,
+          fetch_full_text: fetchFullText, is_active: isActive,
         });
         notify("success", "订阅已更新");
       } else {
@@ -116,6 +122,7 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
           feed_url: feedUrl.trim(),
           target_folder_id: folderId || undefined,
           max_items_per_tick: Number(maxItems) || 3,
+          fetch_full_text: fetchFullText,
         });
         notify("success", "订阅成功，首批条目正在入库");
       }
@@ -174,10 +181,52 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
   return (
     <SimpleModal open={open} onClose={() => onOpenChange(false)} title="RSS 订阅" maxWidth="max-w-2xl">
       <div className="space-y-4">
-        <p className="text-xs text-muted-foreground">
-          订阅源的新文章会自动抓取并入库为素材（默认每 15 分钟，每源每次最多 3 条），
-          落入下方指定的文件夹，可被写作时的知识库检索使用。
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-xs text-muted-foreground">
+            订阅源的新文章会自动抓取并入库为素材（默认每 15 分钟，每源每次最多 3 条），
+            落入下方指定的文件夹，可被写作时的知识库检索使用。
+          </p>
+          <div className="flex gap-1.5 shrink-0">
+            <Button
+              size="sm" variant="outline" className="h-7 gap-1 text-xs"
+              disabled={subs.length === 0}
+              onClick={async () => {
+                try { await exportRSSOPML(); }
+                catch (e) { notify("error", "导出失败", (e as Error).message); }
+              }}
+            >
+              <Download className="h-3 w-3" /> 导出 OPML
+            </Button>
+            <Button
+              size="sm" variant="outline" className="h-7 gap-1 text-xs"
+              onClick={() => opmlInputRef.current?.click()}
+            >
+              <Upload className="h-3 w-3" /> 导入 OPML
+            </Button>
+            <input
+              ref={opmlInputRef}
+              type="file" accept=".opml,.xml" className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+                try {
+                  const xml = await file.text();
+                  const r = await importRSSOPML(xml);
+                  notify("success", `导入完成：新增 ${r.imported} 个订阅`,
+                    r.skipped > 0 ? `${r.skipped} 个已存在或无效` : undefined);
+                  await load();
+                  onSubscriptionsChanged?.();
+                  if (r.errors?.length) {
+                    notify("warning", `${r.failed} 个源导入失败`, r.errors.slice(0, 3).join("；"));
+                  }
+                } catch (err) {
+                  notify("error", "导入失败", (err as Error).message);
+                }
+              }}
+            />
+          </div>
+        </div>
 
         {loading ? (
           <div className="flex justify-center py-8">
@@ -201,6 +250,7 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
                       <Rss className="h-3.5 w-3.5 text-orange-500 shrink-0" />
                       <span className="text-sm font-medium truncate">{sub.title || sub.feed_url}</span>
                       {!sub.is_active && <Badge variant="secondary" className="text-[10px]">已暂停</Badge>}
+                      {sub.fetch_full_text && <Badge variant="outline" className="text-[10px] text-blue-600 border-blue-300">全文</Badge>}
                       {sub.fail_count > 0 && (
                         <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300">
                           <AlertTriangle className="mr-0.5 h-2.5 w-2.5" /> 连续失败 {sub.fail_count}
@@ -304,6 +354,15 @@ export function RSSSubscriptionsPanel({ open, onOpenChange, folders, onSubscript
                 value={maxItems}
                 onChange={(e) => setMaxItems(e.target.value)}
               />
+            </div>
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">
+              <div>
+                <p className="text-sm font-medium">抓取全文</p>
+                <p className="text-xs text-muted-foreground">
+                  摘要源自动抓取原文正文（更慢、消耗更多额度）
+                </p>
+              </div>
+              <Switch checked={fetchFullText} onCheckedChange={setFetchFullText} />
             </div>
             {editing && (
               <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">

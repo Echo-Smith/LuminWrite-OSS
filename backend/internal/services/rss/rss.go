@@ -435,3 +435,98 @@ func decodeEntities(s string) string {
 	)
 	return replacer.Replace(s)
 }
+
+// ─── OPML (subscription list import/export) ─────────────
+
+type opmlOutline struct {
+	Text     string        `xml:"text,attr"`
+	Title    string        `xml:"title,attr"`
+	XMLURL   string        `xml:"xmlUrl,attr"`
+	HTMLURL  string        `xml:"htmlUrl,attr"`
+	Outlines []opmlOutline `xml:"outline"`
+}
+
+type opmlDoc struct {
+	XMLName xml.Name `xml:"opml"`
+	Version string   `xml:"version,attr"`
+	Body    struct {
+		Outlines []opmlOutline `xml:"outline"`
+	} `xml:"body"`
+}
+
+// OPMLFeed is one subscription entry parsed from an OPML outline.
+type OPMLFeed struct {
+	Title   string
+	FeedURL string
+	SiteURL string
+}
+
+// ParseOPML parses an OPML 2.0 subscription list, flattening nested
+// outlines. Entries without xmlUrl (pure category folders) contribute their
+// children only. Duplicate feed URLs collapse (first wins).
+func ParseOPML(data []byte) ([]OPMLFeed, error) {
+	var doc opmlDoc
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse opml: %w", err)
+	}
+	if doc.XMLName.Local != "opml" {
+		return nil, fmt.Errorf("not an OPML document")
+	}
+
+	var feeds []OPMLFeed
+	seen := make(map[string]bool)
+	var walk func(outlines []opmlOutline)
+	walk = func(outlines []opmlOutline) {
+		for _, o := range outlines {
+			feedURL := strings.TrimSpace(o.XMLURL)
+			if feedURL != "" && !seen[feedURL] {
+				seen[feedURL] = true
+				title := strings.TrimSpace(o.Text)
+				if title == "" {
+					title = strings.TrimSpace(o.Title)
+				}
+				feeds = append(feeds, OPMLFeed{
+					Title:   title,
+					FeedURL: feedURL,
+					SiteURL: strings.TrimSpace(o.HTMLURL),
+				})
+				continue
+			}
+			walk(o.Outlines) // category folder: descend
+		}
+	}
+	walk(doc.Body.Outlines)
+
+	if len(feeds) == 0 {
+		return nil, fmt.Errorf("OPML contains no feed entries")
+	}
+	return feeds, nil
+}
+
+// BuildOPML renders subscriptions as an OPML 2.0 document.
+func BuildOPML(title string, feeds []OPMLFeed) []byte {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	b.WriteString(`<opml version="2.0">` + "\n")
+	b.WriteString("  <head>\n")
+	b.WriteString("    <title>" + xmlEscape(title) + "</title>\n")
+	b.WriteString("  </head>\n")
+	b.WriteString("  <body>\n")
+	for _, f := range feeds {
+		b.WriteString(`    <outline type="rss" text="` + xmlEscape(f.Title) +
+			`" xmlUrl="` + xmlEscape(f.FeedURL))
+		if f.SiteURL != "" {
+			b.WriteString(`" htmlUrl="` + xmlEscape(f.SiteURL))
+		}
+		b.WriteString("\" />\n")
+	}
+	b.WriteString("  </body>\n")
+	b.WriteString("</opml>\n")
+	return []byte(b.String())
+}
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
+}

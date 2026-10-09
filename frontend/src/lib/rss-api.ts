@@ -39,6 +39,7 @@ export interface RSSSubscription {
   description?: string;
   target_folder_id?: string;
   max_items_per_tick: number;
+  fetch_full_text: boolean;
   last_fetched_at?: string;
   last_item_at?: string;
   fail_count: number;
@@ -68,6 +69,7 @@ export async function createRSSSubscription(input: {
   feed_url: string;
   target_folder_id?: string;
   max_items_per_tick?: number;
+  fetch_full_text?: boolean;
 }): Promise<RSSSubscription> {
   return request<RSSSubscription>("/api/v2/rss/subscriptions", {
     method: "POST",
@@ -77,7 +79,7 @@ export async function createRSSSubscription(input: {
 
 export async function updateRSSSubscription(
   id: string,
-  input: { title?: string; target_folder_id?: string; max_items_per_tick?: number; is_active?: boolean },
+  input: { title?: string; target_folder_id?: string; max_items_per_tick?: number; fetch_full_text?: boolean; is_active?: boolean },
 ): Promise<RSSSubscription> {
   return request<RSSSubscription>(`/api/v2/rss/subscriptions/${id}`, {
     method: "PUT",
@@ -91,6 +93,33 @@ export async function deleteRSSSubscription(id: string): Promise<void> {
 
 export async function refreshRSSSubscription(id: string): Promise<RSSRefreshResult> {
   return request<RSSRefreshResult>(`/api/v2/rss/subscriptions/${id}/refresh`, { method: "POST" });
+}
+
+/** 导出 OPML（fetch + blob 下载，a.href 无法携带 Authorization 头） */
+export async function exportRSSOPML(): Promise<void> {
+  const token = localStorage.getItem("token");
+  const res = await fetch("/api/v2/rss/subscriptions/opml", {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error("导出失败");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "luminbuddy-subscriptions.opml";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** 导入 OPML（原始 XML 文本） */
+export async function importRSSOPML(xml: string): Promise<{
+  total: number; imported: number; skipped: number; failed: number; errors: string[];
+}> {
+  return request("/api/v2/rss/subscriptions/import", {
+    method: "POST",
+    body: xml,
+    headers: { "Content-Type": "application/xml" },
+  });
 }
 
 export const RSS_ERROR_LABELS: Record<string, string> = {

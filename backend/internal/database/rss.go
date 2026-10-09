@@ -23,6 +23,7 @@ type RSSSubscription struct {
 	Description      string    `json:"description"`
 	TargetFolderID   string    `json:"target_folder_id,omitempty"`
 	MaxItemsPerTick  int       `json:"max_items_per_tick"`
+	FetchFullText    bool      `json:"fetch_full_text"`
 	ETag             string    `json:"-"`
 	LastModified     string    `json:"-"`
 	LastFetchedAt    *time.Time `json:"last_fetched_at,omitempty"`
@@ -36,7 +37,7 @@ type RSSSubscription struct {
 
 const rssSubscriptionColumns = `
 	id::text, user_id::text, feed_url, title, site_url, description,
-	COALESCE(target_folder_id::text, ''), max_items_per_tick, etag, last_modified,
+	COALESCE(target_folder_id::text, ''), max_items_per_tick, fetch_full_text, etag, last_modified,
 	last_fetched_at, last_item_at, fail_count, last_error, is_active,
 	created_at, updated_at
 `
@@ -44,7 +45,7 @@ const rssSubscriptionColumns = `
 func scanRSSSubscription(scan func(dest ...interface{}) error) (*RSSSubscription, error) {
 	var s RSSSubscription
 	err := scan(&s.ID, &s.UserID, &s.FeedURL, &s.Title, &s.SiteURL, &s.Description,
-		&s.TargetFolderID, &s.MaxItemsPerTick, &s.ETag, &s.LastModified,
+		&s.TargetFolderID, &s.MaxItemsPerTick, &s.FetchFullText, &s.ETag, &s.LastModified,
 		&s.LastFetchedAt, &s.LastItemAt, &s.FailCount, &s.LastError, &s.IsActive,
 		&s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
@@ -69,10 +70,10 @@ func (r *AdminRepo) CreateRSSSubscription(ctx context.Context, s *RSSSubscriptio
 	}
 	created, err := scanRSSSubscription(r.db.QueryRowContext(ctx, `
 		INSERT INTO rss_subscriptions
-			(user_id, feed_url, title, site_url, description, target_folder_id, max_items_per_tick)
-		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6, '')::uuid, $7)
+			(user_id, feed_url, title, site_url, description, target_folder_id, max_items_per_tick, fetch_full_text)
+		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6, '')::uuid, $7, $8)
 		RETURNING `+rssSubscriptionColumns+`
-	`, s.UserID, s.FeedURL, s.Title, s.SiteURL, s.Description, s.TargetFolderID, s.MaxItemsPerTick).Scan)
+	`, s.UserID, s.FeedURL, s.Title, s.SiteURL, s.Description, s.TargetFolderID, s.MaxItemsPerTick, s.FetchFullText).Scan)
 	if err != nil {
 		return nil, err
 	}
@@ -139,10 +140,10 @@ func (r *AdminRepo) UpdateRSSSubscription(ctx context.Context, userID, id string
 	updated, err := scanRSSSubscription(r.db.QueryRowContext(ctx, `
 		UPDATE rss_subscriptions SET
 			title = $3, target_folder_id = NULLIF($4, '')::uuid,
-			max_items_per_tick = $5, is_active = $6, updated_at = NOW()
+			max_items_per_tick = $5, fetch_full_text = $6, is_active = $7, updated_at = NOW()
 		WHERE id = $2::uuid AND user_id = $1::uuid
 		RETURNING `+rssSubscriptionColumns+`
-	`, userID, id, s.Title, s.TargetFolderID, s.MaxItemsPerTick, s.IsActive).Scan)
+	`, userID, id, s.Title, s.TargetFolderID, s.MaxItemsPerTick, s.FetchFullText, s.IsActive).Scan)
 	if err != nil {
 		return nil, ErrRSSSubscriptionNotFound
 	}

@@ -222,3 +222,60 @@ func TestParseUnknownRoot(t *testing.T) {
 	}
 	_ = xml.Unmarshal // keep import stable across refactors
 }
+
+// ─── OPML ──────────────────────────────────────────────
+
+const opmlSample = `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>我的订阅</title></head>
+  <body>
+    <outline text="科技">
+      <outline type="rss" text="少数派" xmlUrl="https://sspai.com/feed" htmlUrl="https://sspai.com"/>
+      <outline type="rss" title="阮一峰" xmlUrl="https://ruanyifeng.com/atom.xml"/>
+    </outline>
+    <outline type="rss" text="重复源" xmlUrl="https://sspai.com/feed"/>
+    <outline type="rss" text="无效源" xmlUrl="javascript:alert(1)"/>
+    <outline text="空分类"/>
+  </body>
+</opml>`
+
+func TestParseOPML(t *testing.T) {
+	feeds, err := ParseOPML([]byte(opmlSample))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// 去重后 3 条（含 javascript: 非法 URL，由 handler 层 ValidateFeedURL 拒绝）
+	if len(feeds) != 3 {
+		t.Fatalf("got %d feeds, want 3: %+v", len(feeds), feeds)
+	}
+	if feeds[0].Title != "少数派" || feeds[0].FeedURL != "https://sspai.com/feed" {
+		t.Fatalf("unexpected first feed: %+v", feeds[0])
+	}
+	if feeds[1].Title != "阮一峰" || feeds[1].FeedURL != "https://ruanyifeng.com/atom.xml" {
+		t.Fatalf("unexpected second feed: %+v", feeds[1])
+	}
+	if feeds[2].FeedURL != "javascript:alert(1)" {
+		t.Fatalf("unexpected third feed: %+v", feeds[2])
+	}
+}
+
+func TestParseOPMLRejectsGarbage(t *testing.T) {
+	if _, err := ParseOPML([]byte("<html><body>no</body></html>")); err == nil {
+		t.Fatal("expected error for non-OPML document")
+	}
+	if _, err := ParseOPML([]byte(`<opml version="2.0"><body><outline text="空"/></body></opml>`)); err == nil {
+		t.Fatal("expected error for empty OPML")
+	}
+}
+
+func TestBuildOPMLRoundTrip(t *testing.T) {
+	feeds := []OPMLFeed{{Title: "测试源 & <特殊>", FeedURL: "https://example.com/feed", SiteURL: "https://example.com"}}
+	data := BuildOPML("导出测试", feeds)
+	parsed, err := ParseOPML(data)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if len(parsed) != 1 || parsed[0].Title != feeds[0].Title || parsed[0].FeedURL != feeds[0].FeedURL {
+		t.Fatalf("round trip mismatch: %+v", parsed)
+	}
+}

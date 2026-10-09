@@ -52,14 +52,23 @@ POST   /api/v2/rss/subscriptions/{id}/refresh  # 立即更新（与 cron 同一�
 失败状态/上次抓取/目标文件夹，添加/编辑/立即更新/删除）。素材行
 `source_type=rss` 显示 RSS 徽标。
 
-## 6. 已知限制
+## 6. P3 已落地（2026-10-09）
+
+- **摘要源全文抓取**（migration 124 `fetch_full_text`，订阅级开关默认关）：
+  feed 正文 < 400 runes 判定为摘要 → 经 `URLImporter` 抓原文（fetch →
+  抽取 → 分块 → embedding）→ 以 RSS 素材入库；抓取失败降级用摘要，
+  摘要仍不足 50 runes 才跳过。每次抓取计入 FullText 计数（refresh 响应可见）。
+- **OPML 导入导出**：`GET /api/v2/rss/subscriptions/opml` 导出；
+  `POST /api/v2/rss/subscriptions/import` 导入（原始 XML，≤1MiB、
+  ≤200 feeds；逐源校验 + 抓取预检 + 重复跳过，单源失败不中断批次）。
+  `rss.ParseOPML` 展平嵌套 outline，`BuildOPML` 往返一致。
+
+## 7. 已知限制
 
 1. **`knowledge_base.content_hash` 是全局唯一约束**：两个用户导入字节
    相同的内容时，后到者按「重复内容」跳过（存量限制，非 RSS 引入；
    修复需按 user 作用域化 content_hash 的迁移）。
-2. 纯摘要 feed 暂不做原文抓取回退（P3 候选项：对 description-only 条目
-   回退 `URLImporter`）。
-3. 无 OPML 导入导出（P3 候选）。
+2. OPML 导入暂不映射分类文件夹到 `material_folders`（展平导入）。
 4. 检索质量取决于部署的 embedding 配置与 BM25 中文分词（存量特性，非 RSS
    特有）：未配置 embedding 时降级纯 BM25，中文连续词可能切分不开；配置
    `DASHSCOPE_API_KEY` 后 dense 检索自动参与 RRF 融合。

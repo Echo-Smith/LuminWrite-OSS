@@ -28,6 +28,9 @@ const (
 	rssGlobalTickBudget = 20 // max items per tick across all subscriptions
 	rssFeedTickBudget   = 3  // max items per subscription per tick (also the schema default)
 	rssMinItemRunes     = 50 // shorter items carry no retrievable content
+	// rssFullTextBelow: feed bodies under this length are treated as
+	// summaries when fetch_full_text is on (full articles are far longer).
+	rssFullTextBelow = 400
 )
 
 // rssTickResult reports one subscription's tick outcome.
@@ -36,12 +39,17 @@ type rssTickResult struct {
 	Fetched        int    `json:"fetched"` // items parsed from the feed
 	Imported       int    `json:"imported"`
 	Skipped        int    `json:"skipped"` // already-imported or too short
+	FullText       int    `json:"full_text,omitempty"`
 	NotModified    bool   `json:"not_modified"`
 	Error          string `json:"error,omitempty"`
 }
 
 // rssSubscriptionFetcher is the seam tests replace to avoid live HTTP.
 type rssSubscriptionFetcher func(ctx context.Context, rawURL string, opts rss.FetchOptions) (*rss.Feed, *rss.FetchResult, error)
+
+// rssArticleFetcher imports an original article body for a summary-only item
+// (the URLImporter pipeline). Tests replace it.
+type rssArticleFetcher func(ctx context.Context, userID, url, title string) (docID, docTitle string, err error)
 
 // ingestRSSSubscription fetches one subscription and imports its new items
 // as materials (source_type "rss") into the subscription's target folder.
@@ -95,7 +103,7 @@ func (s *Server) ingestRSSSubscription(ctx context.Context, sub *database.RSSSub
 
 		content := rss.StripHTML(item.Content)
 		link := resolveItemLink(sub.FeedURL, item.Link)
-		if len([]rune(content)) < rssMinItemRunes || link == "" {
+		if link == "" {
 			result.Skipped++
 			continue
 		}
@@ -106,6 +114,37 @@ func (s *Server) ingestRSSSubscription(ctx context.Context, sub *database.RSSSub
 			result.Skipped++
 			continue
 		} else if exists {
+			result.Skipped++
+			continue
+		}
+
+		// Summary-only feeds: opt-in full-text fetch of the original article
+		// (heavier than the feed body — per-item HTTP + extraction + chunks).
+		if sub.FetchFullText && len([]rune(content)) < rssFullTextBelow {
+			docID, title, fetchErr := s.fetchRSSArticleBody(ctx, sub, link, item.Title)
+			if fetchErr != nil {
+				slog.Debug("rss: full-text fetch failed, degrading to summary",
+					"sub", sub.ID, "link", link, "error", fetchErr)
+			} else {
+				if err := s.importRSSFetchedItem(ctx, sub, item, docID, title, link); err != nil {
+					if !errors.Is(err, errRSSDuplicateContent) {
+						slog.Warn("rss: full-text item import failed", "sub", sub.ID, "link", link, "error", err)
+						continue
+					}
+					result.Skipped++
+					continue
+				}
+				imported++
+				result.FullText++
+				if item.PublishedAt.After(time.Time{}) {
+					t := item.PublishedAt
+					lastItemAt = &t
+				}
+				continue
+			}
+		}
+
+		if len([]rune(content)) < rssMinItemRunes {
 			result.Skipped++
 			continue
 		}
@@ -148,6 +187,67 @@ func resolveItemLink(feedURL, link string) string {
 		return link
 	}
 	return base.ResolveReference(ref).String()
+}
+
+// fetchRSSArticleBody fetches the original article for a summary-only feed
+// item through the URLImporter pipeline (fetch → extract → chunk → embed).
+func (s *Server) fetchRSSArticleBody(ctx context.Context, sub *database.RSSSubscription, link, itemTitle string) (docID, docTitle string, err error) {
+	if s.articleFetcher != nil {
+		return s.articleFetcher(ctx, sub.UserID, link, itemTitle)
+	}
+	importer := services.NewURLImporter(s.kbMgr, services.DefaultChunkConfig())
+	docID, err = importer.ImportURLToKB(ctx, sub.UserID, "", link, itemTitle)
+	if err != nil {
+		return "", "", err
+	}
+	doc, err := s.kbMgr.GetDocument(ctx, sub.UserID, docID)
+	if err != nil {
+		return docID, itemTitle, nil // document exists; title fallback is fine
+	}
+	return docID, doc.Title, nil
+}
+
+// importRSSFetchedItem files an article that was fetched by the URLImporter
+// (full-text path) as an RSS material in the subscription's folder.
+func (s *Server) importRSSFetchedItem(ctx context.Context, sub *database.RSSSubscription, item rss.Item, docID, docTitle, link string) error {
+	title := strings.TrimSpace(docTitle)
+	if title == "" {
+		title = strings.TrimSpace(item.Title)
+	}
+	if title == "" {
+		title = link
+	}
+
+	doc, err := s.kbMgr.GetDocument(ctx, sub.UserID, docID)
+	if err != nil {
+		return fmt.Errorf("read fetched document: %w", err)
+	}
+	preview := doc.ContentPreview
+	if preview == "" && len(doc.Content) > 0 {
+		preview = doc.Content
+	}
+	if len([]rune(preview)) > 500 {
+		preview = string([]rune(preview)[:500])
+	}
+	mat := &services.UserMaterial{
+		ID:             uuid.NewString(),
+		UserID:         sub.UserID,
+		Title:          title,
+		ContentPreview: preview,
+		SourceType:     "rss",
+		SourceURL:      link,
+		DocID:          docID,
+		ChunkCount:     doc.ChunkCount,
+		FolderID:       sub.TargetFolderID,
+		Status:         "active",
+	}
+	if err := s.kbMgr.SaveMaterial(ctx, mat); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique") {
+			return errRSSDuplicateContent
+		}
+		return fmt.Errorf("save material: %w", err)
+	}
+	return nil
 }
 
 // backfillRSSSubscriptionMeta fills title/site on the first fetch.
