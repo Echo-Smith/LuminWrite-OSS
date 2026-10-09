@@ -1,5 +1,5 @@
 /**
- * 定时任务 — Admin Dashboard
+ * 定时任务 — 个人中心（实验室开启）
  */
 import { useState, useEffect, useCallback } from "react";
 import { Plus, Trash2, Pencil, Play, Clock, Loader2 } from "lucide-react";

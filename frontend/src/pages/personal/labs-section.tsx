@@ -99,7 +99,7 @@ export function LabsSection() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold">定时任务面板</span>
                 <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
-                  Admin
+                  进阶
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -124,7 +124,7 @@ export function LabsSection() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold">知识库维护面板</span>
                 <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
-                  Admin
+                  进阶
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -149,7 +149,7 @@ export function LabsSection() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold">敏感词库面板</span>
                 <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
-                  Admin
+                  进阶
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">

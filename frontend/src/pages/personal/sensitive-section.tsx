@@ -1,5 +1,5 @@
 /**
- * 敏感词库 — Admin Dashboard
+ * 敏感词库 — 个人中心（实验室开启）
  *
  * 敏感词 CRUD + 全局严格程度配置，读写 sensitive_words 表；
  * 词库由后端 SensitiveCheckService 消费（写作后审、记忆服务，缓存约 5 分钟）。
