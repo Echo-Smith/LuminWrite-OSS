@@ -4,36 +4,13 @@
  * 被主组件和各 Section 子页面引用。
  */
 import { type ReactNode } from "react";
-import {
-  Brain, User, KeyRound, Palette, Settings,
-  Bell, Info, FlaskConical, SlidersHorizontal, Cpu, BarChart3, History, type LucideIcon,
-  X, Plus,
-} from "lucide-react";
+import { X, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── 菜单类型 ──────────────────────────────────────────
 
+// 个人中心各 section 的键（菜单由 personal-center.tsx 自建，此处仅类型与元数据）
 export type MenuKey = "cron" | "sensitive" | "profile" | "history" | "memory" | "models" | "mcp" | "kb-maintenance" | "usage" | "settings" | "customization" | "notifications" | "account" | "labs" | "about";
-
-export interface MenuItem {
-  key: MenuKey;
-  label: string;
-  icon: LucideIcon;
-}
-
-export const MENU_ITEMS: MenuItem[] = [
-  { key: "profile", label: "个人信息", icon: User },
-  { key: "history", label: "写作记录", icon: History },
-  { key: "memory", label: "记忆管理", icon: Brain },
-  { key: "models", label: "模型服务", icon: Cpu },
-  { key: "usage", label: "用量统计", icon: BarChart3 },
-  { key: "settings", label: "偏好设置", icon: Settings },
-  { key: "customization", label: "自定义", icon: SlidersHorizontal },
-  { key: "notifications", label: "通知设置", icon: Bell },
-  { key: "account", label: "账号管理", icon: KeyRound },
-  { key: "labs", label: "实验室", icon: FlaskConical },
-  { key: "about", label: "关于笔润智谈", icon: Info },
-];
 
 export const SECTION_META: Record<MenuKey, { title: string; subtitle: string }> = {
   profile: { title: "个人信息", subtitle: "查看和修改你的账号信息" },

@@ -311,7 +311,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           onClick={() => { navigate("/styles"); onNavigate?.(); }}
         >
           <Store className="h-4 w-4" />
-          风格与插件
+          风格和技能
         </Button>
         <Button
           variant="ghost"

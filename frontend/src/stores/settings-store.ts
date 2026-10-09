@@ -7,8 +7,6 @@
  * 目前管理：
  * - agentMode: "harness" | "pipeline" | "editorial" — 编排模式选择
  * - enableEditorial: boolean — 是否在侧栏显示工作台入口（实验功能）
- * - enableResearchReview: boolean — 是否开启研究综述写作路径（实验功能，
- *   用户在实验室功能勾选后 composer 出现「研究综述」mode）
  * - enablePaperMode: boolean — 稿纸模式（A4 纸面视觉）。默认关闭：
  *   暂停该特性，正文以普通流式文档呈现；用户可在实验室功能重新打开。
  *   加载时对遗留的 enable_paper_mode=true 做一次性重置（以
@@ -39,7 +37,6 @@ function getToken(): string | null {
 interface SettingsState {
   agentMode: AgentMode;
   enableEditorial: boolean;  // 是否显示工作台入口（实验功能）
-  enableResearchReview: boolean;  // 是否开启研究综述路径（实验功能）
   labsCronPanel: boolean;  // 个人中心显示「定时任务」面板（admin 实验开关）
   labsSensitivePanel: boolean;  // 个人中心显示「敏感词库」面板（admin 实验开关）
   labsKbMaintenance: boolean;  // 个人中心显示「知识库维护」面板（admin 实验开关）
@@ -48,7 +45,6 @@ interface SettingsState {
   loaded: boolean;          // 是否已从后端加载
   setAgentMode: (mode: AgentMode) => void;
   setEnableEditorial: (enabled: boolean) => void;
-  setEnableResearchReview: (enabled: boolean) => void;
   setLabsCronPanel: (enabled: boolean) => void;
   setLabsSensitivePanel: (enabled: boolean) => void;
   setLabsKbMaintenance: (enabled: boolean) => void;
@@ -61,7 +57,6 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentMode: "harness",
   enableEditorial: false,
-  enableResearchReview: false,
   labsCronPanel: false,
   labsSensitivePanel: false,
   labsKbMaintenance: false,
@@ -78,11 +73,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setEnableEditorial: (enabled) => {
     set({ enableEditorial: enabled });
     get().syncToServer({ enable_editorial: enabled });
-  },
-
-  setEnableResearchReview: (enabled) => {
-    set({ enableResearchReview: enabled });
-    get().syncToServer({ enable_research_review: enabled });
   },
 
   setLabsCronPanel: (enabled) => {
@@ -126,10 +116,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const enableEditorial = json.data.enable_editorial;
         if (typeof enableEditorial === "boolean") {
           set({ enableEditorial });
-        }
-        const enableResearchReview = json.data.enable_research_review;
-        if (typeof enableResearchReview === "boolean") {
-          set({ enableResearchReview });
         }
         const labsCronPanel = json.data.labs_cron_panel;
         if (typeof labsCronPanel === "boolean") {

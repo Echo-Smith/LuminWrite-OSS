@@ -94,7 +94,7 @@ export function App() {
             element={<Navigate to="/topics?tab=materials" replace />}
           />
 
-          {/* 插件 — 已合并进「风格与插件」悬浮窗 */}
+          {/* 插件 — 已合并进「风格和技能」悬浮窗 */}
           <Route path="/plugins" element={<Navigate to="/styles" replace />} />
 
           {/* 写作风格 — 需登录（guest 页内提示） */}

@@ -1,5 +1,5 @@
 /**
- * 风格与插件（悬浮窗，/styles）
+ * 风格和技能（悬浮窗，/styles）
  *
  * 应用市场式统一面板：写作风格与外部服务插件合并为一个入口。
  * FloatingShell 分组菜单：
@@ -74,8 +74,8 @@ export function StyleMarketDialog() {
         <Store className="h-4 w-4 text-primary" />
       </div>
       <div>
-        <p className="text-sm font-medium">风格与插件</p>
-        <p className="text-[11px] text-muted-foreground">styles &amp; plugins</p>
+        <p className="text-sm font-medium">风格和技能</p>
+        <p className="text-[11px] text-muted-foreground">styles &amp; skills</p>
       </div>
     </div>
   );
@@ -96,7 +96,7 @@ export function StyleMarketDialog() {
       isGuest={isGuest}
       guestNotice={{
         icon: Store,
-        title: "游客模式无法管理风格与插件",
+        title: "游客模式无法管理风格和技能",
         description: "注册并登录后可导入风格、创建自己的写作风格并管理服务插件。",
       }}
       contentClassName="p-6"

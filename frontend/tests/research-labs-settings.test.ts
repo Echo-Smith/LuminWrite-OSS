@@ -1,77 +1,27 @@
 /**
- * 实验室功能「研究综述」开关的设置存储测试：
- * - 默认关闭；
- * - 勾选后 PUT /api/v2/preferences 同步 enable_research_review；
- * - loadFromServer 能读回云端状态（跟随账号，换设备一致）。
+ * 实验室「研究综述」开关移除测试：
+ * - 研究综述已产品化为第四写作流程（flow-picker 无条件渲染），实验室不再有该开关；
+ * - settings-store 不再持有 enableResearchReview 字段与同步键；
+ * - labs-section 源码无该条目（防止回潮）。
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { useSettingsStore } from "../src/stores/settings-store.ts";
+import { readFileSync } from "node:fs";
 
-// settings-store 直接读 localStorage 里的 token（node 无该全局对象，注入最小 stub）。
-const storage: Record<string, string> = {
-  luminbuddy_auth: JSON.stringify({ token: "test-token" }),
-};
-(globalThis as unknown as { localStorage: unknown }).localStorage = {
-  getItem: (key: string) => storage[key] ?? null,
-  setItem: (key: string, value: string) => { storage[key] = value; },
-  removeItem: (key: string) => { delete storage[key]; },
-};
+const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
-interface CapturedRequest {
-  method: string;
-  path: string;
-  body: Record<string, unknown> | null;
-}
+const labs = source("../src/pages/personal/labs-section.tsx");
+const settings = source("../src/stores/settings-store.ts");
 
-function installPreferencesApi(respond: (req: CapturedRequest) => unknown, capture: CapturedRequest[]): void {
-  (globalThis as unknown as { fetch: unknown }).fetch = (async (
-    input: string | URL | Request,
-    init?: { method?: string; body?: string },
-  ) => {
-    const path = typeof input === "string" ? input : input.toString();
-    const method = init?.method ?? "GET";
-    const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
-    capture.push({ method, path, body });
-    const payload = respond({ method, path, body });
-    return { ok: true, json: async () => payload } as Response;
-  }) as typeof fetch;
-}
-
-function resetStore(): void {
-  useSettingsStore.setState({ enableResearchReview: false, loaded: false });
-}
-
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-test("research review lab toggle defaults to off", () => {
-  resetStore();
-  assert.equal(useSettingsStore.getState().enableResearchReview, false);
+test("实验室不再提供研究综述开关", () => {
+  assert.doesNotMatch(labs, /研究综述/);
+  assert.doesNotMatch(labs, /enableResearchReview/);
 });
 
-test("checking the lab toggle syncs enable_research_review to /preferences", async () => {
-  resetStore();
-  const capture: CapturedRequest[] = [];
-  installPreferencesApi(() => ({ success: true, data: { saved: true } }), capture);
-
-  useSettingsStore.getState().setEnableResearchReview(true);
-  await tick();
-
-  assert.equal(useSettingsStore.getState().enableResearchReview, true);
-  const put = capture.find((request) => request.method === "PUT" && request.path === "/api/v2/preferences");
-  assert.ok(put, "expected a PUT /api/v2/preferences");
-  assert.equal(put.body?.enable_research_review, true);
-});
-
-test("loadFromServer restores the lab toggle from the cloud", async () => {
-  resetStore();
-  const capture: CapturedRequest[] = [];
-  installPreferencesApi(() => ({ success: true, data: { enable_research_review: true, enable_editorial: false } }), capture);
-
-  await useSettingsStore.getState().loadFromServer();
-
-  assert.equal(useSettingsStore.getState().enableResearchReview, true);
-  assert.equal(useSettingsStore.getState().enableEditorial, false);
-  const get = capture.find((request) => request.method === "GET" && request.path === "/api/v2/preferences");
-  assert.ok(get, "expected a GET /api/v2/preferences");
+test("settings-store 不再持有 enableResearchReview", () => {
+  assert.doesNotMatch(settings, /enableResearchReview/);
+  assert.doesNotMatch(settings, /enable_research_review/);
+  // 其余实验室开关仍在（防止误删）
+  assert.match(settings, /labsCronPanel/);
+  assert.match(settings, /labsKbMaintenance/);
 });

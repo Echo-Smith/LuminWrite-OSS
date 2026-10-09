@@ -13,7 +13,7 @@ export interface UserMaterial {
   user_id: string;
   title: string;
   content_preview: string;
-  source_type: "text" | "file" | "url" | "auto";
+  source_type: "text" | "file" | "url" | "rss" | "topic" | "auto";
   source_url?: string;
   file_name?: string;
   file_size?: number;
