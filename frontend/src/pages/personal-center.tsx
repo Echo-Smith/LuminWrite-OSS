@@ -55,7 +55,7 @@ export function PersonalCenter() {
         <DialogPrimitive.Content
           onInteractOutside={(e) => e.preventDefault()}
           className={cn(
-            "fixed left-[50%] top-[50%] z-50 flex h-[600px] max-h-[85vh] w-[720px] max-w-[92vw] translate-x-[-50%] translate-y-[-50%] flex-row overflow-hidden rounded-xl border bg-background shadow-md duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+            "fixed left-[50%] top-[50%] z-50 flex h-[85vh] max-h-[90vh] w-[1100px] max-w-[94vw] translate-x-[-50%] translate-y-[-50%] flex-row overflow-hidden rounded-xl border bg-background shadow-md duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
           )}
         >
           {/* ── 左侧菜单 ── */}

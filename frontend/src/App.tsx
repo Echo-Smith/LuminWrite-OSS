@@ -11,7 +11,7 @@ import { useAuthModal } from "@/stores/auth-modal-store";
 import { WritingWorkspace } from "@/pages/writing-workspace";
 import { TopicCenter } from "@/pages/topic-center";
 import { MaterialsCenter } from "@/pages/materials-center";
-import { PluginsPage } from "@/pages/plugins/plugins-page";
+import { PluginsDialog } from "@/pages/plugins/plugins-dialog";
 import { ConsoleDialog } from "@/pages/console/console-dialog";
 import { PersonalCenter } from "@/pages/personal-center";
 import { WritingProjectsPage } from "@/pages/writing-projects"; // 新的轻量级写作项目管理器
@@ -116,7 +116,8 @@ export function App() {
             element={
               <ProtectedRoute>
                 <PageTransition>
-                  <PluginsPage />
+                  <WritingWorkspace />
+                  <PluginsDialog />
                 </PageTransition>
               </ProtectedRoute>
             }
