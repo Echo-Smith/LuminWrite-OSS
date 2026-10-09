@@ -155,8 +155,8 @@ export function KnowledgeBasePage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-xl font-semibold tracking-tight">知识库</h2>
-          <p className="text-sm text-muted-foreground mt-1">混合检索（BM25 + Dense + GraphRAG）· 多知识库 · 多格式文档解析</p>
+          <h2 className="text-xl font-semibold tracking-tight">知识库拓展管理</h2>
+          <p className="text-sm text-muted-foreground mt-1">混合检索（BM25 + Dense + GraphRAG）· 多知识库 · 多格式文档解析 · 重建操作</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {configured && (

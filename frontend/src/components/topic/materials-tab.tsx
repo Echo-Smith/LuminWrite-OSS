@@ -12,7 +12,7 @@ import {
   Plus, Trash2, FileText, Link as LinkIcon, Search, PenLine,
   Loader2, File, ChevronLeft, ChevronRight, AlertCircle, Database,
   FolderPlus, Folder, MoreVertical, Pencil, ChevronRight as ChevronRightIcon,
-  Layers, Rss,
+  Layers, Rss, BarChart3, ChevronDown, Network,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,8 +27,11 @@ import {
 } from "@/lib/material-api";
 import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
 import { KbSearchDebug, KbInspectDialog } from "@/components/materials/kb-inspect";
+import { KBGraphPanel } from "@/pages/personal/kb-maintenance/components";
+import { getStats, type KBStats } from "@/lib/kb-api";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
+import { cn } from "@/lib/utils";
 
 const SOURCE_ICONS: Record<string, typeof FileText> = {
   text: FileText,
@@ -83,6 +86,26 @@ export function MaterialsTab() {
   const [showAdd, setShowAdd] = useState(false);
   const [inspectDoc, setInspectDoc] = useState<{ docId: string; title: string } | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+
+  // 知识库总览（合并自知识库维护面板的只读部分）：统计卡片 + 懒加载实体图谱
+  const [showOverview, setShowOverview] = useState(false);
+  const [stats, setStats] = useState<KBStats | null>(null);
+  const [showGraph, setShowGraph] = useState(false);
+
+  const loadStats = useCallback(async () => {
+    try {
+      setStats(await getStats());
+    } catch {
+      // 统计加载失败不打断素材列表
+    }
+  }, []);
+
+  const toggleOverview = () => {
+    const next = !showOverview;
+    setShowOverview(next);
+    if (next && !stats) void loadStats();
+    if (!next) setShowGraph(false);
+  };
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -396,6 +419,54 @@ export function MaterialsTab() {
               </Button>
             </div>
           </div>
+
+          {/* 知识库总览（统计 + 图谱，合并自维护面板的只读部分） */}
+          <Card>
+            <CardContent className="p-0">
+              <button
+                onClick={toggleOverview}
+                className="flex w-full items-center justify-between px-4 py-2.5 text-sm transition-ui hover:bg-accent/30"
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  <BarChart3 className="h-4 w-4 text-muted-foreground" />
+                  知识库总览
+                </span>
+                <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", showOverview && "rotate-180")} />
+              </button>
+              {showOverview && (
+                <div className="space-y-3 border-t px-4 py-3">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                    {[
+                      { label: "文档", value: stats?.doc_count },
+                      { label: "分块", value: stats?.chunk_count },
+                      { label: "已向量化", value: stats?.chunk_with_embedding },
+                      { label: "实体", value: stats?.entity_count },
+                      { label: "关系", value: stats?.relation_count },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-lg border p-2.5 text-center">
+                        <p className="text-xs text-muted-foreground">{item.label}</p>
+                        <p className="mt-0.5 text-lg font-semibold">{item.value ?? "—"}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      重建类维护操作（重新分块 / 重新导入）在实验室的「知识库拓展管理」面板。
+                    </p>
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setShowGraph((v) => !v)}>
+                      <Network className="h-3.5 w-3.5" />
+                      {showGraph ? "收起图谱" : "实体图谱"}
+                    </Button>
+                  </div>
+                  {showGraph && (
+                    <div className="rounded-lg border">
+                      <KBGraphPanel />
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Search Bar */}
           <div className="flex gap-2">

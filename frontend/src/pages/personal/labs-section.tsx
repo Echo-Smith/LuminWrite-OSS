@@ -87,7 +87,7 @@ export function LabsSection() {
           </div>
         )}
 
-        {/* 知识库维护面板（仅 admin 可开） */}
+        {/* 知识库拓展管理（仅 admin 可开） */}
         {!isGuest && (
           <div className="flex items-start gap-4 rounded-lg border p-4 transition-ui hover:bg-accent/30">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
@@ -95,14 +95,15 @@ export function LabsSection() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold">知识库维护面板</span>
+                <span className="text-sm font-semibold">知识库拓展管理</span>
                 <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
                   进阶
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                在个人中心显示「知识库维护」面板：全局语料的多库管理、实体图谱、
-                统计与重建操作（embeddings 生成 / 重分块 / URL 重导入）。
+                在个人中心显示「知识库拓展管理」面板：全局语料的多库管理与重建操作
+                （embeddings 生成 / 重分块 / URL 重导入）。日常统计与图谱已并入
+                素材页的「知识库总览」。
               </p>
             </div>
             <Switch

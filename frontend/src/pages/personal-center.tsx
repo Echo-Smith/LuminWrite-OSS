@@ -73,7 +73,7 @@ export function PersonalCenter() {
     item("labs", "实验室", FlaskConical),
     ...(isAdmin && labsCronPanel ? [item("cron", "定时任务", Clock)] : []),
     ...(isAdmin && labsSensitivePanel ? [item("sensitive", "敏感词库", Shield)] : []),
-    ...(isAdmin && labsKbMaintenance ? [item("kb-maintenance", "知识库维护", Database)] : []),
+    ...(isAdmin && labsKbMaintenance ? [item("kb-maintenance", "知识库拓展管理", Database)] : []),
   ];
 
   const header = (
