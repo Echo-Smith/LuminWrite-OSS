@@ -918,6 +918,13 @@ func (s *Server) Router() http.Handler {
 		// Per-user usage (own aggregate only)
 		r.With(s.jwtAuthMiddleware).Get("/usage", s.handleGetMyUsage)
 
+		// RSS Subscriptions (per-user feed → material folder)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Get("/rss/subscriptions", s.handleListRSSSubscriptions)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/rss/subscriptions", s.handleCreateRSSSubscription)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Put("/rss/subscriptions/{id}", s.handleUpdateRSSSubscription)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Delete("/rss/subscriptions/{id}", s.handleDeleteRSSSubscription)
+		r.With(s.jwtAuthMiddleware, s.rejectGuestMiddleware).Post("/rss/subscriptions/{id}/refresh", s.handleRefreshRSSSubscription)
+
 		// User Preferences (cloud-synced settings)
 		r.With(s.jwtAuthMiddleware).Get("/preferences", s.handleGetPreferences)
 		r.With(s.jwtAuthMiddleware).Put("/preferences", s.handleUpdatePreferences)
@@ -1395,6 +1402,10 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start cron scheduler
 	if s.cronScheduler != nil {
 		go s.cronScheduler.Start(ctx, s.executeCronJob)
+		// Idempotently seed the global RSS fetch job (admins can edit it later)
+		if err := s.EnsureRSSFetchCronJob(context.Background()); err != nil {
+			slog.Warn("rss: failed to seed cron job", "error", err)
+		}
 	}
 
 	// Start billing cron (plan_balance reset + subscription expiry)

@@ -152,6 +152,16 @@ GET /api/v2/topics?source=hotlist&page=1&page_size=20
 
 ### 4. 反馈
 
+#### RSS 订阅（docs/32）
+
+```
+GET    /api/v2/rss/subscriptions              # 我的订阅（含抓取簿记）
+POST   /api/v2/rss/subscriptions              # 订阅 { feed_url, target_folder_id?, max_items_per_tick? }
+PUT    /api/v2/rss/subscriptions/:id          # 编辑 { title, target_folder_id, max_items_per_tick, is_active }
+DELETE /api/v2/rss/subscriptions/:id          # 删除订阅（素材保留）
+POST   /api/v2/rss/subscriptions/:id/refresh  # 立即更新 → { fetched, imported, skipped, not_modified }
+```
+
 #### 鉴权基线（Phase 3-1 收口；2026-10-08 管理面下放后更新）
 
 ```

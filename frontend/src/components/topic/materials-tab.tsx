@@ -12,7 +12,7 @@ import {
   Plus, Trash2, FileText, Link as LinkIcon, Search, PenLine,
   Loader2, File, ChevronLeft, ChevronRight, AlertCircle, Database,
   FolderPlus, Folder, MoreVertical, Pencil, ChevronRight as ChevronRightIcon,
-  Layers,
+  Layers, Rss,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +26,7 @@ import {
   listFolders, createFolder, updateFolder, deleteFolder, moveMaterial,
 } from "@/lib/material-api";
 import { AddMaterialDialog } from "@/components/topic/add-material-dialog";
+import { RSSSubscriptionsPanel } from "@/components/materials/rss-subscriptions-panel";
 import { KbSearchDebug, KbInspectDialog } from "@/components/materials/kb-inspect";
 import { useWritingRuntimeStore } from "@/stores/writing-runtime-store";
 import { toast } from "@/stores/toast-store";
@@ -34,6 +35,7 @@ const SOURCE_ICONS: Record<string, typeof FileText> = {
   text: FileText,
   file: File,
   url: LinkIcon,
+  rss: Rss,
   auto: Search,
 };
 
@@ -41,6 +43,7 @@ const SOURCE_LABELS: Record<string, string> = {
   text: "文本",
   file: "文件",
   url: "URL",
+  rss: "RSS",
   auto: "自动",
 };
 
@@ -80,6 +83,7 @@ export function MaterialsTab() {
   // Add dialog
   const [showAdd, setShowAdd] = useState(false);
   const [inspectDoc, setInspectDoc] = useState<{ docId: string; title: string } | null>(null);
+  const [showRSSPanel, setShowRSSPanel] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
 
   // Search
@@ -259,6 +263,15 @@ export function MaterialsTab() {
             全部素材
           </button>
 
+          {/* RSS 订阅管理 */}
+          <button
+            onClick={() => setShowRSSPanel(true)}
+            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-ui"
+          >
+            <Rss className="h-3.5 w-3.5 shrink-0" />
+            RSS 订阅
+          </button>
+
           {/* 根目录 */}
           <button
             onClick={() => setActiveFolder("")}
@@ -363,6 +376,13 @@ export function MaterialsTab() {
           onOpenChange={(next) => { if (!next) setInspectDoc(null); }}
         />
       )}
+
+      <RSSSubscriptionsPanel
+        open={showRSSPanel}
+        onOpenChange={setShowRSSPanel}
+        folders={folders.map((f) => ({ id: f.id, name: f.name }))}
+        onSubscriptionsChanged={() => { void load(); }}
+      />
 
           {/* Error */}
           {error && (
