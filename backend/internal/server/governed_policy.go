@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingruntime"
 	"github.com/luminbuddy/luminbuddy-writing-agent-v2/internal/writingstore"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -30,19 +31,36 @@ func (e *servicePolicyExecutor) Descriptor() writingruntime.ExecutorDescriptor {
 func (e *servicePolicyExecutor) Execute(ctx context.Context, req writingruntime.ExecutionRequest) (writingruntime.ExecutionResult, error) {
 	record, err := e.store.LatestRuntimePolicy(ctx, e.spec.CapabilityID)
 	if errors.Is(err, writingstore.ErrNotFound) {
+		// 空策略表 = 默认 shadow（task12 语义）。必须清 err：否则缓存命中
+		// 的 dispatch（revision 未变、跳过 build）会带着这个陈旧的
+		// ErrNotFound 走进 fallback —— 每个非首次 dispatch 都被强制成
+		// mode=off 离线 baseline，真实 LLM 节点必败，运行暂停。
 		policy := writingruntime.DefaultShadowPolicy(e.spec.CandidateID, writingruntime.AdapterFamilyEngine, e.spec.CapabilityID, e.spec.CapabilityVersion)
 		record.Policy, _ = json.Marshal(policy)
+		err = nil
 	} else if err != nil {
+		// runtime-agility 观测修复：fallback 强制 mode=off（离线 baseline，
+		// 真实 LLM 节点必败 → 运行暂停），此前底层错误被静默吞掉，根因
+		// 不可见。现在必须留痕。
+		slog.Error("runtime policy load failed — forcing mode=off baseline (run will pause)",
+			"capability", e.spec.CapabilityID, "error", err)
 		return e.fallback(ctx, req, "policy_unavailable")
 	}
 	e.mu.Lock()
-	if e.cached == nil || e.revision != record.Revision {
+	buildRan := e.cached == nil || e.revision != record.Revision
+	if buildRan {
 		e.cached, err = e.build(record)
 		e.revision = record.Revision
 	}
 	executor := e.cached
 	e.mu.Unlock()
 	if err != nil || executor == nil {
+		// runtime-agility 观测：三分歧因——load 失败 / build 失败 / 缓存
+		// 命中时的陈旧 err（ErrNotFound 分支未清 err，缓存命中跳过 build
+		// 时 err 仍是上层的 not found——这是要定位的真 bug）。
+		slog.Error("runtime policy fallback triggered (forcing mode=off baseline, run will pause)",
+			"capability", e.spec.CapabilityID, "buildRan", buildRan,
+			"cachedNil", executor == nil, "error", err)
 		return e.fallback(ctx, req, "policy_invalid")
 	}
 	return executor.Execute(ctx, req)
