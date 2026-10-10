@@ -10,6 +10,9 @@ func (s *Server) registerWritingRoutes(r chi.Router) {
 		// 写作流程词表单源：选择器/启动链的流程 spec 从这里下发（见
 		// writing_flows.go），前端不再镜像 Go 侧映射表。
 		r.Get("/writing-flows", s.handleListWritingFlows)
+		// 写作路径单入口：documents → 封存合同 → confirm → 计划 → 运行
+		// （→ 视需要 approve）服务端一次编排（见 writing_launch.go）。
+		r.Post("/writing/launch", s.handleCreateWritingLaunch)
 		r.Post("/documents", s.handleCreateWritingDocument)
 		r.Get("/documents/{documentId}", s.handleGetWritingDocument)
 		r.Get("/documents/{documentId}/versions", s.handleListWritingDocumentVersions)

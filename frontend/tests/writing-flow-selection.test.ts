@@ -240,155 +240,84 @@ test("初始 artifact 符合后端 CompilePlan 约束", () => {
   assert.deepEqual(WRITING_FLOW_SPECS.research_review.initialArtifactTypes, ["contract", "materials"]);
 });
 
-// ─── startWritingRun 六步启动链（HTTP-mocked fetch，服务端封存） ────────────
+// ─── startWritingRun 单入口（POST /api/v2/writing/launch，HTTP-mocked） ────
 
-/** 服务端封存视图 fixture：contract/confirmed/intent_plan 原样转发断言用 */
-function sealedDraftView(documentId: string, flow: WritingFlowType) {
-  const contract = {
-    schema_version: "lcp/1.0",
-    contract_id: "ctr_flow_1",
-    version: 1,
-    status: "draft",
-    intent: { operation: WRITING_FLOW_SPECS[flow].intentOperation, genre: "article" },
-    collaboration: { orchestration_mode: WRITING_FLOW_SPECS[flow].orchestration },
-    contract_hash: HASH,
-  };
-  const confirmed = { ...contract, version: 2, status: "confirmed" };
-  return {
-    document_id: documentId,
-    contract,
-    confirmed_contract: confirmed,
-    contract_hash: HASH,
-    intent_plan: {
-      intent_plan_id: "iplan_flow_1",
-      contract_ref: { id: "ctr_flow_1", version: 2, hash: HASH },
-      intent_plan_hash: HASH,
-      summary: WRITING_FLOW_SPECS[flow].summary,
-      created_by: "user",
-      created_at: "2026-09-25T08:00:00Z",
-      proposed_steps: WRITING_FLOW_SPECS[flow].steps.map((step) => ({
-        step_id: step.step_id,
-        objective: step.description,
-        capability_hint: step.capability,
-        depends_on: step.depends_on ?? [],
-      })),
-    },
-    intent_plan_hash: HASH,
-  };
-}
-
-/** 六步启动链的公共 mock：documents → draft → contracts → confirm → plans → runs(→approve) */
-function installLaunchChainMock(documentId: string, flow: WritingFlowType, runStatus: string, hooks: {
-  onDraftBody?: (body: Record<string, unknown>) => void;
-  onContractsBody?: (body: Record<string, unknown>) => void;
-  onConfirmBody?: (body: Record<string, unknown>) => void;
-  onPlansBody?: (body: Record<string, unknown>) => void;
+/** 单入口 mock：一次 POST 承载整条启动链，返回服务端编排结果 */
+function installLaunchMock(runStatus: string, hooks: {
+  onLaunchBody?: (body: Record<string, unknown>) => void;
 } = {}) {
-  const view = sealedDraftView(documentId, flow);
   installFetch((path, method, body) => {
-    if (method === "POST" && path === "/api/v2/documents") return ok({ document_id: documentId, current_version_id: "" }, 201);
-    if (method === "POST" && path === `/api/v2/documents/${documentId}/writing-contract-draft`) {
-      hooks.onDraftBody?.(body ?? {});
-      return ok(view, 201);
+    if (method === "POST" && path === "/api/v2/writing/launch") {
+      hooks.onLaunchBody?.(body ?? {});
+      return {
+        status: 201,
+        body: { success: true, data: {
+          document_id: "doc_flow_1",
+          contract_id: "ctr_flow_1",
+          contract_version: 2,
+          contract_hash: HASH,
+          plan_id: "plan_flow_1",
+          plan_hash: HASH,
+          run_id: "run_flow_1",
+          run_status: runStatus,
+          approved: runStatus !== "awaiting_approval",
+        } },
+      };
     }
-    if (method === "POST" && path === `/api/v2/documents/${documentId}/contracts`) {
-      hooks.onContractsBody?.(body ?? {});
-      assert.deepEqual(body?.contract, view.contract, "封存合同必须原样转发");
-      // ContractRecord 嵌套形状（与真实 handler 一致）：合同身份在 contract 字段里
-      return ok({ document_id: documentId, contract: { contract_id: view.contract.contract_id, version: 1, contract_hash: HASH, status: "draft" } }, 201);
-    }
-    if (method === "POST" && path === "/api/v2/contracts/ctr_flow_1/confirm") {
-      hooks.onConfirmBody?.(body ?? {});
-      assert.equal(body?.previous_version, 1);
-      assert.deepEqual(body?.contract, view.confirmed_contract, "确认版本必须原样转发");
-      return ok({ document_id: documentId, contract: { contract_id: "ctr_flow_1", version: 2, contract_hash: HASH, status: "confirmed" } });
-    }
-    if (method === "POST" && path === `/api/v2/documents/${documentId}/plans`) {
-      hooks.onPlansBody?.(body ?? {});
-      assert.deepEqual(body?.intent_plan, view.intent_plan, "服务端封存的 intent plan 必须原样转发");
-      return ok({ plan: { executable_plan: { plan_id: "plan_flow_1", plan_hash: HASH } }, permissions: ["model.invoke"] });
-    }
-    if (method === "POST" && path === "/api/v2/runs") return ok({ run_id: `run_${documentId}`, status: runStatus }, 201);
-    if (method === "POST" && path === `/api/v2/runs/run_${documentId}/approve`) return ok({ run_id: `run_${documentId}`, status: "planned" });
     return undefined;
   });
-  return view;
 }
 
-test("startWritingRun 走 draft 封存六步链并把用户选择传给服务端（多材料综合）", async () => {
-  let draftBody: Record<string, unknown> | null = null;
-  let plansBody: Record<string, unknown> | null = null;
-  installLaunchChainMock("doc_flow_1", "multi_material", "awaiting_approval", {
-    onDraftBody: (body) => { draftBody = body; },
-    onPlansBody: (body) => { plansBody = body; },
+test("startWritingRun 走单入口 launch，只透传用户选择（多材料综合）", async () => {
+  let launchBody: Record<string, unknown> | null = null;
+  installLaunchMock("awaiting_approval", {
+    onLaunchBody: (body) => { launchBody = body; },
   });
 
-  const result = await startWritingRun({ message: "综合这批材料", flow: "multi_material", assurance_level: "sourced", approval_mode: "always", style: "yinyue", mode: "guided" });
-  assert.equal(result.run_id, "run_doc_flow_1");
+  const result = await startWritingRun({ message: "综合这批材料", flow: "multi_material", assurance_level: "sourced", approval_mode: "always", style: "yinyue", mode: "guided", material_refs: [{ material_id: "m1" }] });
+  assert.equal(result.run_id, "run_flow_1");
+  assert.equal(result.run_status, "awaiting_approval");
+  assert.equal(result.document_id, "doc_flow_1");
+  assert.equal(result.contract_version, 2);
+  assert.equal(result.approved, false);
 
-  // draft 请求体只携带用户可选维度（封存是服务端的事）
-  assert.deepEqual(draftBody, {
+  // 请求体只携带用户可选维度：预算信封/初始 artifact/final artifact 已
+  // 收归服务端单源（writing_launch.go），前端不再计算
+  assert.deepEqual(launchBody, {
     message: "综合这批材料",
+    material_refs: [{ material_id: "m1" }],
+    flow: "multi_material",
     style: "yinyue",
     mode: "guided",
-    flow: "multi_material",
     assurance_level: "sourced",
     approval_mode: "always",
   });
 
-  // plans 请求：initial artifact 按流程附 materials，final artifact 固定 revision_set
-  assert.deepEqual((plansBody as unknown as { initial_artifact_types: string[] }).initial_artifact_types, ["contract", "materials"]);
-  assert.equal((plansBody as unknown as { required_final_artifact: string }).required_final_artifact, "revision_set");
-  assert.equal((plansBody as unknown as { contract_version: number }).contract_version, 2);
-
-  // 六步链：documents → draft → contracts → confirm → plans → runs → approve
-  assert.deepEqual(calls.map((call) => call.path), [
-    "/api/v2/documents",
-    "/api/v2/documents/doc_flow_1/writing-contract-draft",
-    "/api/v2/documents/doc_flow_1/contracts",
-    "/api/v2/contracts/ctr_flow_1/confirm",
-    "/api/v2/documents/doc_flow_1/plans",
-    "/api/v2/runs",
-    "/api/v2/runs/run_doc_flow_1/approve",
-  ]);
-  // 文档与运行创建必须携带 Idempotency-Key（服务端要求非空幂等键）
-  for (const index of [0, 5]) {
-    assert.ok(calls[index].idempotencyKey, `${calls[index].path} 必须携带 Idempotency-Key`);
-  }
+  // 整条链只有一次请求，且必须携带 Idempotency-Key
+  assert.deepEqual(calls.map((call) => call.path), ["/api/v2/writing/launch"]);
+  assert.ok(calls[0].idempotencyKey, "launch 必须携带 Idempotency-Key");
 });
 
-test("startWritingRun 缺省 flow 走 long_form 链路（初始 artifact 仅 contract，planned 不审批）", async () => {
-  let draftBody: Record<string, unknown> | null = null;
-  let plansBody: Record<string, unknown> | null = null;
-  installLaunchChainMock("doc_flow_2", "long_form", "planned", {
-    onDraftBody: (body) => { draftBody = body; },
-    onPlansBody: (body) => { plansBody = body; },
+test("startWritingRun 缺省 flow=long_form、留空维度不下发", async () => {
+  let launchBody: Record<string, unknown> | null = null;
+  installLaunchMock("planned", {
+    onLaunchBody: (body) => { launchBody = body; },
   });
 
   const result = await startWritingRun({ message: "写一篇行业分析" });
-  assert.equal(result.run_id, "run_doc_flow_2");
+  assert.equal(result.run_id, "run_flow_1");
+  assert.equal(result.run_status, "planned");
+  assert.equal(result.approved, true);
 
-  // 缺省值：flow=long_form，可选维度留空由服务端取默认
-  assert.deepEqual(draftBody, { message: "写一篇行业分析", flow: "long_form" });
-  assert.deepEqual((plansBody as unknown as { initial_artifact_types: string[] }).initial_artifact_types, ["contract"]);
-
-  // planned 状态不需要 approve
-  assert.equal(calls.at(-1)?.path, "/api/v2/runs");
-  assert.deepEqual(calls.map((call) => call.path), [
-    "/api/v2/documents",
-    "/api/v2/documents/doc_flow_2/writing-contract-draft",
-    "/api/v2/documents/doc_flow_2/contracts",
-    "/api/v2/contracts/ctr_flow_1/confirm",
-    "/api/v2/documents/doc_flow_2/plans",
-    "/api/v2/runs",
-  ]);
+  // 缺省值在服务端兜底（flow 服务端缺省 long_form；空维度 omitempty 不下发）
+  assert.deepEqual(launchBody, { message: "写一篇行业分析", flow: "long_form" });
+  assert.deepEqual(calls.map((call) => call.path), ["/api/v2/writing/launch"]);
 });
 
-test("draft 端点的 400 INVALID_WRITING_SPEC 原样呈现给调用方", async () => {
+test("launch 端点的 400 INVALID_WRITING_SPEC 原样呈现给调用方", async () => {
   installFetch((path, method) => {
-    if (method === "POST" && path === "/api/v2/documents") return ok({ document_id: "doc_flow_bad", current_version_id: "" }, 201);
-    if (method === "POST" && path === "/api/v2/documents/doc_flow_bad/writing-contract-draft") {
-      return fail(400, "INVALID_WRITING_SPEC", "writing api: invalid writing request: message must not be blank (contract intent.purpose / content.central_question)");
+    if (method === "POST" && path === "/api/v2/writing/launch") {
+      return fail(400, "INVALID_WRITING_SPEC", "launch: contract draft: writing api: invalid writing request: message must not be blank");
     }
     return undefined;
   });
@@ -400,11 +329,8 @@ test("draft 端点的 400 INVALID_WRITING_SPEC 原样呈现给调用方", async 
     assert.equal((error as { status?: number }).status, 400);
     assert.match((error as Error).message, /message must not be blank/);
   }
-  // 封存失败后不再有后续请求（不发孤儿 contracts/plans/runs）
-  assert.deepEqual(calls.map((call) => call.path), [
-    "/api/v2/documents",
-    "/api/v2/documents/doc_flow_bad/writing-contract-draft",
-  ]);
+  // 单入口 = 单请求：不存在孤儿中间态请求
+  assert.deepEqual(calls.map((call) => call.path), ["/api/v2/writing/launch"]);
 });
 
 // ─── UI 接线 ────────────────────────────────────────────────────────────────
