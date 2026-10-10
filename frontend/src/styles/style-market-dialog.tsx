@@ -1,13 +1,10 @@
 /**
- * 风格和技能（/styles，页面形态）
+ * 风格和技能（悬浮窗，/styles）
  *
- * 应用市场式统一面板：写作风格、技能与外部服务合并为一个入口。
- * FloatingShell page 变体（真页面，不再是悬浮窗）：高频管理面，URL 可
- * 直达/分享，布局让出写作台侧边栏宽度。
- * 分组菜单：
- * - 风格：风格库（安装）、我的风格（创建/编辑/投稿）、技能（下载安装）
- * - 服务：MCP 服务（服务密钥 + 安全沙箱）、第三方服务（待接入）
- *   全局默认模型已并入个人中心「模型服务」的「实例默认」组。
+ * 应用市场式统一面板：写作风格与外部服务插件合并为一个入口。
+ * FloatingShell 分组菜单：
+ * - 风格：风格库（内置/全局 + 一键导入）、我的风格（创建/编辑/投稿）、技能（运行时工具插件）
+ * - 服务：MCP 服务（服务密钥 + 安全沙箱）、第三方服务（待接入）、全局默认模型（BYOK 回退）
  */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -17,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
+import { closeOverlayAndBack } from "@/lib/close-overlay";
 import { FloatingShell, type FloatingShellEntry } from "@/components/shell/floating-shell";
 import { StyleLibrarySection } from "./style-library-section";
 import { StyleSection } from "./my-styles-section";
@@ -60,12 +58,13 @@ export function StyleMarketDialog() {
   const navigate = useNavigate();
   const [active, setActive] = useState<MarketKey>("library");
   const [mcpSub, setMcpSub] = useState<McpSubKey>("keys");
+  const [open, setOpen] = useState(true);
   const [showServicePackages, setShowServicePackages] = useState(false);
   const isGuest = useAuthStore((s) => s.user?.role === "guest");
 
-  // 页面形态：关闭即回写作台（不再依赖浮层历史栈）
   const handleClose = () => {
-    navigate("/write");
+    setOpen(false);
+    closeOverlayAndBack(navigate);
   };
 
   const header = (
@@ -87,8 +86,6 @@ export function StyleMarketDialog() {
 
   return (
     <FloatingShell
-      variant="page"
-      className="pl-0 lg:pl-56"
       header={header}
       items={ITEMS}
       active={active}
