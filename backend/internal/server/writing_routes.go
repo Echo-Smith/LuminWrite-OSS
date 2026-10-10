@@ -7,6 +7,9 @@ import (
 func (s *Server) registerWritingRoutes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(s.jwtAuthMiddleware, s.rejectGuestMiddleware, s.requireWritingAPI)
+		// 写作流程词表单源：选择器/启动链的流程 spec 从这里下发（见
+		// writing_flows.go），前端不再镜像 Go 侧映射表。
+		r.Get("/writing-flows", s.handleListWritingFlows)
 		r.Post("/documents", s.handleCreateWritingDocument)
 		r.Get("/documents/{documentId}", s.handleGetWritingDocument)
 		r.Get("/documents/{documentId}/versions", s.handleListWritingDocumentVersions)

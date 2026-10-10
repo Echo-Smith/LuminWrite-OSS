@@ -29,7 +29,7 @@ import { createWorkflow, createdViewToPlan, cancelWorkflow } from "@/lib/workflo
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
 import type { ApprovalMode, AssuranceLevel } from "@/lib/writing-runtime-types";
-import { DEFAULT_WRITING_FLOW, WRITING_FLOW_SPECS, type WritingFlowType } from "@/lib/writing-flows";
+import { DEFAULT_WRITING_FLOW, WRITING_FLOW_SPECS, ensureWritingFlowsLoaded, type WritingFlowType } from "@/lib/writing-flows";
 import { cn } from "@/lib/utils";
 import { listMaterials, getMaterialContent, uploadMaterial, type UserMaterial } from "@/lib/material-api";
 
@@ -155,6 +155,13 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   // Update local state when session changes (e.g. new session from topic center)
   useEffect(() => { setMode(sessionMode); }, [sessionMode]);
   useEffect(() => { setStyle(sessionStyle); }, [sessionStyle]);
+
+  // 流程词表水合：活表真源在服务端（GET /writing-flows），挂载时拉取覆盖
+  // fallback；完成后 bump 一次让选择器以服务端词表重渲染。
+  const [, setFlowsRev] = useState(0);
+  useEffect(() => {
+    void ensureWritingFlowsLoaded().then(() => setFlowsRev((v) => v + 1));
+  }, []);
 
   // Propagate local changes back to session
   const handleModeChange = useCallback((m: WriteMode) => {
