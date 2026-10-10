@@ -1,0 +1,8 @@
+{
+  "kind": "skill",
+  "slug": "research-paper-writing",
+  "version": "1.0.0",
+  "title": "学术论文写作",
+  "description": "ML/CV/NLP 风格学术论文的写作、改写与润色：按节起草（Abstract/Introduction/Related Work/Method/Experiments/Conclusion）、中文草稿转发表级英文、段落通顺度打磨、投稿前审稿人视角自查、LaTeX 编译导出 PDF。触发词：论文、polish、camera-ready、rebuttal、CVPR/NeurIPS/ACL 等。",
+  "entry": "SKILL.md"
+}

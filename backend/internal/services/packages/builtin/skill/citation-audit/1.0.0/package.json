@@ -1,0 +1,8 @@
+{
+  "kind": "skill",
+  "slug": "citation-audit",
+  "version": "1.0.0",
+  "title": "引用校验",
+  "description": "对文章、论文或参考文献列表做两段式引用审计：先用免费学术 API（Crossref/Semantic Scholar/OpenAlex/arXiv，零密钥）机械核验元数据真伪，再逐条审计'所引文献是否真的支撑该论断'。防编造引用、防张冠李戴。触发词：查引用、校验引用、引用核查、参考文献真实吗、citation audit、detect fabricated references、这条引用对吗。",
+  "entry": "SKILL.md"
+}

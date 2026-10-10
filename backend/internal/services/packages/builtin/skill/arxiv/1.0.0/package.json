@@ -1,0 +1,8 @@
+{
+  "kind": "skill",
+  "slug": "arxiv",
+  "version": "1.0.0",
+  "title": "arXiv 文献检索",
+  "description": "arXiv 学术论文的检索、阅读、引用与追踪：按主题/作者/分类搜索、取摘要与元数据、生成 BibTeX、下载 PDF、追踪领域最新提交、查引用影响力与相关论文推荐。纯 Python 标准库脚本 + 免费 API，零密钥。触发词：arXiv、文献检索、论文搜索、找论文、文献综述、引用这篇论文、cs.LG 最新论文。",
+  "entry": "SKILL.md"
+}

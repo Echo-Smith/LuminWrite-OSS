@@ -1,0 +1,8 @@
+{
+  "kind": "skill",
+  "slug": "deep-research",
+  "version": "1.0.0",
+  "title": "深度调研",
+  "description": "多源深度调研：把问题拆成独立研究角度，用搜索/网页读取与免费公开源（零 API Key）交叉取证，产出结构化、带引用编号的研究报告。适用于专题调研、深度选题、写作前的素材研究。",
+  "entry": "SKILL.md"
+}

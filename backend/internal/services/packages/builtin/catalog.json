@@ -13,6 +13,34 @@
       "version": "1.0.0",
       "title": "知识库技能",
       "description": "把知识库文档上传到远端存储的技能包示例（SKILL.md + 脚本约定）。"
+    },
+    {
+      "kind": "skill",
+      "slug": "deep-research",
+      "version": "1.0.0",
+      "title": "深度调研",
+      "description": "多源深度调研：拆独立角度并行取证，只用免费公开源（零 API Key），产出带引用编号的研究报告。适用于专题调研与写作前的深度素材研究。"
+    },
+    {
+      "kind": "skill",
+      "slug": "research-paper-writing",
+      "version": "1.0.0",
+      "title": "学术论文写作",
+      "description": "ML/CV/NLP 风格论文的按节写作与润色：Abstract/Introduction/Method 等章节模板、中文草稿转发表级英文、投稿前审稿人自查、LaTeX 编译导出。"
+    },
+    {
+      "kind": "skill",
+      "slug": "arxiv",
+      "version": "1.0.0",
+      "title": "arXiv 文献检索",
+      "description": "arXiv 论文检索/引用/追踪：按主题/作者/分类搜索、BibTeX 生成、引用图谱与相关论文推荐。纯标准库脚本 + 免费 API，零密钥（MIT 上游）。"
+    },
+    {
+      "kind": "skill",
+      "slug": "citation-audit",
+      "version": "1.0.0",
+      "title": "引用校验",
+      "description": "两段式引用审计：免费学术 API 机械核验元数据真伪（防编造引用），再逐条核对所引文献是否真的支撑正文论断（防张冠李戴），按修复矩阵处置。"
     }
   ]
 }
