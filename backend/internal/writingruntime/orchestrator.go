@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -332,6 +333,19 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 	recovery, err := Recover(plan, planRecord.PlanVersion, checkpoint, attempts, manifests)
 	if err != nil {
 		if errors.Is(err, ErrHumanRecoveryRequired) {
+			// 终态一致性不变量（docs/20 §20.2）：paused 必须有 checkpoint
+			// 快照。此路径原先直接暂停、不落快照——人工恢复场景下轮询方
+			// 会观察到「无快照的 paused」（CI 压力测试踩中）。落一份诚实
+			// 快照：已完成节点沿用旧 checkpoint（没有则空），无法自动恢复
+			// 的节点记入 unsafe_in_flight 供人工接管。
+			completed := map[string]int{}
+			if checkpoint != nil {
+				completed = checkpoint.CompletedNodes
+			}
+			if saveErr := orchestrator.saveCheckpoint(ctx, run, plan, completed, initial, 0, 0, recovery.HumanRequired, nil); saveErr != nil {
+				slog.Error("governed run: unsafe-recovery checkpoint save failed — pausing without snapshot",
+					"run_id", runID, "error", saveErr)
+			}
 			_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "unsafe_recovery")
 			_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "unsafe_recovery")
 			return RunOutcome{RunID: runID, State: StatePaused, HumanRequired: recovery.HumanRequired}, err
@@ -391,9 +405,10 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 			if !pauseOK || !commitOK {
 				// Harnesses without the store-backed gate flow keep the
 				// legacy three-write pause (behavioral baseline for tests).
+				// 快照先于转态（与 docs/20 §20.2 终态一致性不变量对齐）。
+				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
 				_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "human_gate")
 				_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "human_gate")
-				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
 				out := outcome(runID, StatePaused, completed, artifacts, spentCost)
 				out.HumanRequired = []string{node.NodeID}
 				return out, ErrApprovalRequired
@@ -748,8 +763,12 @@ func (orchestrator *Orchestrator) failNode(ctx context.Context, run writingstore
 	if node.FailurePath == writingplan.FailurePause || node.FailurePath == writingplan.FailurePartial {
 		// 终态一致性不变量：状态翻成 paused 之前 checkpoint 必须已持久化
 		// （否则轮询方能看到「无快照的 paused」——CI 压力测试踩中的竞态）。
-		// 与 finishControl 的先快照后转态顺序对齐。
-		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
+		// 与 finishControl 的先快照后转态顺序对齐。保存失败必须留痕：
+		// 此前错误被静默丢弃，快照缺失无从排查。
+		if saveErr := orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil); saveErr != nil {
+			slog.Error("governed run: failure-pause checkpoint save failed — pausing without snapshot",
+				"run_id", run.RunID, "node", node.NodeID, "error", saveErr)
+		}
 		_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StatePausing, "node_failure")
 		_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, "node_failure")
 		orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StatePaused, completed, cost, duration, nil))
