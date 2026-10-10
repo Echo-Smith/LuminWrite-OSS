@@ -77,10 +77,14 @@ type RuntimeEvidence struct {
 	Decision      RouteDecision     `json:"decision"`
 	Status        string            `json:"status"`
 	ErrorCode     ErrorCode         `json:"error_code,omitempty"`
-	Usage         ExecutionUsage    `json:"usage"`
-	Outputs       []OutputManifest  `json:"outputs"`
-	Comparison    *ShadowComparison `json:"comparison,omitempty"`
-	RecordedAt    time.Time         `json:"recorded_at"`
+	// ErrorMessage 是底层执行错误的原文（截断到 500 rune）。runtime-agility
+	// 观测修复：此前节点失败只落 error_code，根因（如 NotFound 类瞬时失败）
+	// 在事件/证据/日志三层都不可见。
+	ErrorMessage string            `json:"error_message,omitempty"`
+	Usage        ExecutionUsage    `json:"usage"`
+	Outputs      []OutputManifest  `json:"outputs"`
+	Comparison   *ShadowComparison `json:"comparison,omitempty"`
+	RecordedAt   time.Time         `json:"recorded_at"`
 }
 
 type OutputManifest struct {

@@ -399,10 +399,20 @@ func (executor *RolloutExecutor) recordExecution(ctx context.Context, request Ex
 	if executeErr != nil {
 		status = "failed"
 	}
-	return executor.record(ctx, RuntimeEvidence{Kind: "execution", Identity: request.Identity(),
+	evidence := RuntimeEvidence{Kind: "execution", Identity: request.Identity(),
 		Adapter: executor.candidate.AdapterPolicy(), PolicyHash: policy.PolicyHash, PolicyVersion: policy.PolicyVersion,
 		Mode: policy.Mode, Lane: lane, Decision: decision, Status: status, ErrorCode: ErrorCodeOf(executeErr),
-		Usage: result.Usage, Outputs: outputManifests(result)})
+		Usage: result.Usage, Outputs: outputManifests(result)}
+	if executeErr != nil {
+		// 根因透传（截断防上下文/存储爆炸）：error_code 只是分类，排障
+		// 需要原文——尤其 NotFound 类瞬时失败，此前三层都不可见。
+		message := []rune(executeErr.Error())
+		if len(message) > 500 {
+			message = message[:500]
+		}
+		evidence.ErrorMessage = string(message)
+	}
+	return executor.record(ctx, evidence)
 }
 
 func (executor *RolloutExecutor) record(ctx context.Context, evidence RuntimeEvidence) error {
