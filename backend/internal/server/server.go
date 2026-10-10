@@ -70,6 +70,7 @@ type Server struct {
 	mcpRegistry       *mcp.Registry
 	mcpServer         *mcp.MCPServer
 	toolRegistry      *engine.ToolRegistry
+	toolPluginLoader  *pluginDirLoader
 	editorialSvc      *editorial.Service
 	editorialHdlr     *editorial.Handlers
 	planner           *editorial.Planner
@@ -787,6 +788,10 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// ── Horizontal scaling: generate instance ID ──
 	instanceID := getEnvInstanceID(cfg.Server.Host, cfg.Server.Port)
+
+	// ── 工具插件目录（runtime-agility M3）：热加载双写 + 热更新 ──
+	// editorial registry 可能为 nil（DB 不可用降级），加载器内部容忍。
+	s.toolPluginLoader = initToolPluginDir(toolRegistry, s.editorialTools)
 
 	// ── In-Process MCP Server ──
 	if cfg.MCPServer.Enabled {

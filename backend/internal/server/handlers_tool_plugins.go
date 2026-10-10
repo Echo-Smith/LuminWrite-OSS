@@ -50,8 +50,11 @@ func (s *Server) handleAdminListToolPlugins(w http.ResponseWriter, r *http.Reque
 //
 // POST /api/v2/admin/tool-plugins
 // Body: PluginConfig JSON (name, description, version, tools[])
+//
+// runtime-agility M3：加载成功后配置落盘 TOOL_PLUGINS_DIR（跨重启存活；
+// SSRF 校验失败/重名工具在构建层即拒绝）。
 func (s *Server) handleAdminCreateToolPlugin(w http.ResponseWriter, r *http.Request) {
-	if s.toolRegistry == nil {
+	if s.toolPluginLoader == nil {
 		response.Err(w, http.StatusServiceUnavailable, "registry_unavailable", "tool registry not initialized")
 		return
 	}
@@ -72,19 +75,27 @@ func (s *Server) handleAdminCreateToolPlugin(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Build the plugin from config
+	// Build the plugin from config（SSRF 红线在此校验：endpoint 协议白名单
+	// + 解析 IP 必须公开可路由）
 	plugin, err := engine.BuildPluginFromConfig(cfg)
 	if err != nil {
 		slog.Error("failed to build tool plugin", "error", err, "name", cfg.Name)
-		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to build plugin: "+err.Error())
+		response.Err(w, http.StatusBadRequest, "invalid_plugin", "failed to build plugin: "+err.Error())
 		return
 	}
 
-	// Register the plugin (this also unregisters any existing plugin with the same name)
-	if err := s.toolRegistry.RegisterPlugin(plugin); err != nil {
+	// 双写注册：engine registry（管理权威）+ editorial registry（写作消费面）
+	if err := s.toolPluginLoader.LoadPlugin(plugin); err != nil {
 		slog.Error("failed to register tool plugin", "error", err, "name", cfg.Name)
 		response.Err(w, http.StatusInternalServerError, "internal_error", "failed to register plugin: "+err.Error())
 		return
+	}
+
+	// 落盘：跨重启存活
+	if path, err := s.toolPluginLoader.persist(cfg); err != nil {
+		slog.Warn("tool plugin persisted failed（内存态生效，重启后丢失）", "error", err, "name", cfg.Name)
+	} else {
+		slog.Info("tool plugin persisted", "path", path, "name", cfg.Name)
 	}
 
 	info, _ := s.toolRegistry.GetPlugin(cfg.Name)
@@ -127,8 +138,10 @@ func (s *Server) handleAdminGetToolPlugin(w http.ResponseWriter, r *http.Request
 // handleAdminDeleteToolPlugin unloads a tool plugin and removes all its tools.
 //
 // DELETE /api/v2/admin/tool-plugins/{name}
+//
+// runtime-agility M3：双侧反注册（engine + editorial）并删除落盘配置。
 func (s *Server) handleAdminDeleteToolPlugin(w http.ResponseWriter, r *http.Request) {
-	if s.toolRegistry == nil {
+	if s.toolPluginLoader == nil {
 		response.Err(w, http.StatusServiceUnavailable, "registry_unavailable", "tool registry not initialized")
 		return
 	}
@@ -139,10 +152,15 @@ func (s *Server) handleAdminDeleteToolPlugin(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := s.toolRegistry.UnregisterPlugin(name); err != nil {
-		slog.Warn("failed to unregister tool plugin", "error", err, "name", name)
+	if _, ok := s.toolRegistry.GetPlugin(name); !ok {
 		response.Err(w, http.StatusNotFound, "not_found", "plugin not found")
 		return
+	}
+
+	s.toolPluginLoader.UnloadPlugin(name)
+
+	if err := s.toolPluginLoader.removePersisted(name); err != nil {
+		slog.Warn("failed to remove persisted plugin config", "error", err, "name", name)
 	}
 
 	slog.Info("tool plugin unloaded via admin API", "name", name)

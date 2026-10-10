@@ -90,6 +90,13 @@ func (r *EditorialToolRegistry) Get(name string) (EditorialTool, bool) {
 	return t, ok
 }
 
+// Remove 按名移除工具（插件热卸载用；不存在时静默）。
+func (r *EditorialToolRegistry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 // All 返回全部已注册工具的快照（M1.5 统一能力视图的只读入口，注册权威不变）。
 func (r *EditorialToolRegistry) All() []EditorialTool {
 	r.mu.RLock()

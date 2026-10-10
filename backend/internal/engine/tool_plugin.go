@@ -36,6 +36,9 @@ type ToolPlugin struct {
 	Version     string                  `json:"version,omitempty"`
 	Tools       []AgentTool             `json:"-"`
 	Descriptors map[string]ToolDescriptor `json:"-"`
+	// ToolRoles 是各工具的编辑部角色声明（工具名 → roles；空 = 所有角色）。
+	// 放在插件层而非具体工具类型上，桥接层不依赖工具的具体实现。
+	ToolRoles map[string][]string `json:"-"`
 }
 
 // PluginInfo is the metadata returned by ListPlugins (without tool instances).
@@ -197,15 +200,15 @@ type HTTPToolConfig struct {
 
 // HTTPTool implements AgentTool for external HTTP calls.
 type HTTPTool struct {
-	config  HTTPToolConfig
-	client  *http.Client
+	config HTTPToolConfig
+	client *http.Client
 }
 
 // NewHTTPTool creates a new HTTP-based tool from configuration.
 func NewHTTPTool(cfg HTTPToolConfig) *HTTPTool {
 	return &HTTPTool{
 		config: cfg,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: pluginHTTPClient(),
 	}
 }
 
@@ -310,21 +313,42 @@ type PluginConfig struct {
 type ToolEntryConfig struct {
 	HTTPToolConfig `yaml:",inline"`
 	Descriptor     ToolDescriptor `json:"descriptor,omitempty" yaml:"descriptor,omitempty"`
+	// Roles 声明该工具适用于编辑部哪些角色（researcher/writer/reviewer）；
+	// 空 = 所有角色。仅作用于编辑部桥接（editorial plugin bridge）。
+	Roles []string `json:"roles,omitempty" yaml:"roles,omitempty"`
 }
 
 // BuildPlugin constructs a ToolPlugin from configuration.
 // This creates HTTPTool instances for each tool entry.
 func BuildPluginFromConfig(cfg PluginConfig) (*ToolPlugin, error) {
+	if cfg.Name == "" {
+		return nil, fmt.Errorf("plugin name is required")
+	}
 	plugin := &ToolPlugin{
 		Name:        cfg.Name,
 		Description: cfg.Description,
 		Version:     cfg.Version,
 		Descriptors: make(map[string]ToolDescriptor),
+		ToolRoles:   make(map[string][]string),
 	}
 
+	seen := make(map[string]bool)
 	for _, tc := range cfg.Tools {
+		if tc.Name == "" {
+			return nil, fmt.Errorf("plugin %q: tool name is required", cfg.Name)
+		}
+		if seen[tc.Name] {
+			return nil, fmt.Errorf("plugin %q: duplicate tool name %q", cfg.Name, tc.Name)
+		}
+		seen[tc.Name] = true
+		// SSRF 红线（M3）：endpoint 在注册时校验——协议白名单 + 解析 IP
+		// 必须公开可路由。失败即整个插件拒绝注册。
+		if err := validatePluginEndpoint(tc.Endpoint); err != nil {
+			return nil, fmt.Errorf("plugin %q tool %q: %w", cfg.Name, tc.Name, err)
+		}
 		tool := NewHTTPTool(tc.HTTPToolConfig)
 		plugin.Tools = append(plugin.Tools, tool)
+		plugin.ToolRoles[tc.Name] = tc.Roles
 
 		desc := tc.Descriptor
 		if desc.Name == "" {
