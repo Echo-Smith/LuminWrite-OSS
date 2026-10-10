@@ -746,9 +746,12 @@ func (orchestrator *Orchestrator) failNode(ctx context.Context, run writingstore
 		return outcome(run.RunID, StateReplanning, completed, artifacts, cost), fmt.Errorf("%w: %v", ErrRunReplanning, cause)
 	}
 	if node.FailurePath == writingplan.FailurePause || node.FailurePath == writingplan.FailurePartial {
+		// 终态一致性不变量：状态翻成 paused 之前 checkpoint 必须已持久化
+		// （否则轮询方能看到「无快照的 paused」——CI 压力测试踩中的竞态）。
+		// 与 finishControl 的先快照后转态顺序对齐。
+		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
 		_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StatePausing, "node_failure")
 		_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, "node_failure")
-		_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{node.NodeID}, nil)
 		orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StatePaused, completed, cost, duration, nil))
 		return outcome(run.RunID, StatePaused, completed, artifacts, cost), fmt.Errorf("%w: %v", ErrRunPaused, cause)
 	}
