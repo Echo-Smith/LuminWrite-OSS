@@ -131,6 +131,9 @@ services:
       #   - alipayCertPublicKey.crt 支付宝公钥证书
       #   - alipayRootCert.crt      支付宝根证书
       - ./certs/alipay:/app/certs:ro
+      # 工具插件目录（runtime-agility M3）：宿主机放 *.json 即热加载新工具，
+      # 无需重启；admin API 加载的插件也落盘到这里（跨重启存活）
+      - ./data/tool-plugins:/app/data/tool-plugins
     networks:
       - internal
       - frontend
