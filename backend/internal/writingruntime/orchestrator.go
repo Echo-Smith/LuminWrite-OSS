@@ -498,9 +498,16 @@ func (orchestrator *Orchestrator) Execute(ctx context.Context, runID string) (Ru
 				continue
 			}
 			if manifest.Idempotency != writingplan.IdempotencySafe {
+				// 终态一致性不变量（docs/20 §20.2）：快照先于 paused 可见。
+				// 此路径原先先转态后存快照——轮询方（CI 压力测试）在两步之间
+				// 观察到「无快照的 paused」。unsafe_retry 是非幂等节点重试
+				// 耗尽的标准暂停路径（pause 场景 draft 节点即走此处）。
+				if saveErr := orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil); saveErr != nil {
+					slog.Error("governed run: unsafe-retry checkpoint save failed — pausing without snapshot",
+						"run_id", runID, "node", node.NodeID, "error", saveErr)
+				}
 				_, _ = orchestrator.transition(ctx, runID, StateRunning, StatePausing, "unsafe_retry")
 				_, _ = orchestrator.transition(ctx, runID, StatePausing, StatePaused, "unsafe_retry")
-				_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, spentCost, spentDuration, []string{node.NodeID}, nil)
 				out := outcome(runID, StatePaused, completed, artifacts, spentCost)
 				out.HumanRequired = []string{node.NodeID}
 				return out, fmt.Errorf("%w: %s", ErrHumanRecoveryRequired, node.NodeID)
@@ -747,9 +754,10 @@ func (orchestrator *Orchestrator) pauseAtBudgetBoundary(ctx context.Context, run
 	if reason == "" {
 		reason = "budget_boundary"
 	}
+	// 终态一致性不变量：快照先于 paused 可见（同 unsafe_retry/failNode 对齐）。
+	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{}, nil)
 	_, _ = orchestrator.transition(ctx, run.RunID, StateRunning, StatePausing, reason)
 	_, _ = orchestrator.transition(ctx, run.RunID, StatePausing, StatePaused, reason)
-	_ = orchestrator.saveCheckpoint(ctx, run, plan, completed, artifacts, cost, duration, []string{}, nil)
 	orchestrator.bus.emit(ctx, LifecycleRunPaused, lifecycleSnapshot(run, plan.PlanID, run.ActivePlanVersion, node, 0, StatePaused, completed, cost, duration, nil))
 	return outcome(run.RunID, StatePaused, completed, artifacts, cost), fmt.Errorf("%w: %s", ErrRunPaused, reason)
 }
