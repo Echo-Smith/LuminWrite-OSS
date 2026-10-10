@@ -174,19 +174,22 @@ func TestWABenchCustomStyleReferenceResolvesImmutableVersionIntegration(t *testi
 
 func TestWABenchPublicRuleProfilesResolveToFrozenBuiltinStyles(t *testing.T) {
 	executor := NewHarnessWABenchExecutor(nil, nil, nil, profile.NewLoader(), nil, nil)
-	wants := map[string]string{
-		"wabench.public.general-writing": "default",
-		"wabench.public.deep-commentary": "yinyue",
-		"wabench.public.policy-essay":    "shenlun",
-		"wabench.public.social-note":     "xiaohongshu",
+	// OSS 内容政策（docs/04 §3）：仅内置引擎级 default，公开基准只有 general-writing。
+	got, err := executor.resolveProfile(context.Background(), []string{"wabench.public.general-writing"})
+	if err != nil {
+		t.Fatalf("resolve general-writing: %v", err)
 	}
-	for ref, want := range wants {
-		got, err := executor.resolveProfile(context.Background(), []string{ref})
-		if err != nil {
-			t.Fatalf("resolve %s: %v", ref, err)
-		}
-		if got.Slug != want {
-			t.Fatalf("resolve %s = %s, want %s", ref, got.Slug, want)
+	if got.Slug != "default" {
+		t.Fatalf("resolve wabench.public.general-writing = %s, want default", got.Slug)
+	}
+	// 依赖第一方编辑栏目风格的公开基准不在 OSS 范围：fail-closed，不静默映射。
+	for _, ref := range []string{
+		"wabench.public.deep-commentary",
+		"wabench.public.policy-essay",
+		"wabench.public.social-note",
+	} {
+		if _, err := executor.resolveProfile(context.Background(), []string{ref}); err == nil {
+			t.Fatalf("resolve %s must fail closed in OSS (editorial styles are first-party content)", ref)
 		}
 	}
 }

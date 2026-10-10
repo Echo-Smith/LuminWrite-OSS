@@ -39,7 +39,7 @@ interface SettingsState {
   enableEditorial: boolean;  // 是否显示工作台入口（实验功能）
   labsCronPanel: boolean;  // 个人中心显示「定时任务」面板（admin 实验开关）
   labsSensitivePanel: boolean;  // 个人中心显示「敏感词库」面板（admin 实验开关）
-  labsKbMaintenance: boolean;  // 个人中心显示「知识库维护」面板（admin 实验开关）
+  labsKbMaintenance: boolean;  // 个人中心显示「知识库拓展管理」面板（admin 实验开关）
   enablePaperMode: boolean;  // 稿纸模式（A4 纸面视觉），默认关闭
   lastStyle: string;        // 上次写作使用的风格 slug
   loaded: boolean;          // 是否已从后端加载
@@ -61,7 +61,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   labsSensitivePanel: false,
   labsKbMaintenance: false,
   enablePaperMode: false,
-  lastStyle: "yinyue",
+  lastStyle: "default",
   loaded: false,
 
   setAgentMode: (mode) => {

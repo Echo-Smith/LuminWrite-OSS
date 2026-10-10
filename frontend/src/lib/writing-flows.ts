@@ -1,20 +1,21 @@
 /**
  * WP4 写作流程映射表 — docs/28-wp4-pilot-scenarios.md 的前端侧唯一映射来源。
  *
- * 选择链路：flow-picker → AgentStartPayload.flow → startWritingRun 的
- * contract / intent plan 构建统一从本表取值：
- * - orchestration → 合同 collaboration.orchestration_mode（真实枚举值，服务端
- *   按此选择 tpl_outline_first_v1 / tpl_sourced_v1 / tpl_fast_v1 计划模板）
- * - intentOperation → 合同 intent.operation（create / synthesize / rewrite）
- * - steps → intent plan proposed_steps 节点序列。docs/28 节点名映射到现有 plan
- *   builder 的 artifact 词汇：draft / synthesis / rewrite 均产出 full_draft，
- *   outline 产出 outline，quality 产出 quality_report，finalize 产出 revision_set
+ * 合同与 intent plan 已封存下沉服务端（POST /documents/{id}/writing-contract-draft，
+ * 与研究流 research-contract-draft 同一模式）：本表不再参与启动请求的构造，
+ * 只承载选择器/展示语义与流程词表：
+ * - orchestration → 合同 collaboration.orchestration_mode 的服务端取值（composer
+ *   payload 透传 flow，服务端按本表同源映射选择计划模板）
+ * - intentOperation → 合同 intent.operation 的服务端取值
+ * - steps → 服务端 intent plan 节点序列的前端镜像（docs/28 节点图 → artifact
+ *   词汇：draft / synthesis / rewrite 均产出 full_draft，outline 产出 outline，
+ *   quality 产出 quality_report，finalize 产出 revision_set）；纯展示/测试用途
  * - evidencePolicy → docs/28 的命名 evidence policy 与 governed 节点索引，逐字
  *   对齐后端 internal/writingruntime/evidence_policy.go 的 EvidenceScenarioPolicies
  *   （Name / GovernedIndex / NodeName）。该命名 policy 在 plan/contract 线上
  *   schema 中没有对应字段（合同 evidence_policy 是 level/unsupported_claims
- *   词表，语义不同，不冒充），落点即本映射表 + plan 节点序列（governed 节点
- *   就是产出 full_draft 的生成步骤）+ intent plan summary 标注。
+ *   词表，语义不同，不冒充），落点即本映射表 + 节点序列（governed 节点就是
+ *   产出 full_draft 的生成步骤）+ summary 标注。
  *
  * 第四流程 research_review（深度研究，WP4 产品化）：服务端按
  * tpl_research_review_v1（十节点固定模板）编译计划，不走 startWritingRun——
@@ -44,7 +45,10 @@ export interface WritingFlowEvidencePolicy {
   governedNode: "draft" | "synthesis" | "rewrite";
 }
 
-/** intent plan proposed_steps 单步（沿用现有 buildIntentPlan 的步骤形状）。 */
+/** intent plan proposed_steps 单步：flow.steps 是服务端意图计划节点序列的
+ * 前端镜像（step_id/capability/description/inputs/outputs/depends_on 承载
+ * 节点图语义与展示）；真实提交由服务端按本表同源映射构造
+ * writingplan.ProposedStep 四字段形状。 */
 export interface WritingFlowPlanStep {
   step_id: string;
   capability: string;

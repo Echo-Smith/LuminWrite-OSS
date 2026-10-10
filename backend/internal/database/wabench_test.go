@@ -35,20 +35,26 @@ func TestLegacyImportOptionsKeepProductDataPrivate(t *testing.T) {
 	}
 }
 
-func TestRuleProfileRefsSupportThreeBuiltinsAndVersionedUserStyles(t *testing.T) {
-	for _, slug := range []string{"yinyue", "shenlun", "xiaohongshu"} {
-		ref, err := BuiltinWABenchRuleProfileRef(slug)
-		if err != nil {
-			t.Fatalf("builtin style %s rejected: %v", slug, err)
-		}
-		if ref != "luminbuddy.builtin-style."+slug {
-			t.Fatalf("builtin ref = %s", ref)
+func TestRuleProfileRefsSupportDefaultBuiltinAndVersionedUserStyles(t *testing.T) {
+	// OSS 内容政策（docs/04 §3）：唯一内置风格是引擎级 default 骨架。
+	ref, err := BuiltinWABenchRuleProfileRef("default")
+	if err != nil {
+		t.Fatalf("builtin style default rejected: %v", err)
+	}
+	if ref != "luminbuddy.builtin-style.default" {
+		t.Fatalf("builtin ref = %s", ref)
+	}
+	// 第一方编辑栏目风格不在 OSS 内置表：按 builtin 引用会被拒绝（fail-closed），
+	// 经 legacyRuleProfileRef 走 legacy-style 重新绑定路径。
+	for _, slug := range []string{"yinyue", "shenlun", "xiaohongshu", "user_custom"} {
+		if _, err := BuiltinWABenchRuleProfileRef(slug); err == nil {
+			t.Fatalf("style %q must not be accepted as an OSS builtin", slug)
 		}
 	}
-	if _, err := BuiltinWABenchRuleProfileRef("user_custom"); err == nil {
-		t.Fatal("custom style must not be misclassified as one of the three builtins")
+	if legacyRef, ok := legacyRuleProfileRef("yinyue"); ok || legacyRef != "luminbuddy.legacy-style.yinyue" {
+		t.Fatalf("editorial style must map to a legacy-style ref: %s (builtin=%v)", legacyRef, ok)
 	}
-	ref, err := UserWABenchRuleProfileRef("123e4567-e89b-12d3-a456-426614174000", 3)
+	ref, err = UserWABenchRuleProfileRef("123e4567-e89b-12d3-a456-426614174000", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +84,13 @@ func TestMapLegacyEvaluationSetPreservesIdentityAsMigrationCandidate(t *testing.
 	if draft.Privacy["publicationPolicy"] != "aggregate_only" || draft.Privacy["allowsRawText"] != false {
 		t.Fatalf("unsafe privacy policy: %+v", draft.Privacy)
 	}
-	if len(draft.MigrationWarnings) != 1 || !draft.MigrationWarnings[0].RequiresReview {
-		t.Fatalf("expected style grouping warning: %+v", draft.MigrationWarnings)
+	// yinyue 在 OSS 已不是内置风格（第一方编辑内容）：除风格分组警告外，
+	// 还会追加一条 LEGACY_CUSTOM_STYLE_UNRESOLVED 要求重新绑定。
+	if len(draft.MigrationWarnings) != 2 || !draft.MigrationWarnings[0].RequiresReview || !draft.MigrationWarnings[1].RequiresReview {
+		t.Fatalf("expected style grouping + unresolved style warnings: %+v", draft.MigrationWarnings)
+	}
+	if draft.MigrationWarnings[1].Code != "LEGACY_CUSTOM_STYLE_UNRESOLVED" {
+		t.Fatalf("second warning = %s", draft.MigrationWarnings[1].Code)
 	}
 }
 
@@ -116,8 +127,10 @@ func TestMapLegacyEvaluationSampleKeepsScoreDiagnosticAndInputByReference(t *tes
 	if weightTotal != 100 || len(draft.RubricWeights) != 5 {
 		t.Fatalf("invalid canonical weights: %+v", draft.RubricWeights)
 	}
-	if len(draft.RuleProfileRefs) != 1 || draft.RuleProfileRefs[0] != "luminbuddy.builtin-style.shenlun" {
-		t.Fatalf("builtin style was not mapped to its rule profile: %+v", draft.RuleProfileRefs)
+	// shenlun 在 OSS 已不是内置风格（第一方编辑内容）：遗留样本映射为
+	// legacy-style 引用（需重新绑定），不再冒充 builtin-style。
+	if len(draft.RuleProfileRefs) != 1 || draft.RuleProfileRefs[0] != "luminbuddy.legacy-style.shenlun" {
+		t.Fatalf("editorial style must map to its legacy rule profile: %+v", draft.RuleProfileRefs)
 	}
 	if draft.LegacyScore["factuality"] != 0.3 {
 		t.Fatalf("legacy score was not preserved: %+v", draft.LegacyScore)

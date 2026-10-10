@@ -819,6 +819,10 @@ func (s *Server) writeWritingErrorWithData(w http.ResponseWriter, err error, dat
 		status, code = http.StatusUnprocessableEntity, researchErrorCode(err)
 	case errors.Is(err, errInvalidResearchSpec):
 		status, code = http.StatusBadRequest, "INVALID_RESEARCH_SPEC"
+	case errors.Is(err, errInvalidWritingSpec):
+		// Normal-flow contract draft (writing-contract-draft): same
+		// field-specific 400 family as the research draft.
+		status, code = http.StatusBadRequest, "INVALID_WRITING_SPEC"
 	case errors.Is(err, errResearchResourceNotFound):
 		status, code = http.StatusNotFound, "WRITING_RESOURCE_NOT_FOUND"
 	case errors.Is(err, writingstore.ErrNotFound):

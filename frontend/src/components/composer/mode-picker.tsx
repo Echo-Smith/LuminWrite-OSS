@@ -1,31 +1,28 @@
 /**
  * 写作方式选择器 — 先选择用户意图，再按需展开执行细节。
  * guided 继续作为协议值存在，但在界面上表达为“直接写 + 先确认提纲”。
- * 研究综述入口（WP4 产品化后不再受前端开关/实验室勾选限制；权威开关是
- * 服务端 RESEARCH_REVIEW_ENABLED）：主入口是 FlowPicker 的第四流程
- * 「深度研究」，此处保留等价入口以维持既有使用习惯。
+ * 语义收敛（与 FlowPicker 分工）：写作流程是「做什么任务」的一级真源
+ * （节点图/编排模式/合同形状由流程映射唯一决定）；本选择器只表达
+ * 「怎么执行」——写作方式、资料要求（仅 assurance 等级）与执行确认。
+ * 深度研究的唯一入口是 FlowPicker 第四流程，此处不再保留等价入口。
  */
 import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
-import { BookOpenText, ChevronDown, ChevronRight, PenLine, Sparkles, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, PenLine, Sparkles, Zap } from "lucide-react";
 import type { WriteMode } from "@/lib/types";
-import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
+import type { ApprovalMode, AssuranceLevel } from "@/lib/writing-runtime-types";
 import { cn } from "@/lib/utils";
 
 interface ModePickerProps {
   value: WriteMode;
   onChange: (mode: WriteMode) => void;
-  orchestrationValue?: OrchestrationMode;
-  onOrchestrationChange?: (mode: OrchestrationMode) => void;
   assuranceValue?: AssuranceLevel;
   onAssuranceChange?: (level: AssuranceLevel) => void;
   approvalValue?: ApprovalMode;
   onApprovalChange?: (mode: ApprovalMode) => void;
   compact?: boolean;
-  /** 选择「研究综述」时回调（打开 ResearchSpec 表单）；未提供则只同步 orchestration。 */
-  onResearchReviewSelect?: () => void;
 }
 
 const MODE_OPTIONS: Array<{ value: Exclude<WriteMode, "guided">; label: string; icon: typeof Zap; description: string }> = [
@@ -34,14 +31,12 @@ const MODE_OPTIONS: Array<{ value: Exclude<WriteMode, "guided">; label: string; 
   { value: "polish", label: "润色", icon: Sparkles, description: "改写或优化已有文本" },
 ];
 
-const RESEARCH_PRESETS: Array<{ value: string; label: string; description: string; orchestration: OrchestrationMode; assurance: AssuranceLevel }> = [
-  { value: "auto", label: "自动", description: "由 AI 判断是否需要资料", orchestration: "auto", assurance: "standard" },
-  { value: "sourced", label: "使用来源", description: "围绕材料和来源组织内容", orchestration: "sourced", assurance: "sourced" },
-  { value: "strict", label: "严格验证", description: "检索并逐项核查关键信息", orchestration: "strict_research", assurance: "strict" },
+/** 资料要求只表达 assurance 等级；编排模式由写作流程映射唯一决定。 */
+const RESEARCH_PRESETS: Array<{ value: string; label: string; description: string; assurance: AssuranceLevel }> = [
+  { value: "auto", label: "自动", description: "由 AI 判断是否需要资料", assurance: "standard" },
+  { value: "sourced", label: "使用来源", description: "围绕材料和来源组织内容", assurance: "sourced" },
+  { value: "strict", label: "严格验证", description: "检索并逐项核查关键信息", assurance: "strict" },
 ];
-
-/** 研究综述是独立入口（research_review 编排模式 + lcp/1.1 合同），不与普通资料要求混排。 */
-const RESEARCH_REVIEW_PRESET = { value: "review", label: "研究综述", description: "多源文献检索与逐条引用核查（两个确认点）" };
 
 const APPROVAL_OPTIONS: Array<{ value: ApprovalMode; label: string; description: string }> = [
   { value: "conditional", label: "风险时询问", description: "一般步骤自动执行，遇到风险再确认" },
@@ -51,32 +46,17 @@ const APPROVAL_OPTIONS: Array<{ value: ApprovalMode; label: string; description:
 
 export function ModePicker({
   value, onChange,
-  orchestrationValue = "auto", onOrchestrationChange,
   assuranceValue = "standard", onAssuranceChange,
   approvalValue = "conditional", onApprovalChange,
   compact = false,
-  onResearchReviewSelect,
 }: ModePickerProps) {
   const [open, setOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const primaryValue = value === "guided" ? "writing" : value;
   const selected = MODE_OPTIONS.find((option) => option.value === primaryValue) ?? MODE_OPTIONS[0];
-  const researchReviewActive = orchestrationValue === "research_review";
-  const researchPreset = researchReviewActive
-    ? null
-    : RESEARCH_PRESETS.find((option) => option.orchestration === orchestrationValue && option.assurance === assuranceValue);
+  const researchPreset = RESEARCH_PRESETS.find((option) => option.assurance === assuranceValue);
   const approvalOption = APPROVAL_OPTIONS.find((option) => option.value === approvalValue) ?? APPROVAL_OPTIONS[0];
-  const canConfigureExecution = Boolean(onOrchestrationChange && onAssuranceChange) || Boolean(onApprovalChange);
-  // 研究综述不再受前端开关限制（WP4 产品化）；服务端 RESEARCH_REVIEW_ENABLED
-  // 关闭时启动请求得到 503 RESEARCH_UNAVAILABLE 的明确错误。
-  const researchEnabled = Boolean(onOrchestrationChange);
-
-  const handleResearchReviewSelect = () => {
-    onOrchestrationChange?.("research_review");
-    onAssuranceChange?.("strict");
-    onResearchReviewSelect?.();
-    setOpen(false);
-  };
+  const canConfigureExecution = Boolean(onAssuranceChange) || Boolean(onApprovalChange);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -100,25 +80,8 @@ export function ModePicker({
         <div className="mx-2 my-1 border-t" />
         <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md px-3 py-2 hover:bg-accent">
           <span className="min-w-0"><span className="block text-sm font-medium">生成前先确认提纲</span><span className="block text-xs text-muted-foreground">适合长文或结构要求明确的任务</span></span>
-          <Switch checked={value === "guided"} onCheckedChange={(checked) => onChange(checked ? "guided" : "writing")} aria-label="生成前先确认提纲" />
+          <Switch checked={value === "guided"} onCheckedChange={(checked) => { onChange(checked ? "guided" : "writing"); }} aria-label="生成前先确认提纲" />
         </label>
-
-        {researchEnabled && (
-          <>
-            <div className="mx-2 my-1 border-t" />
-            <button
-              onClick={handleResearchReviewSelect}
-              className={cn("flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent",
-                researchReviewActive && "bg-accent/50")}
-            >
-              <BookOpenText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">{RESEARCH_REVIEW_PRESET.label}</span>
-                <span className="block text-xs text-muted-foreground">{RESEARCH_REVIEW_PRESET.description}</span>
-              </span>
-            </button>
-          </>
-        )}
 
         {canConfigureExecution && (
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -126,15 +89,15 @@ export function ModePicker({
             <CollapsibleTrigger asChild>
               <button className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent">
                 <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", advancedOpen && "rotate-90")} />
-                <span className="min-w-0 flex-1"><span className="block text-sm font-medium">高级设置</span><span className="block truncate text-xs text-muted-foreground">{researchReviewActive ? "研究综述（逐条引用核查）" : researchPreset?.label ?? "自定义资料策略"} · {approvalOption.label}</span></span>
+                <span className="min-w-0 flex-1"><span className="block text-sm font-medium">高级设置</span><span className="block truncate text-xs text-muted-foreground">{researchPreset?.label ?? "自定义资料策略"} · {approvalOption.label}</span></span>
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent className="pb-1">
-              {onOrchestrationChange && onAssuranceChange && (
+              {onAssuranceChange && (
                 <div className="px-2 pt-1">
                   <p className="px-1 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">资料要求</p>
                   {RESEARCH_PRESETS.map((option) => (
-                    <button key={option.value} onClick={() => { onOrchestrationChange(option.orchestration); onAssuranceChange(option.assurance); }} className={cn("w-full rounded-md px-2 py-1.5 text-left hover:bg-accent", option === researchPreset && "bg-accent/60")}>
+                    <button key={option.value} onClick={() => { onAssuranceChange(option.assurance); }} className={cn("w-full rounded-md px-2 py-1.5 text-left hover:bg-accent", option === researchPreset && "bg-accent/60")}>
                       <span className="block text-xs font-medium">{option.label}</span><span className="block text-[11px] text-muted-foreground">{option.description}</span>
                     </button>
                   ))}

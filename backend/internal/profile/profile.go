@@ -815,165 +815,12 @@ func (l *Loader) List() []StyleOption {
 }
 
 // getBuiltinProfiles returns the built-in style profiles.
+//
+// OSS 内容政策（docs/04-style-profile.md §3）：「引擎开源、内容自有」——编辑
+// 风格指南属于第一方内容资产，有意不进入开源仓库。全新安装仅内置一个引擎级
+// 通用骨架 default（三段式结构 + 事实约束，无栏目定位、无范文语料），保证
+// 开箱可用；商业版另行内置印月三谈等编辑栏目风格（见商业版 profile.go）。
 func getBuiltinProfiles() map[string]*StyleProfile {
-	yinyueJSON := `{
-		"slug": "yinyue",
-		"name": "印月三谈",
-		"description": "植根于时评专栏的深度评论风格",
-		"version": 3,
-		"tags": ["政论", "民生", "深度评论"],
-		"word_range": {"min": 1000, "max": 1500, "hard_limit": true},
-	"structure": {
-		"type": "three_part",
-		"opening": "现象点题",
-		"body": "分层论述",
-		"conclusion": "总结升华",
-		"argument_pattern": "递进式论述（灵活变式）",
-		"argument_variations": ["首在-重在-贵在", "破-立-合", "是什么-为什么-怎么办", "现象-本质-对策", "起-承-转-合"],
-		"argument_instruction": "每篇文章从上述变式中灵活选择一种递进模式，切忌每篇都机械套用「首在-重在-贵在」三段口号式分论点。可根据选题特点自然展开，分论点之间应体现逻辑递进而非简单并列。",
-		"argument_count": {"min": 2, "max": 4}
-	},
-		"rhetoric": {
-			"required_metaphor": true,
-			"required_parallelism": true,
-			"required_rhetorical_question": true,
-			"metaphor_description": "每篇文章围绕一个高频复现的核心比喻展开"
-		},
-		"value_orientation": {
-			"type": "people_livelihood",
-			"emotional_gradient": "关切→共情→温暖",
-			"keywords": ["细", "微", "暖", "柔", "盼"]
-		},
-		"title_guidelines": {
-			"length": {"min": 10, "max": 25},
-			"style": "判断式或设问式，禁止用伤亡数字、煽动性表述做标题",
-			"forbidden_patterns": ["\\d+人死亡", "\\d+人伤亡", "惨烈", "震惊", "沸腾"],
-			"examples": ["外卖骑手的红灯困境", "城市温度，从一条背篓专线说起"]
-		},
-		"system_prompt": "你是「印月三谈」写作助手，专注撰写政论时评。要求：\n1. 结构化论述（现象→分析→升华），分论点的展开方式应灵活多变\n2. 递进式论述，可从「首在-重在-贵在」「破-立-合」「是什么-为什么-怎么办」「起-承-转-合」等模式中自然选择，切忌每篇都机械套用同一种三段口号\n3. 核心比喻贯穿全文\n4. 排比+设问修辞\n5. 关注民生温度\n6. 标题不用伤亡数字\n7. 输出 Markdown 格式",
-		"writing_standard": "篇幅1000-1500字，标题10-25字，禁止使用伤亡数字做标题",
-		"fact_guard": {
-			"future_tense_required": ["将", "即将", "将于", "预计", "计划", "拟", "待"],
-			"forbidden_results": ["已夺冠", "夺得", "拿下", "完成", "传来捷报", "摘得", "桂冠", "斩获", "包揽", "夺魁", "问鼎", "加冕", "封王", "登顶", "折桂"],
-			"user_material_priority": true
-		},
-		"output_format": {
-			"use_markdown": true,
-			"title_prefix": "## ",
-			"separator": "---MODIFICATIONS---",
-			"include_modification_notes": true,
-			"note_label": "成文说明"
-		},
-		"length_profiles": {
-			"writing": {"min": 1000, "max": 1500, "hard_limit": true},
-			"polish_short": {"min": 100, "max": 600, "hard_limit": false},
-			"polish_long": {"min": 600, "max": 1200, "hard_limit": false}
-		},
-		"kb_id": "default"
-	}`
-
-	shenlunJSON := `{
-		"slug": "shenlun",
-		"name": "申论风格",
-		"description": "公务员申论写作风格",
-		"version": 1,
-		"tags": ["申论", "公考"],
-		"word_range": {"min": 800, "max": 1200, "hard_limit": true},
-		"structure": {
-			"type": "three_part",
-			"opening": "提出问题",
-			"body": "分析问题",
-			"conclusion": "解决问题",
-			"argument_pattern": "提出-分析-解决",
-			"argument_count": {"min": 2, "max": 3}
-		},
-		"rhetoric": {
-			"required_metaphor": false,
-			"required_parallelism": true,
-			"required_rhetorical_question": false,
-			"metaphor_description": ""
-		},
-		"value_orientation": {
-			"type": "governance",
-			"emotional_gradient": "理性→客观→建设性",
-			"keywords": ["规范", "制度", "治理", "协同"]
-		},
-		"title_guidelines": {
-			"length": {"min": 8, "max": 20},
-			"style": "概括式或对策式",
-			"forbidden_patterns": [],
-			"examples": ["以制度建设破解治理难题"]
-		},
-		"system_prompt": "你是申论写作助手。要求：\n1. 提出问题→分析问题→解决问题 结构\n2. 语言规范、政策引用准确\n3. 排比修辞增强气势\n4. 对策具有可操作性\n5. 输出 Markdown 格式",
-		"writing_standard": "篇幅800-1200字，结构严谨，对策可行",
-		"fact_guard": {
-			"future_tense_required": ["将", "拟", "计划"],
-			"forbidden_results": [],
-			"user_material_priority": true
-		},
-		"output_format": {
-			"use_markdown": true,
-			"title_prefix": "## ",
-			"separator": "---MODIFICATIONS---",
-			"include_modification_notes": false,
-			"note_label": ""
-		},
-		"length_profiles": {
-			"writing": {"min": 800, "max": 1200, "hard_limit": true}
-		}
-	}`
-
-	xiaohongshuJSON := `{
-		"slug": "xiaohongshu",
-		"name": "小红书风格",
-		"description": "轻松种草风格",
-		"version": 1,
-		"tags": ["社交媒体", "种草"],
-		"word_range": {"min": 300, "max": 800, "hard_limit": false},
-		"structure": {
-			"type": "free_form",
-			"opening": "吸引眼球的开头",
-			"body": "核心内容",
-			"conclusion": "互动引导",
-			"argument_pattern": "",
-			"argument_count": {"min": 1, "max": 3}
-		},
-		"rhetoric": {
-			"required_metaphor": false,
-			"required_parallelism": false,
-			"required_rhetorical_question": false,
-			"metaphor_description": ""
-		},
-		"value_orientation": {
-			"type": "custom",
-			"emotional_gradient": "好奇→惊喜→分享欲",
-			"keywords": ["宝藏", "绝了", "姐妹们"]
-		},
-		"title_guidelines": {
-			"length": {"min": 5, "max": 20},
-			"style": "口语化、带emoji",
-			"forbidden_patterns": [],
-			"examples": ["这家店也太绝了吧😭"]
-		},
-		"system_prompt": "你是小红书写作助手。要求：\n1. 口语化、轻松\n2. 适当使用emoji\n3. 短句为主\n4. 有互动引导\n5. 输出 Markdown 格式",
-		"writing_standard": "篇幅300-800字，轻松口语化",
-		"fact_guard": {
-			"future_tense_required": [],
-			"forbidden_results": [],
-			"user_material_priority": false
-		},
-		"output_format": {
-			"use_markdown": true,
-			"title_prefix": "# ",
-			"separator": "",
-			"include_modification_notes": false,
-			"note_label": ""
-		},
-		"length_profiles": {
-			"writing": {"min": 300, "max": 800, "hard_limit": false}
-		}
-	}`
-
 	defaultJSON := `{
 		"slug": "default",
 		"name": "通用写作风格",
@@ -1029,7 +876,7 @@ func getBuiltinProfiles() map[string]*StyleProfile {
 	}`
 
 	profiles := make(map[string]*StyleProfile)
-	for _, jsonStr := range []string{defaultJSON, yinyueJSON, shenlunJSON, xiaohongshuJSON} {
+	for _, jsonStr := range []string{defaultJSON} {
 		var p StyleProfile
 		if err := json.Unmarshal([]byte(jsonStr), &p); err != nil {
 			slog.Error("failed to parse builtin profile", "error", err)

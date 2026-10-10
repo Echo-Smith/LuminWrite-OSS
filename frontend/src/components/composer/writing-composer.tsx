@@ -28,8 +28,8 @@ import { useWorkflowStore } from "@/stores/workflow-store";
 import { createWorkflow, createdViewToPlan, cancelWorkflow } from "@/lib/workflow-api";
 import { toast } from "@/stores/toast-store";
 import type { WriteMode } from "@/lib/types";
-import type { ApprovalMode, AssuranceLevel, OrchestrationMode } from "@/lib/writing-runtime-types";
-import { DEFAULT_WRITING_FLOW, type WritingFlowType } from "@/lib/writing-flows";
+import type { ApprovalMode, AssuranceLevel } from "@/lib/writing-runtime-types";
+import { DEFAULT_WRITING_FLOW, WRITING_FLOW_SPECS, type WritingFlowType } from "@/lib/writing-flows";
 import { cn } from "@/lib/utils";
 import { listMaterials, getMaterialContent, uploadMaterial, type UserMaterial } from "@/lib/material-api";
 
@@ -125,44 +125,31 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
   });
   const sessionStyle = useWritingRuntimeStore((s) => {
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return session?.style ?? "yinyue";
+    return session?.style ?? "default";
   });
   const [mode, setMode] = useState<WriteMode>(sessionMode);
   const [style, setStyle] = useState(sessionStyle);
-  // WP4 写作流程（长文创作/多材料综合/忠实改写），缺省 long_form
+  // WP4 写作流程（长文创作/多材料综合/忠实改写/深度研究），缺省 long_form。
+  // 语义收敛：flow 是「做什么任务」的一级真源——编排模式（orchestration_mode）
+  // 与计划模板由 WRITING_FLOW_SPECS[flow] 唯一决定；ModePicker 只表达
+  // 「怎么执行」（写作方式/资料要求 assurance/执行确认），不再下发编排模式。
   const [flow, setFlow] = useState<WritingFlowType>(DEFAULT_WRITING_FLOW);
-  const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("auto");
   const [assuranceLevel, setAssuranceLevel] = useState<AssuranceLevel>("standard");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("conditional");
   const [researchSettingsOpen, setResearchSettingsOpen] = useState(false);
 
-  const handleResearchReviewSelect = useCallback(() => setResearchSettingsOpen(true), []);
-
-  // 切换编排模式：离开研究综述时收起悬浮配置面板（配置已持久化，重开即回填）
-  const handleOrchestrationChange = useCallback((value: OrchestrationMode) => {
-    setOrchestrationMode((prev) => {
-      if (prev === "research_review" && value !== "research_review") setResearchSettingsOpen(false);
-      return value;
-    });
-  }, []);
-
   // 切换写作流程：「深度研究」（research_review）与其他三个流程的启动链不同——
   // 它需要 research-settings 表单收集参数后走 research-contract-draft 封存合同
-  // 的研究链路，因此选中即同步编排模式并打开悬浮表单；从研究流切回其他流程时
-  // 退出研究编排（面板关闭，配置保留）。
+  // 的研究链路，因此选中即打开悬浮表单并升格 assurance；从研究流切回其他流程时
+  // 收起面板（配置保留）。
   const handleFlowChange = useCallback((next: WritingFlowType) => {
     setFlow(next);
     if (next === "research_review") {
-      setOrchestrationMode("research_review");
       setAssuranceLevel("strict");
       setResearchSettingsOpen(true);
       return;
     }
-    setOrchestrationMode((prev) => {
-      if (prev !== "research_review") return prev;
-      setResearchSettingsOpen(false);
-      return "auto";
-    });
+    setResearchSettingsOpen(false);
   }, []);
 
   // Update local state when session changes (e.g. new session from topic center)
@@ -273,7 +260,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
       agent_mode: agentMode,
       user_materials: materials.length > 0 ? materials.map((material) => material.payload) : undefined,
       kb_enabled: kbEnabled,
-      orchestration_mode: orchestrationMode,
+      orchestration_mode: WRITING_FLOW_SPECS[flow].orchestration,
       assurance_level: assuranceLevel,
       approval_mode: approvalMode,
       flow,
@@ -281,7 +268,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
 
     editorRef.current?.clear();
     setMessage("");
-  }, [isRunning, style, mode, model, materials, startWriting, agentMode, kbEnabled, orchestrationMode, assuranceLevel, approvalMode, flow]);
+  }, [isRunning, style, mode, model, materials, startWriting, agentMode, kbEnabled, assuranceLevel, approvalMode, flow]);
 
   const handleAddMaterial = () => {
     if (materialInput.trim()) {
@@ -400,7 +387,7 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
     <div className="relative">
       {/* 研究综述悬浮配置面板：浮现在输入区上方，不挤压 composer；
           配置持久化在 research-review-store，重开自动回填 */}
-      {researchSettingsOpen && orchestrationMode === "research_review" && (
+      {researchSettingsOpen && flow === "research_review" && (
         <div className="composer-research-float anim-fade-in">
           <ResearchSettings
             centralQuestion={message.trim()}
@@ -572,17 +559,14 @@ export const WritingComposer = forwardRef<WritingComposerHandle, WritingComposer
             value={mode}
             compact={compact}
             onChange={handleModeChange}
-            orchestrationValue={orchestrationMode}
-            onOrchestrationChange={handleOrchestrationChange}
             assuranceValue={assuranceLevel}
             onAssuranceChange={setAssuranceLevel}
             approvalValue={approvalMode}
             onApprovalChange={setApprovalMode}
-            onResearchReviewSelect={handleResearchReviewSelect}
           />
 
           {/* 研究综述激活时显示入口标签（点击重新打开设置） */}
-          {orchestrationMode === "research_review" && !researchSettingsOpen && (
+          {flow === "research_review" && !researchSettingsOpen && (
             <button
               onClick={() => setResearchSettingsOpen(true)}
               className="composer-research-tag flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-sm text-muted-foreground transition-ui hover:bg-accent hover:text-foreground"

@@ -30,11 +30,14 @@ var (
 	userStyleRefPattern    = regexp.MustCompile(`^luminbuddy\.user-style\.([a-f0-9]{32})\.v([1-9][0-9]*)$`)
 )
 
+// publicWABenchStyleRefs maps OSS 公开 WABench 基准到内置风格。
+//
+// 内容政策（docs/04-style-profile.md §3）：「引擎开源、内容自有」——OSS 仅
+// 内置引擎级通用骨架 default，因此公开基准只有 general-writing 一项；deep-
+// commentary / policy-essay / social-note 依赖第一方编辑栏目风格（印月三谈/
+// 申论/小红书），属于商业版评测内容，不在开源范围（商业版适配器保留全部四项）。
 var publicWABenchStyleRefs = map[string]string{
 	"wabench.public.general-writing": "default",
-	"wabench.public.deep-commentary": "yinyue",
-	"wabench.public.policy-essay":    "shenlun",
-	"wabench.public.social-note":     "xiaohongshu",
 }
 
 type WABenchAgentRequest struct {

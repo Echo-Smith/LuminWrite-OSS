@@ -15,6 +15,10 @@ func (s *Server) registerWritingRoutes(r chi.Router) {
 		// sealed lcp/1.1 contract is built server-side; the frontend posts
 		// the returned versions straight to /contracts and /confirm.
 		r.Post("/documents/{documentId}/research-contract-draft", s.handleCreateWritingResearchContractDraft)
+		// Writing contract draft (normal flows): same productization for
+		// 长文创作/多材料综合/忠实改写 — the server seals the lcp/1.0 contract
+		// pair plus the intent plan; the frontend forwards all three verbatim.
+		r.Post("/documents/{documentId}/writing-contract-draft", s.handleCreateWritingContractDraft)
 		r.Post("/contracts/{contractId}/confirm", s.handleConfirmWritingContract)
 		r.Post("/documents/{documentId}/plans", s.handleCompileWritingPlan)
 		r.Post("/runs", s.handleCreateWritingRun)

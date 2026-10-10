@@ -113,7 +113,10 @@ docker compose -f docker-compose.quickstart.yml up -d
 检索调试 + 总览统计与实体图谱），见 [docs/33](docs/33-materials-ia.md)。
 「风格和技能」中的风格、技能与服务以**下载安装**方式落入固定目录
 （`data/packages/<kind>/<slug>/<version>/`），可卸载，见
-[docs/34](docs/34-package-install.md)。
+[docs/34](docs/34-package-install.md)。内置技能包开箱即装：
+**深度调研**（多角度并行取证 → 带引用报告，零 API Key）、**学术论文写作**
+（ML/CV/NLP 按节起草与润色）、**arXiv 文献检索**（搜索/BibTeX/引用图谱）、
+**引用校验**（免费学术 API 核验引用真伪，防编造引用与张冠李戴）。
 
 <details>
 <summary>方式二：主 Compose（自构建）· 方式三：本地开发 · 验证 · 生产部署</summary>
@@ -141,6 +144,11 @@ cd frontend && npm ci && npm test && npm run build
 
 ## 🧩 功能全景
 
+- **内置技能包（写作增强，[docs/34](docs/34-package-install.md) 下载安装体系）**：
+  深度调研（独立角度并行取证、单点成稿，只用免费公开源）、学术论文写作
+  （Abstract/Intro/Method 等章节模板 + 审稿人视角自查 + LaTeX 导出）、arXiv 文献检索
+  （MIT 上游，SSRF/XML 防护加固、服务端只读 stdout）、引用校验（Crossref/S2/OpenAlex/
+  arXiv 瀑布核验引用元数据 + 逐条语境支撑审计）。各包附 PROVENANCE 说明来源与许可状态；
 - **多模式写作执行**：治理运行时统一调度；编辑部 DAG 的研究→写作→审校以受治理
   Executor 接力（上下文按角色分槽），WebSocket 已退出主架构；
 - **治理型写作运行时**：WritingContract → ExecutablePlan → typed Artifact →

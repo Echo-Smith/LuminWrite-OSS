@@ -26,11 +26,11 @@ var wabenchPartitions = map[string]struct{}{
 	"live_probe":      {},
 }
 
+// builtinStyleSlugs 是 OSS 实际内置的风格（内容政策 docs/04 §3：仅引擎级
+// default 骨架）。第一方编辑栏目风格（印月三谈/申论/小红书）属商业版内容，
+// 不在此表——对它们的引用按 legacy-style 处理（需重新绑定），fail-closed。
 var builtinStyleSlugs = map[string]struct{}{
-	"default":     {},
-	"yinyue":      {},
-	"shenlun":     {},
-	"xiaohongshu": {},
+	"default": {},
 }
 
 var nonIDChars = regexp.MustCompile(`[^a-z0-9_-]+`)
