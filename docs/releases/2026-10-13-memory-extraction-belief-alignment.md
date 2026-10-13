@@ -29,6 +29,7 @@
 
 - `go build ./...` 全树通过；`go test -p 1 -count=1 ./...` 全绿（DB 门控的 CI 对齐用例本机按惯例 skip，与本改动无关）。
 - `pkg/memory` + `internal/memory` 两包含新增 13 个用例全绿。
+- **真实抽取链 A/B（商业线 `cmd/pref-evolution-ab`，DeepSeek-V4-Flash @0.7，24 会话）**：同二进制双臂（new=对齐通道 / old=剥除可选接口回退精确匹配）× 3 剧本（同题措辞漂移 ×4 / 真实演化 ×5 / 独立新增 ×3），new 臂 8/8 判据通过——恒定偏好（title/tone）措辞复述零撤回且 active occ=4、真实演化撤旧无矛盾并存、独立新增零误撤回；old 臂每个维度都出现 superseded/candidate 震荡（实测区分度成立）。驱动同时钓出 `Store.Update` 存量缺陷（见变更 6）。
 
 ## 已知边界
 
