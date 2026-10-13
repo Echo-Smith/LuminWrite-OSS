@@ -72,6 +72,47 @@ func (s *PgStore) Save(ctx context.Context, m *memory.Memory) error {
 	return nil
 }
 
+// Update 按主键更新已存在的记忆（强化路径专用，见 Store.Update 契约）。
+// embedding 为空时保留库中原向量，语义与 Save 的 upsert 分支一致。
+func (s *PgStore) Update(ctx context.Context, m *memory.Memory) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
+
+	embeddingStr := vectorToPgFormat(m.Embedding)
+
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE user_memories SET
+			value = $2,
+			embedding = COALESCE($3, embedding),
+			confidence = $4,
+			occurrences = $5,
+			source_trace_id = $6,
+			quality_source = $7,
+			quality_weight = $8,
+			status = $9,
+			superseded_by = NULLIF($10, '')::uuid,
+			last_seen = $11,
+			updated_at = NOW(),
+			evidence_status = $12,
+			source_count = $13
+		WHERE id = $1::uuid
+	`,
+		m.ID, m.Value, embeddingStr,
+		m.Confidence, m.Occurrences, m.SourceTraceID,
+		m.QualitySource, m.QualityWeight, m.Status, m.SupersededBy,
+		m.LastSeen,
+		m.EvidenceStatus, m.SourceCount,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update memory: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("memory %s not found", m.ID)
+	}
+	return nil
+}
+
 // Get 按 ID 获取记忆
 func (s *PgStore) Get(ctx context.Context, id string) (*memory.Memory, error) {
 	if s.db == nil {

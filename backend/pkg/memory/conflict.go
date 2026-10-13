@@ -254,7 +254,9 @@ func (r *ConflictResolver) reinforceExisting(ctx context.Context, latest *Memory
 		latest.SourceCount++
 	}
 
-	if err := r.store.Save(ctx, latest); err != nil {
+	// 走 Update 而非 Save：晋升/强化改变 status 元组时 Save 的 upsert
+	// 冲突目标命中不了，会以同一 id 撞主键（见 Store.Update 契约）。
+	if err := r.store.Update(ctx, latest); err != nil {
 		return nil, err
 	}
 

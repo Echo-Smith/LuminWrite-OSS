@@ -17,6 +17,7 @@
 3. **`pkg/memory/conflict.go`**：`ResolveAndSaveAligned`（旧 `ResolveAndSave` 委托它，签名与语义不变）——`retract` 指向有效目标 → 先 supersede 再常规新建（撤回链指向新记忆）；`reinforce` → 复用 Case 2 强化主体（抽为 `reinforceExisting`），措辞更新不构成冲突，two-strike 晋升照常。`resolveAlignmentTarget` 做护栏：action 取值合法、序号落在展示范围内、目标非 Tier1 且仍为 active/candidate，任何不满足静默降级为无标签路径。
 4. **`internal/memory/deepseek_extractor.go`**：`ExtractFromArticle/ExtractFromRevision` 委托到带 beliefs 的内部实现（beliefs 为空时 prompt 与原版一致）；新增 `ExtractFromSessionWithBeliefs`——按会话是否携带改前稿选通道，prompt 附加序号化 belief 清单与三值标注规则（reinforce 必须复用旧 key；拿不准宁可不标）。
 5. **测试**：`pkg/memory/conflict_alignment_test.go`（retract 修 key 漂移并补撤回链、reinforce 修措辞降级/候选晋升、越界与 Tier1 双保险、死目标降级、无标签路径保持 Case 3、beliefContext 过滤/排序/截断）；`internal/memory/deepseek_extractor_test.go`（新字段解析、旧形状不变、belief 块渲染含 ID 不进 prompt 断言）。
+6. **附带修复（存量缺陷，A/B 驱动实测钓出）**：`Store` 接口新增 `Update`（按主键 UPDATE），`PgStore` 实现之；强化路径统一改走 `Update`。原 `Save` 是以 `(user_id, category, key, status)` 为冲突目标的 upsert——two-strike 候选晋升改变 status 元组后冲突不命中，同 id INSERT 撞 `user_memories_pkey`，**改前 Case 2 的晋升对 PgStore 一直静默失败**（仅 WARN，候选永远升不了 active）。fake/mock store 同步补齐该方法。
 
 ## 语义保持
 

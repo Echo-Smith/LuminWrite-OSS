@@ -9,6 +9,12 @@ type Store interface {
 	// Save 保存或更新一条记忆
 	Save(ctx context.Context, m *Memory) error
 
+	// Update 按主键更新一条已存在的记忆。Save 是以
+	// (user_id, category, key, status) 为冲突目标的 upsert——候选晋升等
+	// 改变 status 元组的更新命中不了冲突，会以同一 id 撞主键；
+	// 强化路径（Case 2 / reinforce 标签）必须走 Update。
+	Update(ctx context.Context, m *Memory) error
+
 	// Get 按 ID 获取记忆
 	Get(ctx context.Context, id string) (*Memory, error)
 

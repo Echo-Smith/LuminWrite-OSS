@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"testing"
@@ -27,6 +28,14 @@ func (s *fakeMemStore) Save(_ context.Context, m *Memory) error {
 	if m.ID == "" {
 		s.seq++
 		m.ID = "mem-" + strconv.Itoa(s.seq)
+	}
+	s.items[m.ID] = m
+	return nil
+}
+
+func (s *fakeMemStore) Update(_ context.Context, m *Memory) error {
+	if _, ok := s.items[m.ID]; !ok {
+		return fmt.Errorf("memory %s not found", m.ID)
 	}
 	s.items[m.ID] = m
 	return nil

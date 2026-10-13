@@ -596,6 +596,7 @@ func TestFileMemorySyncer_SyncFromDB(t *testing.T) {
 type mockFileSyncStore struct{}
 
 func (m *mockFileSyncStore) Save(ctx context.Context, mem *Memory) error { return nil }
+func (m *mockFileSyncStore) Update(ctx context.Context, mem *Memory) error { return nil }
 func (m *mockFileSyncStore) Get(ctx context.Context, id string) (*Memory, error) { return nil, nil }
 func (m *mockFileSyncStore) List(ctx context.Context, userID string, opts ListOptions) ([]*Memory, error) {
 	return []*Memory{
