@@ -25,6 +25,75 @@ func NewConflictResolver(store Store) *ConflictResolver {
 // qs 是本次提取派生出的质量信号出处（人工录用/人工确认/好评等），
 // 用于证据阶梯与质量加权（WP6）。
 func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, extracted ExtractedMemory, tier Tier, traceID string, grade ArticleGrade, qs QualitySource) (*Memory, error) {
+	return r.ResolveAndSaveAligned(ctx, userID, extracted, tier, traceID, grade, qs, nil)
+}
+
+// ResolveAndSaveAligned 在既有精确匹配语义之前处理模型声明的对齐标签
+// （WP7 对齐感知抽取）：
+//   - reinforce 指向有效目标 → 视为同一条 belief 的措辞更新：复用目标
+//     key 走强化路径，不触发 supersede（修复"措辞漂移把 active 偏好
+//     打回候选期"）
+//   - retract 指向有效目标 → 先撤回目标再走常规对齐新建（修复"key
+//     漂移导致旧偏好漏撤回、矛盾 belief 并存"）
+//
+// 标签缺失或目标无效（越界/指向 Tier1/目标已非 active+candidate）时
+// 静默降级为无标签路径——误标签宁可当新记忆处理，也不能误伤。
+func (r *ConflictResolver) ResolveAndSaveAligned(ctx context.Context, userID string, extracted ExtractedMemory, tier Tier, traceID string, grade ArticleGrade, qs QualitySource, beliefs []BeliefContext) (*Memory, error) {
+	target := resolveAlignmentTarget(extracted, beliefs)
+	if target == nil {
+		return r.resolveAndSaveUnlabeled(ctx, userID, extracted, tier, traceID, grade, qs)
+	}
+
+	targetMem, err := r.store.Get(ctx, target.ID)
+	if err != nil || targetMem == nil ||
+		(targetMem.Status != StatusActive && targetMem.Status != StatusCandidate) {
+		// 目标已消失或已撤回（并发抽取等）：降级为无标签路径
+		return r.resolveAndSaveUnlabeled(ctx, userID, extracted, tier, traceID, grade, qs)
+	}
+
+	if extracted.Action == ActionReinforce {
+		// 同一条 belief 的措辞更新：强制复用目标维度，防止模型
+		// 声明了 reinforce 却换了个 key 造成平行记忆
+		extracted.Category = targetMem.Category
+		extracted.Key = targetMem.Key
+		return r.reinforceExisting(ctx, targetMem, extracted.Value, traceID, grade, qs)
+	}
+
+	// retract：先撤目标再常规新建。新记忆与目标同 key 时，
+	// supersede 后 FindByCategoryKey 的活跃结果自然落空，落入新建；
+	// 不同 key 时同样保证旧 belief 退出注入池。
+	if err := r.store.Supersede(ctx, targetMem.ID, ""); err != nil {
+		slog.Warn("memory: aligned retract failed to supersede target", "target", targetMem.ID, "error", err)
+	}
+	mem, err := r.resolveAndSaveUnlabeled(ctx, userID, extracted, tier, traceID, grade, qs)
+	if err == nil && mem != nil {
+		// 补上撤回链指向（与 Case 3 的两步写法一致）
+		_ = r.store.Supersede(ctx, targetMem.ID, mem.ID)
+	}
+	return mem, err
+}
+
+// resolveAlignmentTarget 校验对齐标签：action 取值合法、序号落在
+// beliefs 展示范围内、目标非 Tier1。任何不满足都返回 nil。
+func resolveAlignmentTarget(extracted ExtractedMemory, beliefs []BeliefContext) *BeliefContext {
+	if len(beliefs) == 0 {
+		return nil
+	}
+	if extracted.Action != ActionReinforce && extracted.Action != ActionRetract {
+		return nil
+	}
+	if extracted.RetractTarget < 1 || extracted.RetractTarget > len(beliefs) {
+		return nil
+	}
+	b := beliefs[extracted.RetractTarget-1]
+	if b.Tier == TierHard {
+		return nil
+	}
+	return &b
+}
+
+// resolveAndSaveUnlabeled 是原 ResolveAndSave 主体（无对齐标签路径）。
+func (r *ConflictResolver) resolveAndSaveUnlabeled(ctx context.Context, userID string, extracted ExtractedMemory, tier Tier, traceID string, grade ArticleGrade, qs QualitySource) (*Memory, error) {
 	existing, err := r.store.FindByCategoryKey(ctx, userID, extracted.Category, extracted.Key)
 	if err != nil {
 		return nil, err
@@ -99,53 +168,7 @@ func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, ex
 
 	// Case 2: value 相同 → 增加出现次数
 	if latest.Value == extracted.Value {
-		// Two-Strike: candidate → active
-		if latest.Status == StatusCandidate {
-			latest.Status = StatusActive
-			latest.Confidence = maxFloat(latest.Confidence+0.2, 0.6)
-			slog.Info("memory: candidate promoted to active (two-strike)",
-				"category", extracted.Category, "key", extracted.Key)
-		}
-
-		latest.Occurrences++
-		latest.LastSeen = time.Now()
-
-		// 质量加权
-		if grade == GradePositive {
-			latest.Confidence = minFloat(latest.Confidence+0.05, 1.0)
-			if latest.QualitySource == "" {
-				latest.QualitySource = QualityHighRating
-				latest.QualityWeight = 0.8
-			}
-		}
-
-		// 强信号（人工录用/人工确认）覆盖较弱的质量出处
-		if isStrongQualitySource(qs) {
-			latest.QualitySource = qs
-		}
-
-		// 证据升级链路（Layer-0 止血④b）：每次被再次观测/正反馈都推进
-		// 证据状态。此前 evidence_status 恒为 none，写作场景的严格证据门
-		// 会把所有 Tier2/3 静默全拦。
-		latest.EvidenceStatus = upgradedEvidenceStatus(latest.EvidenceStatus, grade, latest.QualitySource)
-
-		// 多源计数（WP6）：不同 traceID 的再次观测视为独立证据源。
-		// 保留首个出处 SourceTraceID 不覆盖；旧记录 SourceCount 为 0 时先补到 1 再自增。
-		if traceID != "" && traceID != latest.SourceTraceID {
-			if latest.SourceCount < 1 {
-				latest.SourceCount = 1
-			}
-			latest.SourceCount++
-		}
-
-		if err := r.store.Save(ctx, latest); err != nil {
-			return nil, err
-		}
-
-		slog.Debug("memory: existing memory reinforced",
-			"category", extracted.Category, "key", extracted.Key,
-			"occurrences", latest.Occurrences, "confidence", latest.Confidence)
-		return latest, nil
+		return r.reinforceExisting(ctx, latest, latest.Value, traceID, grade, qs)
 	}
 
 	// Case 3: value 不同 → 旧记忆标记 superseded，新建
@@ -183,6 +206,62 @@ func (r *ConflictResolver) ResolveAndSave(ctx context.Context, userID string, ex
 		"old_value", latest.Value, "new_value", extracted.Value,
 		"old_id", latest.ID, "new_id", mem.ID)
 	return mem, nil
+}
+
+// reinforceExisting 强化路径（Case 2 主体 + WP7 reinforce 标签复用）：
+// two-strike 晋升、质量加权、证据升级、多源计数，并把 value 刷新为
+// 最新措辞（同一条 belief 的表述随观测演进，不构成冲突）。
+func (r *ConflictResolver) reinforceExisting(ctx context.Context, latest *Memory, value, traceID string, grade ArticleGrade, qs QualitySource) (*Memory, error) {
+	// Two-Strike: candidate → active
+	if latest.Status == StatusCandidate {
+		latest.Status = StatusActive
+		latest.Confidence = maxFloat(latest.Confidence+0.2, 0.6)
+		slog.Info("memory: candidate promoted to active (two-strike)",
+			"category", latest.Category, "key", latest.Key)
+	}
+
+	latest.Occurrences++
+	latest.LastSeen = time.Now()
+	if value != "" && value != latest.Value {
+		latest.Value = value
+	}
+
+	// 质量加权
+	if grade == GradePositive {
+		latest.Confidence = minFloat(latest.Confidence+0.05, 1.0)
+		if latest.QualitySource == "" {
+			latest.QualitySource = QualityHighRating
+			latest.QualityWeight = 0.8
+		}
+	}
+
+	// 强信号（人工录用/人工确认）覆盖较弱的质量出处
+	if isStrongQualitySource(qs) {
+		latest.QualitySource = qs
+	}
+
+	// 证据升级链路（Layer-0 止血④b）：每次被再次观测/正反馈都推进
+	// 证据状态。此前 evidence_status 恒为 none，写作场景的严格证据门
+	// 会把所有 Tier2/3 静默全拦。
+	latest.EvidenceStatus = upgradedEvidenceStatus(latest.EvidenceStatus, grade, latest.QualitySource)
+
+	// 多源计数（WP6）：不同 traceID 的再次观测视为独立证据源。
+	// 保留首个出处 SourceTraceID 不覆盖；旧记录 SourceCount 为 0 时先补到 1 再自增。
+	if traceID != "" && traceID != latest.SourceTraceID {
+		if latest.SourceCount < 1 {
+			latest.SourceCount = 1
+		}
+		latest.SourceCount++
+	}
+
+	if err := r.store.Save(ctx, latest); err != nil {
+		return nil, err
+	}
+
+	slog.Debug("memory: existing memory reinforced",
+		"category", latest.Category, "key", latest.Key,
+		"occurrences", latest.Occurrences, "confidence", latest.Confidence)
+	return latest, nil
 }
 
 // calculateInitialConfidence 根据分层和评级计算初始置信度

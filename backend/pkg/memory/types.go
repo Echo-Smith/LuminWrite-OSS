@@ -197,6 +197,42 @@ type ExtractedMemory struct {
 	Key      string `json:"key"`
 	Value    string `json:"value"`
 	Source   string `json:"source"` // deterministic | llm | feedback
+	// Action 对齐标签（WP7 对齐感知抽取，可选）：
+	//   reinforce — 与某条已有 belief 同维度且含义一致（仅措辞不同），
+	//               解析时必须复用该条 key，走强化路径而非冲突路径
+	//   retract   — 与某条已有 belief 同维度且相互矛盾/取代
+	//   省略      — 未标注，走既有 category+key 精确匹配路径
+	Action string `json:"action,omitempty"`
+	// RetractTarget 是 prompt 中展示的 belief 序号（1..k），仅 Action
+	// 非空时有意义。SDK 侧校验：越界或指向 Tier1 的一律剥掉标签。
+	RetractTarget int `json:"retract_target,omitempty"`
+}
+
+// 对齐标签取值（ExtractedMemory.Action）
+const (
+	ActionReinforce = "reinforce"
+	ActionRetract   = "retract"
+)
+
+// BeliefContext 是抽取时喂给模型的已有记忆上下文。
+// 只含 Tier2/3（Tier1 硬偏好不可被抽取链撤回，不进入该列表）；
+// Index 是 prompt 中的 1..k 序号，ID 不进 prompt，仅用于服务端
+// 把模型声明的序号映射回真实记忆。
+type BeliefContext struct {
+	Index    int
+	ID       string
+	Category string
+	Key      string
+	Value    string
+	Tier     Tier
+}
+
+// ContextAwareExtractor 可选的对齐感知提取通道（WP7）。
+// 实现方在抽取 prompt 中携带 beliefs，让模型直接标注 reinforce /
+// retract(指向序号)，替代事后 category+key 字符串对齐；
+// 未实现时 SDK 保持原通道不变。
+type ContextAwareExtractor interface {
+	ExtractFromSessionWithBeliefs(ctx context.Context, session ExtractSession, beliefs []BeliefContext) ([]ExtractedMemory, error)
 }
 
 // ─── 配置 ──────────────────────────────────────────────────

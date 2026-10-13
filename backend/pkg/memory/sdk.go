@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 )
+
+// maxBeliefContext 抽取 prompt 携带的已有 belief 上限（最近优先截断）。
+const maxBeliefContext = 10
 
 // SDK 是记忆系统的统一入口
 type SDK struct {
@@ -58,11 +62,18 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 
 	// 3. LLM 提取（仅当非差评时）
 	var llmExtracted []ExtractedMemory
+	// WP7 对齐感知：prompt 携带该用户已有的 Tier2/3 belief，让模型
+	// 直接标注 reinforce / retract(指向序号)，替代事后 category+key
+	// 字符串对齐；无 belief 或提取器未实现该通道时行为不变。
+	var beliefs []BeliefContext
 	if grade != GradeNegative && len(session.Article) > 100 {
 		var err error
-		// P2-1 浓信号：携带改前稿时优先走 diff 对比通道——
-		// "用户改了什么"比"终稿长什么样"偏好信号更强。
-		if session.BeforeRevision != "" {
+		beliefs = s.beliefContext(ctx, session.UserID)
+		if cae, ok := s.extractor.(ContextAwareExtractor); ok && len(beliefs) > 0 {
+			llmExtracted, err = cae.ExtractFromSessionWithBeliefs(ctx, session, beliefs)
+		} else if session.BeforeRevision != "" {
+			// P2-1 浓信号：携带改前稿时优先走 diff 对比通道——
+			// "用户改了什么"比"终稿长什么样"偏好信号更强。
 			if rev, ok := s.extractor.(RevisionExtractor); ok {
 				llmExtracted, err = rev.ExtractFromRevision(ctx, session.BeforeRevision, session.Article, session.StyleSlug)
 			} else {
@@ -110,12 +121,15 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 		for _, ext := range llmExtracted {
 			checkedValue, skipped := s.checkAndCleanMemoryValue(ctx, ext.Value, ext.Category)
 			if skipped {
-				slog.Warn("memory: skipped sensitive LLM extraction", 
+				slog.Warn("memory: skipped sensitive LLM extraction",
 					"category", ext.Category, "key", ext.Key, "trace_id", session.TraceID)
 				continue
 			}
 			ext.Value = checkedValue
-			mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierPattern, session.TraceID, grade, qs)
+			// 仅 LLM 通道传入 beliefs：对齐标签只能作用于抽取 prompt
+			// 里实际展示过的 belief（resolveAlignmentTarget 内再做
+			// 越界/Tier1 校验）。
+			mem, err := s.resolver.ResolveAndSaveAligned(ctx, session.UserID, ext, TierPattern, session.TraceID, grade, qs, beliefs)
 			if err != nil {
 				slog.Warn("memory: failed to save LLM pattern", "category", ext.Category, "error", err)
 				continue
@@ -291,6 +305,50 @@ func extractDeterministic(session *ExtractSession) []ExtractedMemory {
 	}
 
 	return memories
+}
+
+// beliefContext 取该用户可参与抽取对齐的已有记忆：active + candidate、
+// 仅 Tier2/3（Tier1 硬偏好不可被抽取链撤回，永不进入 prompt）、最近
+// 优先截断到 maxBeliefContext，并分配 1..k 序号。任何存储错误都返回
+// nil——抽取退回无上下文通道，不阻塞提取。
+func (s *SDK) beliefContext(ctx context.Context, userID string) []BeliefContext {
+	if s.store == nil {
+		return nil
+	}
+	var picked []*Memory
+	for _, status := range []MemoryStatus{StatusActive, StatusCandidate} {
+		st := status
+		memories, err := s.store.List(ctx, userID, ListOptions{Status: &st, Limit: 50})
+		if err != nil {
+			slog.Debug("memory: belief context list failed", "error", err)
+			return nil
+		}
+		for _, m := range memories {
+			if m.Tier == TierHard {
+				continue
+			}
+			picked = append(picked, m)
+		}
+	}
+	if len(picked) == 0 {
+		return nil
+	}
+	sort.Slice(picked, func(i, j int) bool { return picked[i].LastSeen.After(picked[j].LastSeen) })
+	if len(picked) > maxBeliefContext {
+		picked = picked[:maxBeliefContext]
+	}
+	out := make([]BeliefContext, len(picked))
+	for i, m := range picked {
+		out[i] = BeliefContext{
+			Index:    i + 1,
+			ID:       m.ID,
+			Category: m.Category,
+			Key:      m.Key,
+			Value:    m.Value,
+			Tier:     m.Tier,
+		}
+	}
+	return out
 }
 
 // generateEmbeddings 为缺少 embedding 的记忆生成向量

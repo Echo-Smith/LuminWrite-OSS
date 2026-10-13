@@ -23,6 +23,12 @@ func NewDeepSeekExtractor(llm *tools.LLMClient) *DeepSeekExtractor {
 
 // ExtractFromArticle 从完整文章中提取结构化偏好
 func (e *DeepSeekExtractor) ExtractFromArticle(ctx context.Context, article, styleSlug string) ([]memory.ExtractedMemory, error) {
+	return e.extractArticle(ctx, article, styleSlug, nil)
+}
+
+// extractArticle 是终稿归纳通道主体；beliefs 非空时 prompt 附加已有
+// 偏好清单与对齐标注规则（WP7 对齐感知抽取）。
+func (e *DeepSeekExtractor) extractArticle(ctx context.Context, article, styleSlug string, beliefs []memory.BeliefContext) ([]memory.ExtractedMemory, error) {
 	if e.llm == nil || len(article) < 100 {
 		return nil, nil
 	}
@@ -40,8 +46,8 @@ func (e *DeepSeekExtractor) ExtractFromArticle(ctx context.Context, article, sty
   {"category": "sentence", "key": "sentence_style", "value": "长短句比例/排比/设问等特征", "source": "llm"},
   {"category": "topic", "key": "topic_domain", "value": "文章话题领域", "source": "llm"}
 ]
-
-只输出 JSON 数组，不要其他文字。`, styleSlug, truncate(article, 2000))
+%s
+只输出 JSON 数组，不要其他文字。`, styleSlug, truncate(article, 2000), buildBeliefBlock(beliefs))
 
 	resp, _, err := e.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: "你是写作风格分析师，只输出 JSON 格式结果。"},
@@ -58,9 +64,26 @@ func (e *DeepSeekExtractor) ExtractFromArticle(ctx context.Context, article, sty
 // 从"改前稿 → 改后稿"的差异中提取偏好：用户的主动修改是最强的
 // 显式偏好信号，强于终稿风格归纳。
 func (e *DeepSeekExtractor) ExtractFromRevision(ctx context.Context, before, after, styleSlug string) ([]memory.ExtractedMemory, error) {
+	return e.extractRevision(ctx, before, after, styleSlug, nil)
+}
+
+// ExtractFromSessionWithBeliefs 对齐感知通道（WP7 ContextAwareExtractor）。
+// 按会话是否携带改前稿选择 diff/终稿通道，prompt 统一附加已有偏好
+// 清单，让模型直接标注 reinforce / retract(指向序号)。
+func (e *DeepSeekExtractor) ExtractFromSessionWithBeliefs(ctx context.Context, session memory.ExtractSession, beliefs []memory.BeliefContext) ([]memory.ExtractedMemory, error) {
+	if e.llm == nil {
+		return nil, nil
+	}
+	if session.BeforeRevision != "" && len(session.BeforeRevision) >= 100 {
+		return e.extractRevision(ctx, session.BeforeRevision, session.Article, session.StyleSlug, beliefs)
+	}
+	return e.extractArticle(ctx, session.Article, session.StyleSlug, beliefs)
+}
+
+func (e *DeepSeekExtractor) extractRevision(ctx context.Context, before, after, styleSlug string, beliefs []memory.BeliefContext) ([]memory.ExtractedMemory, error) {
 	if e.llm == nil || len(before) < 100 || len(after) < 100 {
 		// 退化：任一稿缺失时回退终稿归纳
-		return e.ExtractFromArticle(ctx, after, styleSlug)
+		return e.extractArticle(ctx, after, styleSlug, beliefs)
 	}
 
 	prompt := fmt.Sprintf(`对比用户的改前稿与改后稿，从修改行为中提取写作偏好。
@@ -85,8 +108,9 @@ func (e *DeepSeekExtractor) ExtractFromRevision(ctx context.Context, before, aft
 注意：
 - 只从实际发生的修改中归纳，不要臆测未修改部分的偏好
 - 若两稿几乎无差异，输出空数组 []
-- 只输出 JSON 数组，不要其他文字。`,
-		styleSlug, truncate(before, 1500), truncate(after, 1500))
+%s
+只输出 JSON 数组，不要其他文字。`,
+		styleSlug, truncate(before, 1500), truncate(after, 1500), buildBeliefBlock(beliefs))
 
 	resp, _, err := e.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: "你是写作修改分析师，只输出 JSON 格式结果。"},
@@ -97,6 +121,30 @@ func (e *DeepSeekExtractor) ExtractFromRevision(ctx context.Context, before, aft
 	}
 
 	return parseExtractedMemories(resp, "llm"), nil
+}
+
+// buildBeliefBlock 渲染已有偏好清单与三值标注规则，追加在抽取
+// prompt 的输出 schema 之后；beliefs 为空时返回空串，prompt 与
+// 原通道保持一致。
+func buildBeliefBlock(beliefs []memory.BeliefContext) string {
+	if len(beliefs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n该用户已记录的写作偏好（序号 | 类别/键 | 内容）：\n")
+	for _, bl := range beliefs {
+		fmt.Fprintf(&b, "%d | %s/%s | %s\n", bl.Index, bl.Category, bl.Key, truncate(bl.Value, 120))
+	}
+	b.WriteString(`对每条提取结果追加对齐标注：
+  "action": "reinforce" 或 "retract"；与已有偏好无关时省略
+  "retract_target": 上表序号（仅 action 非空时必填）
+标注规则：
+- 与某条已有偏好同维度、含义一致仅措辞不同 → action=reinforce，且 key 必须复用该条偏好的 key
+- 与某条已有偏好同维度但相互矛盾/取代（用户偏好变了）→ action=retract
+- 相关但可共存的新偏好 → 省略 action
+- 拿不准 → 省略 action（宁可不标，不要猜）
+`)
+	return b.String()
 }
 
 // ExtractFromFeedback 从反馈评论中提取改进信号
