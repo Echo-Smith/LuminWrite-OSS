@@ -60,15 +60,16 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 	// 2. 确定性提取（从 ExecutionContext 字段）
 	deterministic := extractDeterministic(&session)
 
-	// 3. LLM 提取（仅当非差评时）
-	var llmExtracted []ExtractedMemory
 	// WP7 对齐感知：prompt 携带该用户已有的 Tier2/3 belief，让模型
 	// 直接标注 reinforce / retract(指向序号)，替代事后 category+key
 	// 字符串对齐；无 belief 或提取器未实现该通道时行为不变。
-	var beliefs []BeliefContext
+	// 差评也会提取 Tier3 反馈记忆，beliefs 提升到分级判断之前。
+	beliefs := s.beliefContext(ctx, session.UserID)
+
+	// 3. LLM 提取（仅当非差评时）
+	var llmExtracted []ExtractedMemory
 	if grade != GradeNegative && len(session.Article) > 100 {
 		var err error
-		beliefs = s.beliefContext(ctx, session.UserID)
 		if cae, ok := s.extractor.(ContextAwareExtractor); ok && len(beliefs) > 0 {
 			llmExtracted, err = cae.ExtractFromSessionWithBeliefs(ctx, session, beliefs)
 		} else if session.BeforeRevision != "" {
@@ -91,7 +92,11 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 	var feedbackExtracted []ExtractedMemory
 	if len(session.Feedback) > 0 {
 		var err error
-		feedbackExtracted, err = s.extractor.ExtractFromFeedback(ctx, session.Feedback)
+		if cae, ok := s.extractor.(ContextAwareExtractor); ok && len(beliefs) > 0 {
+			feedbackExtracted, err = cae.ExtractFromFeedbackWithBeliefs(ctx, session.Feedback, beliefs)
+		} else {
+			feedbackExtracted, err = s.extractor.ExtractFromFeedback(ctx, session.Feedback)
+		}
 		if err != nil {
 			slog.Warn("memory: feedback extraction failed", "error", err)
 		}
@@ -142,7 +147,7 @@ func (s *SDK) Extract(ctx context.Context, session ExtractSession) error {
 
 	// 6. 保存 Tier 3 反馈记忆
 	for _, ext := range feedbackExtracted {
-		mem, err := s.resolver.ResolveAndSave(ctx, session.UserID, ext, TierFeedback, session.TraceID, grade, qs)
+		mem, err := s.resolver.ResolveAndSaveAligned(ctx, session.UserID, ext, TierFeedback, session.TraceID, grade, qs, beliefs)
 		if err != nil {
 			slog.Warn("memory: failed to save feedback memory", "category", ext.Category, "error", err)
 			continue

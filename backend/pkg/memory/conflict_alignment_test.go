@@ -203,6 +203,75 @@ func TestUnlabeledStillSupersedesExactKey(t *testing.T) {
 	}
 }
 
+// ─── WP7：反馈通道的对齐（差评撤回旧偏好） ─────────────────────
+
+// fakeAligningExtractor 实现 LLMExtractor + ContextAwareExtractor 全部
+// 四个方法：文章/会话通道静默，反馈通道声明 retract。
+type fakeAligningExtractor struct {
+	feedbackCalled bool
+	beliefsSeen    int
+}
+
+func (f *fakeAligningExtractor) ExtractFromArticle(ctx context.Context, article, styleSlug string) ([]ExtractedMemory, error) {
+	return nil, nil
+}
+
+func (f *fakeAligningExtractor) ExtractFromFeedback(ctx context.Context, feedback []FeedbackInfo) ([]ExtractedMemory, error) {
+	return nil, nil
+}
+
+func (f *fakeAligningExtractor) ExtractFromSessionWithBeliefs(ctx context.Context, session ExtractSession, beliefs []BeliefContext) ([]ExtractedMemory, error) {
+	return nil, nil
+}
+
+func (f *fakeAligningExtractor) ExtractFromFeedbackWithBeliefs(ctx context.Context, feedback []FeedbackInfo, beliefs []BeliefContext) ([]ExtractedMemory, error) {
+	f.feedbackCalled = true
+	f.beliefsSeen = len(beliefs)
+	return []ExtractedMemory{{
+		Category: "title", Key: "title_style", Value: "标题要短", Source: "feedback",
+		Action: ActionRetract, RetractTarget: 1,
+	}}, nil
+}
+
+// 差评反馈走对齐通道：beliefs 注入反馈提取，撤回标签作用于展示过的
+// Tier2 信念，新反馈记忆以 candidate 落库。
+func TestFeedbackChannelAlignsRetraction(t *testing.T) {
+	store := newFakeMemStore()
+	old := seedBelief(t, store, &Memory{
+		UserID: "u9", Tier: TierPattern, Category: "title", Key: "title_style",
+		Value: "偏好长标题", Confidence: 0.6, Status: StatusActive,
+	})
+	ex := &fakeAligningExtractor{}
+	s := NewSDK(DefaultConfig(), store, nil, ex, NoopEmitter{})
+
+	if err := s.Extract(context.Background(), ExtractSession{
+		UserID:   "u9",
+		TraceID:  "tr-fb",
+		Feedback: []FeedbackInfo{{SegmentType: "title", Rating: 1, Comment: "标题太长了"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !ex.feedbackCalled {
+		t.Fatal("aligned feedback channel was not used")
+	}
+	if ex.beliefsSeen != 1 {
+		t.Errorf("feedback prompt saw %d beliefs, want 1", ex.beliefsSeen)
+	}
+	if store.items[old.ID].Status != StatusSuperseded {
+		t.Errorf("old status = %q, want superseded by feedback retraction", store.items[old.ID].Status)
+	}
+	var created *Memory
+	for _, m := range store.items {
+		if m.Tier == TierFeedback {
+			created = m
+		}
+	}
+	if created == nil || created.Status != StatusCandidate {
+		t.Errorf("feedback memory = %+v, want a TierFeedback candidate", created)
+	}
+}
+
 // beliefContext：排除 Tier1 与非活跃记忆，最近优先，截断到上限。
 func TestBeliefContextFiltersOrdersAndCaps(t *testing.T) {
 	store := newFakeMemStore()

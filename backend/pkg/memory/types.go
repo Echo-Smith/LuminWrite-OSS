@@ -233,6 +233,12 @@ type BeliefContext struct {
 // 未实现时 SDK 保持原通道不变。
 type ContextAwareExtractor interface {
 	ExtractFromSessionWithBeliefs(ctx context.Context, session ExtractSession, beliefs []BeliefContext) ([]ExtractedMemory, error)
+
+	// ExtractFromFeedbackWithBeliefs 反馈通道的对齐变体：反馈驱动的
+	// 偏好演化（差评撤回旧偏好）同样需要 belief 清单才能声明撤回
+	// 目标；且反馈 key 是自由词表（dislikes_long_title 等），本就是
+	// key 漂移高发的通道。
+	ExtractFromFeedbackWithBeliefs(ctx context.Context, feedback []FeedbackInfo, beliefs []BeliefContext) ([]ExtractedMemory, error)
 }
 
 // ─── 配置 ──────────────────────────────────────────────────

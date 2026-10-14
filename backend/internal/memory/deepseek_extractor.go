@@ -149,6 +149,16 @@ func buildBeliefBlock(beliefs []memory.BeliefContext) string {
 
 // ExtractFromFeedback 从反馈评论中提取改进信号
 func (e *DeepSeekExtractor) ExtractFromFeedback(ctx context.Context, feedback []memory.FeedbackInfo) ([]memory.ExtractedMemory, error) {
+	return e.extractFeedback(ctx, feedback, nil)
+}
+
+// ExtractFromFeedbackWithBeliefs 反馈通道的对齐变体（WP7）：反馈 key 是
+// 自由词表，prompt 携带 belief 清单让模型显式声明撤回/强化目标。
+func (e *DeepSeekExtractor) ExtractFromFeedbackWithBeliefs(ctx context.Context, feedback []memory.FeedbackInfo, beliefs []memory.BeliefContext) ([]memory.ExtractedMemory, error) {
+	return e.extractFeedback(ctx, feedback, beliefs)
+}
+
+func (e *DeepSeekExtractor) extractFeedback(ctx context.Context, feedback []memory.FeedbackInfo, beliefs []memory.BeliefContext) ([]memory.ExtractedMemory, error) {
 	if e.llm == nil || len(feedback) == 0 {
 		return nil, nil
 	}
@@ -184,8 +194,9 @@ func (e *DeepSeekExtractor) ExtractFromFeedback(ctx context.Context, feedback []
 - 只提取有明确改进方向的反馈
 - key 用英文 snake_case，描述具体问题（如 dislikes_long_title, prefers_concise）
 - value 用中文描述用户期望
-- 只输出 JSON 数组，不要其他文字`,
-		strings.Join(feedbackParts, "\n"))
+%s
+只输出 JSON 数组，不要其他文字`,
+		strings.Join(feedbackParts, "\n"), buildBeliefBlock(beliefs))
 
 	resp, _, err := e.llm.Chat(ctx, []tools.LLMMessage{
 		{Role: "system", Content: "你是反馈分析师，只输出 JSON 格式结果。"},
