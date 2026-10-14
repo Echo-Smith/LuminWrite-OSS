@@ -7,9 +7,9 @@
 #
 # Edition isolation: the commercial line shares this file's ancestry, so every
 # locally built image carries the -oss suffix and the project name is pinned.
-# Never drop the suffix — the commercial compose uses luminbuddy-v2-com-* — or
+# Never drop the suffix — the commercial compose uses luminwrite-com-* — or
 # one line's `docker compose build` silently overwrites the other's images.
-name: luminbuddy-v2-oss
+name: luminwrite-oss
 
 services:
   # ── PostgreSQL + pgvector + paradedb (BM25) ──────────
@@ -18,7 +18,7 @@ services:
   postgres:
     image: paradedb/paradedb:v0.22.2-pg17
     platform: linux/amd64
-    container_name: luminbuddy-v2-pg
+    container_name: luminwrite-oss-pg
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -46,7 +46,7 @@ services:
   redis:
     image: redis:7-alpine
     platform: linux/amd64
-    container_name: luminbuddy-v2-redis
+    container_name: luminwrite-oss-redis
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     networks:
       - internal
@@ -69,9 +69,9 @@ services:
     build:
       context: ./docker/docreader
       dockerfile: Dockerfile
-    image: luminbuddy-v2-oss-docreader:latest
+    image: luminwrite-oss-docreader:latest
     platform: linux/amd64
-    container_name: luminbuddy-v2-docreader
+    container_name: luminwrite-oss-docreader
     environment:
       # Bounded inline-byte protocol cap (backend pre-rejects at 25 MiB).
       DOCREADER_MAX_INLINE_BYTES: "33554432"
@@ -92,9 +92,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: luminbuddy-v2-oss-backend:latest
+    image: luminwrite-oss-backend:latest
     platform: linux/amd64
-    container_name: luminbuddy-v2-backend
+    container_name: luminwrite-oss-backend
     env_file:
       - .env.docker
     environment:
@@ -162,9 +162,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: luminbuddy-v2-oss-frontend:latest
+    image: luminwrite-oss-frontend:latest
     platform: linux/amd64
-    container_name: luminbuddy-v2-frontend
+    container_name: luminwrite-oss-frontend
     ports:
       - "${FRONTEND_PORT:-3002}:8080"
     networks:
