@@ -18,6 +18,8 @@
 4. **`internal/memory/deepseek_extractor.go`**：`ExtractFromArticle/ExtractFromRevision` 委托到带 beliefs 的内部实现（beliefs 为空时 prompt 与原版一致）；新增 `ExtractFromSessionWithBeliefs`——按会话是否携带改前稿选通道，prompt 附加序号化 belief 清单与三值标注规则（reinforce 必须复用旧 key；拿不准宁可不标）。
 5. **测试**：`pkg/memory/conflict_alignment_test.go`（retract 修 key 漂移并补撤回链、reinforce 修措辞降级/候选晋升、越界与 Tier1 双保险、死目标降级、无标签路径保持 Case 3、beliefContext 过滤/排序/截断）；`internal/memory/deepseek_extractor_test.go`（新字段解析、旧形状不变、belief 块渲染含 ID 不进 prompt 断言）。
 6. **附带修复（存量缺陷，A/B 驱动实测钓出）**：`Store` 接口新增 `Update`（按主键 UPDATE），`PgStore` 实现之；强化路径统一改走 `Update`。原 `Save` 是以 `(user_id, category, key, status)` 为冲突目标的 upsert——two-strike 候选晋升改变 status 元组后冲突不命中，同 id INSERT 撞 `user_memories_pkey`，**改前 Case 2 的晋升对 PgStore 一直静默失败**（仅 WARN，候选永远升不了 active）。fake/mock store 同步补齐该方法。
+7. **迁移 128（偏好历史解锁）**：`uk_user_memory (user_id, category, key, status)` 替换为 partial unique index `uk_user_memory_live (user_id, category, key) WHERE status IN ('active','candidate')`——同一维度只保证一条活记忆，superseded/archived 历史行不再受限（此前同维度第 2 行 superseded 即撞唯一键，冲突震荡从第 3 代起写入静默冻结）。迁移内含数据修复：同维度活记忆并存时保留最近观测、其余降级 superseded 并挂撤回链。`PgStore.Save` 的 upsert 冲突目标同步改为该 partial index（不满足谓词的行直接插入）。双线同名迁移，已在一次性 paradedb 全量 fresh apply + 真实开发库事务预演验证。
+8. **反馈通道对齐**：`ContextAwareExtractor` 增加 `ExtractFromFeedbackWithBeliefs`；反馈 key 是自由词表（dislikes_long_title 等），本就是 key 漂移高发通道——差评反馈现在同样携带 belief 清单并显式声明撤回/强化目标，SDK 侧反馈保存统一走 `ResolveAndSaveAligned`。`beliefContext` 提升到分级判断之前（差评也要撤回，Tier3 提取不依赖文章分级）。
 
 ## 语义保持
 

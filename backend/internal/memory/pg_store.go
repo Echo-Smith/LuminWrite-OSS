@@ -45,7 +45,10 @@ func (s *PgStore) Save(ctx context.Context, m *memory.Memory) error {
 			COALESCE($17, NOW()), NOW(),
 			$18, $19
 		)
-		ON CONFLICT (user_id, category, key, status) DO UPDATE SET
+		-- 冲突目标是迁移 128 的 partial unique index（活记忆唯一）：
+		-- 旧 uk_user_memory 含 status，同维度第 2 行历史即撞唯一键。
+		-- 不满足谓词的行（superseded/archived）不参与冲突，直接插入。
+		ON CONFLICT (user_id, category, key) WHERE status IN ('active', 'candidate') DO UPDATE SET
 			value = EXCLUDED.value,
 			embedding = COALESCE(EXCLUDED.embedding, user_memories.embedding),
 			confidence = EXCLUDED.confidence,
