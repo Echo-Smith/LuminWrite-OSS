@@ -156,6 +156,18 @@ export function resolveModels(input: ResolveInput): PricedModel[] {
   return expand(target, input);
 }
 
+/**
+ * 回合用的链。钉住的具体模型还在当前档位里时只试它；
+ * 换了档位、钉住的模型不在新链里时，改走新链。显式 prefer 覆盖钉。
+ */
+export function resolveTurnModels(input: ResolveInput): PricedModel[] {
+  if (input.prefer) return resolveModels({ ...input, sessionPin: undefined });
+  const open = resolveModels({ ...input, sessionPin: undefined });
+  if (!input.sessionPin) return open;
+  const stuck = open.filter((model) => model.ref === input.sessionPin);
+  return stuck.length > 0 ? stuck : open;
+}
+
 function whyUnusable(ref: string, input: ResolveInput): string {
   const model = concreteOf(ref, input.entries, input.catalog);
   if (!model) return "目录里没有这个模型";

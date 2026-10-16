@@ -119,6 +119,8 @@ export const turns = pgTable(
     piSubmissionId: text("pi_submission_id"),
     instruction: text("instruction").notNull(),
     error: text("error"),
+    modelRef: text("model_ref"),
+    tierRef: text("tier_ref"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("uk_turn_idem").on(table.documentId, table.idempotencyKey)],

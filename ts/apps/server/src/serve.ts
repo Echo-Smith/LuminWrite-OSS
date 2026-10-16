@@ -10,11 +10,12 @@ import {
 } from "@luminwrite/db";
 import type { WritingRuntime } from "@luminwrite/harness";
 import { createWritingRuntime, writingStoreFromDatabase } from "@luminwrite/harness";
+import { createClosedModels } from "@luminwrite/models";
 
 import { createApp } from "./app.js";
 import { createOssAuth } from "./auth.js";
 import { listenUrl, resolveListen } from "./listen.js";
-import { ensureDefaultRegistry } from "./model-registry.js";
+import { ensureDefaultRegistry, resolveTurnChain, turnSpendFor } from "./model-registry.js";
 
 export interface RunningServer {
   url: string;
@@ -41,10 +42,16 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     const secrets = await ensureMasterKey({ db, dataDir: location.dataDir, env });
     await importEnvCredential(db, secrets.ring, env, owner.userId);
     await ensureDefaultRegistry(db, owner.userId, env);
+    const models = createClosedModels();
+    const registry = { db, env, keyring: secrets.ring, models };
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),
       usage: { record: (event) => db.recordUsage(event) },
+      models,
+      env,
+      resolveTurn: (input) => resolveTurnChain(registry, input),
+      turnSpend: (actor) => turnSpendFor(registry, actor),
     });
     const app = createApp({
       db,
@@ -52,6 +59,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       auth: createOssAuth(db),
       keyring: secrets.ring,
       env,
+      models,
     });
     const address = await new Promise<AddressInfo>((resolve, reject) => {
       const listening = serve(

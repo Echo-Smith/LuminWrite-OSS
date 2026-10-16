@@ -1,12 +1,12 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { type Message, type TranscriptContext, Type } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  fauxAssistantMessage,
-  fauxProvider,
-  fauxToolCall,
-} from "@earendil-works/pi-ai/providers/faux";
+  type Message,
+  type MutableModels,
+  type TranscriptContext,
+  Type,
+} from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import {
   type Conversation,
   type ConversationId,
@@ -22,11 +22,24 @@ import {
   type DossierContent,
   type EditOp,
   EditOpSchema,
+  type ModelSlot,
   type RunEvent,
   type TurnRequest,
   type TurnStatus,
 } from "@luminwrite/contracts";
 import type { UsageSink } from "@luminwrite/edition";
+import {
+  assertTurnSpend,
+  chargeMicros,
+  createClosedModels,
+  type FullRates,
+  fauxAllowed,
+  fauxFor,
+  type PricedModel,
+  runWithFallback,
+  secondsUntilUtcMidnight,
+  UpstreamModelError,
+} from "@luminwrite/models";
 
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
 import type { HarnessChange, HarnessPort } from "./port.js";
@@ -104,17 +117,100 @@ export interface WritingRuntime extends HarnessPort {
   readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
 }
 
+export interface TurnModelChoice {
+  chain: PricedModel[];
+  conservative: FullRates;
+}
+
+const LOCAL_FAUX: PricedModel = {
+  ref: "test/faux",
+  piProviderId: "test",
+  piModelId: "faux-1",
+  credentialId: "local",
+  price: { known: false, source: "none" },
+  rates: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+
+function slotFor(kind: TurnRequest["kind"]): ModelSlot {
+  if (kind === "research") return "research.plan";
+  if (kind === "review") return "role.reviewer";
+  return "writer.main";
+}
+
+function usesFaux(model: PricedModel): boolean {
+  return model.ref === "test/faux" || model.piModelId === "faux-1" || model.piProviderId === "test";
+}
+
+function assistantStarted(message: Message): boolean {
+  if (message.role !== "assistant") return false;
+  return message.content.some((part) => {
+    if (part.type === "text") return part.text.length > 0;
+    if (part.type === "thinking") return part.thinking.length > 0;
+    return part.type === "toolCall";
+  });
+}
+
+function assistantsOf(entries: readonly { model?: readonly Message[] }[]): Message[] {
+  const messages: Message[] = [];
+  for (const entry of entries) {
+    for (const message of entry.model ?? []) {
+      if (message.role === "assistant") messages.push(message);
+    }
+  }
+  return messages;
+}
+
+function detailText(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "";
+}
+
+function statusOf(text: string): number | undefined {
+  if (/\b429\b/.test(text) || /rate limit/i.test(text)) return 429;
+  if (/\b401\b|\b403\b|invalid api key|incorrect api key/i.test(text)) return 401;
+  const five = /\b5\d\d\b/.exec(text);
+  return five ? Number(five[0]) : undefined;
+}
+
+function retryableFailure(text: string): boolean {
+  const status = statusOf(text);
+  if (status === 429 || status === 401 || (status !== undefined && status >= 500)) return true;
+  return /network|fetch failed|ECONN|ETIMEDOUT|timeout|invalid/i.test(text);
+}
+
 export async function createWritingRuntime(options: {
   sqlitePath: string;
   store: WritingStore;
   planner?: typeof planOps;
   usage?: UsageSink;
+  models?: MutableModels;
+  env?: NodeJS.ProcessEnv;
+  /** 缺省时回合走进程内 test/faux，不访问网络。服务进程传入注册表解析。 */
+  resolveTurn?(input: {
+    actor: TurnRequest["actor"];
+    slot: ModelSlot;
+    prefer?: string;
+    sessionPin: string | null;
+    now: number;
+    cooldownUntil: ReadonlyMap<string, number>;
+  }): Promise<TurnModelChoice>;
+  turnSpend?(actor: TurnRequest["actor"]): Promise<{
+    userMicros: number;
+    keyMicros: number;
+    ownerCapUsd?: string;
+    keyCapUsd?: number | null;
+  }>;
 }): Promise<WritingRuntime> {
   const planner = options.planner ?? planOps;
   const storage = await openNodeSqliteStorage(options.sqlitePath);
-  const faux = fauxProvider();
-  const models = createModels();
+  const models = options.models ?? createClosedModels();
+  const faux = fauxFor(models);
   models.setProvider(faux.provider);
+  const cooldownUntil = new Map<string, number>();
   const respond = (context: TranscriptContext) => {
     faux.appendResponses([respond]);
     if (toolRanAfterLatestUser(context.messages)) return fauxAssistantMessage("已处理这一回合。");
@@ -275,7 +371,15 @@ export async function createWritingRuntime(options: {
   registry.install(
     defineExtension({ name: "lw-writing", tools: [readBlocks, readRelatedDossier, proposeEdits] }),
   );
-  const harness = await Harness.open(storage, { models, registry }, ctx);
+  const harness = await Harness.open(
+    storage,
+    {
+      models,
+      registry,
+      settings: { retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } },
+    },
+    ctx,
+  );
   harness.resume();
   const seenEntries = new Set<string>();
 
@@ -290,7 +394,7 @@ export async function createWritingRuntime(options: {
     const created = await harness.createConversation(
       {
         ownership: { kind: "ownerless" },
-        agent: { model: { provider: "faux", modelId: "faux-1" } },
+        agent: { model: { provider: "test", modelId: "faux-1" } },
       },
       ctx,
     );
@@ -369,13 +473,44 @@ export async function createWritingRuntime(options: {
           ...(existing.resultVersionId ? { versionId: existing.resultVersionId } : {}),
         };
       }
-      await options.store.markTurn(begun.turnId, { status: "running" });
+      if (options.turnSpend) {
+        const spend = await options.turnSpend(req.actor);
+        assertTurnSpend({ ...spend, retryAfterSeconds: secondsUntilUtcMidnight() });
+      }
       const session = await options.store.sessionFor(req);
+      const now = Date.now();
+      const choice = options.resolveTurn
+        ? await options.resolveTurn({
+            actor: req.actor,
+            slot: slotFor(req.kind),
+            ...(req.model ? { prefer: req.model } : {}),
+            sessionPin: session.modelPin,
+            now,
+            cooldownUntil,
+          })
+        : { chain: [], conservative: LOCAL_FAUX.rates };
+      let chain = choice.chain;
+      if (chain.length === 0) {
+        if (!options.resolveTurn || fauxAllowed(options.env)) chain = [LOCAL_FAUX];
+        else {
+          await options.store.markTurn(begun.turnId, { status: "failed", error: "没有可用模型" });
+          return { turnId: begun.turnId, status: "failed", submissionId: "" };
+        }
+      }
+      await options.store.markTurn(begun.turnId, { status: "running" });
       const dossier = await options.store.readDossier(req.documentId);
       const blocks = await options.store.readBlocksAt(req.documentId, session.baseVersionId);
       const index = targetIndex(req.instruction, blocks, req.selection);
       const scoped = req.kind === "revise" ? blocks[index]?.blockId : undefined;
       const conversation = await conversationFor(session);
+      const prompt = promptFor(
+        req,
+        begun.turnId,
+        session,
+        dossier.content,
+        blocks,
+        scoped ? [scoped] : [],
+      );
       await options.store.appendEvent(req.documentId, {
         turnId: begun.turnId,
         type: "turn.started",
@@ -387,39 +522,152 @@ export async function createWritingRuntime(options: {
           dossier: dossier.content,
         },
       });
-      const submission = await conversation.submit(
-        {
-          type: "input",
-          content: promptFor(
-            req,
-            begun.turnId,
-            session,
-            dossier.content,
-            blocks,
-            scoped ? [scoped] : [],
-          ),
-          requestId: req.idempotencyKey,
-          whenBusy: req.delivery === "steer" ? "steer" : "followUp",
-        },
-        ctx,
-      );
+      const fallbacks: Array<{
+        type: "model.fallback";
+        from: string;
+        to: string;
+        credentialId: string;
+        reason: string;
+      }> = [];
+      let outcome: {
+        value: {
+          submissionId: string;
+          usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+        };
+        used: PricedModel;
+      };
+      try {
+        outcome = await runWithFallback({
+          chain,
+          now,
+          cooldownUntil,
+          onEvent: (event) => {
+            fallbacks.push(event);
+          },
+          run: async (model, markToken) => {
+            await conversation.configure(
+              { model: { provider: model.piProviderId, modelId: model.piModelId } },
+              ctx,
+            );
+            if (usesFaux(model)) faux.appendResponses([respond]);
+            const before = (await conversation.context(ctx)).entries.length;
+            const watch = await conversation.watch(ctx);
+            const noteTokens = () => {
+              const fresh = assistantsOf(watch.value.entries.slice(before));
+              if (fresh.some(assistantStarted)) markToken();
+            };
+            watch.start(async () => {
+              noteTokens();
+            });
+            try {
+              const submission = await conversation.submit(
+                {
+                  type: "input",
+                  content: prompt,
+                  requestId: `${req.idempotencyKey}:${model.piProviderId}:${model.ref}`,
+                  whenBusy: req.delivery === "steer" ? "steer" : "followUp",
+                },
+                ctx,
+              );
+              const settled = await submission.wait(ctx);
+              noteTokens();
+              const assistants = assistantsOf(
+                (await conversation.context(ctx)).entries.slice(before),
+              );
+              const started = assistants.some(assistantStarted);
+              if (started) markToken();
+              if (settled.status === "unanswered") {
+                const text = `${settled.reason} ${detailText(settled.detail)}`.trim();
+                throw new UpstreamModelError(text || "模型调用失败", {
+                  status: statusOf(text),
+                  retryable: !started && retryableFailure(text),
+                });
+              }
+              const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+              for (const message of assistants) {
+                if (message.role !== "assistant") continue;
+                usage.input += message.usage.input;
+                usage.output += message.usage.output;
+                usage.cacheRead += message.usage.cacheRead;
+                usage.cacheWrite += message.usage.cacheWrite;
+              }
+              return { submissionId: String(submission.id), usage };
+            } catch (error) {
+              if (error instanceof UpstreamModelError) throw error;
+              const text = error instanceof Error ? error.message : "模型调用失败";
+              throw new UpstreamModelError(text, {
+                status: statusOf(text),
+                retryable: retryableFailure(text),
+              });
+            } finally {
+              await watch.stop();
+            }
+          },
+        });
+      } catch (error) {
+        for (const event of fallbacks) {
+          await options.store.appendEvent(req.documentId, {
+            turnId: begun.turnId,
+            type: event.type,
+            payload: {
+              from: event.from,
+              to: event.to,
+              credentialId: event.credentialId,
+              reason: event.reason,
+            },
+          });
+        }
+        const message = error instanceof Error ? error.message : "没有可用模型";
+        await options.store.markTurn(begun.turnId, { status: "failed", error: message });
+        return { turnId: begun.turnId, status: "failed", submissionId: "" };
+      }
+      for (const event of fallbacks) {
+        await options.store.appendEvent(req.documentId, {
+          turnId: begun.turnId,
+          type: event.type,
+          payload: {
+            from: event.from,
+            to: event.to,
+            credentialId: event.credentialId,
+            reason: event.reason,
+          },
+        });
+      }
       await options.store.markTurn(begun.turnId, {
         piConversationId: String(conversation.id),
-        piSubmissionId: String(submission.id),
+        piSubmissionId: outcome.value.submissionId,
+        modelRef: outcome.used.ref,
+        tierRef: outcome.used.viaTier ?? null,
       });
-      await submission.wait(ctx);
+      await options.store.setSessionModelPin(session.id, outcome.used.ref);
       await translate(conversation, req.documentId, begun.turnId);
       let turn = await options.store.getTurn(begun.turnId);
       if (turn && (turn.status === "running" || turn.status === "queued")) {
         await options.store.markTurn(begun.turnId, { status: "failed", error: "尚未实现" });
         turn = await options.store.getTurn(begun.turnId);
       }
+      const tokens = outcome.value.usage;
       await options.usage?.record({
         requestId: req.idempotencyKey,
-        model: "faux-1",
-        inputTokens: 0,
-        outputTokens: 0,
-        costMicros: 0,
+        model: outcome.used.piModelId,
+        inputTokens: tokens.input,
+        outputTokens: tokens.output,
+        cacheReadTokens: tokens.cacheRead,
+        cacheWriteTokens: tokens.cacheWrite,
+        costMicros: chargeMicros(
+          outcome.used.price.known,
+          outcome.used.rates,
+          choice.conservative,
+          tokens,
+        ),
+        priceKnown: outcome.used.price.known,
+        credentialId: outcome.used.credentialId,
+        modelRef: outcome.used.ref,
+        ...(outcome.used.viaTier ? { tierRef: outcome.used.viaTier } : {}),
+        sessionId: session.id,
+        turnId: begun.turnId,
+        ...(req.actor.type === "system" ? {} : { userId: req.actor.userId }),
+        ...(req.actor.type === "api_client" ? { apiKeyId: req.actor.keyId } : {}),
       });
       if (turn?.status === "applied" && turn.resultVersionId) {
         await options.store.advanceSessionBase(session.id, turn.resultVersionId);
@@ -427,7 +675,7 @@ export async function createWritingRuntime(options: {
       return {
         turnId: begun.turnId,
         status: turn?.status ?? "failed",
-        submissionId: String(submission.id),
+        submissionId: outcome.value.submissionId,
         ...(turn?.resultVersionId ? { versionId: turn.resultVersionId } : {}),
       };
     },

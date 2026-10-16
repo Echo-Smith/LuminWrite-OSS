@@ -161,7 +161,17 @@ export {
 export type { FallbackEvent } from "./fallback.js";
 export { runWithFallback, UpstreamModelError } from "./fallback.js";
 export type { FullRates } from "./price.js";
-export { choosePrice, costMicros, fillRates, ownerSpendAllowed, rateSum } from "./price.js";
+export {
+  assertTurnSpend,
+  chargeMicros,
+  choosePrice,
+  costMicros,
+  fillRates,
+  ownerSpendAllowed,
+  rateSum,
+  secondsUntilUtcMidnight,
+  TurnSpendError,
+} from "./price.js";
 export type { CredentialRef, PricedModel, ResolveInput } from "./registry.js";
 export {
   cheapestModel,
@@ -169,5 +179,6 @@ export {
   listModels,
   modelsForCredential,
   resolveModels,
+  resolveTurnModels,
   validateRegistrySpec,
 } from "./registry.js";
