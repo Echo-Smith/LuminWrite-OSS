@@ -3,7 +3,9 @@ import type { PMJSON } from "@luminwrite/doc-model";
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  customType,
   doublePrecision,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -12,6 +14,24 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+
+const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array | string }>({
+  dataType() {
+    return "bytea";
+  },
+  toDriver(value) {
+    return value;
+  },
+  fromDriver(value) {
+    if (Buffer.isBuffer(value)) return value;
+    if (value instanceof Uint8Array) return Buffer.from(value);
+    if (typeof value === "string") {
+      const hex = value.startsWith("\\x") ? value.slice(2) : value;
+      return Buffer.from(hex, "hex");
+    }
+    return Buffer.from(value);
+  },
+});
 
 /**
  * OSS 只有一行。`singleton` 上的唯一约束把“一行”落在库里，商业版多用户时去掉这列即可。
@@ -195,6 +215,27 @@ export const apiKeyPolicies = pgTable("api_key_policies", {
   defaultApplyMode: text("default_apply_mode").notNull().default("auto"),
   webhookSecret: text("webhook_secret"),
 });
+
+export const providerCredentials = pgTable(
+  "provider_credentials",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    provider: text("provider").notNull(),
+    label: text("label").notNull(),
+    baseUrl: text("base_url"),
+    ciphertext: bytea("ciphertext").notNull(),
+    nonce: bytea("nonce").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    status: text("status").notNull().default("active"),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+    lastErrorCode: text("last_error_code"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_cred_user").on(table.userId, table.provider)],
+);
 
 export const usageLedger = pgTable("usage_ledger", {
   id: text("id").primaryKey(),

@@ -4,9 +4,11 @@ import { join } from "node:path";
 import {
   authenticateApiKey,
   authenticateOwnerToken,
+  ensureMasterKey,
   hashApiKey,
   openDatabase,
   readOwnerToken,
+  revealCredential,
 } from "@luminwrite/db";
 import { describe, expect, it } from "vitest";
 
@@ -100,6 +102,48 @@ describe("lw", () => {
     const again = await openDatabase({ kind: "pglite", dataDir: dir });
     expect(await authenticateApiKey(again, token)).toBeNull();
     await again.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("credentials 不回显密钥，secrets rotate 之后仍能解开", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lw-cred-cli-"));
+    const env = { LW_DATA_DIR: dir };
+    let out = "";
+    const stdout = {
+      write: (chunk: string) => {
+        out += chunk;
+      },
+    };
+    const stderr = { write: () => {} };
+    expect(await runLw(["init"], env, stdout, stderr)).toBe(0);
+    const key = "lwtest_cli_provider_secret";
+    out = "";
+    expect(
+      await runLw(
+        ["credentials", "add", "--provider", "openai", "--label", "主 key", "--key", key],
+        env,
+        stdout,
+        stderr,
+      ),
+    ).toBe(0);
+    expect(out).not.toContain(key);
+    expect(out).toContain("指纹");
+    out = "";
+    expect(await runLw(["credentials", "list"], env, stdout, stderr)).toBe(0);
+    expect(out).not.toContain(key);
+    expect(out).toContain("openai");
+    out = "";
+    expect(await runLw(["secrets", "rotate"], env, stdout, stderr)).toBe(0);
+    expect(out).toContain("已轮换");
+    expect(out).not.toContain(key);
+    const db = await openDatabase({ kind: "pglite", dataDir: dir });
+    const secrets = await ensureMasterKey({ db, dataDir: dir, env });
+    const owner = await db.getOwner();
+    const rows = await db.listCredentials(owner?.id ?? "");
+    const row = rows[0];
+    if (!row) throw new Error("没有凭据");
+    expect(revealCredential(row, secrets.ring).reveal()).toBe(key);
+    await db.close();
     await rm(dir, { recursive: true, force: true });
   });
 });

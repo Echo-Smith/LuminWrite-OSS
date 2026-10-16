@@ -166,6 +166,25 @@ CREATE TABLE IF NOT EXISTS api_key_policies (
   webhook_secret text
 );
 
+CREATE TABLE IF NOT EXISTS provider_credentials (
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  provider text NOT NULL,
+  label text NOT NULL,
+  base_url text,
+  ciphertext bytea NOT NULL,
+  nonce bytea NOT NULL,
+  key_version integer NOT NULL,
+  fingerprint text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  last_verified_at timestamptz,
+  last_error_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cred_user ON provider_credentials (user_id, provider);
+
 CREATE TABLE IF NOT EXISTS usage_ledger (
   id text PRIMARY KEY,
   request_id text NOT NULL,

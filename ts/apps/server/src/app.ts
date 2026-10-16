@@ -8,15 +8,22 @@ import {
 import {
   ApiKeyInputError,
   type ApiKeyView,
+  CredentialInputError,
   createApiKey,
+  createCredential,
   DocumentNotFound,
+  deleteCredential,
   type LwDatabase,
   listApiKeys,
+  listCredentialViews,
+  type MasterKeyring,
   revokeApiKey,
   SessionClosed,
   SessionNotFound,
   SessionScopeError,
+  updateCredential,
   VersionNotFound,
+  verifyCredential,
 } from "@luminwrite/db";
 import type { EditAuthorizer } from "@luminwrite/edition";
 import { type AuthPort, ownerAuthorizer } from "@luminwrite/edition";
@@ -75,6 +82,20 @@ const TurnBody = TurnRequestSchema.omit({ documentId: true, actor: true, applyMo
   tier: z.string().min(1).optional(),
 });
 
+const CreateCredentialBody = z.object({
+  provider: z.string().min(1).max(64),
+  label: z.string().min(1).max(128),
+  key: z.string().min(1).max(4096),
+  baseUrl: z.string().max(2048).nullable().optional(),
+});
+
+const PatchCredentialBody = z.object({
+  label: z.string().max(128).optional(),
+  key: z.string().max(4096).optional(),
+  baseUrl: z.string().max(2048).nullable().optional(),
+  status: z.enum(["active", "disabled"]).optional(),
+});
+
 const CreateApiKeyBody = z.object({
   name: z.string().min(1).max(128),
   scopes: z.array(z.string()).optional(),
@@ -94,6 +115,8 @@ export interface AppDeps {
   auth: AuthPort;
   authorizer?: EditAuthorizer;
   limiter?: TokenBucketLimiter;
+  keyring?: MasterKeyring;
+  env?: NodeJS.ProcessEnv;
 }
 
 function httpError(error: unknown): { status: 404 | 409; body: { error: string } } | undefined {
@@ -478,6 +501,83 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
+  function requireKeyring(c: AppContext): MasterKeyring | Response {
+    if (!deps.keyring) return c.json({ error: "还没有主密钥" }, 500);
+    return deps.keyring;
+  }
+
+  api.get("/me/credentials", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json(await listCredentialViews(deps.db, userId));
+  });
+
+  api.post("/me/credentials", async (c) => {
+    const ring = requireKeyring(c);
+    if (ring instanceof Response) return ring;
+    const parsed = CreateCredentialBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "凭据参数不合法" }, 400);
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    try {
+      const created = await createCredential(deps.db, ring, {
+        userId,
+        provider: parsed.data.provider,
+        label: parsed.data.label,
+        key: parsed.data.key,
+        ...(parsed.data.baseUrl !== undefined ? { baseUrl: parsed.data.baseUrl } : {}),
+        ...(deps.env ? { env: deps.env } : {}),
+      });
+      return c.json(created, 201);
+    } catch (error) {
+      if (error instanceof CredentialInputError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  });
+
+  api.patch("/me/credentials/:id", async (c) => {
+    const ring = requireKeyring(c);
+    if (ring instanceof Response) return ring;
+    const parsed = PatchCredentialBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "凭据参数不合法" }, 400);
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    try {
+      const updated = await updateCredential(deps.db, ring, {
+        id: c.req.param("id"),
+        userId,
+        ...(parsed.data.label !== undefined ? { label: parsed.data.label } : {}),
+        ...(parsed.data.key ? { key: parsed.data.key } : {}),
+        ...(parsed.data.baseUrl !== undefined ? { baseUrl: parsed.data.baseUrl } : {}),
+        ...(parsed.data.status ? { status: parsed.data.status } : {}),
+        ...(deps.env ? { env: deps.env } : {}),
+      });
+      if (!updated) return c.json({ error: "找不到凭据" }, 404);
+      return c.json(updated);
+    } catch (error) {
+      if (error instanceof CredentialInputError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  });
+
+  api.post("/me/credentials/:id/verify", async (c) => {
+    const ring = requireKeyring(c);
+    if (ring instanceof Response) return ring;
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const verified = await verifyCredential(deps.db, ring, { id: c.req.param("id"), userId });
+    if (!verified) return c.json({ error: "找不到凭据" }, 404);
+    return c.json(verified);
+  });
+
+  api.delete("/me/credentials/:id", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const outcome = await deleteCredential(deps.db, { id: c.req.param("id"), userId });
+    if (outcome === "missing") return c.json({ error: "找不到凭据" }, 404);
+    return c.json({ ok: true });
+  });
+
   api.get("/documents/:id/events", async (c) => {
     const denied = await requireDocument(c, c.req.param("id"));
     if (denied) return denied;
@@ -497,5 +597,11 @@ export function createApp(deps: AppDeps): Hono<Env> {
   });
 
   app.route("/api/v1", api);
+  app.onError((error, c) => {
+    if (error instanceof CredentialInputError || error instanceof ApiKeyInputError) {
+      return c.json({ error: error.message }, 400);
+    }
+    return c.json({ error: "服务器出错" }, 500);
+  });
   return app;
 }
