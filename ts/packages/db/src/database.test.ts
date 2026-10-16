@@ -257,6 +257,31 @@ describe("会话与派生文档", () => {
     expect(inherited.content.citations).toEqual([{ title: "时租价目", locator: "2026-10" }]);
     expect(inherited.content.requirements).toEqual(["只写能核对的数字"]);
     expect(inherited.content.decisions).toEqual([]);
+    expect(JSON.stringify(inherited.content)).not.toContain("先不增加机器");
+    const laterDecision = await db.applyDossier({
+      documentId: created.id,
+      expectedVersion: 2,
+      ops: [{ op: "add_decision", text: "改用更便宜的显卡时租" }],
+    });
+    expect(laterDecision.ok).toBe(true);
+    expect((await db.readDossier(derived.id)).content.decisions).toEqual([]);
+    const live = await db.readRelatedDossier(derived.sessionId, created.id);
+    expect(live.content.decisions).toEqual(["先不增加机器", "改用更便宜的显卡时租"]);
+    const stranger = await db.createDocument({ title: "无关", ownerId: "user_3" });
+    await expect(db.readRelatedDossier(derived.sessionId, stranger.id)).rejects.toThrow(
+      /不能读这篇文档的档案/,
+    );
+    await db.grantRead(derived.sessionId, stranger.id);
+    expect((await db.readRelatedDossier(derived.sessionId, stranger.id)).content.decisions).toEqual(
+      [],
+    );
+    const adopted = await db.applyDossier({
+      documentId: derived.id,
+      expectedVersion: 1,
+      ops: [{ op: "add_decision", text: "先不增加机器" }],
+    });
+    expect(adopted.ok).toBe(true);
+    if (adopted.ok) expect(adopted.content.decisions).toEqual(["先不增加机器"]);
     expect((await db.readDossier(bare.id)).content.outline).toEqual([]);
     const derivedSession = await db.getSession(derived.sessionId);
     expect(derivedSession?.piConversationId).toBeNull();

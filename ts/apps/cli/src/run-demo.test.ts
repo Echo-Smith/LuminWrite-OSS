@@ -9,5 +9,6 @@ describe("演示", () => {
     expect(result.log).toContain("DEMO_OK");
     expect(result.log).toContain("第 3 段仍是主会话的文本");
     expect(result.log).toContain("没有改到源文档");
+    expect(result.log).toContain("没有复制到自己的档案");
   });
 });

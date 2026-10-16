@@ -773,6 +773,57 @@ export class LwDatabase {
     return Boolean(rows[0]);
   }
 
+  /** 祖先和全部派生后代。不含自己。 */
+  async relatedDocumentIds(documentId: string): Promise<string[]> {
+    const related: string[] = [];
+    const seen = new Set<string>([documentId]);
+    let cursor: string | null = documentId;
+    while (cursor) {
+      const rows = await this.orm
+        .select({ parentId: documents.derivedFromDocumentId })
+        .from(documents)
+        .where(eq(documents.id, cursor))
+        .limit(1);
+      const parentId: string | null = rows[0]?.parentId ?? null;
+      if (!parentId || seen.has(parentId)) break;
+      seen.add(parentId);
+      related.push(parentId);
+      cursor = parentId;
+    }
+    const queue = [documentId];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) break;
+      const children = await this.orm
+        .select({ id: documents.id })
+        .from(documents)
+        .where(eq(documents.derivedFromDocumentId, current));
+      for (const child of children) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        related.push(child.id);
+        queue.push(child.id);
+      }
+    }
+    return related;
+  }
+
+  async readRelatedDossier(sessionId: string, documentId: string): Promise<DossierView> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new SessionNotFound(sessionId);
+    if (session.status !== "open") throw new SessionClosed(sessionId);
+    const granted = await this.orm
+      .select({ documentId: sessionReads.documentId })
+      .from(sessionReads)
+      .where(and(eq(sessionReads.sessionId, sessionId), eq(sessionReads.documentId, documentId)))
+      .limit(1);
+    const allowed =
+      Boolean(granted[0]) ||
+      (await this.relatedDocumentIds(session.documentId)).includes(documentId);
+    if (!allowed) throw new SessionScopeError("这个会话不能读这篇文档的档案");
+    return this.readDossier(documentId);
+  }
+
   async readDossier(documentId: string): Promise<DossierView> {
     const rows = await this.orm
       .select()

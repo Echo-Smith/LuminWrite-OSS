@@ -8,6 +8,7 @@ import type {
   TurnStatus,
 } from "@luminwrite/contracts";
 import { emptyDossier } from "@luminwrite/contracts";
+import { SessionScopeError } from "@luminwrite/db";
 import {
   applyOps,
   blockHashSync,
@@ -33,6 +34,7 @@ interface MemVersion {
 interface MemDoc {
   title: string;
   ownerId: string;
+  derivedFromDocumentId: string | null;
   head: PMJSON;
   versions: MemVersion[];
 }
@@ -81,6 +83,7 @@ export class MemoryWritingStore implements WritingStore {
     this.docs.set(id, {
       title: input.title,
       ownerId: input.ownerId,
+      derivedFromDocumentId: null,
       head: emptyDoc(),
       versions: [{ id: versionId, content: emptyDoc(), origin: "import" }],
     });
@@ -197,6 +200,41 @@ export class MemoryWritingStore implements WritingStore {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
     return session.documentId === documentId || session.reads.has(documentId);
+  }
+
+  async readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot> {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== "open") {
+      throw new SessionScopeError("这个会话不能读这篇文档的档案");
+    }
+    const allowed =
+      session.reads.has(documentId) ||
+      this.relatedDocumentIds(session.documentId).includes(documentId);
+    if (!allowed) throw new SessionScopeError("这个会话不能读这篇文档的档案");
+    return this.readDossier(documentId);
+  }
+
+  private relatedDocumentIds(documentId: string): string[] {
+    const related: string[] = [];
+    const seen = new Set<string>([documentId]);
+    let cursor = this.docs.get(documentId)?.derivedFromDocumentId ?? null;
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      related.push(cursor);
+      cursor = this.docs.get(cursor)?.derivedFromDocumentId ?? null;
+    }
+    const queue = [documentId];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) break;
+      for (const [id, doc] of this.docs) {
+        if (doc.derivedFromDocumentId !== current || seen.has(id)) continue;
+        seen.add(id);
+        related.push(id);
+        queue.push(id);
+      }
+    }
+    return related;
   }
 
   async beginTurn(

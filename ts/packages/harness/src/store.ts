@@ -40,6 +40,7 @@ export interface WritingStore {
   readBlocks(documentId: string): Promise<PlanBlock[]>;
   readBlocksAt(documentId: string, versionId: string): Promise<PlanBlock[]>;
   readDossier(documentId: string): Promise<DossierSnapshot>;
+  readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
   sessionFor(req: TurnRequest): Promise<SessionSnapshot>;
   getSession(sessionId: string): Promise<SessionSnapshot | undefined>;
   setSessionConversation(sessionId: string, piConversationId: string): Promise<void>;

@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openMemoryDatabase } from "@luminwrite/db";
+import { openMemoryDatabase, SessionScopeError } from "@luminwrite/db";
 import {
   createWritingRuntime,
   SECTION_PARAGRAPHS,
@@ -197,6 +197,65 @@ export async function runDemo(): Promise<DemoResult> {
       await app.request(`/documents/${derived.id}/dossier`)
     ).json()) as DossierResponse;
     if (derivedDossier.content.decisions.length !== 0) return fail("派生档案不该带走关键决定");
+    if (JSON.stringify(derivedDossier.content).includes("先不增加机器")) {
+      return fail("关键决定被复制进了派生档案");
+    }
+    const later = (await (
+      await app.request(`/documents/${created.id}/dossier`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: 2,
+          ops: [{ op: "add_decision", text: "改用更便宜的显卡时租" }],
+        }),
+      })
+    ).json()) as { ok?: boolean };
+    if (!later.ok) return fail("源文档的新决定没有写上");
+    let liveDecisions: string[] = [];
+    try {
+      const live = await runtime.readRelatedDossier(derived.sessionId, created.id);
+      liveDecisions = live.content.decisions;
+    } catch {
+      return fail("派生会话没有按血缘读到源文档档案");
+    }
+    if (
+      !liveDecisions.includes("先不增加机器") ||
+      !liveDecisions.includes("改用更便宜的显卡时租")
+    ) {
+      return fail("读到的不是源文档的当前决定");
+    }
+    const stillEmpty = (await (
+      await app.request(`/documents/${derived.id}/dossier`)
+    ).json()) as DossierResponse;
+    if (stillEmpty.content.decisions.length !== 0) return fail("读取源档案时复制了决定");
+    const stranger = (await (
+      await app.request("/documents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "无关", ownerId: "user_demo" }),
+      })
+    ).json()) as { id: string };
+    try {
+      await runtime.readRelatedDossier(derived.sessionId, stranger.id);
+      return fail("无关文档的档案不该被读到");
+    } catch (error) {
+      if (!(error instanceof SessionScopeError)) return fail("拒绝无关文档时的错误不对");
+    }
+    lines.push("派生会话按血缘读到源文档的当前决定，没有复制到自己的档案");
+    const adopted = (await (
+      await app.request(`/documents/${derived.id}/dossier`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: 1,
+          ops: [{ op: "add_decision", text: "先不增加机器" }],
+        }),
+      })
+    ).json()) as { ok?: boolean; content?: { decisions: string[] } };
+    if (!adopted.ok || adopted.content?.decisions.join("、") !== "先不增加机器") {
+      return fail("派生文档没有用自己的档案操作记下决定");
+    }
+    lines.push("要留下的决定写进派生文档自己的档案");
     if (
       derivedDossier.content.outline.length !== 2 ||
       derivedDossier.content.requirements.length !== 1

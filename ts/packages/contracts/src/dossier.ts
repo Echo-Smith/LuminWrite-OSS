@@ -38,8 +38,9 @@ export function emptyDossier(): DossierContent {
 }
 
 /**
- * 派生文档的档案。inherit 为真时复制大纲、引用和要求；关键决定不复制，派生文档自己再记。
- * 版本号从 1 重新计，不沿用源文档的档案版本。
+ * 派生时只复制起点材料：大纲、引用、要求。
+ * 关键决定不以任何形式复制，也不做引用态或停用态。要留下某条决定，由派生文档自己的档案操作写入。
+ * 版本号从 1 重新计。
  */
 export function dossierForDerived(source: DossierContent, inherit: boolean): DossierContent {
   if (!inherit) return emptyDossier();

@@ -22,6 +22,7 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
       }));
     },
     readDossier: (documentId) => db.readDossier(documentId),
+    readRelatedDossier: (sessionId, documentId) => db.readRelatedDossier(sessionId, documentId),
     async sessionFor(req) {
       const session = await db.resolveSession(req);
       return {

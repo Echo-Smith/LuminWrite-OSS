@@ -31,7 +31,7 @@ import type { UsageSink } from "@luminwrite/edition";
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
 import type { HarnessChange, HarnessPort } from "./port.js";
 import { screenOps } from "./screen.js";
-import type { SessionSnapshot, WritingStore } from "./store.js";
+import type { DossierSnapshot, SessionSnapshot, WritingStore } from "./store.js";
 
 const ctx: Context = BACKGROUND_CONTEXT;
 
@@ -101,6 +101,7 @@ export interface TurnResult {
 export interface WritingRuntime extends HarnessPort {
   submitTurn(req: TurnRequest): Promise<TurnResult>;
   events(documentId: string, afterSeq?: number): Promise<RunEvent[]>;
+  readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
 }
 
 export async function createWritingRuntime(options: {
@@ -140,6 +141,18 @@ export async function createWritingRuntime(options: {
     ) {
       return fauxAssistantMessage("回合信息不完整。");
     }
+    const related = /^读取关联档案\s+(\S+)/.exec(turn.instruction ?? "");
+    if (related?.[1]) {
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("read_related_dossier", {
+            sessionId: turn.sessionId,
+            documentId: related[1],
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
     const planned = planner({
       kind: turn.kind,
       instruction: turn.instruction ?? "",
@@ -177,6 +190,29 @@ export async function createWritingRuntime(options: {
       }
       const blocks = await options.store.readBlocks(args.documentId);
       return { output: [{ type: "text", text: JSON.stringify(blocks) }] };
+    },
+  });
+
+  const readRelatedDossier = defineTool({
+    name: "read_related_dossier",
+    description: "只读有血缘或已授权文档的当前档案。不复制、不同步到本篇。",
+    parameters: Type.Object({ sessionId: Type.String(), documentId: Type.String() }),
+    replay: "safe",
+    async execute(args) {
+      try {
+        const dossier = await options.store.readRelatedDossier(args.sessionId, args.documentId);
+        return {
+          output: [
+            {
+              type: "text",
+              text: JSON.stringify({ version: dossier.version, content: dossier.content }),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "不能读取档案";
+        return { isError: true, output: [{ type: "text", text: message }] };
+      }
     },
   });
 
@@ -236,7 +272,9 @@ export async function createWritingRuntime(options: {
   });
 
   const registry = createRegistry();
-  registry.install(defineExtension({ name: "lw-writing", tools: [readBlocks, proposeEdits] }));
+  registry.install(
+    defineExtension({ name: "lw-writing", tools: [readBlocks, readRelatedDossier, proposeEdits] }),
+  );
   const harness = await Harness.open(storage, { models, registry }, ctx);
   harness.resume();
   const seenEntries = new Set<string>();
@@ -316,6 +354,9 @@ export async function createWritingRuntime(options: {
     },
     events(documentId, afterSeq) {
       return options.store.eventsAfter(documentId, afterSeq);
+    },
+    readRelatedDossier(sessionId, documentId) {
+      return options.store.readRelatedDossier(sessionId, documentId);
     },
     async submitTurn(req) {
       const begun = await options.store.beginTurn(req);
