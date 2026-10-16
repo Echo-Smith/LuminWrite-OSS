@@ -3,6 +3,7 @@ import type { PMJSON } from "@luminwrite/doc-model";
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  doublePrecision,
   integer,
   jsonb,
   pgTable,
@@ -166,6 +167,33 @@ export const documentDossier = pgTable("document_dossier", {
   version: integer("version").notNull(),
   content: jsonb("content").$type<DossierContent>().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    prefix: text("prefix").notNull(),
+    hash: text("hash").notNull(),
+    scopes: text("scopes").array().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("uk_api_keys_hash").on(table.hash)],
+);
+
+export const apiKeyPolicies = pgTable("api_key_policies", {
+  apiKeyId: text("api_key_id")
+    .primaryKey()
+    .references(() => apiKeys.id),
+  maxConcurrentTasks: integer("max_concurrent_tasks"),
+  dailyCostCapUsd: doublePrecision("daily_cost_cap_usd"),
+  allowedTiers: text("allowed_tiers").array(),
+  defaultApplyMode: text("default_apply_mode").notNull().default("auto"),
+  webhookSecret: text("webhook_secret"),
 });
 
 export const usageLedger = pgTable("usage_ledger", {

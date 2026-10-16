@@ -1,10 +1,10 @@
 import type { Actor } from "@luminwrite/contracts";
-import { authenticateOwnerToken, type LwDatabase } from "@luminwrite/db";
+import { authenticateApiKey, authenticateOwnerToken, type LwDatabase } from "@luminwrite/db";
 import type { AuthPort } from "@luminwrite/edition";
 
 export interface OssAuthOptions {
   /**
-   * M1-02 接入 API Key。未提供时，对不上所有者令牌的 Bearer 一律拒绝。
+   * 默认查库里的 API Key（只认哈希）。测试可以换掉。
    * 命中后应返回 `{ type: "api_client", userId, keyId }`。
    */
   authenticateApiKey?: (token: string) => Promise<Actor | null>;
@@ -19,16 +19,16 @@ export function bearerToken(req: {
   return match?.[1];
 }
 
-/** OSS 的 AuthPort：所有者令牌，以及可选的 API Key 钩子。请求体里的身份不参与。 */
+/** OSS 的 AuthPort：先认所有者令牌，再认 API Key。请求体里的身份不参与。 */
 export function createOssAuth(db: LwDatabase, options: OssAuthOptions = {}): AuthPort {
+  const authenticateKey = options.authenticateApiKey ?? ((token) => authenticateApiKey(db, token));
   return {
     async authenticate(req) {
       const token = bearerToken(req);
       if (!token) return null;
       const owner = await authenticateOwnerToken(db, token);
       if (owner) return { type: "user", userId: owner.id };
-      if (!options.authenticateApiKey) return null;
-      return options.authenticateApiKey(token);
+      return authenticateKey(token);
     },
   };
 }
