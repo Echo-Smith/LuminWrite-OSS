@@ -1,0 +1,65 @@
+name: TypeScript
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ts:
+    name: ts lint, typecheck, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm -r build
+
+      - name: Test
+        run: pnpm -r test
+
+      - name: Lint
+        run: pnpm exec biome check .
+
+      - name: Boundary
+        run: node scripts/check-boundary.mjs
+
+      - name: Licenses
+        run: node scripts/check-licenses.mjs
+
+      - name: Demo
+        run: pnpm demo
+
+  gitleaks:
+    name: gitleaks worktree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan the worktree, not git history
+        run: gitleaks detect --no-git --redact --config .gitleaks.toml --source .
+
+      - name: Custom sk- rule
+        working-directory: ts
+        run: node scripts/check-gitleaks-rule.mjs

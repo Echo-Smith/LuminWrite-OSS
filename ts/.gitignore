@@ -1,0 +1,11 @@
+dist/
+*.tsbuildinfo
+coverage/
+.turbo/
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+.pglite/
+.vite/

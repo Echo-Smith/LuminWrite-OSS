@@ -1,0 +1,31 @@
+{
+  "name": "@luminwrite/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "catalog:",
+    "@luminwrite/contracts": "workspace:*",
+    "@luminwrite/doc-model": "workspace:*",
+    "@luminwrite/edition": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "nanoid": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

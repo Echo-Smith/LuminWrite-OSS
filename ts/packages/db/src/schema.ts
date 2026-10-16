@@ -1,0 +1,128 @@
+import type { EditOp } from "@luminwrite/contracts";
+import type { PMJSON } from "@luminwrite/doc-model";
+import { sql } from "drizzle-orm";
+import {
+  boolean,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+export const documents = pgTable("documents", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  title: text("title").notNull(),
+  genre: text("genre").notNull(),
+  status: text("status").notNull(),
+  headVersionId: text("head_version_id"),
+  finalVersionId: text("final_version_id"),
+  styleRef: text("style_ref").notNull(),
+  tierRef: text("tier_ref").notNull(),
+  brief: jsonb("brief").$type<Record<string, unknown>>().notNull(),
+  authoredByMe: boolean("authored_by_me").notNull(),
+  createdVia: text("created_via").notNull(),
+  humanTouched: boolean("human_touched").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const docVersions = pgTable(
+  "doc_versions",
+  {
+    id: text("id").primaryKey(),
+    documentId: text("document_id").notNull(),
+    seq: integer("seq").notNull(),
+    parentId: text("parent_id"),
+    origin: text("origin").notNull(),
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id").notNull(),
+    turnId: text("turn_id"),
+    piTaskId: text("pi_task_id"),
+    content: jsonb("content").$type<PMJSON>().notNull(),
+    ops: jsonb("ops").$type<EditOp[]>().notNull().default(sql`'[]'::jsonb`),
+    summary: text("summary").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("uk_ver_seq").on(table.documentId, table.seq)],
+);
+
+export const docBlocks = pgTable("doc_blocks", {
+  documentId: text("document_id").notNull(),
+  blockId: text("block_id").notNull(),
+  type: text("type").notNull(),
+  contentHash: text("content_hash").notNull(),
+  text: text("text").notNull(),
+  orderKey: text("order_key").notNull(),
+  searchText: text("search_text").notNull(),
+});
+
+export const turns = pgTable(
+  "turns",
+  {
+    id: text("id").primaryKey(),
+    documentId: text("document_id").notNull(),
+    kind: text("kind").notNull(),
+    delivery: text("delivery").notNull(),
+    status: text("status").notNull(),
+    selection: jsonb("selection"),
+    scope: text("scope").notNull(),
+    baseVersionId: text("base_version_id"),
+    resultVersionId: text("result_version_id"),
+    applyMode: text("apply_mode").notNull(),
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    piConversationId: text("pi_conversation_id"),
+    piSubmissionId: text("pi_submission_id"),
+    instruction: text("instruction").notNull(),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("uk_turn_idem").on(table.documentId, table.idempotencyKey)],
+);
+
+export const runEvents = pgTable(
+  "run_events",
+  {
+    id: text("id").primaryKey(),
+    documentId: text("document_id").notNull(),
+    seq: integer("seq").notNull(),
+    turnId: text("turn_id"),
+    type: text("type").notNull(),
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("uk_event_seq").on(table.documentId, table.seq)],
+);
+
+export const proposals = pgTable("proposals", {
+  id: text("id").primaryKey(),
+  documentId: text("document_id").notNull(),
+  turnId: text("turn_id"),
+  baseVersionId: text("base_version_id").notNull(),
+  status: text("status").notNull(),
+  piTaskId: text("pi_task_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const proposalHunks = pgTable("proposal_hunks", {
+  id: text("id").primaryKey(),
+  proposalId: text("proposal_id").notNull(),
+  op: jsonb("op").$type<EditOp>().notNull(),
+  status: text("status").notNull(),
+  userEdit: jsonb("user_edit"),
+});
+
+export const usageLedger = pgTable("usage_ledger", {
+  id: text("id").primaryKey(),
+  requestId: text("request_id").notNull(),
+  model: text("model").notNull(),
+  inputTokens: integer("input_tokens").notNull(),
+  outputTokens: integer("output_tokens").notNull(),
+  costMicros: integer("cost_micros").notNull(),
+  apiKeyId: text("api_key_id"),
+  apiTaskId: text("api_task_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

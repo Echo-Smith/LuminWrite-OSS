@@ -1,0 +1,11 @@
+{
+  "name": "plain-professional",
+  "version": "1.0.0",
+  "kind": "voice",
+  "ref": "pkg:luminwrite/plain-professional@1.0.0",
+  "prose": "用具体的主语、数字和动作。先给结论，再给依据。不写空话，不靠排比撑篇幅。",
+  "rules": [
+    { "kind": "sentence_length", "p90Max": 80 },
+    { "kind": "paragraph", "leadWithConclusion": true, "maxChars": 400 }
+  ]
+}
