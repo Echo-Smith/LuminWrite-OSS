@@ -30,4 +30,4 @@
 - `documents.final_version_id` 是可空的 `text`。建文档和派生文档都写成 `null`，没有别的写入。
 - `documents.status` 是不带检查约束的 `text`。迁移默认值是 `'draft'`，代码也只写 `'draft'`。没有 `'final'`，也没有 `'archived'`。
 
-M1-06 再把 `final` 收成 `active`（目前没有这种行）、删掉 `final_version_id`，并把状态收成 `active` / `archived`。
+M1-06 已删掉 `final_version_id`，并把 `draft` / `final` / `archived` 收成 `active`。丢弃不用状态位，用 `discarded_at`。

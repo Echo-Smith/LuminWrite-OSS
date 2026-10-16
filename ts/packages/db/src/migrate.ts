@@ -14,9 +14,8 @@ CREATE TABLE IF NOT EXISTS documents (
   owner_id text NOT NULL,
   title text NOT NULL,
   genre text NOT NULL DEFAULT '',
-  status text NOT NULL DEFAULT 'draft',
+  status text NOT NULL DEFAULT 'active',
   head_version_id text,
-  final_version_id text,
   style_ref text NOT NULL DEFAULT 'pkg:luminwrite/plain-professional@1.0.0',
   tier_ref text NOT NULL DEFAULT 'balanced',
   brief jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -25,6 +24,9 @@ CREATE TABLE IF NOT EXISTS documents (
   human_touched boolean NOT NULL DEFAULT false,
   derived_from_document_id text,
   derived_from_version_id text,
+  saved_at timestamptz,
+  saved_version_id text,
+  discarded_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS doc_versions (
   content jsonb NOT NULL,
   ops jsonb NOT NULL DEFAULT '[]'::jsonb,
   summary text NOT NULL DEFAULT '',
+  api_key_id text,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (document_id, seq)
 );
@@ -242,11 +245,50 @@ ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS cache_read_tokens integer;
 ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS cache_write_tokens integer;
 ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS price_known boolean NOT NULL DEFAULT true;
 
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS saved_at timestamptz;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS saved_version_id text;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS discarded_at timestamptz;
+ALTER TABLE documents DROP COLUMN IF EXISTS final_version_id;
+UPDATE documents SET status = 'active' WHERE status IN ('draft', 'final', 'archived');
+ALTER TABLE documents ALTER COLUMN status SET DEFAULT 'active';
+ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS api_key_id text;
+CREATE INDEX IF NOT EXISTS idx_doc_discarded ON documents (discarded_at) WHERE discarded_at IS NOT NULL;
+
 CREATE OR REPLACE FUNCTION doc_versions_append_only()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  mode text;
 BEGIN
+  mode := current_setting('lw.version_write', true);
+  IF TG_OP = 'DELETE' AND mode = 'purge' THEN
+    RETURN OLD;
+  END IF;
+  IF TG_OP = 'UPDATE' AND mode = 'coalesce' THEN
+    IF OLD.origin IS DISTINCT FROM 'manual'
+       OR NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.document_id IS DISTINCT FROM OLD.document_id
+       OR NEW.seq IS DISTINCT FROM OLD.seq
+       OR NEW.parent_id IS DISTINCT FROM OLD.parent_id
+       OR NEW.origin IS DISTINCT FROM OLD.origin
+       OR NEW.actor_type IS DISTINCT FROM OLD.actor_type
+       OR NEW.actor_id IS DISTINCT FROM OLD.actor_id
+       OR NEW.turn_id IS DISTINCT FROM OLD.turn_id
+       OR NEW.pi_task_id IS DISTINCT FROM OLD.pi_task_id
+       OR NEW.api_key_id IS DISTINCT FROM OLD.api_key_id
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR NOT EXISTS (
+         SELECT 1 FROM documents d
+         WHERE d.id = OLD.document_id
+           AND d.head_version_id = OLD.id
+           AND d.saved_at IS NOT NULL
+           AND d.saved_version_id IS DISTINCT FROM OLD.id
+       ) THEN
+      RAISE EXCEPTION 'doc_versions is append-only';
+    END IF;
+    RETURN NEW;
+  END IF;
   RAISE EXCEPTION 'doc_versions is append-only';
 END;
 $$;

@@ -2,6 +2,8 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { type ServerType, serve } from "@hono/node-server";
 import {
+  discardPurgeIntervalMs,
+  discardRetentionDays,
   ensureMasterKey,
   ensureOwner,
   importEnvCredential,
@@ -76,12 +78,21 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     if (!server) throw new Error("没有拿到监听地址");
     const listening = server;
     const opened = runtime;
+    const retentionDays = discardRetentionDays(env);
+    const purgeEvery = discardPurgeIntervalMs(env);
+    const purge = () => {
+      void db.purgeDiscarded({ retentionDays }).catch(() => undefined);
+    };
+    purge();
+    const purgeTimer = purgeEvery > 0 ? setInterval(purge, purgeEvery) : undefined;
+    purgeTimer?.unref();
     const warning = [listen.warning, secrets.warning].filter((item) => item).join("\n");
     return {
       url: listenUrl(listen.host, address.port),
       ...(warning ? { warning } : {}),
       owner,
       async close() {
+        if (purgeTimer) clearInterval(purgeTimer);
         await closeServer(listening);
         await opened.close();
         await db.close();

@@ -14,7 +14,7 @@
 
 ## 文档没有 final 状态
 
-M0 表有 `documents.final_version_id`（可空）和 `documents.status`（文本，默认 `draft`）。没有 `final` 枚举。本 PR 不迁移；等文档生命周期那一步再把列去掉。
+M0 表有 `documents.final_version_id`（可空）和 `documents.status`（文本，默认 `draft`）。没有 `final` 枚举。M1-06 删掉了这一列，并把 `draft` / `final` / `archived` 收成 `active`。
 
 ## 丢掉未保存文档
 
