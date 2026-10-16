@@ -59,7 +59,6 @@ export function createInlineJobs(): InlineJobs {
       );
       if (existing) {
         existing.data = data;
-        existing.dueAt = dueAt;
         return existing.id;
       }
     }

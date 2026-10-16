@@ -63,6 +63,8 @@ const {
   sessionReads,
   documentDossier,
   users,
+  sources,
+  evidence,
 } = schema;
 
 export class DocumentNotFound extends Error {
@@ -212,9 +214,16 @@ export interface DocumentView {
   head: VersionView | null;
   savedAt: string | null;
   discardedAt: string | null;
+  kbExcluded: boolean;
   createdVia: string;
   createdAt: string;
 }
+
+/** 版本写入之后通知知识库。schedule 是 60 秒节流；index / remove 立刻执行。 */
+export type DocumentIndexNotice = {
+  documentId: string;
+  action: "schedule" | "index" | "remove";
+};
 
 export interface DocumentListItem {
   id: string;
@@ -289,14 +298,15 @@ export const DEFAULT_DISCARD_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 const SAVED_ON_CREATE = new Set(["api", "import", "derive"]);
 
 /**
- * 知识库和检索以后只用这个判断。未保存、已丢弃的文档都不进。
- * 列表用同样的条件（saved_at 非空且 discarded_at 为空）。
+ * 知识库和检索以后只用这个判断。未保存、已丢弃、移出知识库的文档都不进。
+ * 列表仍只看 saved_at 和 discarded_at。
  */
 export function documentVisibleToKb(doc: {
   savedAt: Date | string | null;
   discardedAt: Date | string | null;
+  kbExcluded?: boolean;
 }): boolean {
-  return doc.savedAt != null && doc.discardedAt == null;
+  return doc.savedAt != null && doc.discardedAt == null && doc.kbExcluded !== true;
 }
 
 export function discardRetentionDays(env: NodeJS.ProcessEnv = {}): number {
@@ -352,6 +362,7 @@ export class LwDatabase {
   private readonly orm: Orm;
   private readonly client: Closer;
   private readonly clock: () => Date;
+  private indexListener: ((notice: DocumentIndexNotice) => void | Promise<void>) | null = null;
 
   constructor(
     orm: Orm,
@@ -363,6 +374,29 @@ export class LwDatabase {
     this.client = client;
     this.clock = clock;
     this.driver = driver ?? { kind: "postgres", connectionString: "" };
+  }
+
+  /** 服务器接上队列后登记。没登记时版本照常落库，只是不进知识库。 */
+  onDocumentIndex(listener: (notice: DocumentIndexNotice) => void | Promise<void>): void {
+    this.indexListener = listener;
+  }
+
+  private async notifyIndex(notice: DocumentIndexNotice): Promise<void> {
+    await this.indexListener?.(notice);
+  }
+
+  private async afterVersion(documentId: string): Promise<void> {
+    const doc = await this.getDocument(documentId);
+    if (!doc || !documentVisibleToKb(doc)) return;
+    await this.notifyIndex({ documentId, action: "schedule" });
+  }
+
+  private async deleteDocumentChunks(tx: Tx, id: string): Promise<void> {
+    await tx.execute(
+      sql`DELETE FROM chunks WHERE source_id IN (
+        SELECT id FROM sources WHERE document_id = ${id} AND kind = 'document'
+      )`,
+    );
   }
 
   exec(sqlText: string): Promise<void> {
@@ -489,6 +523,7 @@ export class LwDatabase {
         updatedAt: now,
       });
     });
+    if (savedAt) await this.afterVersion(id);
     return { id, versionId, sessionId };
   }
 
@@ -507,6 +542,7 @@ export class LwDatabase {
       head,
       savedAt: stampOrNull(row.savedAt),
       discardedAt: stampOrNull(row.discardedAt),
+      kbExcluded: row.kbExcluded,
       createdVia: row.createdVia,
       createdAt: stamp(row.createdAt),
     };
@@ -537,7 +573,7 @@ export class LwDatabase {
   }
 
   async saveDocument(id: string): Promise<{ savedAt: string; already: boolean }> {
-    return this.orm.transaction(async (tx) => {
+    const result = await this.orm.transaction(async (tx) => {
       const doc = await this.lock(tx, id);
       if (doc.savedAt) return { savedAt: stamp(doc.savedAt), already: true };
       const now = this.clock();
@@ -547,24 +583,41 @@ export class LwDatabase {
         .where(eq(documents.id, id));
       return { savedAt: now.toISOString(), already: false };
     });
+    if (!result.already) await this.notifyIndex({ documentId: id, action: "index" });
+    return result;
   }
 
   async discardDocument(id: string): Promise<{ discardedAt: string }> {
-    return this.orm.transaction(async (tx) => {
+    const result = await this.orm.transaction(async (tx) => {
       const doc = await this.lock(tx, id);
       if (doc.discardedAt) return { discardedAt: stamp(doc.discardedAt) };
       const now = this.clock();
       await tx.update(documents).set({ discardedAt: now }).where(eq(documents.id, id));
+      await this.deleteDocumentChunks(tx, id);
       return { discardedAt: now.toISOString() };
     });
+    await this.notifyIndex({ documentId: id, action: "remove" });
+    return result;
   }
 
   async undoDiscard(id: string): Promise<{ discardedAt: null }> {
-    return this.orm.transaction(async (tx) => {
+    const result = await this.orm.transaction(async (tx) => {
       await this.lock(tx, id);
       await tx.update(documents).set({ discardedAt: null }).where(eq(documents.id, id));
       return { discardedAt: null };
     });
+    await this.notifyIndex({ documentId: id, action: "index" });
+    return result;
+  }
+
+  async setKbExcluded(id: string, excluded: boolean): Promise<{ kbExcluded: boolean }> {
+    await this.orm.transaction(async (tx) => {
+      await this.lock(tx, id);
+      await tx.update(documents).set({ kbExcluded: excluded }).where(eq(documents.id, id));
+      if (excluded) await this.deleteDocumentChunks(tx, id);
+    });
+    await this.notifyIndex({ documentId: id, action: excluded ? "remove" : "index" });
+    return { kbExcluded: excluded };
   }
 
   async getVersion(id: string): Promise<VersionDetail | undefined> {
@@ -641,8 +694,8 @@ export class LwDatabase {
     scope?: BlockId[];
     sessionId?: string;
   }): Promise<ApplyOutcome> {
-    return this.orm.transaction(async (tx) => {
-      const written = await this.writeOps(tx, {
+    const written = await this.orm.transaction(async (tx) => {
+      const outcome = await this.writeOps(tx, {
         documentId: input.documentId,
         ops: input.ops,
         origin: "manual",
@@ -650,10 +703,12 @@ export class LwDatabase {
         summary: input.summary ?? "人工修订",
         scope: input.scope,
       });
-      if (written.ok && input.sessionId)
-        await this.advanceInTx(tx, input.sessionId, written.versionId);
-      return written;
+      if (outcome.ok && input.sessionId)
+        await this.advanceInTx(tx, input.sessionId, outcome.versionId);
+      return outcome;
     });
+    if (written.ok) await this.afterVersion(input.documentId);
+    return written;
   }
 
   async rollback(input: {
@@ -661,7 +716,7 @@ export class LwDatabase {
     toVersionId: string;
     actor: Actor;
   }): Promise<ApplyOutcome> {
-    return this.orm.transaction(async (tx) => {
+    const written = await this.orm.transaction(async (tx) => {
       await this.lock(tx, input.documentId);
       const target = await this.versionInTx(tx, input.toVersionId);
       if (!target || target.documentId !== input.documentId) {
@@ -681,6 +736,8 @@ export class LwDatabase {
         piTaskId: null,
       });
     });
+    if (written.ok) await this.afterVersion(input.documentId);
+    return written;
   }
 
   async beginTurn(
@@ -763,7 +820,7 @@ export class LwDatabase {
     scope?: BlockId[];
     sessionId?: string;
   }): Promise<ProposeOutcome> {
-    return this.orm.transaction(async (tx) => {
+    const outcome = await this.orm.transaction(async (tx) => {
       await this.lock(tx, input.documentId);
       if (input.sessionId) {
         const scoped = await this.sessionInTx(tx, input.sessionId);
@@ -875,10 +932,15 @@ export class LwDatabase {
         versionId: written.versionId,
       };
     });
+    if (outcome.ok && outcome.status === "applied" && !outcome.already) {
+      await this.afterVersion(input.documentId);
+    }
+    return outcome;
   }
 
   async acceptProposal(proposalId: string, actor: Actor): Promise<ApplyOutcome> {
-    return this.orm.transaction(async (tx) => {
+    let documentId: string | undefined;
+    const written = await this.orm.transaction(async (tx) => {
       const found = await tx.select().from(proposals).where(eq(proposals.id, proposalId)).limit(1);
       const proposal = found[0];
       if (!proposal) {
@@ -895,7 +957,8 @@ export class LwDatabase {
       const ops = hunks
         .filter((hunk) => hunk.status === "pending" || hunk.status === "accepted")
         .map((hunk) => hunk.op);
-      const written = await this.writeOps(tx, {
+      documentId = proposal.documentId;
+      const applied = await this.writeOps(tx, {
         documentId: proposal.documentId,
         ops,
         origin: "turn",
@@ -903,13 +966,13 @@ export class LwDatabase {
         summary: "接受提案",
         turnId: proposal.turnId,
       });
-      if (!written.ok) {
+      if (!applied.ok) {
         await tx
           .update(proposalHunks)
           .set({ status: "stale" })
           .where(eq(proposalHunks.proposalId, proposalId));
         await tx.update(proposals).set({ status: "stale" }).where(eq(proposals.id, proposalId));
-        return written;
+        return applied;
       }
       await tx
         .update(proposalHunks)
@@ -919,11 +982,13 @@ export class LwDatabase {
       if (proposal.turnId) {
         await tx
           .update(turns)
-          .set({ status: "applied", resultVersionId: written.versionId })
+          .set({ status: "applied", resultVersionId: applied.versionId })
           .where(eq(turns.id, proposal.turnId));
       }
-      return written;
+      return applied;
     });
+    if (written.ok && documentId) await this.afterVersion(documentId);
+    return written;
   }
 
   async rejectProposal(proposalId: string): Promise<void> {
@@ -1496,7 +1561,7 @@ export class LwDatabase {
     title?: string;
     actor: Actor;
   }): Promise<{ id: string; versionId: string; sessionId: string }> {
-    return this.orm.transaction(async (tx) => {
+    const created = await this.orm.transaction(async (tx) => {
       const source = await this.versionInTx(tx, input.versionId);
       if (!source) throw new VersionNotFound(input.versionId);
       const parents = await tx
@@ -1571,6 +1636,8 @@ export class LwDatabase {
       });
       return { id, versionId: written.versionId, sessionId };
     });
+    await this.afterVersion(created.id);
+    return created;
   }
 
   async listDerived(documentId: string): Promise<DerivedDocumentView[]> {
@@ -1648,6 +1715,8 @@ export class LwDatabase {
   }
 
   private async purgeOne(tx: Tx, id: string) {
+    await tx.delete(evidence).where(eq(evidence.citingDocumentId, id));
+    await tx.delete(sources).where(eq(sources.documentId, id));
     const ses = await tx
       .select({ id: sessions.id })
       .from(sessions)

@@ -43,9 +43,9 @@ export async function openJobPort(driver: DatabaseDriver): Promise<JobPort> {
       const sent = await boss.send(name, payload, options);
       if (sent) return sent;
       if (opts?.singletonKey) {
+        // 不带 startAfter，已排队任务保持原来的到期时间。
         const updated = await boss.update(name, payload, {
           singletonKey: opts.singletonKey,
-          ...(opts.startAfterSeconds != null ? { startAfter: opts.startAfterSeconds } : {}),
         });
         const existing = updated.jobs[0];
         if (existing) return existing;

@@ -19,6 +19,7 @@ import { createFeedService, safeFetch } from "@luminwrite/sources";
 
 import { createApp } from "./app.js";
 import { createOssAuth } from "./auth.js";
+import { bindDocumentIndex, startDocumentIndex } from "./doc-index.js";
 import { kbEmbedderFor } from "./kb-embed.js";
 import { sessionKnowledge } from "./kb-session.js";
 import { listenUrl, resolveListen } from "./listen.js";
@@ -61,6 +62,8 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       safeFetch(url, { ...options, allowPrivate: env.LW_ALLOW_PRIVATE_FETCH === "1" });
     const feeds = createFeedService({ db, kb, fetch: fetchPage, jobs });
     await feeds.start();
+    bindDocumentIndex(db, jobs, kb);
+    await startDocumentIndex(jobs, kb);
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),

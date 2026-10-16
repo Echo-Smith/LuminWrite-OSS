@@ -31,6 +31,7 @@ export type {
   CredentialRow,
   DatabaseDriver,
   DerivedDocumentView,
+  DocumentIndexNotice,
   DocumentListItem,
   DocumentView,
   DossierView,

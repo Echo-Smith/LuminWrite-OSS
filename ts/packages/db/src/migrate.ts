@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS documents (
   saved_at timestamptz,
   saved_version_id text,
   discarded_at timestamptz,
+  kb_excluded boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -248,6 +249,7 @@ ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS price_known boolean NOT NULL D
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS saved_at timestamptz;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS saved_version_id text;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS discarded_at timestamptz;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS kb_excluded boolean NOT NULL DEFAULT false;
 ALTER TABLE documents DROP COLUMN IF EXISTS final_version_id;
 UPDATE documents SET status = 'active' WHERE status IN ('draft', 'final', 'archived');
 ALTER TABLE documents ALTER COLUMN status SET DEFAULT 'active';
