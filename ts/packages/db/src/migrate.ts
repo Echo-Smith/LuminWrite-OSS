@@ -297,4 +297,62 @@ DROP TRIGGER IF EXISTS doc_versions_no_mutation ON doc_versions;
 CREATE TRIGGER doc_versions_no_mutation
 BEFORE UPDATE OR DELETE ON doc_versions
 FOR EACH ROW EXECUTE FUNCTION doc_versions_append_only();
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS folders (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  name text NOT NULL,
+  parent_id text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  kind text NOT NULL,
+  title text NOT NULL,
+  url text,
+  publisher text,
+  published_at timestamptz,
+  authority smallint NOT NULL DEFAULT 2,
+  folder_id text,
+  feed_id text,
+  feed_guid text,
+  document_id text,
+  indexed_version_id text,
+  body text NOT NULL,
+  revision integer NOT NULL DEFAULT 1,
+  content_hash text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_source_owner_hash ON sources (owner_id, content_hash) WHERE kind <> 'document';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_source_feed_item ON sources (feed_id, feed_guid) WHERE feed_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_source_document ON sources (document_id) WHERE kind = 'document';
+CREATE INDEX IF NOT EXISTS idx_source_owner ON sources (owner_id);
+
+CREATE TABLE IF NOT EXISTS chunks (
+  id text PRIMARY KEY,
+  source_id text NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  owner_id text NOT NULL,
+  ord integer NOT NULL,
+  text text NOT NULL,
+  search_text text NOT NULL,
+  embedding vector(1024),
+  embedding_model text,
+  char_start integer NOT NULL,
+  char_end integer NOT NULL,
+  page integer,
+  heading_path text[],
+  block_ids text[]
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunk_owner ON chunks (owner_id);
+CREATE INDEX IF NOT EXISTS idx_chunk_fts ON chunks USING gin (to_tsvector('simple', search_text));
+CREATE INDEX IF NOT EXISTS idx_chunk_vec ON chunks USING hnsw (embedding vector_cosine_ops);
 `;

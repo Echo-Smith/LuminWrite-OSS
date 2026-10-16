@@ -1,11 +1,12 @@
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
 import { describe, expect, it } from "vitest";
 
 import { migrationSql } from "./migrate.js";
 
 describe("只追加的版本", () => {
   it("删除文档会级联到版本表，触发器拒绝这次删除", async () => {
-    const db = new PGlite();
+    const db = new PGlite({ extensions: { vector } });
     try {
       await db.exec(migrationSql);
       await db.exec(`
@@ -28,7 +29,7 @@ describe("只追加的版本", () => {
   });
 
   it("清退标记才允许删版本，合并标记不能改掉来源", async () => {
-    const db = new PGlite();
+    const db = new PGlite({ extensions: { vector } });
     try {
       await db.exec(migrationSql);
       await db.exec(`

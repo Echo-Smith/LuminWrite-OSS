@@ -46,11 +46,15 @@ describe("客户端", () => {
     await client.restoreDocument("doc_1", "ver_1");
     await client.discardDocument("doc_1");
     await client.undoDiscard("doc_1");
+    await client.uploadSource({ filename: "a.md", dataBase64: "YQ==" });
+    await client.searchSources("春茶");
     expect(seen).toEqual([
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/save",
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/restore",
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/discard",
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/discard/undo",
+      "POST http://127.0.0.1:8787/api/v1/sources",
+      "GET http://127.0.0.1:8787/api/v1/sources/search?q=%E6%98%A5%E8%8C%B6",
     ]);
   });
 });

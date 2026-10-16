@@ -37,6 +37,7 @@ export type {
   ProposeOutcome,
   RegistryEntryRow,
   SessionView,
+  SqlQuery,
   TurnView,
   VersionDetail,
   VersionView,
@@ -59,6 +60,7 @@ export {
   VersionNotFound,
 } from "./database.js";
 export { importEnvCredential } from "./env-credential.js";
+export { newId } from "./ids.js";
 export { migrationSql } from "./migrate.js";
 export {
   authenticateOwnerToken,

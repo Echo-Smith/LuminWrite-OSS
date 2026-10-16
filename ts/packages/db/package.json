@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "catalog:",
+    "@electric-sql/pglite-pgvector": "catalog:",
     "@luminwrite/contracts": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/edition": "workspace:*",
@@ -24,7 +25,6 @@
     "pg": "catalog:"
   },
   "devDependencies": {
-    "@electric-sql/pglite-pgvector": "catalog:",
     "@types/pg": "catalog:",
     "pg-boss": "catalog:",
     "typescript": "catalog:",

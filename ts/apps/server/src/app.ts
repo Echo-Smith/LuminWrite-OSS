@@ -30,6 +30,12 @@ import {
 import type { EditAuthorizer } from "@luminwrite/edition";
 import { type AuthPort, ownerAuthorizer } from "@luminwrite/edition";
 import type { WritingRuntime } from "@luminwrite/harness";
+import {
+  createKnowledgeBase,
+  KbInputError,
+  type KnowledgeBase,
+  retrievalDataNote,
+} from "@luminwrite/kb";
 import { TurnSpendError } from "@luminwrite/models";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -109,6 +115,24 @@ const PatchCredentialBody = z.object({
   status: z.enum(["active", "disabled"]).optional(),
 });
 
+const UploadBody = z.object({
+  filename: z.string().min(1).max(200),
+  mime: z.string().max(200).optional(),
+  dataBase64: z
+    .string()
+    .min(1)
+    .max(Math.ceil((20 * 1024 * 1024 * 4) / 3) + 16),
+  folderId: z.string().min(1).optional(),
+  title: z.string().max(200).optional(),
+});
+
+const FolderBody = z.object({
+  name: z.string().min(1).max(80),
+  parentId: z.string().min(1).optional(),
+});
+
+const SOURCE_KINDS = ["upload", "url", "rss_item", "web", "document"] as const;
+
 const CreateApiKeyBody = z.object({
   name: z.string().min(1).max(128),
   scopes: z.array(z.string()).optional(),
@@ -131,6 +155,7 @@ export interface AppDeps {
   keyring?: MasterKeyring;
   env?: NodeJS.ProcessEnv;
   models?: MutableModels;
+  kb?: KnowledgeBase;
 }
 
 function httpError(error: unknown): { status: 404 | 409; body: { error: string } } | undefined {
@@ -164,6 +189,12 @@ async function readBody(c: AppContext): Promise<unknown> {
   }
 }
 
+function kbFailure(error: unknown): { status: 400 | 404; body: { error: string } } | undefined {
+  if (!(error instanceof KbInputError)) return undefined;
+  const status = error.message.startsWith("找不到") ? 404 : 400;
+  return { status, body: { error: error.message } };
+}
+
 function userIdOf(actor: Actor): string | undefined {
   if (actor.type === "system") return undefined;
   return actor.userId;
@@ -176,6 +207,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     ownerAuthorizer(async (documentId) => (await deps.db.getDocument(documentId))?.ownerId);
   const limiter = deps.limiter ?? defaultRateLimiter();
   const concurrency = new TaskConcurrency();
+  const kb = deps.kb ?? createKnowledgeBase({ db: deps.db });
 
   app.get("/health", (c) => c.json({ ok: true, service: "luminwrite-ts" }));
 
@@ -736,11 +768,111 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return new Response(body, { headers: { "content-type": "text/event-stream" } });
   });
 
+  api.post("/sources/folders", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = FolderBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "文件夹参数不合法" }, 400);
+    try {
+      return c.json(
+        await kb.createFolder({
+          ownerId: userId,
+          name: parsed.data.name,
+          ...(parsed.data.parentId ? { parentId: parsed.data.parentId } : {}),
+        }),
+        201,
+      );
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/sources", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = UploadBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "上传参数不合法" }, 400);
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(parsed.data.dataBase64, "base64");
+    } catch {
+      return c.json({ error: "文件内容不是 base64" }, 400);
+    }
+    if (bytes.length === 0) return c.json({ error: "文件是空的" }, 400);
+    if (bytes.length > 20 * 1024 * 1024) return c.json({ error: "文件超过 20MB" }, 400);
+    try {
+      const outcome = await kb.ingest({
+        ownerId: userId,
+        filename: parsed.data.filename,
+        bytes,
+        ...(parsed.data.mime ? { mime: parsed.data.mime } : {}),
+        ...(parsed.data.folderId ? { folderId: parsed.data.folderId } : {}),
+        ...(parsed.data.title ? { title: parsed.data.title } : {}),
+      });
+      return c.json(outcome, outcome.status === "indexed" ? 201 : 200);
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.get("/sources/search", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const text = c.req.query("q")?.trim() ?? "";
+    if (!text) return c.json({ error: "缺少查询" }, 400);
+    const limit = Number(c.req.query("limit") ?? "5");
+    const kinds = c.req
+      .query("kinds")
+      ?.split(",")
+      .map((kind) => kind.trim())
+      .filter((kind): kind is (typeof SOURCE_KINDS)[number] =>
+        (SOURCE_KINDS as readonly string[]).includes(kind),
+      );
+    const folderIds = c.req
+      .query("folderIds")
+      ?.split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+    const hits = await kb.search({
+      ownerId: userId,
+      text,
+      limit: Number.isFinite(limit) ? limit : 5,
+      ...(kinds && kinds.length > 0 ? { kinds } : {}),
+      ...(folderIds && folderIds.length > 0 ? { folderIds } : {}),
+    });
+    return c.json({ note: retrievalDataNote, hits });
+  });
+
+  api.get("/sources/:id", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const start = c.req.query("start");
+    const end = c.req.query("end");
+    const range =
+      start !== undefined && end !== undefined
+        ? { charStart: Number(start), charEnd: Number(end) }
+        : undefined;
+    try {
+      const source = await kb.readSource(userId, c.req.param("id"), range);
+      return c.json({ note: retrievalDataNote, ...source });
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
   app.route("/api/v1", api);
   app.onError((error, c) => {
     if (error instanceof CredentialInputError || error instanceof ApiKeyInputError) {
       return c.json({ error: error.message }, 400);
     }
+    const mapped = kbFailure(error);
+    if (mapped) return c.json(mapped.body, mapped.status);
     return c.json({ error: "服务器出错" }, 500);
   });
   return app;
