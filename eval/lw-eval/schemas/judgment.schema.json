@@ -1,0 +1,93 @@
+{
+  "title": "Judgment",
+  "type": "object",
+  "required": [
+    "jid",
+    "kind",
+    "judge",
+    "status"
+  ],
+  "properties": {
+    "jid": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "pairwise",
+        "checklist",
+        "claim_verify",
+        "plan_compare",
+        "deletion",
+        "auto_metric",
+        "human"
+      ]
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "judge": {
+      "type": "object",
+      "properties": {
+        "vendor": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "prompt_id": {
+          "type": "string"
+        },
+        "prompt_sha": {
+          "type": "string"
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "infra_error",
+        "parse_error"
+      ]
+    },
+    "system_a": {
+      "type": "string"
+    },
+    "system_b": {
+      "type": "string"
+    },
+    "order": {
+      "enum": [
+        "AB",
+        "BA"
+      ]
+    },
+    "winner": {
+      "enum": [
+        "A",
+        "B",
+        "tie"
+      ]
+    },
+    "items": {
+      "type": "object"
+    },
+    "value": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rater_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    }
+  }
+}

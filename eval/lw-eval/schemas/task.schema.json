@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task",
+  "type": "object",
+  "required": [
+    "task_id",
+    "hypotheses",
+    "genre",
+    "prompt",
+    "split"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[a-z]+-[a-z0-9_]+-\\d{3}$"
+    },
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "logic",
+          "retrieval",
+          "style",
+          "natural"
+        ]
+      }
+    },
+    "genre": {
+      "enum": [
+        "report",
+        "analysis",
+        "explainer",
+        "commentary",
+        "brief",
+        "literature_review"
+      ]
+    },
+    "split": {
+      "enum": [
+        "dev",
+        "test",
+        "gold_human",
+        "canary"
+      ]
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "length_target": {
+      "type": "integer"
+    },
+    "audience": {
+      "type": "string"
+    },
+    "style_pack": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_pack_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "gold": {
+      "type": "object",
+      "properties": {
+        "thesis": {
+          "type": "string"
+        },
+        "outline_points": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "research_plan": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "question": {
+                "type": "string"
+              },
+              "critical": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "must_have": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "must_not_have": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "revision_script": {
+      "type": "array",
+      "description": "多轮修订用例：每轮一条指令及其目标锚点",
+      "items": {
+        "type": "object",
+        "required": [
+          "turn",
+          "instruction",
+          "anchors"
+        ],
+        "properties": {
+          "turn": {
+            "type": "integer"
+          },
+          "instruction": {
+            "type": "string"
+          },
+          "anchors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "must_contain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "must_not_contain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "human_reference_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "同体裁真人文本，用于成对朗读测试/图灵测试"
+    }
+  }
+}
