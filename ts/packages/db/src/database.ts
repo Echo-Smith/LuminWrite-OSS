@@ -21,9 +21,11 @@ import {
 } from "@luminwrite/contracts";
 import {
   applyOps,
+  type BlockDiff,
   blockHashSync,
   blockIdOf,
   blockText,
+  diffBlocks,
   emptyDoc,
   findBlock,
   listBlocks,
@@ -32,7 +34,7 @@ import {
   remapBlockIds,
 } from "@luminwrite/doc-model";
 import type { UsageEvent } from "@luminwrite/edition";
-import { and, desc, eq, gte, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lte, type SQL, sql } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import pg from "pg";
@@ -112,9 +114,16 @@ export interface VersionView {
   origin: string;
   summary: string;
   content: PMJSON;
+  ops: EditOp[];
   turnId: string | null;
   actorType: string;
   actorId: string;
+  apiKeyId: string | null;
+  createdAt: string;
+}
+
+export interface VersionDetail extends VersionView {
+  documentId: string;
 }
 
 export interface OwnerRow {
@@ -196,9 +205,25 @@ export interface DocumentView {
   id: string;
   ownerId: string;
   title: string;
+  status: string;
   humanTouched: boolean;
   headVersionId: string | null;
   head: VersionView | null;
+  savedAt: string | null;
+  discardedAt: string | null;
+  createdVia: string;
+  createdAt: string;
+}
+
+export interface DocumentListItem {
+  id: string;
+  title: string;
+  status: string;
+  savedAt: string;
+  createdVia: string;
+  humanTouched: boolean;
+  headVersionId: string | null;
+  createdAt: string;
 }
 
 export interface TurnView {
@@ -255,6 +280,39 @@ export type ProposeOutcome =
     }
   | { ok: false; errors: OpError[] };
 
+/** 同一 actor 的连续人工修订合并成一个版本的窗口。 */
+export const AUTOSAVE_WINDOW_MS = 30_000;
+export const DEFAULT_DISCARD_RETENTION_DAYS = 30;
+export const DEFAULT_DISCARD_PURGE_INTERVAL_MS = 60 * 60 * 1000;
+
+const SAVED_ON_CREATE = new Set(["api", "import", "derive"]);
+
+/**
+ * 知识库和检索以后只用这个判断。未保存、已丢弃的文档都不进。
+ * 列表用同样的条件（saved_at 非空且 discarded_at 为空）。
+ */
+export function documentVisibleToKb(doc: {
+  savedAt: Date | string | null;
+  discardedAt: Date | string | null;
+}): boolean {
+  return doc.savedAt != null && doc.discardedAt == null;
+}
+
+export function discardRetentionDays(env: NodeJS.ProcessEnv = {}): number {
+  return readNonNegative(env.LW_DISCARD_RETENTION_DAYS, DEFAULT_DISCARD_RETENTION_DAYS);
+}
+
+export function discardPurgeIntervalMs(env: NodeJS.ProcessEnv = {}): number {
+  return readNonNegative(env.LW_DISCARD_PURGE_INTERVAL_MS, DEFAULT_DISCARD_PURGE_INTERVAL_MS);
+}
+
+function readNonNegative(raw: string | undefined, fallback: number): number {
+  if (raw == null || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
 type Origin = "turn" | "manual" | "restore" | "import" | "api" | "derive";
 type Orm = PgliteDatabase<typeof schema>;
 
@@ -268,6 +326,10 @@ function actorParts(actor: Actor): { actorType: string; actorId: string } {
   return { actorType: actor.type, actorId: actor.userId };
 }
 
+function apiKeyIdOf(actor: Actor): string | null {
+  return actor.type === "api_client" ? actor.keyId : null;
+}
+
 function asDoc(value: unknown): PMJSON {
   if (typeof value === "string") return JSON.parse(value) as PMJSON;
   return value as PMJSON;
@@ -276,10 +338,12 @@ function asDoc(value: unknown): PMJSON {
 export class LwDatabase {
   private readonly orm: Orm;
   private readonly client: Closer;
+  private readonly clock: () => Date;
 
-  constructor(orm: Orm, client: Closer) {
+  constructor(orm: Orm, client: Closer, clock: () => Date = () => new Date()) {
     this.orm = orm;
     this.client = client;
+    this.clock = clock;
   }
 
   exec(sqlText: string): Promise<void> {
@@ -332,28 +396,35 @@ export class LwDatabase {
     ownerId: string;
     genre?: string;
     createdVia?: string;
+    actor?: Actor;
   }): Promise<{ id: string; versionId: string; sessionId: string }> {
     const id = newId("doc");
     const versionId = newId("ver");
     const sessionId = newId("ses");
-    const now = new Date();
+    const now = this.clock();
+    const via = input.createdVia ?? "ui";
+    const actor = input.actor ?? { type: "user" as const, userId: input.ownerId };
+    const parts = actorParts(actor);
+    const savedAt = SAVED_ON_CREATE.has(via) || actor.type === "api_client" ? now : null;
     await this.orm.transaction(async (tx) => {
       await tx.insert(documents).values({
         id,
         ownerId: input.ownerId,
         title: input.title,
         genre: input.genre ?? "",
-        status: "draft",
+        status: "active",
         headVersionId: versionId,
-        finalVersionId: null,
         styleRef: "pkg:luminwrite/plain-professional@1.0.0",
         tierRef: "balanced",
         brief: {},
         authoredByMe: false,
-        createdVia: input.createdVia ?? "ui",
+        createdVia: via,
         humanTouched: false,
         derivedFromDocumentId: null,
         derivedFromVersionId: null,
+        savedAt,
+        savedVersionId: savedAt ? versionId : null,
+        discardedAt: null,
         createdAt: now,
       });
       await tx.insert(docVersions).values({
@@ -362,8 +433,9 @@ export class LwDatabase {
         seq: 1,
         parentId: null,
         origin: "import",
-        actorType: "user",
-        actorId: input.ownerId,
+        actorType: parts.actorType,
+        actorId: parts.actorId,
+        apiKeyId: apiKeyIdOf(actor),
         turnId: null,
         piTaskId: null,
         content: emptyDoc(),
@@ -383,8 +455,8 @@ export class LwDatabase {
         kind: "main",
         baseVersionId: versionId,
         piConversationId: null,
-        createdByType: "user",
-        createdById: input.ownerId,
+        createdByType: parts.actorType,
+        createdById: parts.actorId,
         status: "open",
         createdAt: now,
         updatedAt: now,
@@ -402,10 +474,112 @@ export class LwDatabase {
       id: row.id,
       ownerId: row.ownerId,
       title: row.title,
+      status: row.status,
       humanTouched: row.humanTouched,
       headVersionId: row.headVersionId,
       head,
+      savedAt: stampOrNull(row.savedAt),
+      discardedAt: stampOrNull(row.discardedAt),
+      createdVia: row.createdVia,
+      createdAt: stamp(row.createdAt),
     };
+  }
+
+  async listDocuments(ownerId: string): Promise<DocumentListItem[]> {
+    const rows = await this.orm
+      .select()
+      .from(documents)
+      .where(
+        and(
+          eq(documents.ownerId, ownerId),
+          isNotNull(documents.savedAt),
+          isNull(documents.discardedAt),
+        ),
+      )
+      .orderBy(desc(documents.createdAt), desc(documents.id));
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      savedAt: stamp(row.savedAt ?? row.createdAt),
+      createdVia: row.createdVia,
+      humanTouched: row.humanTouched,
+      headVersionId: row.headVersionId,
+      createdAt: stamp(row.createdAt),
+    }));
+  }
+
+  async saveDocument(id: string): Promise<{ savedAt: string; already: boolean }> {
+    return this.orm.transaction(async (tx) => {
+      const doc = await this.lock(tx, id);
+      if (doc.savedAt) return { savedAt: stamp(doc.savedAt), already: true };
+      const now = this.clock();
+      await tx
+        .update(documents)
+        .set({ savedAt: now, savedVersionId: doc.headVersionId, status: "active" })
+        .where(eq(documents.id, id));
+      return { savedAt: now.toISOString(), already: false };
+    });
+  }
+
+  async discardDocument(id: string): Promise<{ discardedAt: string }> {
+    return this.orm.transaction(async (tx) => {
+      const doc = await this.lock(tx, id);
+      if (doc.discardedAt) return { discardedAt: stamp(doc.discardedAt) };
+      const now = this.clock();
+      await tx.update(documents).set({ discardedAt: now }).where(eq(documents.id, id));
+      return { discardedAt: now.toISOString() };
+    });
+  }
+
+  async undoDiscard(id: string): Promise<{ discardedAt: null }> {
+    return this.orm.transaction(async (tx) => {
+      await this.lock(tx, id);
+      await tx.update(documents).set({ discardedAt: null }).where(eq(documents.id, id));
+      return { discardedAt: null };
+    });
+  }
+
+  async getVersion(id: string): Promise<VersionDetail | undefined> {
+    const rows = await this.orm.select().from(docVersions).where(eq(docVersions.id, id)).limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    return { ...toVersion(row), documentId: row.documentId };
+  }
+
+  async diffVersions(documentId: string, fromId: string, toId: string): Promise<BlockDiff[]> {
+    const from = await this.versionRow(fromId);
+    const to = await this.versionRow(toId);
+    if (!from || from.documentId !== documentId) throw new VersionNotFound(fromId);
+    if (!to || to.documentId !== documentId) throw new VersionNotFound(toId);
+    return diffBlocks(asDoc(from.content), asDoc(to.content));
+  }
+
+  /**
+   * 硬删已过保留期的丢弃文档。只在这个事务里把 `lw.version_write` 设成 `purge`，
+   * 触发器才放行版本删除。普通 DELETE / UPDATE 仍然失败。
+   */
+  async purgeDiscarded(input?: {
+    retentionDays?: number;
+    now?: Date;
+  }): Promise<{ purged: string[] }> {
+    const retentionDays = input?.retentionDays ?? DEFAULT_DISCARD_RETENTION_DAYS;
+    if (!Number.isFinite(retentionDays) || retentionDays < 0) {
+      throw new Error("保留天数不合法");
+    }
+    const now = input?.now ?? this.clock();
+    const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+    return this.orm.transaction(async (tx) => {
+      const rows = await tx
+        .select({ id: documents.id })
+        .from(documents)
+        .where(and(isNotNull(documents.discardedAt), lte(documents.discardedAt, cutoff)));
+      const ids = rows.map((row) => row.id);
+      if (ids.length === 0) return { purged: [] };
+      await tx.execute(sql`select set_config('lw.version_write', 'purge', true)`);
+      for (const id of ids) await this.purgeOne(tx, id);
+      return { purged: ids };
+    });
   }
 
   async listVersions(documentId: string): Promise<VersionView[]> {
@@ -1313,16 +1487,15 @@ export class LwDatabase {
       const sourceDossier = parseDossier(dossierRows[0]?.content);
       const id = newId("doc");
       const sessionId = newId("ses");
-      const now = new Date();
+      const now = this.clock();
       const actor = actorParts(input.actor);
       await tx.insert(documents).values({
         id,
         ownerId: input.ownerId,
         title: input.title ?? `${parent.title}的派生`,
         genre: parent.genre,
-        status: "draft",
+        status: "active",
         headVersionId: null,
-        finalVersionId: null,
         styleRef: parent.styleRef,
         tierRef: parent.tierRef,
         brief: {},
@@ -1331,6 +1504,9 @@ export class LwDatabase {
         humanTouched: false,
         derivedFromDocumentId: source.documentId,
         derivedFromVersionId: source.id,
+        savedAt: now,
+        savedVersionId: null,
+        discardedAt: null,
         createdAt: now,
       });
       const written = await this.insertSnapshot(tx, {
@@ -1344,6 +1520,10 @@ export class LwDatabase {
         piTaskId: null,
       });
       if (!written.ok) throw new SessionScopeError(written.errors[0]?.message ?? "派生失败");
+      await tx
+        .update(documents)
+        .set({ savedVersionId: written.versionId })
+        .where(eq(documents.id, id));
       await tx.insert(documentDossier).values({
         documentId: id,
         version: 1,
@@ -1370,7 +1550,13 @@ export class LwDatabase {
     const rows = await this.orm
       .select()
       .from(documents)
-      .where(eq(documents.derivedFromDocumentId, documentId))
+      .where(
+        and(
+          eq(documents.derivedFromDocumentId, documentId),
+          isNotNull(documents.savedAt),
+          isNull(documents.discardedAt),
+        ),
+      )
       .orderBy(documents.createdAt);
     return rows.map((row) => ({
       id: row.id,
@@ -1425,9 +1611,37 @@ export class LwDatabase {
   }
 
   private async versionById(id: string): Promise<VersionView | null> {
-    const rows = await this.orm.select().from(docVersions).where(eq(docVersions.id, id)).limit(1);
-    const row = rows[0];
+    const row = await this.versionRow(id);
     return row ? toVersion(row) : null;
+  }
+
+  private async versionRow(id: string) {
+    const rows = await this.orm.select().from(docVersions).where(eq(docVersions.id, id)).limit(1);
+    return rows[0];
+  }
+
+  private async purgeOne(tx: Tx, id: string) {
+    const ses = await tx
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(eq(sessions.documentId, id));
+    for (const session of ses) {
+      await tx.delete(sessionReads).where(eq(sessionReads.sessionId, session.id));
+    }
+    await tx.delete(sessionReads).where(eq(sessionReads.documentId, id));
+    await tx.delete(sessions).where(eq(sessions.documentId, id));
+    await tx.delete(docVersions).where(eq(docVersions.documentId, id));
+    const props = await tx
+      .select({ id: proposals.id })
+      .from(proposals)
+      .where(eq(proposals.documentId, id));
+    for (const proposal of props) {
+      await tx.delete(proposalHunks).where(eq(proposalHunks.proposalId, proposal.id));
+    }
+    await tx.delete(proposals).where(eq(proposals.documentId, id));
+    await tx.delete(docBlocks).where(eq(docBlocks.documentId, id));
+    await tx.delete(runEvents).where(eq(runEvents.documentId, id));
+    await tx.delete(documents).where(eq(documents.id, id));
   }
 
   private async sessionInTx(tx: Tx, id: string) {
@@ -1523,6 +1737,8 @@ export class LwDatabase {
     },
   ): Promise<ApplyOutcome> {
     const doc = await this.lock(tx, input.documentId);
+    const coalesced = await this.coalesceManual(tx, doc, input);
+    if (coalesced) return coalesced;
     const latest = await tx
       .select()
       .from(docVersions)
@@ -1532,6 +1748,7 @@ export class LwDatabase {
     const seq = (latest[0]?.seq ?? 0) + 1;
     const versionId = newId("ver");
     const actor = actorParts(input.actor);
+    const now = this.clock();
     await tx.insert(docVersions).values({
       id: versionId,
       documentId: input.documentId,
@@ -1540,29 +1757,71 @@ export class LwDatabase {
       origin: input.origin,
       actorType: actor.actorType,
       actorId: actor.actorId,
+      apiKeyId: apiKeyIdOf(input.actor),
       turnId: input.turnId,
       piTaskId: input.piTaskId,
       content: input.content,
       ops: input.ops,
       summary: input.summary,
-      createdAt: new Date(),
+      createdAt: now,
     });
     await tx
       .update(documents)
       .set({ headVersionId: versionId })
       .where(eq(documents.id, input.documentId));
-    if (input.actor.type === "user" && input.origin === "manual") {
-      await tx
-        .update(documents)
-        .set({ humanTouched: true })
-        .where(eq(documents.id, input.documentId));
-    }
-    await tx.delete(docBlocks).where(eq(docBlocks.documentId, input.documentId));
-    const projected = listBlocks(input.content).map((node, index) => {
+    await this.touchHuman(tx, input.documentId, input.actor, input.origin);
+    await this.replaceBlocks(tx, input.documentId, input.content);
+    return { ok: true, versionId, seq };
+  }
+
+  private async coalesceManual(
+    tx: Tx,
+    doc: typeof documents.$inferSelect,
+    input: {
+      content: PMJSON;
+      ops: EditOp[];
+      origin: Origin;
+      actor: Actor;
+      summary: string;
+    },
+  ): Promise<ApplyOutcome | undefined> {
+    if (input.origin !== "manual" || !doc.savedAt || !doc.headVersionId) return undefined;
+    if (doc.headVersionId === doc.savedVersionId) return undefined;
+    const head = await this.versionInTx(tx, doc.headVersionId);
+    if (!head || head.origin !== "manual") return undefined;
+    const actor = actorParts(input.actor);
+    if (head.actorType !== actor.actorType || head.actorId !== actor.actorId) return undefined;
+    if ((head.apiKeyId ?? null) !== apiKeyIdOf(input.actor)) return undefined;
+    const created = asDate(head.createdAt);
+    if (!created) return undefined;
+    const elapsed = this.clock().getTime() - created.getTime();
+    if (elapsed < 0 || elapsed >= AUTOSAVE_WINDOW_MS) return undefined;
+    await tx.execute(sql`select set_config('lw.version_write', 'coalesce', true)`);
+    await tx
+      .update(docVersions)
+      .set({
+        content: input.content,
+        ops: [...asOps(head.ops), ...input.ops],
+        summary: input.summary,
+      })
+      .where(eq(docVersions.id, head.id));
+    await this.touchHuman(tx, doc.id, input.actor, input.origin);
+    await this.replaceBlocks(tx, doc.id, input.content);
+    return { ok: true, versionId: head.id, seq: head.seq };
+  }
+
+  private async touchHuman(tx: Tx, documentId: string, actor: Actor, origin: Origin) {
+    if (actor.type !== "user" || origin !== "manual") return;
+    await tx.update(documents).set({ humanTouched: true }).where(eq(documents.id, documentId));
+  }
+
+  private async replaceBlocks(tx: Tx, documentId: string, content: PMJSON) {
+    await tx.delete(docBlocks).where(eq(docBlocks.documentId, documentId));
+    const projected = listBlocks(content).map((node, index) => {
       const blockId = blockIdOf(node);
       if (!blockId) throw new Error("块缺少 id");
       return {
-        documentId: input.documentId,
+        documentId,
         blockId,
         type: node.type,
         contentHash: blockHashSync(node),
@@ -1572,7 +1831,6 @@ export class LwDatabase {
       };
     });
     if (projected.length > 0) await tx.insert(docBlocks).values(projected);
-    return { ok: true, versionId, seq };
   }
 
   private async appendEventTx(
@@ -1707,9 +1965,12 @@ function toVersion(row: typeof docVersions.$inferSelect): VersionView {
     origin: row.origin,
     summary: row.summary,
     content: asDoc(row.content),
+    ops: asOps(row.ops),
     turnId: row.turnId,
     actorType: row.actorType,
     actorId: row.actorId,
+    apiKeyId: row.apiKeyId,
+    createdAt: stamp(row.createdAt),
   };
 }
 
@@ -1749,6 +2010,16 @@ function toSession(row: typeof sessions.$inferSelect): SessionView {
 
 function stamp(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function stampOrNull(value: Date | string | null): string | null {
+  if (value == null) return null;
+  return stamp(value);
+}
+
+function asOps(value: unknown): EditOp[] {
+  const raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  return Array.isArray(raw) ? (raw as EditOp[]) : [];
 }
 
 function parseDossier(value: unknown): DossierContent {
@@ -1830,14 +2101,18 @@ function prepareOps(
   return { ok: true, doc: applied.doc, ops: rebased };
 }
 
-export async function openMemoryDatabase(): Promise<LwDatabase> {
+export async function openMemoryDatabase(options?: { now?: () => Date }): Promise<LwDatabase> {
   const client = new PGlite();
   await client.exec(migrationSql);
   const orm = drizzle({ client, schema });
-  return new LwDatabase(orm, {
-    exec: (sqlText) => client.exec(sqlText).then(() => undefined),
-    close: () => client.close(),
-  });
+  return new LwDatabase(
+    orm,
+    {
+      exec: (sqlText) => client.exec(sqlText).then(() => undefined),
+      close: () => client.close(),
+    },
+    options?.now,
+  );
 }
 
 /** 本机默认：数据目录里的 PGlite。`location.kind === "postgres"` 时走正式 Postgres。 */

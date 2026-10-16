@@ -15,6 +15,7 @@ import {
   createCredential,
   DocumentNotFound,
   deleteCredential,
+  discardRetentionDays,
   type LwDatabase,
   listApiKeys,
   listCredentialViews,
@@ -228,14 +229,23 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return requireDocument(c, documentId);
   }
 
+  api.get("/documents", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json(await deps.db.listDocuments(userId));
+  });
+
   api.post("/documents", async (c) => {
     const parsed = CreateDocument.safeParse(await readBody(c));
     if (!parsed.success) return c.json({ error: "文档参数不合法" }, 400);
-    const userId = userIdOf(c.get("actor"));
+    const actor = c.get("actor");
+    const userId = userIdOf(actor);
     if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
     const created = await deps.db.createDocument({
       title: parsed.data.title,
       ownerId: userId,
+      actor,
+      createdVia: actor.type === "api_client" ? "api" : "ui",
       ...(parsed.data.genre ? { genre: parsed.data.genre } : {}),
     });
     return c.json(created, 201);
@@ -254,6 +264,65 @@ export function createApp(deps: AppDeps): Hono<Env> {
     const denied = await requireDocument(c, c.req.param("id"));
     if (denied) return denied;
     return c.json(await deps.db.listVersions(c.req.param("id")));
+  });
+
+  api.get("/versions/:id", async (c) => {
+    const version = await deps.db.getVersion(c.req.param("id"));
+    if (!version) return c.json({ error: "找不到版本" }, 404);
+    const denied = await requireDocument(c, version.documentId);
+    if (denied) return denied;
+    return c.json(version);
+  });
+
+  api.get("/documents/:id/diff", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const from = c.req.query("from");
+    const to = c.req.query("to");
+    if (!from || !to) return c.json({ error: "需要 from 和 to" }, 400);
+    try {
+      return c.json(await deps.db.diffVersions(c.req.param("id"), from, to));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/documents/:id/save", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      return c.json(await deps.db.saveDocument(c.req.param("id")));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/documents/:id/discard/undo", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      return c.json(await deps.db.undoDiscard(c.req.param("id")));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/documents/:id/discard", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      return c.json(await deps.db.discardDocument(c.req.param("id")));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
   });
 
   api.post("/documents/:id/ops", async (c) => {
@@ -420,14 +489,16 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json(await deps.db.listDerived(c.req.param("id")));
   });
 
-  api.post("/documents/:id/rollback", async (c) => {
-    const denied = await requireDocument(c, c.req.param("id"));
+  const restore = async (c: AppContext) => {
+    const documentId = c.req.param("id");
+    if (!documentId) return c.json({ error: "找不到文档" }, 404);
+    const denied = await requireDocument(c, documentId);
     if (denied) return denied;
     const parsed = RollbackBody.safeParse(await readBody(c));
     if (!parsed.success) return c.json({ error: "回滚参数不合法" }, 400);
     try {
       const result = await deps.db.rollback({
-        documentId: c.req.param("id"),
+        documentId,
         toVersionId: parsed.data.versionId,
         actor: c.get("actor"),
       });
@@ -438,6 +509,18 @@ export function createApp(deps: AppDeps): Hono<Env> {
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
     }
+  };
+  api.post("/documents/:id/restore", restore);
+  api.post("/documents/:id/rollback", restore);
+
+  api.post("/admin/purge-discarded", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const parsed = z
+      .object({ retentionDays: z.number().nonnegative().optional() })
+      .safeParse((await readBody(c)) ?? {});
+    if (!parsed.success) return c.json({ error: "清退参数不合法" }, 400);
+    const retentionDays = parsed.data.retentionDays ?? discardRetentionDays(deps.env ?? {});
+    return c.json(await deps.db.purgeDiscarded({ retentionDays }));
   });
 
   api.post("/documents/:id/turns", async (c) => {

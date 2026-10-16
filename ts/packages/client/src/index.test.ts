@@ -33,4 +33,24 @@ describe("客户端", () => {
     expect(seen[0]?.body).not.toContain("ownerId");
     expect(seen[0]?.body).not.toContain("actor");
   });
+
+  it("保存和回滚走文档接口", async () => {
+    const seen: string[] = [];
+    const client = createClient("http://127.0.0.1:8787", async (input, init) => {
+      seen.push(`${init?.method ?? "GET"} ${String(input)}`);
+      return new Response(
+        JSON.stringify({ savedAt: "t", already: false, ok: true, discardedAt: "t" }),
+      );
+    });
+    await client.saveDocument("doc_1");
+    await client.restoreDocument("doc_1", "ver_1");
+    await client.discardDocument("doc_1");
+    await client.undoDiscard("doc_1");
+    expect(seen).toEqual([
+      "POST http://127.0.0.1:8787/api/v1/documents/doc_1/save",
+      "POST http://127.0.0.1:8787/api/v1/documents/doc_1/restore",
+      "POST http://127.0.0.1:8787/api/v1/documents/doc_1/discard",
+      "POST http://127.0.0.1:8787/api/v1/documents/doc_1/discard/undo",
+    ]);
+  });
 });

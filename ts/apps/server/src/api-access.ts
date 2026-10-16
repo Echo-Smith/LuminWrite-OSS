@@ -5,6 +5,7 @@ import { humanTouchedProposalPolicy } from "@luminwrite/edition";
 import type { TokenBucketLimiter } from "./rate-limit.js";
 
 const OWNER_ONLY_PREFIXES = [
+  "/admin",
   "/me/api-keys",
   "/me/credentials",
   "/me/writing-notes",
@@ -54,6 +55,9 @@ export function requiredScope(method: string, path: string): ApiScope | "owner-o
     return verb === "POST" ? "tasks:write" : "deny";
   }
   if (normalized === "/models" && verb === "GET") return "documents:read";
+  if (/^\/versions\/[^/]+$/.test(normalized)) {
+    return verb === "GET" ? "documents:read" : "deny";
+  }
   if (hasPrefix(normalized, "/documents") || hasPrefix(normalized, "/sessions")) {
     return verb === "GET" ? "documents:read" : "documents:write";
   }
