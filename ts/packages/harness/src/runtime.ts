@@ -11,7 +11,6 @@ import {
   type Conversation,
   type ConversationId,
   createRegistry,
-  defineDoc,
   defineExtension,
   defineTool,
   Harness,
@@ -20,6 +19,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import {
   ActorSchema,
   asBlockId,
+  type DossierContent,
   type EditOp,
   EditOpSchema,
   type RunEvent,
@@ -31,16 +31,9 @@ import type { UsageSink } from "@luminwrite/edition";
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
 import type { HarnessChange, HarnessPort } from "./port.js";
 import { screenOps } from "./screen.js";
-import type { WritingStore } from "./store.js";
+import type { DossierSnapshot, SessionSnapshot, WritingStore } from "./store.js";
 
 const ctx: Context = BACKGROUND_CONTEXT;
-
-const conversationsDoc = defineDoc({
-  kind: "lw.conversations",
-  version: 1,
-  scope: "session",
-  initial: () => ({ byKey: {} as Record<string, number> }),
-});
 
 const terminal = new Set<TurnStatus>(["applied", "proposed", "failed", "conflicted", "cancelled"]);
 
@@ -72,11 +65,14 @@ function toolRanAfterLatestUser(messages: readonly Message[]): boolean {
 function promptFor(
   turn: TurnRequest,
   turnId: string,
+  session: SessionSnapshot,
+  dossier: DossierContent,
   blocks: PlanBlock[],
   scopeIds: string[],
 ): string {
   const payload = {
     documentId: turn.documentId,
+    sessionId: session.id,
     turnId,
     kind: turn.kind,
     instruction: turn.instruction,
@@ -84,9 +80,12 @@ function promptFor(
     actor: turn.actor,
     selection: turn.selection ?? [],
     scopeIds,
+    baseVersionId: session.baseVersionId,
   };
   return [
-    "只通过 propose_edits 提交修订。服务端会校验块哈希。",
+    "只通过 propose_edits 提交修订。锚点来自会话的基准版本，服务端按文档当前版本校验。",
+    "先读文档档案，不要依赖更早的聊天记录。",
+    `<dossier>${JSON.stringify(dossier)}</dossier>`,
     `<turn>${JSON.stringify(payload)}</turn>`,
     `<blocks>${JSON.stringify(blocks)}</blocks>`,
   ].join("\n");
@@ -102,6 +101,7 @@ export interface TurnResult {
 export interface WritingRuntime extends HarnessPort {
   submitTurn(req: TurnRequest): Promise<TurnResult>;
   events(documentId: string, afterSeq?: number): Promise<RunEvent[]>;
+  readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
 }
 
 export async function createWritingRuntime(options: {
@@ -121,6 +121,7 @@ export async function createWritingRuntime(options: {
     const text = latestUserText(context.messages);
     const turn = JSON.parse(parseTag(text, "turn") || "{}") as {
       documentId?: string;
+      sessionId?: string;
       turnId?: string;
       kind?: TurnRequest["kind"];
       instruction?: string;
@@ -130,8 +131,27 @@ export async function createWritingRuntime(options: {
       scopeIds?: string[];
     };
     const blocks = JSON.parse(parseTag(text, "blocks") || "[]") as PlanBlock[];
-    if (!turn.kind || !turn.documentId || !turn.turnId || !turn.applyMode || !turn.actor) {
+    if (
+      !turn.kind ||
+      !turn.documentId ||
+      !turn.sessionId ||
+      !turn.turnId ||
+      !turn.applyMode ||
+      !turn.actor
+    ) {
       return fauxAssistantMessage("回合信息不完整。");
+    }
+    const related = /^读取关联档案\s+(\S+)/.exec(turn.instruction ?? "");
+    if (related?.[1]) {
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("read_related_dossier", {
+            sessionId: turn.sessionId,
+            documentId: related[1],
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
     }
     const planned = planner({
       kind: turn.kind,
@@ -144,6 +164,7 @@ export async function createWritingRuntime(options: {
       [
         fauxToolCall("propose_edits", {
           documentId: turn.documentId,
+          sessionId: turn.sessionId,
           turnId: turn.turnId,
           applyMode: turn.applyMode,
           summary: planned.summary,
@@ -160,11 +181,38 @@ export async function createWritingRuntime(options: {
   const readBlocks = defineTool({
     name: "read_blocks",
     description: "读取文档当前块的 id、哈希和文本。",
-    parameters: Type.Object({ documentId: Type.String() }),
+    parameters: Type.Object({ sessionId: Type.String(), documentId: Type.String() }),
     replay: "safe",
     async execute(args) {
+      const allowed = await options.store.canRead(args.sessionId, args.documentId);
+      if (!allowed) {
+        return { isError: true, output: [{ type: "text", text: "这个会话不能读这篇文档" }] };
+      }
       const blocks = await options.store.readBlocks(args.documentId);
       return { output: [{ type: "text", text: JSON.stringify(blocks) }] };
+    },
+  });
+
+  const readRelatedDossier = defineTool({
+    name: "read_related_dossier",
+    description: "只读有血缘或已授权文档的当前档案。不复制、不同步到本篇。",
+    parameters: Type.Object({ sessionId: Type.String(), documentId: Type.String() }),
+    replay: "safe",
+    async execute(args) {
+      try {
+        const dossier = await options.store.readRelatedDossier(args.sessionId, args.documentId);
+        return {
+          output: [
+            {
+              type: "text",
+              text: JSON.stringify({ version: dossier.version, content: dossier.content }),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "不能读取档案";
+        return { isError: true, output: [{ type: "text", text: message }] };
+      }
     },
   });
 
@@ -173,6 +221,7 @@ export async function createWritingRuntime(options: {
     description: "提交块锚点修订。哈希和说人话由服务端校验。",
     parameters: Type.Object({
       documentId: Type.String(),
+      sessionId: Type.String(),
       turnId: Type.String(),
       applyMode: Type.Union([Type.Literal("auto"), Type.Literal("proposal")]),
       summary: Type.String(),
@@ -202,6 +251,7 @@ export async function createWritingRuntime(options: {
       const scope = (JSON.parse(args.scopeJson) as string[]).map((id) => asBlockId(id));
       const outcome = await options.store.propose({
         documentId: args.documentId,
+        sessionId: args.sessionId,
         turnId: args.turnId,
         ops,
         piTaskId: String(api.taskId),
@@ -222,16 +272,19 @@ export async function createWritingRuntime(options: {
   });
 
   const registry = createRegistry();
-  registry.install(defineExtension({ name: "lw-writing", tools: [readBlocks, proposeEdits] }));
+  registry.install(
+    defineExtension({ name: "lw-writing", tools: [readBlocks, readRelatedDossier, proposeEdits] }),
+  );
   const harness = await Harness.open(storage, { models, registry }, ctx);
   harness.resume();
   const seenEntries = new Set<string>();
 
-  async function conversationFor(documentId: string): Promise<Conversation> {
-    const snap = await harness.snapshot(conversationsDoc, ctx);
-    const existing = snap?.byKey[documentId];
-    if (typeof existing === "number") {
-      const found = await harness.conversation(existing as ConversationId, ctx);
+  async function conversationFor(session: SessionSnapshot): Promise<Conversation> {
+    if (session.piConversationId) {
+      const found = await harness.conversation(
+        Number(session.piConversationId) as ConversationId,
+        ctx,
+      );
       if (found) return found;
     }
     const created = await harness.createConversation(
@@ -241,10 +294,8 @@ export async function createWritingRuntime(options: {
       },
       ctx,
     );
-    await harness.commit(async (tx) => {
-      const doc = await tx.doc(conversationsDoc);
-      doc.byKey = { ...doc.byKey, [documentId]: created.id };
-    }, ctx);
+    await options.store.setSessionConversation(session.id, String(created.id));
+    session.piConversationId = String(created.id);
     return created;
   }
 
@@ -271,8 +322,10 @@ export async function createWritingRuntime(options: {
   }
 
   const runtime: WritingRuntime = {
-    async submit(conversationKey, input) {
-      const conversation = await conversationFor(conversationKey);
+    async submit(sessionId, input) {
+      const session = await options.store.getSession(sessionId);
+      if (!session) throw new Error(`找不到会话 ${sessionId}`);
+      const conversation = await conversationFor(session);
       const submission = await conversation.submit(
         {
           type: "input",
@@ -284,21 +337,26 @@ export async function createWritingRuntime(options: {
       );
       return { submissionId: String(submission.id) };
     },
-    async abort(conversationKey) {
-      const conversation = await conversationFor(conversationKey);
+    async abort(sessionId) {
+      const session = await options.store.getSession(sessionId);
+      if (!session) throw new Error(`找不到会话 ${sessionId}`);
+      const conversation = await conversationFor(session);
       await conversation.abort(ctx);
     },
     async resume() {
       harness.resume();
     },
-    watch(conversationKey) {
-      return watchConversation(conversationKey);
+    watch(sessionId) {
+      return watchConversation(sessionId);
     },
     async close() {
       await harness.close(ctx);
     },
     events(documentId, afterSeq) {
       return options.store.eventsAfter(documentId, afterSeq);
+    },
+    readRelatedDossier(sessionId, documentId) {
+      return options.store.readRelatedDossier(sessionId, documentId);
     },
     async submitTurn(req) {
       const begun = await options.store.beginTurn(req);
@@ -312,19 +370,34 @@ export async function createWritingRuntime(options: {
         };
       }
       await options.store.markTurn(begun.turnId, { status: "running" });
-      const blocks = await options.store.readBlocks(req.documentId);
+      const session = await options.store.sessionFor(req);
+      const dossier = await options.store.readDossier(req.documentId);
+      const blocks = await options.store.readBlocksAt(req.documentId, session.baseVersionId);
       const index = targetIndex(req.instruction, blocks, req.selection);
       const scoped = req.kind === "revise" ? blocks[index]?.blockId : undefined;
-      const conversation = await conversationFor(req.documentId);
+      const conversation = await conversationFor(session);
       await options.store.appendEvent(req.documentId, {
         turnId: begun.turnId,
         type: "turn.started",
-        payload: { kind: req.kind },
+        payload: {
+          kind: req.kind,
+          sessionId: session.id,
+          baseVersionId: session.baseVersionId,
+          dossierVersion: dossier.version,
+          dossier: dossier.content,
+        },
       });
       const submission = await conversation.submit(
         {
           type: "input",
-          content: promptFor(req, begun.turnId, blocks, scoped ? [scoped] : []),
+          content: promptFor(
+            req,
+            begun.turnId,
+            session,
+            dossier.content,
+            blocks,
+            scoped ? [scoped] : [],
+          ),
           requestId: req.idempotencyKey,
           whenBusy: req.delivery === "steer" ? "steer" : "followUp",
         },
@@ -348,6 +421,9 @@ export async function createWritingRuntime(options: {
         outputTokens: 0,
         costMicros: 0,
       });
+      if (turn?.status === "applied" && turn.resultVersionId) {
+        await options.store.advanceSessionBase(session.id, turn.resultVersionId);
+      }
       return {
         turnId: begun.turnId,
         status: turn?.status ?? "failed",
@@ -357,14 +433,16 @@ export async function createWritingRuntime(options: {
     },
   };
 
-  async function* watchConversation(conversationKey: string): AsyncGenerator<HarnessChange> {
-    const conversation = await conversationFor(conversationKey);
+  async function* watchConversation(sessionId: string): AsyncGenerator<HarnessChange> {
+    const session = await options.store.getSession(sessionId);
+    if (!session) throw new Error(`找不到会话 ${sessionId}`);
+    const conversation = await conversationFor(session);
     const handle = await conversation.watch(ctx);
-    const queue: HarnessChange[] = [toChange(conversationKey, handle.value.entries)];
+    const queue: HarnessChange[] = [toChange(sessionId, handle.value.entries)];
     let pending: (() => void) | undefined;
     let stopped = false;
     handle.start(async (value) => {
-      queue.push(toChange(conversationKey, value.entries));
+      queue.push(toChange(sessionId, value.entries));
       pending?.();
       pending = undefined;
     });
@@ -389,10 +467,10 @@ export async function createWritingRuntime(options: {
   return runtime;
 }
 
-function toChange(conversationKey: string, entries: readonly { kind: string }[]): HarnessChange {
+function toChange(sessionId: string, entries: readonly { kind: string }[]): HarnessChange {
   const last = entries.at(-1);
   return {
-    conversationKey,
+    sessionId,
     entryCount: entries.length,
     ...(last ? { lastKind: last.kind } : {}),
   };

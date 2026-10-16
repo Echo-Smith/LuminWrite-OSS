@@ -14,8 +14,12 @@ CREATE TABLE IF NOT EXISTS documents (
   authored_by_me boolean NOT NULL DEFAULT false,
   created_via text NOT NULL DEFAULT 'ui',
   human_touched boolean NOT NULL DEFAULT false,
+  derived_from_document_id text,
+  derived_from_version_id text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_doc_derived ON documents (derived_from_document_id);
 
 CREATE TABLE IF NOT EXISTS doc_versions (
   id text PRIMARY KEY,
@@ -60,6 +64,7 @@ CREATE TABLE IF NOT EXISTS turns (
   apply_mode text NOT NULL,
   actor_type text NOT NULL,
   actor_id text NOT NULL,
+  session_id text NOT NULL,
   idempotency_key text NOT NULL,
   pi_conversation_id text,
   pi_submission_id text,
@@ -98,6 +103,34 @@ CREATE TABLE IF NOT EXISTS proposal_hunks (
   op jsonb NOT NULL,
   status text NOT NULL,
   user_edit jsonb
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id text PRIMARY KEY,
+  document_id text NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  base_version_id text NOT NULL REFERENCES doc_versions(id),
+  pi_conversation_id text,
+  created_by_type text NOT NULL,
+  created_by_id text NOT NULL,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_session_main ON sessions (document_id) WHERE kind = 'main';
+
+CREATE TABLE IF NOT EXISTS session_reads (
+  session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  document_id text NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  PRIMARY KEY (session_id, document_id)
+);
+
+CREATE TABLE IF NOT EXISTS document_dossier (
+  document_id text PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  version integer NOT NULL,
+  content jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS usage_ledger (

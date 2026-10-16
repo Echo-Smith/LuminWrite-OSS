@@ -1,8 +1,10 @@
 import type {
   Actor,
   BlockId,
+  DossierContent,
   EditOp,
   RunEvent,
+  SessionKind,
   TurnRequest,
   TurnStatus,
 } from "@luminwrite/contracts";
@@ -19,8 +21,31 @@ export interface TurnSnapshot {
   piSubmissionId: string | null;
 }
 
+/** 会话行不保存正文。正文只在文档版本链里。 */
+export interface SessionSnapshot {
+  id: string;
+  documentId: string;
+  kind: SessionKind;
+  baseVersionId: string;
+  piConversationId: string | null;
+  status: "open" | "closed";
+}
+
+export interface DossierSnapshot {
+  version: number;
+  content: DossierContent;
+}
+
 export interface WritingStore {
   readBlocks(documentId: string): Promise<PlanBlock[]>;
+  readBlocksAt(documentId: string, versionId: string): Promise<PlanBlock[]>;
+  readDossier(documentId: string): Promise<DossierSnapshot>;
+  readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
+  sessionFor(req: TurnRequest): Promise<SessionSnapshot>;
+  getSession(sessionId: string): Promise<SessionSnapshot | undefined>;
+  setSessionConversation(sessionId: string, piConversationId: string): Promise<void>;
+  advanceSessionBase(sessionId: string, versionId: string): Promise<void>;
+  canRead(sessionId: string, documentId: string): Promise<boolean>;
   beginTurn(req: TurnRequest): Promise<{ turnId: string; created: boolean; status: TurnStatus }>;
   markTurn(
     turnId: string,
@@ -35,6 +60,7 @@ export interface WritingStore {
   getTurn(turnId: string): Promise<TurnSnapshot | undefined>;
   propose(input: {
     documentId: string;
+    sessionId?: string;
     turnId: string;
     ops: EditOp[];
     piTaskId: string;

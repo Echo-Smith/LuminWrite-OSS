@@ -2,7 +2,7 @@
 
 这里是 LuminWrite 的 TypeScript 重写，只放在 `ts/`。仓库里原有的 Go 后端和 React 前端不动。
 
-M0 打的是地基：块锚点修订、只追加的版本链、以及每篇文档一个 Pi 对话。不需要模型密钥就能安装、构建、测试和跑演示。
+M0 打的是地基：块锚点修订、只追加的版本链。会话属于文档：一篇文档有一个主会话，也可以有分叉、接口和协同会话。派生文档是另一篇独立文档，不跟分叉会话混在一起。不需要模型密钥就能安装、构建、测试和跑演示。
 
 ## 环境
 
@@ -17,7 +17,7 @@ pnpm -r test
 pnpm demo
 ```
 
-`pnpm demo` 会建一篇文档，写出大纲和初稿，再只改第 2 段。其余段落与初稿逐字相同，然后回滚到大纲。成功时输出 `DEMO_OK`。
+`pnpm demo` 会建一篇文档。主会话只改第 3 段；从旧版本分出的会话再改第 3 段会被拒绝，改第 5 段可以落下。然后从旧版本派生一篇新文档，派生文档自己的修改不会回到源文档。把段落写回源文档必须用源文档当前的块锚点。成功时输出 `DEMO_OK`。
 
 真实模型不会在测试或演示里被调用。只有同时设置 `LW_LLM_ENABLE=1` 和 `LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）时，`@luminwrite/models` 才会构造 OpenAI 兼容客户端。M0 的写作回合使用 Pi 的 faux 提供者，修订内容由确定性计划函数提出，服务端负责校验锚点和说人话。
 
@@ -28,14 +28,14 @@ pnpm demo
 | `contracts` `doc-model` `plainspeak` | 浏览器和 Node 共用的文档模型与空话检测 |
 | `db` | Drizzle schema。测试和演示用 PGlite，`openPostgres` 留给 `DATABASE_URL` |
 | `models` | 档位路由、可重试回退、用量账本接口 |
-| `harness` | `HarnessPort` 后面的 pi-durable 1.3.0，SQLite 存储 |
+| `harness` | `HarnessPort` 后面的 pi-durable 1.3.0。一个会话一个 SQLite 对话，不按文档复用 |
 | `style` | 默认文风 `plain-professional`，说人话地板不可关 |
 | `eval-adapter` | 确定性说人话冒烟，负对照排最后 |
 | `edition` | 开源扩展口：授权、提案策略、实时通道 |
 | `server` `cli` | 最小 HTTP 和演示 |
 | `jobs` `prefs` `kb` `sources` `research` `roles` `library` | 空桩，留给后续里程碑 |
 
-验证记录和与功能地图的偏差见 `docs/m0-verification.md`。
+M0 的验证记录见 `docs/m0-verification.md`。会话和派生文档见 `docs/m1-sessions.md`。
 
 ## 密钥扫描
 

@@ -13,6 +13,43 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
         text: block.text,
       }));
     },
+    async readBlocksAt(documentId, versionId) {
+      const blocks = await db.readBlocksAt(documentId, versionId);
+      return blocks.map((block) => ({
+        blockId: block.blockId,
+        contentHash: block.contentHash as ContentHash,
+        text: block.text,
+      }));
+    },
+    readDossier: (documentId) => db.readDossier(documentId),
+    readRelatedDossier: (sessionId, documentId) => db.readRelatedDossier(sessionId, documentId),
+    async sessionFor(req) {
+      const session = await db.resolveSession(req);
+      return {
+        id: session.id,
+        documentId: session.documentId,
+        kind: session.kind,
+        baseVersionId: session.baseVersionId,
+        piConversationId: session.piConversationId,
+        status: session.status,
+      };
+    },
+    async getSession(sessionId) {
+      const session = await db.getSession(sessionId);
+      if (!session) return undefined;
+      return {
+        id: session.id,
+        documentId: session.documentId,
+        kind: session.kind,
+        baseVersionId: session.baseVersionId,
+        piConversationId: session.piConversationId,
+        status: session.status,
+      };
+    },
+    setSessionConversation: (sessionId, piConversationId) =>
+      db.setSessionConversation(sessionId, piConversationId),
+    advanceSessionBase: (sessionId, versionId) => db.advanceSessionBase(sessionId, versionId),
+    canRead: (sessionId, documentId) => db.canRead(sessionId, documentId),
     beginTurn: (req) => db.beginTurn(req),
     markTurn: (turnId, patch) => db.markTurn(turnId, patch),
     async getTurn(turnId) {
