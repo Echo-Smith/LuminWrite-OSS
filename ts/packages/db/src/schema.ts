@@ -1,4 +1,4 @@
-import type { EditOp } from "@luminwrite/contracts";
+import type { DossierContent, EditOp } from "@luminwrite/contracts";
 import type { PMJSON } from "@luminwrite/doc-model";
 import { sql } from "drizzle-orm";
 import {
@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -25,6 +26,8 @@ export const documents = pgTable("documents", {
   authoredByMe: boolean("authored_by_me").notNull(),
   createdVia: text("created_via").notNull(),
   humanTouched: boolean("human_touched").notNull(),
+  derivedFromDocumentId: text("derived_from_document_id"),
+  derivedFromVersionId: text("derived_from_version_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -73,6 +76,7 @@ export const turns = pgTable(
     applyMode: text("apply_mode").notNull(),
     actorType: text("actor_type").notNull(),
     actorId: text("actor_id").notNull(),
+    sessionId: text("session_id").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     piConversationId: text("pi_conversation_id"),
     piSubmissionId: text("pi_submission_id"),
@@ -113,6 +117,39 @@ export const proposalHunks = pgTable("proposal_hunks", {
   op: jsonb("op").$type<EditOp>().notNull(),
   status: text("status").notNull(),
   userEdit: jsonb("user_edit"),
+});
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    documentId: text("document_id").notNull(),
+    kind: text("kind").notNull(),
+    baseVersionId: text("base_version_id").notNull(),
+    piConversationId: text("pi_conversation_id"),
+    createdByType: text("created_by_type").notNull(),
+    createdById: text("created_by_id").notNull(),
+    status: text("status").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("uk_session_main").on(table.documentId).where(sql`kind = 'main'`)],
+);
+
+export const sessionReads = pgTable(
+  "session_reads",
+  {
+    sessionId: text("session_id").notNull(),
+    documentId: text("document_id").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.documentId] })],
+);
+
+export const documentDossier = pgTable("document_dossier", {
+  documentId: text("document_id").primaryKey(),
+  version: integer("version").notNull(),
+  content: jsonb("content").$type<DossierContent>().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const usageLedger = pgTable("usage_ledger", {

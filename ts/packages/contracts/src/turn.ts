@@ -30,6 +30,7 @@ export type Actor = z.infer<typeof ActorSchema>;
 
 export const TurnRequestSchema = z.object({
   documentId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
   kind: TurnKindSchema,
   instruction: z.string().min(1).max(4000),
   selection: z.array(AnchorSchema).optional(),

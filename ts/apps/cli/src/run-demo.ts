@@ -2,18 +2,53 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openMemoryDatabase } from "@luminwrite/db";
-import { createWritingRuntime, writingStoreFromDatabase } from "@luminwrite/harness";
+import {
+  createWritingRuntime,
+  SECTION_PARAGRAPHS,
+  writingStoreFromDatabase,
+} from "@luminwrite/harness";
 import { createApp } from "@luminwrite/server";
 
 const actor = { type: "user" as const, userId: "user_demo" };
+const forkActor = { type: "user" as const, userId: "user_fork" };
 
 interface TurnResponse {
   status: string;
   versionId?: string;
+  error?: string;
+}
+
+interface BlockView {
+  blockId: string;
+  text: string;
+  contentHash: string;
 }
 
 interface DocumentResponse {
-  blocks: Array<{ blockId: string; text: string }>;
+  blocks: BlockView[];
+}
+
+interface ApplyResponse {
+  ok: boolean;
+  versionId?: string;
+  errors?: Array<{ code: string }>;
+}
+
+interface SessionResponse {
+  id: string;
+  kind: string;
+  piConversationId: string | null;
+  baseVersionId: string;
+}
+
+interface DossierResponse {
+  version: number;
+  content: {
+    outline: string[];
+    decisions: string[];
+    citations: Array<{ title: string; locator: string }>;
+    requirements: string[];
+  };
 }
 
 export interface DemoResult {
@@ -31,6 +66,10 @@ export async function runDemo(): Promise<DemoResult> {
     store: writingStoreFromDatabase(db),
   });
   const app = createApp({ db, runtime });
+  const fail = (message: string): DemoResult => ({
+    ok: false,
+    log: lines.concat(message).join("\n"),
+  });
   try {
     const created = (await (
       await app.request("/documents", {
@@ -38,16 +77,59 @@ export async function runDemo(): Promise<DemoResult> {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "推理成本", ownerId: "user_demo" }),
       })
-    ).json()) as { id: string };
+    ).json()) as { id: string; sessionId: string };
     lines.push(`文档 ${created.id}`);
-    const turn = async (kind: string, key: string, instruction: string) => {
-      const response = await app.request(`/documents/${created.id}/turns`, {
+    const seeded = (await (
+      await app.request(`/documents/${created.id}/ops`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          kind,
+          actor,
+          sessionId: created.sessionId,
+          summary: "五段底稿",
+          ops: [
+            {
+              op: "insert_block",
+              afterBlockId: null,
+              newMarkdown: SECTION_PARAGRAPHS.join("\n\n"),
+              reason: "起稿",
+            },
+          ],
+        }),
+      })
+    ).json()) as ApplyResponse;
+    if (!seeded.ok || !seeded.versionId) return fail("底稿没有写上");
+    const dossier = (await (
+      await app.request(`/documents/${created.id}/dossier`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: 1,
+          ops: [
+            { op: "set_outline", items: ["先看时租", "再看批大小"] },
+            { op: "add_citation", title: "时租价目", locator: "2026-10" },
+            { op: "add_requirement", text: "只写能核对的数字" },
+            { op: "add_decision", text: "先不增加机器" },
+          ],
+        }),
+      })
+    ).json()) as { ok?: boolean; version?: number };
+    if (dossier.version !== 2) return fail("档案没有按操作更新");
+
+    const turn = async (
+      documentId: string,
+      sessionId: string,
+      key: string,
+      instruction: string,
+    ) => {
+      const response = await app.request(`/documents/${documentId}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          kind: "revise",
           instruction,
-          scope: kind === "revise" ? "selection" : "document",
+          scope: "selection",
           delivery: "followup",
           applyMode: "auto",
           idempotencyKey: key,
@@ -56,42 +138,185 @@ export async function runDemo(): Promise<DemoResult> {
       });
       return (await response.json()) as TurnResponse;
     };
-    const outline = await turn("outline", "demo-outline", "先写大纲");
-    if (outline.status !== "applied")
-      return { ok: false, log: lines.concat(`大纲失败 ${outline.status}`).join("\n") };
-    lines.push(`大纲版本 ${outline.versionId ?? ""}`);
-    const draft = await turn("draft", "demo-draft", "按大纲写初稿");
-    if (draft.status !== "applied") return { ok: false, log: lines.concat("初稿失败").join("\n") };
-    const drafted = (await (
-      await app.request(`/documents/${created.id}`)
-    ).json()) as DocumentResponse;
-    const revised = await turn("revise", "demo-revise", "只改第2段，写短一点");
-    if (revised.status !== "applied")
-      return { ok: false, log: lines.concat("修订失败").join("\n") };
-    const after = (await (
-      await app.request(`/documents/${created.id}`)
-    ).json()) as DocumentResponse;
-    const untouched =
-      after.blocks[0]?.text === drafted.blocks[0]?.text &&
-      after.blocks[2]?.text === drafted.blocks[2]?.text &&
-      after.blocks[1]?.text !== drafted.blocks[1]?.text;
-    if (!untouched) return { ok: false, log: lines.concat("其他段落被改动").join("\n") };
-    lines.push("只改了第 2 段，其余段落逐字相同");
-    const versions = (await (
-      await app.request(`/documents/${created.id}/versions`)
-    ).json()) as Array<{ id: string }>;
-    await app.request(`/documents/${created.id}/rollback`, {
+
+    const mainEdit = await turn(created.id, created.sessionId, "main-p3", "只改第3段，写短一点");
+    if (mainEdit.status !== "applied") return fail(`主会话改第 3 段失败 ${mainEdit.status}`);
+    const afterMain = await loadDoc(app, created.id);
+    lines.push("主会话改了第 3 段");
+
+    const fork = (await (
+      await app.request(`/documents/${created.id}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "fork",
+          baseVersionId: seeded.versionId,
+          actor: forkActor,
+        }),
+      })
+    ).json()) as SessionResponse;
+    if (fork.kind !== "fork" || fork.piConversationId !== null)
+      return fail("分叉会话没有从空对话开始");
+    const stale = await turn(created.id, fork.id, "fork-p3", "只改第3段，写短一点");
+    if (stale.status !== "conflicted") return fail(`过期的第 3 段应当被拒绝，实际 ${stale.status}`);
+    const afterStale = await loadDoc(app, created.id);
+    if (afterStale.blocks[2]?.text !== afterMain.blocks[2]?.text)
+      return fail("过期修订改写了第 3 段");
+    lines.push("分叉基于旧版本改第 3 段被拒绝");
+
+    const forkFifth = await turn(created.id, fork.id, "fork-p5", "只改第5段，写短一点");
+    if (forkFifth.status !== "applied") return fail(`分叉改第 5 段失败 ${forkFifth.status}`);
+    const afterFork = await loadDoc(app, created.id);
+    if (afterFork.blocks[2]?.text !== afterMain.blocks[2]?.text)
+      return fail("第 5 段的修订动了第 3 段");
+    if (afterFork.blocks[4]?.text === afterMain.blocks[4]?.text) return fail("第 5 段没有改动");
+    if (afterFork.blocks[0]?.text !== afterMain.blocks[0]?.text) return fail("第 1 段被带动");
+    if (afterFork.blocks[3]?.text !== afterMain.blocks[3]?.text) return fail("第 4 段被带动");
+    lines.push("分叉改第 5 段已应用，第 3 段仍是主会话的文本");
+
+    const derived = (await (
+      await app.request(`/documents/${created.id}/derive`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          versionId: seeded.versionId,
+          inheritDossier: true,
+          ownerId: "user_demo",
+          title: "推理成本的派生",
+          actor,
+        }),
+      })
+    ).json()) as { id: string; sessionId: string };
+    const derivedSessions = (await (
+      await app.request(`/documents/${derived.id}/sessions`)
+    ).json()) as SessionResponse[];
+    if (derivedSessions.length !== 1 || derivedSessions[0]?.piConversationId !== null) {
+      return fail("派生文档带走了聊天");
+    }
+    const derivedDossier = (await (
+      await app.request(`/documents/${derived.id}/dossier`)
+    ).json()) as DossierResponse;
+    if (derivedDossier.content.decisions.length !== 0) return fail("派生档案不该带走关键决定");
+    if (
+      derivedDossier.content.outline.length !== 2 ||
+      derivedDossier.content.requirements.length !== 1
+    ) {
+      return fail("派生档案没有复制大纲和要求");
+    }
+    const derivedDoc = await loadDoc(app, derived.id);
+    const sourceIds = new Set(afterFork.blocks.map((block) => block.blockId));
+    if (derivedDoc.blocks.some((block) => sourceIds.has(block.blockId)))
+      return fail("派生文档沿用了源文档的块 id");
+    if (derivedDoc.blocks.map((block) => block.text).join("\n") !== SECTION_PARAGRAPHS.join("\n")) {
+      return fail("派生文档的正文不是所选版本");
+    }
+    lines.push(`派生文档 ${derived.id}，块 id 与源文档没有交集`);
+
+    const derivedEdit = await turn(
+      derived.id,
+      derived.sessionId,
+      "derived-p1",
+      "只改第1段，写短一点",
+    );
+    if (derivedEdit.status !== "applied")
+      return fail(`派生文档改第 1 段失败 ${derivedEdit.status}`);
+    const sourceAfterDerived = await loadDoc(app, created.id);
+    if (
+      sourceAfterDerived.blocks.map((block) => block.text).join("\n") !==
+      afterFork.blocks.map((block) => block.text).join("\n")
+    ) {
+      return fail("派生文档的修订改到了源文档");
+    }
+    lines.push("派生文档的修订没有改到源文档");
+
+    const listed = (await (await app.request(`/documents/${created.id}/derived`)).json()) as Array<{
+      id: string;
+    }>;
+    if (!listed.some((item) => item.id === derived.id)) return fail("源文档列不出派生文档");
+
+    await app.request(`/sessions/${created.sessionId}/reads`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ versionId: versions[1]?.id, actor: { type: "system" } }),
+      body: JSON.stringify({ documentId: derived.id }),
     });
-    const restored = (await (
-      await app.request(`/documents/${created.id}`)
-    ).json()) as DocumentResponse;
-    if (!restored.blocks[0]?.text.includes("显卡时租")) {
-      return { ok: false, log: lines.concat("回滚后的正文不对").join("\n") };
+    const derivedNow = await loadDoc(app, derived.id);
+    const sourceNow = await loadDoc(app, created.id);
+    const foreign = derivedNow.blocks[0];
+    const home = sourceNow.blocks[0];
+    if (!foreign || !home) return fail("缺少可写回的段落");
+    const rejected = (await (
+      await app.request(`/sessions/${created.sessionId}/edits`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          documentIds: [created.id],
+          actor,
+          ops: [
+            {
+              op: "replace_text",
+              blockId: foreign.blockId,
+              contentHash: foreign.contentHash,
+              expectedOldText: foreign.text,
+              newText: "不该写上的句子。",
+              reason: "误用派生文档的块 id",
+            },
+          ],
+        }),
+      })
+    ).json()) as ApplyResponse;
+    if (rejected.ok || rejected.errors?.[0]?.code !== "block_not_found") {
+      return fail("用派生文档的块 id 写源文档应当被拒绝");
     }
-    lines.push(`回滚到大纲，当前 ${restored.blocks.length} 段`);
+    const mixed = (await (
+      await app.request(`/sessions/${created.sessionId}/edits`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          documentIds: [created.id, derived.id],
+          actor,
+          ops: [
+            {
+              op: "replace_text",
+              blockId: home.blockId,
+              contentHash: home.contentHash,
+              expectedOldText: home.text,
+              newText: foreign.text,
+              reason: "一批里写两篇",
+            },
+          ],
+        }),
+      })
+    ).json()) as ApplyResponse;
+    if (mixed.ok || mixed.errors?.[0]?.code !== "out_of_scope")
+      return fail("一批修订不该同时写两篇文档");
+    const brought = (await (
+      await app.request(`/sessions/${created.sessionId}/edits`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          documentIds: [created.id],
+          actor,
+          summary: "从派生文档写回第 1 段",
+          ops: [
+            {
+              op: "replace_text",
+              blockId: home.blockId,
+              contentHash: home.contentHash,
+              expectedOldText: home.text,
+              newText: foreign.text,
+              reason: "写回派生文档的第 1 段",
+            },
+          ],
+        }),
+      })
+    ).json()) as ApplyResponse;
+    if (!brought.ok) return fail("用源文档自己的锚点写回失败");
+    const afterBring = await loadDoc(app, created.id);
+    const derivedUntouched = await loadDoc(app, derived.id);
+    if (afterBring.blocks[0]?.text !== foreign.text) return fail("第 1 段没有写回");
+    if (afterBring.blocks[2]?.text !== afterFork.blocks[2]?.text) return fail("写回改动了第 3 段");
+    if (derivedUntouched.blocks[0]?.text !== foreign.text) return fail("写回改动了派生文档");
+    lines.push("主会话读了派生文档，用源文档的锚点写回第 1 段");
     lines.push("DEMO_OK");
     return { ok: true, log: lines.join("\n"), documentId: created.id };
   } finally {
@@ -99,4 +324,8 @@ export async function runDemo(): Promise<DemoResult> {
     await db.close();
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function loadDoc(app: ReturnType<typeof createApp>, id: string): Promise<DocumentResponse> {
+  return (await (await app.request(`/documents/${id}`)).json()) as DocumentResponse;
 }

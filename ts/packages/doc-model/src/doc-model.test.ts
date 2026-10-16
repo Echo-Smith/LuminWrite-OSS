@@ -14,6 +14,7 @@ import {
   manualOpsFromSteps,
   mergeBlocks,
   rebaseOp,
+  remapBlockIds,
   sha256Text,
   splitBlock,
 } from "./index.js";
@@ -356,5 +357,19 @@ describe("属性：锚点与冲突", () => {
       ),
       { numRuns: 40 },
     );
+  });
+});
+
+describe("派生文档的块 id", () => {
+  it("复制正文时换成新 id，相同文本的哈希不变", () => {
+    const doc = docFromParagraphs(sample);
+    const copied = remapBlockIds(doc);
+    const before = listBlocks(doc);
+    const after = listBlocks(copied);
+    expect(after.map(blockText)).toEqual(before.map(blockText));
+    expect(after.map(blockHashSync)).toEqual(before.map(blockHashSync));
+    const ids = new Set(before.map((node) => node.attrs?.id));
+    for (const node of after) expect(ids.has(node.attrs?.id)).toBe(false);
+    expect(new Set(after.map((node) => node.attrs?.id)).size).toBe(after.length);
   });
 });

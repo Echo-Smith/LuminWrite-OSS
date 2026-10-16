@@ -2,11 +2,21 @@ import { PGlite } from "@electric-sql/pglite";
 import type {
   Actor,
   BlockId,
+  DossierContent,
+  DossierOp,
   EditOp,
   OpError,
   RunEvent,
+  SessionKind,
   TurnRequest,
   TurnStatus,
+} from "@luminwrite/contracts";
+import {
+  applyDossierOps,
+  DossierContentSchema,
+  dossierForDerived,
+  editBatchTarget,
+  emptyDossier,
 } from "@luminwrite/contracts";
 import {
   applyOps,
@@ -18,6 +28,7 @@ import {
   listBlocks,
   type PMJSON,
   rebaseOp,
+  remapBlockIds,
 } from "@luminwrite/doc-model";
 import type { UsageEvent } from "@luminwrite/edition";
 import { and, desc, eq } from "drizzle-orm";
@@ -38,12 +49,43 @@ const {
   proposals,
   proposalHunks,
   usageLedger,
+  sessions,
+  sessionReads,
+  documentDossier,
 } = schema;
 
 export class DocumentNotFound extends Error {
   constructor(id: string) {
     super(`找不到文档 ${id}`);
     this.name = "DocumentNotFound";
+  }
+}
+
+export class SessionNotFound extends Error {
+  constructor(id: string) {
+    super(`找不到会话 ${id}`);
+    this.name = "SessionNotFound";
+  }
+}
+
+export class SessionClosed extends Error {
+  constructor(id: string) {
+    super(`会话已关闭 ${id}`);
+    this.name = "SessionClosed";
+  }
+}
+
+export class SessionScopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionScopeError";
+  }
+}
+
+export class VersionNotFound extends Error {
+  constructor(id: string) {
+    super(`找不到版本 ${id}`);
+    this.name = "VersionNotFound";
   }
 }
 
@@ -77,11 +119,38 @@ export interface DocumentView {
 export interface TurnView {
   id: string;
   documentId: string;
+  sessionId: string;
   status: TurnStatus;
   resultVersionId: string | null;
   error: string | null;
   piSubmissionId: string | null;
   idempotencyKey: string;
+}
+
+export interface SessionView {
+  id: string;
+  documentId: string;
+  kind: SessionKind;
+  baseVersionId: string;
+  piConversationId: string | null;
+  createdByType: string;
+  createdById: string;
+  status: "open" | "closed";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DossierView {
+  documentId: string;
+  version: number;
+  content: DossierContent;
+}
+
+export interface DerivedDocumentView {
+  id: string;
+  title: string;
+  derivedFromVersionId: string | null;
+  headVersionId: string | null;
 }
 
 export type ApplyOutcome =
@@ -98,7 +167,7 @@ export type ProposeOutcome =
     }
   | { ok: false; errors: OpError[] };
 
-type Origin = "turn" | "manual" | "restore" | "import" | "api";
+type Origin = "turn" | "manual" | "restore" | "import" | "api" | "derive";
 type Orm = PgliteDatabase<typeof schema>;
 
 interface Closer {
@@ -138,9 +207,10 @@ export class LwDatabase {
     ownerId: string;
     genre?: string;
     createdVia?: string;
-  }): Promise<{ id: string; versionId: string }> {
+  }): Promise<{ id: string; versionId: string; sessionId: string }> {
     const id = newId("doc");
     const versionId = newId("ver");
+    const sessionId = newId("ses");
     const now = new Date();
     await this.orm.transaction(async (tx) => {
       await tx.insert(documents).values({
@@ -157,6 +227,8 @@ export class LwDatabase {
         authoredByMe: false,
         createdVia: input.createdVia ?? "ui",
         humanTouched: false,
+        derivedFromDocumentId: null,
+        derivedFromVersionId: null,
         createdAt: now,
       });
       await tx.insert(docVersions).values({
@@ -174,8 +246,26 @@ export class LwDatabase {
         summary: "空文档",
         createdAt: now,
       });
+      await tx.insert(documentDossier).values({
+        documentId: id,
+        version: 1,
+        content: emptyDossier(),
+        updatedAt: now,
+      });
+      await tx.insert(sessions).values({
+        id: sessionId,
+        documentId: id,
+        kind: "main",
+        baseVersionId: versionId,
+        piConversationId: null,
+        createdByType: "user",
+        createdById: input.ownerId,
+        status: "open",
+        createdAt: now,
+        updatedAt: now,
+      });
     });
-    return { id, versionId };
+    return { id, versionId, sessionId };
   }
 
   async getDocument(id: string): Promise<DocumentView | undefined> {
@@ -223,6 +313,7 @@ export class LwDatabase {
     actor: Actor;
     summary?: string;
     scope?: BlockId[];
+    sessionId?: string;
   }): Promise<ApplyOutcome> {
     return this.orm.transaction(async (tx) => {
       const written = await this.writeOps(tx, {
@@ -233,6 +324,8 @@ export class LwDatabase {
         summary: input.summary ?? "人工修订",
         scope: input.scope,
       });
+      if (written.ok && input.sessionId)
+        await this.advanceInTx(tx, input.sessionId, written.versionId);
       return written;
     });
   }
@@ -269,8 +362,7 @@ export class LwDatabase {
   ): Promise<{ turnId: string; created: boolean; status: TurnStatus }> {
     const id = newId("trn");
     const actor = actorParts(req.actor);
-    const doc = await this.getDocument(req.documentId);
-    if (!doc) throw new DocumentNotFound(req.documentId);
+    const session = await this.resolveSession(req);
     const inserted = await this.orm
       .insert(turns)
       .values({
@@ -281,11 +373,12 @@ export class LwDatabase {
         status: "queued",
         selection: req.selection ?? null,
         scope: req.scope,
-        baseVersionId: doc.headVersionId,
+        baseVersionId: session.baseVersionId,
         resultVersionId: null,
         applyMode: req.applyMode,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        sessionId: session.id,
         idempotencyKey: req.idempotencyKey,
         piConversationId: null,
         piSubmissionId: null,
@@ -338,9 +431,25 @@ export class LwDatabase {
     actor: Actor;
     summary: string;
     scope?: BlockId[];
+    sessionId?: string;
   }): Promise<ProposeOutcome> {
     return this.orm.transaction(async (tx) => {
       await this.lock(tx, input.documentId);
+      if (input.sessionId) {
+        const scoped = await this.sessionInTx(tx, input.sessionId);
+        if (!scoped || scoped.documentId !== input.documentId || scoped.status !== "open") {
+          await tx
+            .update(turns)
+            .set({ status: "failed", error: "会话只能修订自己所属的文档" })
+            .where(eq(turns.id, input.turnId));
+          return {
+            ok: false as const,
+            errors: [
+              { index: 0, code: "out_of_scope" as const, message: "会话只能修订自己所属的文档" },
+            ],
+          };
+        }
+      }
       const priorVersion = await tx
         .select()
         .from(docVersions)
@@ -539,10 +648,331 @@ export class LwDatabase {
     });
   }
 
+  async resolveSession(req: TurnRequest): Promise<SessionView> {
+    if (req.sessionId) {
+      const session = await this.getSession(req.sessionId);
+      if (!session) throw new SessionNotFound(req.sessionId);
+      if (session.documentId !== req.documentId) {
+        throw new SessionScopeError("会话只能修订自己所属的文档");
+      }
+      if (session.status !== "open") throw new SessionClosed(session.id);
+      return session;
+    }
+    const main = await this.mainSession(req.documentId);
+    if (!main) throw new SessionNotFound(req.documentId);
+    return main;
+  }
+
+  async getSession(id: string): Promise<SessionView | undefined> {
+    const rows = await this.orm.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+    const row = rows[0];
+    return row ? toSession(row) : undefined;
+  }
+
+  async mainSession(documentId: string): Promise<SessionView | undefined> {
+    const rows = await this.orm
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.documentId, documentId), eq(sessions.kind, "main")))
+      .limit(1);
+    const row = rows[0];
+    return row ? toSession(row) : undefined;
+  }
+
+  async listSessions(documentId: string): Promise<SessionView[]> {
+    const rows = await this.orm
+      .select()
+      .from(sessions)
+      .where(eq(sessions.documentId, documentId))
+      .orderBy(sessions.createdAt);
+    return rows.map(toSession);
+  }
+
+  async openSession(input: {
+    documentId: string;
+    kind: "fork" | "api" | "collab";
+    baseVersionId?: string;
+    actor: Actor;
+  }): Promise<SessionView> {
+    return this.orm.transaction(async (tx) => {
+      const doc = await this.lock(tx, input.documentId);
+      let baseVersionId = input.baseVersionId;
+      if (input.kind === "fork") {
+        if (!baseVersionId) throw new SessionScopeError("分叉会话必须指定版本");
+        const version = await this.versionInTx(tx, baseVersionId);
+        if (!version || version.documentId !== input.documentId) {
+          throw new VersionNotFound(baseVersionId);
+        }
+      } else {
+        if (!doc.headVersionId) throw new DocumentNotFound(input.documentId);
+        baseVersionId = doc.headVersionId;
+      }
+      if (!baseVersionId) throw new SessionScopeError("分叉会话必须指定版本");
+      const actor = actorParts(input.actor);
+      const now = new Date();
+      const id = newId("ses");
+      await tx.insert(sessions).values({
+        id,
+        documentId: input.documentId,
+        kind: input.kind,
+        baseVersionId,
+        piConversationId: null,
+        createdByType: actor.actorType,
+        createdById: actor.actorId,
+        status: "open",
+        createdAt: now,
+        updatedAt: now,
+      });
+      const created = await this.sessionInTx(tx, id);
+      if (!created) throw new SessionNotFound(id);
+      return toSession(created);
+    });
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new SessionNotFound(sessionId);
+    await this.orm
+      .update(sessions)
+      .set({ status: "closed", updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
+  }
+
+  async setSessionConversation(sessionId: string, piConversationId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new SessionNotFound(sessionId);
+    await this.orm
+      .update(sessions)
+      .set({ piConversationId, updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
+  }
+
+  async advanceSessionBase(sessionId: string, versionId: string): Promise<void> {
+    await this.orm.transaction(async (tx) => {
+      await this.advanceInTx(tx, sessionId, versionId);
+    });
+  }
+
+  async grantRead(sessionId: string, documentId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new SessionNotFound(sessionId);
+    const doc = await this.getDocument(documentId);
+    if (!doc) throw new DocumentNotFound(documentId);
+    await this.orm.insert(sessionReads).values({ sessionId, documentId }).onConflictDoNothing();
+  }
+
+  async canRead(sessionId: string, documentId: string): Promise<boolean> {
+    const session = await this.getSession(sessionId);
+    if (!session) return false;
+    if (session.documentId === documentId) return true;
+    const rows = await this.orm
+      .select()
+      .from(sessionReads)
+      .where(and(eq(sessionReads.sessionId, sessionId), eq(sessionReads.documentId, documentId)))
+      .limit(1);
+    return Boolean(rows[0]);
+  }
+
+  async readDossier(documentId: string): Promise<DossierView> {
+    const rows = await this.orm
+      .select()
+      .from(documentDossier)
+      .where(eq(documentDossier.documentId, documentId))
+      .limit(1);
+    const row = rows[0];
+    if (!row) throw new DocumentNotFound(documentId);
+    return {
+      documentId,
+      version: row.version,
+      content: parseDossier(row.content),
+    };
+  }
+
+  async applyDossier(input: {
+    documentId: string;
+    expectedVersion: number;
+    ops: DossierOp[];
+  }): Promise<
+    { ok: true; version: number; content: DossierContent } | { ok: false; message: string }
+  > {
+    return this.orm.transaction(async (tx) => {
+      await this.lock(tx, input.documentId);
+      const rows = await tx
+        .select()
+        .from(documentDossier)
+        .where(eq(documentDossier.documentId, input.documentId))
+        .limit(1);
+      const row = rows[0];
+      if (!row) throw new DocumentNotFound(input.documentId);
+      if (row.version !== input.expectedVersion) return { ok: false, message: "档案版本已变化" };
+      if (input.ops.length === 0) return { ok: false, message: "没有档案操作" };
+      const content = applyDossierOps(parseDossier(row.content), input.ops);
+      const version = row.version + 1;
+      await tx
+        .update(documentDossier)
+        .set({ version, content, updatedAt: new Date() })
+        .where(eq(documentDossier.documentId, input.documentId));
+      return { ok: true, version, content };
+    });
+  }
+
+  async deriveDocument(input: {
+    versionId: string;
+    inheritDossier: boolean;
+    ownerId: string;
+    title?: string;
+    actor: Actor;
+  }): Promise<{ id: string; versionId: string; sessionId: string }> {
+    return this.orm.transaction(async (tx) => {
+      const source = await this.versionInTx(tx, input.versionId);
+      if (!source) throw new VersionNotFound(input.versionId);
+      const parents = await tx
+        .select()
+        .from(documents)
+        .where(eq(documents.id, source.documentId))
+        .limit(1);
+      const parent = parents[0];
+      if (!parent) throw new DocumentNotFound(source.documentId);
+      const dossierRows = await tx
+        .select()
+        .from(documentDossier)
+        .where(eq(documentDossier.documentId, source.documentId))
+        .limit(1);
+      const sourceDossier = parseDossier(dossierRows[0]?.content);
+      const id = newId("doc");
+      const sessionId = newId("ses");
+      const now = new Date();
+      const actor = actorParts(input.actor);
+      await tx.insert(documents).values({
+        id,
+        ownerId: input.ownerId,
+        title: input.title ?? `${parent.title}的派生`,
+        genre: parent.genre,
+        status: "draft",
+        headVersionId: null,
+        finalVersionId: null,
+        styleRef: parent.styleRef,
+        tierRef: parent.tierRef,
+        brief: {},
+        authoredByMe: false,
+        createdVia: "derive",
+        humanTouched: false,
+        derivedFromDocumentId: source.documentId,
+        derivedFromVersionId: source.id,
+        createdAt: now,
+      });
+      const written = await this.insertSnapshot(tx, {
+        documentId: id,
+        content: remapBlockIds(asDoc(source.content)),
+        ops: [],
+        origin: "derive",
+        actor: input.actor,
+        summary: `派生自 ${source.id}`,
+        turnId: null,
+        piTaskId: null,
+      });
+      if (!written.ok) throw new SessionScopeError(written.errors[0]?.message ?? "派生失败");
+      await tx.insert(documentDossier).values({
+        documentId: id,
+        version: 1,
+        content: dossierForDerived(sourceDossier, input.inheritDossier),
+        updatedAt: now,
+      });
+      await tx.insert(sessions).values({
+        id: sessionId,
+        documentId: id,
+        kind: "main",
+        baseVersionId: written.versionId,
+        piConversationId: null,
+        createdByType: actor.actorType,
+        createdById: actor.actorId,
+        status: "open",
+        createdAt: now,
+        updatedAt: now,
+      });
+      return { id, versionId: written.versionId, sessionId };
+    });
+  }
+
+  async listDerived(documentId: string): Promise<DerivedDocumentView[]> {
+    const rows = await this.orm
+      .select()
+      .from(documents)
+      .where(eq(documents.derivedFromDocumentId, documentId))
+      .orderBy(documents.createdAt);
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      derivedFromVersionId: row.derivedFromVersionId,
+      headVersionId: row.headVersionId,
+    }));
+  }
+
+  async readBlocksAt(documentId: string, versionId: string): Promise<BlockView[]> {
+    const version = await this.versionById(versionId);
+    if (!version) throw new VersionNotFound(versionId);
+    const row = await this.orm
+      .select()
+      .from(docVersions)
+      .where(eq(docVersions.id, versionId))
+      .limit(1);
+    if (row[0]?.documentId !== documentId) throw new VersionNotFound(versionId);
+    return blocksOf(documentId, version.content);
+  }
+
+  async applySessionEdits(input: {
+    sessionId: string;
+    documentIds: string[];
+    ops: EditOp[];
+    actor: Actor;
+    summary?: string;
+  }): Promise<ApplyOutcome> {
+    const target = editBatchTarget(input.documentIds);
+    if (!target.ok) {
+      return {
+        ok: false,
+        errors: [{ index: 0, code: "out_of_scope", message: target.message }],
+      };
+    }
+    const session = await this.getSession(input.sessionId);
+    if (!session) throw new SessionNotFound(input.sessionId);
+    if (session.status !== "open") throw new SessionClosed(input.sessionId);
+    if (session.documentId !== target.documentId) {
+      return {
+        ok: false,
+        errors: [{ index: 0, code: "out_of_scope", message: "会话只能修订自己所属的文档" }],
+      };
+    }
+    return this.applyManual({
+      documentId: target.documentId,
+      ops: input.ops,
+      actor: input.actor,
+      summary: input.summary ?? "会话修订",
+      sessionId: input.sessionId,
+    });
+  }
+
   private async versionById(id: string): Promise<VersionView | null> {
     const rows = await this.orm.select().from(docVersions).where(eq(docVersions.id, id)).limit(1);
     const row = rows[0];
     return row ? toVersion(row) : null;
+  }
+
+  private async sessionInTx(tx: Tx, id: string) {
+    const rows = await tx.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+    return rows[0];
+  }
+
+  private async advanceInTx(tx: Tx, sessionId: string, versionId: string) {
+    const session = await this.sessionInTx(tx, sessionId);
+    if (!session) throw new SessionNotFound(sessionId);
+    if (session.status !== "open") throw new SessionClosed(sessionId);
+    const version = await this.versionInTx(tx, versionId);
+    if (!version || version.documentId !== session.documentId) throw new VersionNotFound(versionId);
+    await tx
+      .update(sessions)
+      .set({ baseVersionId: versionId, updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
   }
 
   private async versionInTx(tx: Tx, id: string) {
@@ -718,10 +1148,50 @@ function toVersion(row: typeof docVersions.$inferSelect): VersionView {
   };
 }
 
+function toSession(row: typeof sessions.$inferSelect): SessionView {
+  return {
+    id: row.id,
+    documentId: row.documentId,
+    kind: row.kind as SessionKind,
+    baseVersionId: row.baseVersionId,
+    piConversationId: row.piConversationId,
+    createdByType: row.createdByType,
+    createdById: row.createdById,
+    status: row.status === "closed" ? "closed" : "open",
+    createdAt: stamp(row.createdAt),
+    updatedAt: stamp(row.updatedAt),
+  };
+}
+
+function stamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function parseDossier(value: unknown): DossierContent {
+  const raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  const parsed = DossierContentSchema.safeParse(raw);
+  return parsed.success ? parsed.data : emptyDossier();
+}
+
+function blocksOf(_documentId: string, content: PMJSON): BlockView[] {
+  return listBlocks(content).map((node, index) => {
+    const blockId = blockIdOf(node);
+    if (!blockId) throw new Error("块缺少 id");
+    return {
+      blockId,
+      type: node.type,
+      contentHash: blockHashSync(node),
+      text: blockText(node),
+      orderKey: String(index).padStart(6, "0"),
+    };
+  });
+}
+
 function toTurn(row: typeof turns.$inferSelect): TurnView {
   return {
     id: row.id,
     documentId: row.documentId,
+    sessionId: row.sessionId,
     status: row.status as TurnStatus,
     resultVersionId: row.resultVersionId,
     error: row.error,
