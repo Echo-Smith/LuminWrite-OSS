@@ -1,0 +1,25 @@
+title = "LuminWrite gitleaks"
+
+[extend]
+useDefault = true
+
+# 默认规则曾经放过裸的 sk- 密钥。这里单独再拦一层。
+[[rules]]
+id = "generic-openai-sk"
+description = "Bare sk- API key missed by default gitleaks rules"
+regex = '''sk-[A-Za-z0-9]{20,}'''
+keywords = ["sk-"]
+tags = ["key", "openai"]
+
+[allowlist]
+description = "依赖目录，以及仓库里已有的测试夹具。这些字符串会触发默认的 generic-api-key，但不是密钥。"
+paths = [
+  '''(?:^|/)node_modules/''',
+  '''(?:^|/)dist/''',
+  '''pnpm-lock\.yaml''',
+]
+regexes = [
+  '''ar012-0123456789abcdef''',
+  '''src-biz-quarterly-1''',
+  '''luminbuddy2\.ericdocmic\.top''',
+]

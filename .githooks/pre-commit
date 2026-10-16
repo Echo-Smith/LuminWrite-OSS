@@ -1,0 +1,7 @@
+#!/bin/sh
+# 提交前拦截密钥。安装：git config core.hooksPath .githooks
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "未找到 gitleaks。请安装 v8.30.1 后再提交（见 ts/README.md）。" >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --redact --staged --config .gitleaks.toml

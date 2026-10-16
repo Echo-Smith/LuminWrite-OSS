@@ -1,0 +1,27 @@
+{
+  "name": "@luminwrite/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/run-demo.d.ts",
+      "import": "./dist/run-demo.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "demo": "node dist/demo.js"
+  },
+  "dependencies": {
+    "@luminwrite/db": "workspace:*",
+    "@luminwrite/harness": "workspace:*",
+    "@luminwrite/server": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
