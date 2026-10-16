@@ -1,13 +1,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openMemoryDatabase, SessionScopeError } from "@luminwrite/db";
+import { ensureOwner, openMemoryDatabase, readOwnerToken, SessionScopeError } from "@luminwrite/db";
 import {
   createWritingRuntime,
   SECTION_PARAGRAPHS,
   writingStoreFromDatabase,
 } from "@luminwrite/harness";
-import { createApp } from "@luminwrite/server";
+import { createApp, createOssAuth } from "@luminwrite/server";
 
 const actor = { type: "user" as const, userId: "user_demo" };
 const forkActor = { type: "user" as const, userId: "user_fork" };
@@ -60,19 +60,28 @@ export interface DemoResult {
 export async function runDemo(): Promise<DemoResult> {
   const lines: string[] = [];
   const dir = await mkdtemp(join(tmpdir(), "lw-demo-"));
+  const dataDir = join(dir, "data");
   const db = await openMemoryDatabase();
+  await ensureOwner(db, { dataDir });
+  const token = await readOwnerToken(dataDir);
   const runtime = await createWritingRuntime({
     sqlitePath: join(dir, "pi.sqlite"),
     store: writingStoreFromDatabase(db),
   });
-  const app = createApp({ db, runtime });
+  const app = createApp({ db, runtime, auth: createOssAuth(db) });
+  const call = async (path: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    headers.set("authorization", `Bearer ${token}`);
+    if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+    return app.request(path, { ...init, headers });
+  };
   const fail = (message: string): DemoResult => ({
     ok: false,
     log: lines.concat(message).join("\n"),
   });
   try {
     const created = (await (
-      await app.request("/documents", {
+      await call("/api/v1/documents", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "推理成本", ownerId: "user_demo" }),
@@ -80,7 +89,7 @@ export async function runDemo(): Promise<DemoResult> {
     ).json()) as { id: string; sessionId: string };
     lines.push(`文档 ${created.id}`);
     const seeded = (await (
-      await app.request(`/documents/${created.id}/ops`, {
+      await call(`/api/v1/documents/${created.id}/ops`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -100,7 +109,7 @@ export async function runDemo(): Promise<DemoResult> {
     ).json()) as ApplyResponse;
     if (!seeded.ok || !seeded.versionId) return fail("底稿没有写上");
     const dossier = (await (
-      await app.request(`/documents/${created.id}/dossier`, {
+      await call(`/api/v1/documents/${created.id}/dossier`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -122,7 +131,7 @@ export async function runDemo(): Promise<DemoResult> {
       key: string,
       instruction: string,
     ) => {
-      const response = await app.request(`/documents/${documentId}/turns`, {
+      const response = await call(`/api/v1/documents/${documentId}/turns`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -141,11 +150,11 @@ export async function runDemo(): Promise<DemoResult> {
 
     const mainEdit = await turn(created.id, created.sessionId, "main-p3", "只改第3段，写短一点");
     if (mainEdit.status !== "applied") return fail(`主会话改第 3 段失败 ${mainEdit.status}`);
-    const afterMain = await loadDoc(app, created.id);
+    const afterMain = await loadDoc(call, created.id);
     lines.push("主会话改了第 3 段");
 
     const fork = (await (
-      await app.request(`/documents/${created.id}/sessions`, {
+      await call(`/api/v1/documents/${created.id}/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -159,14 +168,14 @@ export async function runDemo(): Promise<DemoResult> {
       return fail("分叉会话没有从空对话开始");
     const stale = await turn(created.id, fork.id, "fork-p3", "只改第3段，写短一点");
     if (stale.status !== "conflicted") return fail(`过期的第 3 段应当被拒绝，实际 ${stale.status}`);
-    const afterStale = await loadDoc(app, created.id);
+    const afterStale = await loadDoc(call, created.id);
     if (afterStale.blocks[2]?.text !== afterMain.blocks[2]?.text)
       return fail("过期修订改写了第 3 段");
     lines.push("分叉基于旧版本改第 3 段被拒绝");
 
     const forkFifth = await turn(created.id, fork.id, "fork-p5", "只改第5段，写短一点");
     if (forkFifth.status !== "applied") return fail(`分叉改第 5 段失败 ${forkFifth.status}`);
-    const afterFork = await loadDoc(app, created.id);
+    const afterFork = await loadDoc(call, created.id);
     if (afterFork.blocks[2]?.text !== afterMain.blocks[2]?.text)
       return fail("第 5 段的修订动了第 3 段");
     if (afterFork.blocks[4]?.text === afterMain.blocks[4]?.text) return fail("第 5 段没有改动");
@@ -175,7 +184,7 @@ export async function runDemo(): Promise<DemoResult> {
     lines.push("分叉改第 5 段已应用，第 3 段仍是主会话的文本");
 
     const derived = (await (
-      await app.request(`/documents/${created.id}/derive`, {
+      await call(`/api/v1/documents/${created.id}/derive`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -188,20 +197,20 @@ export async function runDemo(): Promise<DemoResult> {
       })
     ).json()) as { id: string; sessionId: string };
     const derivedSessions = (await (
-      await app.request(`/documents/${derived.id}/sessions`)
+      await call(`/api/v1/documents/${derived.id}/sessions`)
     ).json()) as SessionResponse[];
     if (derivedSessions.length !== 1 || derivedSessions[0]?.piConversationId !== null) {
       return fail("派生文档带走了聊天");
     }
     const derivedDossier = (await (
-      await app.request(`/documents/${derived.id}/dossier`)
+      await call(`/api/v1/documents/${derived.id}/dossier`)
     ).json()) as DossierResponse;
     if (derivedDossier.content.decisions.length !== 0) return fail("派生档案不该带走关键决定");
     if (JSON.stringify(derivedDossier.content).includes("先不增加机器")) {
       return fail("关键决定被复制进了派生档案");
     }
     const later = (await (
-      await app.request(`/documents/${created.id}/dossier`, {
+      await call(`/api/v1/documents/${created.id}/dossier`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -225,11 +234,11 @@ export async function runDemo(): Promise<DemoResult> {
       return fail("读到的不是源文档的当前决定");
     }
     const stillEmpty = (await (
-      await app.request(`/documents/${derived.id}/dossier`)
+      await call(`/api/v1/documents/${derived.id}/dossier`)
     ).json()) as DossierResponse;
     if (stillEmpty.content.decisions.length !== 0) return fail("读取源档案时复制了决定");
     const stranger = (await (
-      await app.request("/documents", {
+      await call("/api/v1/documents", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "无关", ownerId: "user_demo" }),
@@ -243,7 +252,7 @@ export async function runDemo(): Promise<DemoResult> {
     }
     lines.push("派生会话按血缘读到源文档的当前决定，没有复制到自己的档案");
     const adopted = (await (
-      await app.request(`/documents/${derived.id}/dossier`, {
+      await call(`/api/v1/documents/${derived.id}/dossier`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -262,7 +271,7 @@ export async function runDemo(): Promise<DemoResult> {
     ) {
       return fail("派生档案没有复制大纲和要求");
     }
-    const derivedDoc = await loadDoc(app, derived.id);
+    const derivedDoc = await loadDoc(call, derived.id);
     const sourceIds = new Set(afterFork.blocks.map((block) => block.blockId));
     if (derivedDoc.blocks.some((block) => sourceIds.has(block.blockId)))
       return fail("派生文档沿用了源文档的块 id");
@@ -279,7 +288,7 @@ export async function runDemo(): Promise<DemoResult> {
     );
     if (derivedEdit.status !== "applied")
       return fail(`派生文档改第 1 段失败 ${derivedEdit.status}`);
-    const sourceAfterDerived = await loadDoc(app, created.id);
+    const sourceAfterDerived = await loadDoc(call, created.id);
     if (
       sourceAfterDerived.blocks.map((block) => block.text).join("\n") !==
       afterFork.blocks.map((block) => block.text).join("\n")
@@ -288,23 +297,23 @@ export async function runDemo(): Promise<DemoResult> {
     }
     lines.push("派生文档的修订没有改到源文档");
 
-    const listed = (await (await app.request(`/documents/${created.id}/derived`)).json()) as Array<{
+    const listed = (await (await call(`/api/v1/documents/${created.id}/derived`)).json()) as Array<{
       id: string;
     }>;
     if (!listed.some((item) => item.id === derived.id)) return fail("源文档列不出派生文档");
 
-    await app.request(`/sessions/${created.sessionId}/reads`, {
+    await call(`/api/v1/sessions/${created.sessionId}/reads`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ documentId: derived.id }),
     });
-    const derivedNow = await loadDoc(app, derived.id);
-    const sourceNow = await loadDoc(app, created.id);
+    const derivedNow = await loadDoc(call, derived.id);
+    const sourceNow = await loadDoc(call, created.id);
     const foreign = derivedNow.blocks[0];
     const home = sourceNow.blocks[0];
     if (!foreign || !home) return fail("缺少可写回的段落");
     const rejected = (await (
-      await app.request(`/sessions/${created.sessionId}/edits`, {
+      await call(`/api/v1/sessions/${created.sessionId}/edits`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -327,7 +336,7 @@ export async function runDemo(): Promise<DemoResult> {
       return fail("用派生文档的块 id 写源文档应当被拒绝");
     }
     const mixed = (await (
-      await app.request(`/sessions/${created.sessionId}/edits`, {
+      await call(`/api/v1/sessions/${created.sessionId}/edits`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -349,7 +358,7 @@ export async function runDemo(): Promise<DemoResult> {
     if (mixed.ok || mixed.errors?.[0]?.code !== "out_of_scope")
       return fail("一批修订不该同时写两篇文档");
     const brought = (await (
-      await app.request(`/sessions/${created.sessionId}/edits`, {
+      await call(`/api/v1/sessions/${created.sessionId}/edits`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -370,8 +379,8 @@ export async function runDemo(): Promise<DemoResult> {
       })
     ).json()) as ApplyResponse;
     if (!brought.ok) return fail("用源文档自己的锚点写回失败");
-    const afterBring = await loadDoc(app, created.id);
-    const derivedUntouched = await loadDoc(app, derived.id);
+    const afterBring = await loadDoc(call, created.id);
+    const derivedUntouched = await loadDoc(call, derived.id);
     if (afterBring.blocks[0]?.text !== foreign.text) return fail("第 1 段没有写回");
     if (afterBring.blocks[2]?.text !== afterFork.blocks[2]?.text) return fail("写回改动了第 3 段");
     if (derivedUntouched.blocks[0]?.text !== foreign.text) return fail("写回改动了派生文档");
@@ -385,6 +394,9 @@ export async function runDemo(): Promise<DemoResult> {
   }
 }
 
-async function loadDoc(app: ReturnType<typeof createApp>, id: string): Promise<DocumentResponse> {
-  return (await (await app.request(`/documents/${id}`)).json()) as DocumentResponse;
+async function loadDoc(
+  call: (path: string, init?: RequestInit) => Promise<Response>,
+  id: string,
+): Promise<DocumentResponse> {
+  return (await (await call(`/api/v1/documents/${id}`)).json()) as DocumentResponse;
 }

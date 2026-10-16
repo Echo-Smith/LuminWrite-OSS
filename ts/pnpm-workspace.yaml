@@ -11,6 +11,8 @@ catalog:
   diff: 9.0.0
   drizzle-orm: 0.45.4
   "@electric-sql/pglite": 0.5.10
+  "@electric-sql/pglite-pgvector": 0.0.11
+  pg-boss: 12.38.0
   pg: 8.16.3
   "@types/pg": 8.15.5
   hono: 4.13.13

@@ -12,12 +12,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "start": "node dist/main.js"
   },
   "dependencies": {
     "@hono/node-server": "catalog:",
     "@luminwrite/contracts": "workspace:*",
     "@luminwrite/db": "workspace:*",
+    "@luminwrite/edition": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/harness": "workspace:*",
     "hono": "catalog:",

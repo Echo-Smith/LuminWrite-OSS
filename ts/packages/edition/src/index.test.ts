@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AuthPort } from "./index.js";
 import {
   allowAllEntitlements,
   humanTouchedProposalPolicy,
@@ -25,6 +26,18 @@ describe("edition ports", () => {
     const auth = ownerAuthorizer(async (id) => (id === "d1" ? "u1" : undefined));
     expect(await auth.canEdit("d1", "u1")).toBe(true);
     expect(await auth.canEdit("d1", "u2")).toBe(false);
+  });
+
+  it("AuthPort 由调用方实现，商业版可以换掉", async () => {
+    const auth: AuthPort = {
+      async authenticate() {
+        return { type: "user", userId: "usr_1" };
+      },
+    };
+    expect(await auth.authenticate(new Request("http://127.0.0.1/"))).toEqual({
+      type: "user",
+      userId: "usr_1",
+    });
   });
 
   it("人工改过的文档默认走提案", async () => {

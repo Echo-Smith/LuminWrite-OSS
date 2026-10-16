@@ -24,7 +24,9 @@
     "pg": "catalog:"
   },
   "devDependencies": {
+    "@electric-sql/pglite-pgvector": "catalog:",
     "@types/pg": "catalog:",
+    "pg-boss": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
