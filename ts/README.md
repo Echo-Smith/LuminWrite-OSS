@@ -6,6 +6,8 @@ M0 打的是地基：块锚点修订、只追加的版本链。会话属于文�
 
 本机默认一个所有者。首次 `lw init` 或 `lw serve` 会在数据目录写下 `owner.token`（权限 0600），库里只留令牌的 SHA-256。`/api/v1` 的调用者由这把令牌推出，请求体里的 `actor` 和 `ownerId` 会被忽略。默认只监听 `127.0.0.1`。
 
+外部 Agent 用所有者签发的 API Key（`lw keys create` 或 `POST /api/v1/me/api-keys`）。明文只在创建时出现一次，库里只存 SHA-256。密钥带 scope 和策略；不能管理凭据、写作笔记、模型 slot、订阅源，也不能再签发密钥。按密钥的请求速率是进程内令牌桶，重启清零。人改过的文档上，外部 Agent 的回合默认挂成提案。
+
 ## 环境
 
 - Node.js 24（见 `.nvmrc`）
@@ -34,7 +36,7 @@ pnpm demo
 | `style` | 默认文风 `plain-professional`，说人话地板不可关 |
 | `eval-adapter` | 确定性说人话冒烟，负对照排最后 |
 | `edition` | 开源扩展口：授权、提案策略、实时通道 |
-| `server` `cli` | HTTP（`/api/v1`，所有者令牌）、`lw init` / `lw owner rotate-token` / `lw serve`，以及演示 |
+| `server` `cli` | HTTP（`/api/v1`，所有者令牌或 API Key）、`lw init` / `lw owner rotate-token` / `lw keys` / `lw serve`，以及演示 |
 | `jobs` `prefs` `kb` `sources` `research` `roles` `library` | 空桩，留给后续里程碑 |
 
 M0 的验证记录见 `docs/m0-verification.md`。会话和派生文档见 `docs/m1-sessions.md`。PGlite 上的 pg-boss 和 pgvector 见 `docs/m1-pglite-findings.md`。

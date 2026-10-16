@@ -6,8 +6,13 @@ import {
   TurnRequestSchema,
 } from "@luminwrite/contracts";
 import {
+  ApiKeyInputError,
+  type ApiKeyView,
+  createApiKey,
   DocumentNotFound,
   type LwDatabase,
+  listApiKeys,
+  revokeApiKey,
   SessionClosed,
   SessionNotFound,
   SessionScopeError,
@@ -19,6 +24,9 @@ import type { WritingRuntime } from "@luminwrite/harness";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+
+import { enforceApiKey, resolveApiApplyMode } from "./api-access.js";
+import { defaultRateLimiter, TaskConcurrency, type TokenBucketLimiter } from "./rate-limit.js";
 
 const CreateDocument = z.object({
   title: z.string().min(1),
@@ -61,9 +69,23 @@ const RollbackBody = z.object({
   versionId: z.string().min(1),
 });
 
-const TurnBody = TurnRequestSchema.omit({ documentId: true, actor: true });
+const TurnBody = TurnRequestSchema.omit({ documentId: true, actor: true, applyMode: true }).extend({
+  applyMode: z.enum(["auto", "proposal"]).optional(),
+  model: z.string().min(1).optional(),
+  tier: z.string().min(1).optional(),
+});
 
-type Env = { Variables: { actor: Actor } };
+const CreateApiKeyBody = z.object({
+  name: z.string().min(1).max(128),
+  scopes: z.array(z.string()).optional(),
+  maxConcurrentTasks: z.number().int().positive().nullable().optional(),
+  dailyCostCapUsd: z.number().nonnegative().nullable().optional(),
+  allowedTiers: z.array(z.string()).nullable().optional(),
+  defaultApplyMode: z.enum(["auto", "proposal"]).optional(),
+  webhookSecret: z.string().min(1).max(256).nullable().optional(),
+});
+
+type Env = { Variables: { actor: Actor; apiKey?: ApiKeyView } };
 type AppContext = Context<Env>;
 
 export interface AppDeps {
@@ -71,6 +93,7 @@ export interface AppDeps {
   runtime: WritingRuntime;
   auth: AuthPort;
   authorizer?: EditAuthorizer;
+  limiter?: TokenBucketLimiter;
 }
 
 function httpError(error: unknown): { status: 404 | 409; body: { error: string } } | undefined {
@@ -114,6 +137,8 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const authorizer =
     deps.authorizer ??
     ownerAuthorizer(async (documentId) => (await deps.db.getDocument(documentId))?.ownerId);
+  const limiter = deps.limiter ?? defaultRateLimiter();
+  const concurrency = new TaskConcurrency();
 
   app.get("/health", (c) => c.json({ ok: true, service: "luminwrite-ts" }));
 
@@ -122,6 +147,23 @@ export function createApp(deps: AppDeps): Hono<Env> {
     const actor = await deps.auth.authenticate(c.req.raw);
     if (!actor || actor.type === "system") return c.json({ error: "需要所有者令牌" }, 401);
     c.set("actor", actor);
+    if (actor.type === "api_client") {
+      const decision = await enforceApiKey({
+        db: deps.db,
+        limiter,
+        keyId: actor.keyId,
+        method: c.req.method,
+        path: c.req.path,
+      });
+      if (!decision.ok) {
+        const { status, error, retryAfter } = decision.denial;
+        if (retryAfter !== undefined) {
+          return c.json({ error }, status, { "Retry-After": String(retryAfter) });
+        }
+        return c.json({ error }, status);
+      }
+      c.set("apiKey", decision.key);
+    }
     await next();
   });
 
@@ -367,18 +409,73 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (denied) return denied;
     const parsed = TurnBody.safeParse(await readBody(c));
     if (!parsed.success) return c.json({ error: "回合参数不合法" }, 400);
+    const actor = c.get("actor");
+    const { model, tier, applyMode: requestedApply, ...rest } = parsed.data;
+    let applyMode = requestedApply ?? "auto";
+    let release: (() => void) | undefined;
+    if (actor.type === "api_client") {
+      const key = c.get("apiKey");
+      if (!key) return c.json({ error: "密钥已吊销或不存在" }, 401);
+      const requestedModel = model ?? tier;
+      if (key.allowedTiers && requestedModel && !key.allowedTiers.includes(requestedModel)) {
+        return c.json({ error: "这把密钥不能用这个档位" }, 403);
+      }
+      const document = await deps.db.getDocument(c.req.param("id"));
+      applyMode = resolveApiApplyMode({
+        ...(requestedApply ? { requested: requestedApply } : {}),
+        humanTouched: document?.humanTouched ?? false,
+        policyDefault: key.defaultApplyMode,
+      });
+      if (key.maxConcurrentTasks != null) {
+        if (!concurrency.tryAcquire(actor.keyId, key.maxConcurrentTasks)) {
+          return c.json({ error: "超过并发上限" }, 429, { "Retry-After": "1" });
+        }
+        release = () => concurrency.release(actor.keyId);
+      }
+    }
     try {
       const result = await deps.runtime.submitTurn({
-        ...parsed.data,
+        ...rest,
+        applyMode,
         documentId: c.req.param("id"),
-        actor: c.get("actor"),
+        actor,
       });
       return c.json(result);
     } catch (error) {
       const mapped = httpError(error);
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
+    } finally {
+      release?.();
     }
+  });
+
+  api.post("/me/api-keys", async (c) => {
+    const parsed = CreateApiKeyBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "密钥参数不合法" }, 400);
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    try {
+      const issued = await createApiKey(deps.db, { userId, ...parsed.data });
+      return c.json(issued, 201);
+    } catch (error) {
+      if (error instanceof ApiKeyInputError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  });
+
+  api.get("/me/api-keys", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json(await listApiKeys(deps.db, userId));
+  });
+
+  api.delete("/me/api-keys/:id", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const outcome = await revokeApiKey(deps.db, { id: c.req.param("id"), userId });
+    if (outcome === "missing") return c.json({ error: "找不到密钥" }, 404);
+    return c.json({ ok: true });
   });
 
   api.get("/documents/:id/events", async (c) => {

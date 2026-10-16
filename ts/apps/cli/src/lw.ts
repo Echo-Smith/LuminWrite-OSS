@@ -2,10 +2,14 @@
 import { access } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
+  createApiKey,
   ensureOwner,
+  listApiKeys,
+  OwnerNotFound,
   openDatabase,
   pgliteDataDir,
   resolveDatabaseLocation,
+  revokeApiKey,
   rotateOwnerToken,
 } from "@luminwrite/db";
 import { startServer } from "@luminwrite/server";
@@ -22,12 +26,13 @@ export async function runLw(
   try {
     if (command === "init") return await init(env, stdout);
     if (command === "owner" && sub === "rotate-token") return await rotate(env, stdout);
+    if (command === "keys") return await keys(argv.slice(1), env, stdout);
     if (command === "serve") return await serve(env, stdout, stderr);
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : "命令失败"}\n`);
     return 1;
   }
-  stderr.write("用法：lw init | lw owner rotate-token | lw serve\n");
+  stderr.write("用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw serve\n");
   return 1;
 }
 
@@ -63,6 +68,103 @@ async function rotate(env: NodeJS.ProcessEnv, stdout: Writer): Promise<number> {
     const owner = await rotateOwnerToken(db, { dataDir: location.dataDir });
     stdout.write(`已更换所有者令牌。旧令牌失效。\n令牌文件 ${owner.tokenPath}\n`);
     return 0;
+  } finally {
+    await db.close();
+  }
+}
+
+function parseFlags(argv: readonly string[]): {
+  positionals: string[];
+  flags: Map<string, string[]>;
+} {
+  const positionals: string[] = [];
+  const flags = new Map<string, string[]>();
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (!arg.startsWith("--")) {
+      positionals.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const name = (eq === -1 ? arg.slice(2) : arg.slice(2, eq)).trim();
+    const value = eq === -1 ? argv[++index] : arg.slice(eq + 1);
+    if (!name || value === undefined) throw new Error(`缺少 --${name || "参数"} 的值`);
+    const list = flags.get(name) ?? [];
+    list.push(value);
+    flags.set(name, list);
+  }
+  return { positionals, flags };
+}
+
+function flag(flags: Map<string, string[]>, name: string): string | undefined {
+  const values = flags.get(name);
+  return values?.[values.length - 1];
+}
+
+async function keys(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  stdout: Writer,
+): Promise<number> {
+  const [sub, ...rest] = argv;
+  const location = resolveDatabaseLocation(env);
+  const db = await openDatabase(location);
+  try {
+    const owner = await db.getOwner();
+    if (!owner) throw new OwnerNotFound();
+    if (sub === "create") {
+      const { flags } = parseFlags(rest);
+      const name = flag(flags, "name");
+      if (!name) throw new Error("用法：lw keys create --name <名称> [--scope <权限>]...");
+      const maxRaw = flag(flags, "max-concurrent-tasks");
+      const capRaw = flag(flags, "daily-cost-cap-usd");
+      const mode = flag(flags, "default-apply-mode");
+      if (mode !== undefined && mode !== "auto" && mode !== "proposal") {
+        throw new Error("默认落稿方式只能是 auto 或 proposal");
+      }
+      const issued = await createApiKey(db, {
+        userId: owner.id,
+        name,
+        ...(flags.get("scope") ? { scopes: flags.get("scope") } : {}),
+        ...(maxRaw !== undefined ? { maxConcurrentTasks: Number(maxRaw) } : {}),
+        ...(capRaw !== undefined ? { dailyCostCapUsd: Number(capRaw) } : {}),
+        ...(flags.get("allowed-tier") ? { allowedTiers: flags.get("allowed-tier") } : {}),
+        ...(mode === "auto" || mode === "proposal" ? { defaultApplyMode: mode } : {}),
+        ...(flag(flags, "webhook-secret") !== undefined
+          ? { webhookSecret: flag(flags, "webhook-secret") }
+          : {}),
+      });
+      stdout.write(`密钥 ${issued.id}\n`);
+      stdout.write(`名称 ${issued.name}\n`);
+      stdout.write(`前缀 lw_${issued.prefix}\n`);
+      stdout.write(`权限 ${issued.scopes.join(" ")}\n`);
+      stdout.write(`令牌 ${issued.token}\n`);
+      stdout.write("这是唯一一次显示令牌。请另行保存。\n");
+      return 0;
+    }
+    if (sub === "list") {
+      const rows = await listApiKeys(db, owner.id);
+      if (rows.length === 0) {
+        stdout.write("还没有密钥。\n");
+        return 0;
+      }
+      for (const row of rows) {
+        const state = row.revokedAt ? "已吊销" : "有效";
+        stdout.write(
+          `${row.id}\t${row.name}\tlw_${row.prefix}\t${state}\t${row.scopes.join(",")}\n`,
+        );
+      }
+      return 0;
+    }
+    if (sub === "revoke") {
+      const id = rest[0];
+      if (!id || id.startsWith("--")) throw new Error("用法：lw keys revoke <id>");
+      const outcome = await revokeApiKey(db, { id, userId: owner.id });
+      if (outcome === "missing") throw new Error("找不到密钥");
+      stdout.write(`已吊销 ${id}\n`);
+      return 0;
+    }
+    throw new Error("用法：lw keys create --name <名称> | lw keys list | lw keys revoke <id>");
   } finally {
     await db.close();
   }
