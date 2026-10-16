@@ -1,0 +1,1263 @@
+{
+  "aitone": [
+    {
+      "file": "samples/control_filler_ev_county.md",
+      "chars": 337,
+      "aitone_score": 89.7,
+      "aitone_raw": 90.8,
+      "hollow_raw": 90.8,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 0.0,
+      "hollow_ratio": 0.786,
+      "deletable_ratio": 0.071,
+      "top_categories": {
+        "buzzword": 9,
+        "hollow_summary": 6,
+        "template_connector": 5,
+        "hedge": 2
+      }
+    },
+    {
+      "file": "samples/control_filler_village.md",
+      "chars": 301,
+      "aitone_score": 92.1,
+      "aitone_raw": 101.66,
+      "hollow_raw": 101.66,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 0.0,
+      "hollow_ratio": 0.786,
+      "deletable_ratio": 0.071,
+      "top_categories": {
+        "buzzword": 9,
+        "hollow_summary": 6,
+        "template_connector": 5,
+        "hedge": 2
+      }
+    },
+    {
+      "file": "samples/hollow_explainer_hedging.md",
+      "chars": 308,
+      "aitone_score": 93.9,
+      "aitone_raw": 112.01,
+      "hollow_raw": 103.9,
+      "rhetoric_raw": 1.62,
+      "rhetoric_gated": 1.62,
+      "concreteness": 0.32,
+      "hollow_ratio": 0.818,
+      "deletable_ratio": 0.091,
+      "top_categories": {
+        "hedge": 15,
+        "hollow_summary": 6,
+        "template_connector": 3,
+        "cta": 2
+      }
+    },
+    {
+      "file": "samples/hollow_report_ev_county.md",
+      "chars": 421,
+      "aitone_score": 95.5,
+      "aitone_raw": 124.23,
+      "hollow_raw": 100.48,
+      "rhetoric_raw": 1.19,
+      "rhetoric_gated": 1.19,
+      "concreteness": 0.0,
+      "hollow_ratio": 0.522,
+      "deletable_ratio": 0.087,
+      "top_categories": {
+        "buzzword": 22,
+        "bold": 7,
+        "hollow_summary": 5,
+        "template_connector": 3
+      }
+    },
+    {
+      "file": "samples/hollow_subtle_template.md",
+      "chars": 313,
+      "aitone_score": 80.6,
+      "aitone_raw": 65.5,
+      "hollow_raw": 51.12,
+      "rhetoric_raw": 14.38,
+      "rhetoric_gated": 14.38,
+      "concreteness": 0.0,
+      "hollow_ratio": 0.529,
+      "deletable_ratio": 0.0,
+      "top_categories": {
+        "template_connector": 8,
+        "hollow_summary": 4,
+        "rhetorical_q": 1,
+        "parallel_paragraph_openers": 1
+      }
+    },
+    {
+      "file": "samples/hollow_yinyue_imitation.md",
+      "chars": 379,
+      "aitone_score": 99.5,
+      "aitone_raw": 208.44,
+      "hollow_raw": 147.76,
+      "rhetoric_raw": 60.69,
+      "rhetoric_gated": 60.69,
+      "concreteness": 0.0,
+      "hollow_ratio": 0.875,
+      "deletable_ratio": 0.188,
+      "top_categories": {
+        "slogan": 28,
+        "buzzword": 5,
+        "cliche_metaphor": 5,
+        "rhetorical_q": 3
+      }
+    },
+    {
+      "file": "samples/style_yinyue_good_village.md",
+      "chars": 363,
+      "aitone_score": 14.8,
+      "aitone_raw": 6.41,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 34.44,
+      "rhetoric_gated": 6.41,
+      "concreteness": 4.13,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.0,
+      "top_categories": {
+        "rhetoric_frame": 3,
+        "cliche_metaphor": 1,
+        "rhetorical_q": 1,
+        "parallel_clause_run": 1
+      }
+    },
+    {
+      "file": "samples/style_yinyue_report_ev_county.md",
+      "chars": 441,
+      "aitone_score": 7.3,
+      "aitone_raw": 3.03,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 7.94,
+      "rhetoric_gated": 3.03,
+      "concreteness": 4.31,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.045,
+      "top_categories": {
+        "rhetorical_q": 1,
+        "parallel_clause_run": 1
+      }
+    },
+    {
+      "file": "samples/nat_commentary_village.md",
+      "chars": 327,
+      "aitone_score": 0.0,
+      "aitone_raw": 0.0,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 3.98,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.0,
+      "top_categories": {}
+    },
+    {
+      "file": "samples/nat_essay_remote_work.md",
+      "chars": 305,
+      "aitone_score": 0.0,
+      "aitone_raw": 0.0,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 3.61,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.0,
+      "top_categories": {}
+    },
+    {
+      "file": "samples/nat_explainer_electricity.md",
+      "chars": 309,
+      "aitone_score": 0.0,
+      "aitone_raw": 0.0,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 5.5,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.133,
+      "top_categories": {}
+    },
+    {
+      "file": "samples/nat_report_ev_county.md",
+      "chars": 401,
+      "aitone_score": 0.0,
+      "aitone_raw": 0.0,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 3.99,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.0,
+      "top_categories": {}
+    },
+    {
+      "file": "data/heldout/real_gov2024_review.md",
+      "chars": 1601,
+      "aitone_score": 20.4,
+      "aitone_raw": 9.14,
+      "hollow_raw": 5.62,
+      "rhetoric_raw": 6.87,
+      "rhetoric_gated": 3.52,
+      "concreteness": 1.44,
+      "hollow_ratio": 0.157,
+      "deletable_ratio": 0.039,
+      "top_categories": {
+        "buzzword": 7,
+        "idiom_chain": 7,
+        "hollow_summary": 1,
+        "exclaim": 1
+      }
+    },
+    {
+      "file": "data/heldout/real_gov2024_tasks.md",
+      "chars": 1619,
+      "aitone_score": 42.2,
+      "aitone_raw": 21.93,
+      "hollow_raw": 14.52,
+      "rhetoric_raw": 7.41,
+      "rhetoric_gated": 7.41,
+      "concreteness": 0.06,
+      "hollow_ratio": 0.316,
+      "deletable_ratio": 0.175,
+      "top_categories": {
+        "buzzword": 22,
+        "idiom_chain": 8,
+        "slogan": 1
+      }
+    },
+    {
+      "file": "data/heldout/real_weekly100_essay.md",
+      "chars": 593,
+      "aitone_score": 11.9,
+      "aitone_raw": 5.06,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 2.53,
+      "rhetoric_gated": 2.53,
+      "concreteness": 0.67,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.045,
+      "top_categories": {
+        "bold": 3,
+        "idiom_chain": 1
+      }
+    },
+    {
+      "file": "data/heldout/real_weekly150_essay.md",
+      "chars": 861,
+      "aitone_score": 2.9,
+      "aitone_raw": 1.16,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 0.0,
+      "rhetoric_gated": 0.0,
+      "concreteness": 1.74,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.0,
+      "top_categories": {
+        "bold": 2
+      }
+    },
+    {
+      "file": "data/heldout/real_weekly300_essay.md",
+      "chars": 530,
+      "aitone_score": 20.2,
+      "aitone_raw": 9.02,
+      "hollow_raw": 3.77,
+      "rhetoric_raw": 5.66,
+      "rhetoric_gated": 0.53,
+      "concreteness": 6.79,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.0,
+      "top_categories": {
+        "bold": 5,
+        "idiom_chain": 2,
+        "hollow_summary": 1
+      }
+    }
+  ],
+  "calibration": [
+    {
+      "file": "samples/control_filler_ev_county.md",
+      "aitone_v01": 89.7,
+      "aitone_v02": 89.7,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "samples/control_filler_village.md",
+      "aitone_v01": 92.1,
+      "aitone_v02": 92.1,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "samples/hollow_explainer_hedging.md",
+      "aitone_v01": 93.9,
+      "aitone_v02": 93.9,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "samples/hollow_report_ev_county.md",
+      "aitone_v01": 95.5,
+      "aitone_v02": 95.5,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "samples/hollow_subtle_template.md",
+      "aitone_v01": 80.6,
+      "aitone_v02": 80.6,
+      "yinyue_required_v02": 0.5,
+      "yinyue_voice_v03": 0.667,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 3.19,
+        "rhetorical_question": 3.19
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "samples/hollow_yinyue_imitation.md",
+      "aitone_v01": 99.5,
+      "aitone_v02": 99.5,
+      "yinyue_required_v02": 1.0,
+      "yinyue_voice_v03": 0.983,
+      "per1k": {
+        "metaphor": 15.83,
+        "parallelism": 2.64,
+        "rhetorical_question": 7.92
+      },
+      "progression_used": true,
+      "checks": {
+        "metaphor": 0.948,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "samples/style_yinyue_good_village.md",
+      "aitone_v01": 57.7,
+      "aitone_v02": 14.8,
+      "yinyue_required_v02": 1.0,
+      "yinyue_voice_v03": 1.0,
+      "per1k": {
+        "metaphor": 2.75,
+        "parallelism": 5.51,
+        "rhetorical_question": 8.26
+      },
+      "progression_used": true,
+      "checks": {
+        "metaphor": 1.0,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "samples/style_yinyue_report_ev_county.md",
+      "aitone_v01": 18.0,
+      "aitone_v02": 7.3,
+      "yinyue_required_v02": 0.75,
+      "yinyue_voice_v03": 1.0,
+      "per1k": {
+        "metaphor": 4.54,
+        "parallelism": 2.27,
+        "rhetorical_question": 2.27
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 1.0,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "samples/nat_commentary_village.md",
+      "aitone_v01": 0.0,
+      "aitone_v02": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "samples/nat_essay_remote_work.md",
+      "aitone_v01": 0.0,
+      "aitone_v02": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "samples/nat_explainer_electricity.md",
+      "aitone_v01": 0.0,
+      "aitone_v02": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.333,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 3.24
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "samples/nat_report_ev_county.md",
+      "aitone_v01": 0.0,
+      "aitone_v02": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "data/heldout/real_gov2024_review.md",
+      "aitone_v01": 26.8,
+      "aitone_v02": 20.4,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "data/heldout/real_gov2024_tasks.md",
+      "aitone_v01": 42.2,
+      "aitone_v02": 42.2,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    },
+    {
+      "file": "data/heldout/real_weekly100_essay.md",
+      "aitone_v01": 11.9,
+      "aitone_v02": 11.9,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.333,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.69
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "data/heldout/real_weekly150_essay.md",
+      "aitone_v01": 2.9,
+      "aitone_v02": 2.9,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.333,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 2.32
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "data/heldout/real_weekly300_essay.md",
+      "aitone_v01": 29.8,
+      "aitone_v02": 20.2,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      }
+    }
+  ],
+  "voice_genre": {
+    "grid": [
+      {
+        "cell": "印月 × 评论",
+        "file": "samples/style_yinyue_good_village.md",
+        "voice_yinyue": 1.0,
+        "voice_plain": 0.818,
+        "genre_commentary": 1.0,
+        "genre_report": 0.333
+      },
+      {
+        "cell": "印月 × 调研报告",
+        "file": "samples/style_yinyue_report_ev_county.md",
+        "voice_yinyue": 1.0,
+        "voice_plain": 0.943,
+        "genre_commentary": 0.5,
+        "genre_report": 1.0
+      },
+      {
+        "cell": "平实 × 评论",
+        "file": "samples/nat_commentary_village.md",
+        "voice_yinyue": 0.0,
+        "voice_plain": 1.0,
+        "genre_commentary": 1.0,
+        "genre_report": 0.333
+      },
+      {
+        "cell": "平实 × 调研报告",
+        "file": "samples/nat_report_ev_county.md",
+        "voice_yinyue": 0.0,
+        "voice_plain": 1.0,
+        "genre_commentary": 0.5,
+        "genre_report": 1.0
+      }
+    ],
+    "progression_ablation": {
+      "with_progression": {
+        "v02_required": 1.0,
+        "v03_voice": 1.0
+      },
+      "without_progression": {
+        "v02_required": 0.75,
+        "v03_voice": 1.0
+      }
+    }
+  },
+  "injection": {
+    "samples/nat_commentary_village.md": {
+      "0": 0.0,
+      "1": 13.5,
+      "2": 42.9,
+      "4": 63.0,
+      "8": 86.1
+    },
+    "samples/nat_essay_remote_work.md": {
+      "0": 0.0,
+      "1": 14.3,
+      "2": 45.0,
+      "4": 64.4,
+      "8": 87.2
+    },
+    "samples/nat_explainer_electricity.md": {
+      "0": 0.0,
+      "1": 14.2,
+      "2": 44.6,
+      "4": 64.4,
+      "8": 86.9
+    },
+    "samples/nat_report_ev_county.md": {
+      "0": 0.0,
+      "1": 11.2,
+      "2": 37.1,
+      "4": 56.3,
+      "8": 81.4
+    },
+    "data/heldout/real_weekly100_essay.md": {
+      "0": 11.9,
+      "1": 18.5,
+      "2": 35.7,
+      "4": 50.9,
+      "8": 74.3
+    },
+    "data/heldout/real_weekly150_essay.md": {
+      "0": 2.9,
+      "1": 8.2,
+      "2": 22.3,
+      "4": 36.0,
+      "8": 60.6
+    },
+    "data/heldout/real_weekly300_essay.md": {
+      "0": 20.2,
+      "1": 26.6,
+      "2": 43.5,
+      "4": 57.1,
+      "8": 78.4
+    }
+  },
+  "style": {
+    "samples/nat_commentary_village.md": {
+      "to_natural_LOO": {
+        "distance": 0.397,
+        "families": {
+          "sentlen": 0.221,
+          "punct": 0.387,
+          "funcword": 0.77,
+          "rhetoric": 0.209
+        },
+        "hist_jsd": 0.0959
+      },
+      "to_yinyue": {
+        "distance": 1.165,
+        "families": {
+          "sentlen": 0.562,
+          "punct": 1.478,
+          "funcword": 1.528,
+          "rhetoric": 1.091
+        },
+        "hist_jsd": 0.1187
+      }
+    },
+    "samples/nat_essay_remote_work.md": {
+      "to_natural_LOO": {
+        "distance": 0.534,
+        "families": {
+          "sentlen": 0.559,
+          "punct": 0.309,
+          "funcword": 0.959,
+          "rhetoric": 0.309
+        },
+        "hist_jsd": 0.1786
+      },
+      "to_yinyue": {
+        "distance": 1.162,
+        "families": {
+          "sentlen": 0.658,
+          "punct": 1.205,
+          "funcword": 1.716,
+          "rhetoric": 1.068
+        },
+        "hist_jsd": 0.1443
+      }
+    },
+    "samples/nat_explainer_electricity.md": {
+      "to_natural_LOO": {
+        "distance": 1.029,
+        "families": {
+          "sentlen": 0.693,
+          "punct": 1.117,
+          "funcword": 0.799,
+          "rhetoric": 1.505
+        },
+        "hist_jsd": 0.0545
+      },
+      "to_yinyue": {
+        "distance": 0.984,
+        "families": {
+          "sentlen": 0.496,
+          "punct": 0.897,
+          "funcword": 1.362,
+          "rhetoric": 1.182
+        },
+        "hist_jsd": 0.0383
+      }
+    },
+    "samples/nat_report_ev_county.md": {
+      "to_natural_LOO": {
+        "distance": 0.544,
+        "families": {
+          "sentlen": 0.86,
+          "punct": 0.411,
+          "funcword": 0.666,
+          "rhetoric": 0.241
+        },
+        "hist_jsd": 0.115
+      },
+      "to_yinyue": {
+        "distance": 1.238,
+        "families": {
+          "sentlen": 1.168,
+          "punct": 1.214,
+          "funcword": 1.477,
+          "rhetoric": 1.093
+        },
+        "hist_jsd": 0.2085
+      }
+    },
+    "samples/hollow_explainer_hedging.md": {
+      "to_natural_LOO": {
+        "distance": 1.301,
+        "families": {
+          "sentlen": 0.803,
+          "punct": 0.943,
+          "funcword": 0.961,
+          "rhetoric": 2.498
+        },
+        "hist_jsd": 0.067
+      },
+      "to_yinyue": {
+        "distance": 1.464,
+        "families": {
+          "sentlen": 0.532,
+          "punct": 1.087,
+          "funcword": 1.526,
+          "rhetoric": 2.713
+        },
+        "hist_jsd": 0.0441
+      }
+    },
+    "samples/hollow_report_ev_county.md": {
+      "to_natural_LOO": {
+        "distance": 1.303,
+        "families": {
+          "sentlen": 0.708,
+          "punct": 1.169,
+          "funcword": 0.874,
+          "rhetoric": 2.459
+        },
+        "hist_jsd": 0.0367
+      },
+      "to_yinyue": {
+        "distance": 1.495,
+        "families": {
+          "sentlen": 1.029,
+          "punct": 1.266,
+          "funcword": 0.884,
+          "rhetoric": 2.802
+        },
+        "hist_jsd": 0.0922
+      }
+    },
+    "samples/hollow_subtle_template.md": {
+      "to_natural_LOO": {
+        "distance": 1.562,
+        "families": {
+          "sentlen": 0.983,
+          "punct": 0.643,
+          "funcword": 1.174,
+          "rhetoric": 3.45
+        },
+        "hist_jsd": 0.1746
+      },
+      "to_yinyue": {
+        "distance": 1.426,
+        "families": {
+          "sentlen": 0.859,
+          "punct": 0.918,
+          "funcword": 1.662,
+          "rhetoric": 2.267
+        },
+        "hist_jsd": 0.0805
+      }
+    },
+    "samples/hollow_yinyue_imitation.md": {
+      "to_natural_LOO": {
+        "distance": 1.51,
+        "families": {
+          "sentlen": 0.693,
+          "punct": 1.233,
+          "funcword": 0.733,
+          "rhetoric": 3.381
+        },
+        "hist_jsd": 0.2238
+      },
+      "to_yinyue": {
+        "distance": 1.446,
+        "families": {
+          "sentlen": 1.279,
+          "punct": 1.43,
+          "funcword": 0.755,
+          "rhetoric": 2.321
+        },
+        "hist_jsd": 0.1358
+      }
+    },
+    "samples/style_yinyue_good_village.md": {
+      "to_natural_LOO": {
+        "distance": 1.091,
+        "families": {
+          "sentlen": 0.433,
+          "punct": 0.882,
+          "funcword": 0.866,
+          "rhetoric": 2.182
+        },
+        "hist_jsd": 0.0932
+      },
+      "to_yinyue": {
+        "distance": 0.205,
+        "families": {
+          "sentlen": 0.5,
+          "punct": 0.097,
+          "funcword": 0.09,
+          "rhetoric": 0.132
+        },
+        "hist_jsd": 0.0206
+      }
+    },
+    "samples/style_yinyue_report_ev_county.md": {
+      "to_natural_LOO": {
+        "distance": 0.729,
+        "families": {
+          "sentlen": 0.763,
+          "punct": 0.411,
+          "funcword": 0.495,
+          "rhetoric": 1.247
+        },
+        "hist_jsd": 0.0305
+      },
+      "to_yinyue": {
+        "distance": 1.01,
+        "families": {
+          "sentlen": 0.91,
+          "punct": 1.102,
+          "funcword": 1.411,
+          "rhetoric": 0.618
+        },
+        "hist_jsd": 0.1171
+      }
+    },
+    "samples/control_filler_ev_county.md": {
+      "to_natural_LOO": {
+        "distance": 1.093,
+        "families": {
+          "sentlen": 0.88,
+          "punct": 0.369,
+          "funcword": 1.056,
+          "rhetoric": 2.067
+        },
+        "hist_jsd": 0.1796
+      },
+      "to_yinyue": {
+        "distance": 1.389,
+        "families": {
+          "sentlen": 0.383,
+          "punct": 0.806,
+          "funcword": 1.421,
+          "rhetoric": 2.948
+        },
+        "hist_jsd": 0.137
+      }
+    },
+    "samples/control_filler_village.md": {
+      "to_natural_LOO": {
+        "distance": 1.129,
+        "families": {
+          "sentlen": 1.069,
+          "punct": 0.327,
+          "funcword": 1.054,
+          "rhetoric": 2.067
+        },
+        "hist_jsd": 0.1713
+      },
+      "to_yinyue": {
+        "distance": 1.464,
+        "families": {
+          "sentlen": 0.639,
+          "punct": 0.845,
+          "funcword": 1.424,
+          "rhetoric": 2.948
+        },
+        "hist_jsd": 0.1094
+      }
+    },
+    "data/heldout/real_gov2024_review.md": {
+      "to_natural_LOO": {
+        "distance": 1.514,
+        "families": {
+          "sentlen": 1.482,
+          "punct": 1.225,
+          "funcword": 0.782,
+          "rhetoric": 2.566
+        },
+        "hist_jsd": 0.1507
+      },
+      "to_yinyue": {
+        "distance": 1.642,
+        "families": {
+          "sentlen": 1.95,
+          "punct": 1.541,
+          "funcword": 1.071,
+          "rhetoric": 2.007
+        },
+        "hist_jsd": 0.1139
+      }
+    },
+    "data/heldout/real_gov2024_tasks.md": {
+      "to_natural_LOO": {
+        "distance": 1.516,
+        "families": {
+          "sentlen": 0.762,
+          "punct": 1.282,
+          "funcword": 0.896,
+          "rhetoric": 3.122
+        },
+        "hist_jsd": 0.0766
+      },
+      "to_yinyue": {
+        "distance": 1.612,
+        "families": {
+          "sentlen": 1.193,
+          "punct": 1.749,
+          "funcword": 0.964,
+          "rhetoric": 2.541
+        },
+        "hist_jsd": 0.0882
+      }
+    },
+    "data/heldout/real_weekly100_essay.md": {
+      "to_natural_LOO": {
+        "distance": 0.832,
+        "families": {
+          "sentlen": 0.561,
+          "punct": 0.591,
+          "funcword": 0.89,
+          "rhetoric": 1.286
+        },
+        "hist_jsd": 0.0229
+      },
+      "to_yinyue": {
+        "distance": 1.32,
+        "families": {
+          "sentlen": 0.59,
+          "punct": 1.516,
+          "funcword": 1.92,
+          "rhetoric": 1.255
+        },
+        "hist_jsd": 0.0328
+      }
+    },
+    "data/heldout/real_weekly150_essay.md": {
+      "to_natural_LOO": {
+        "distance": 0.687,
+        "families": {
+          "sentlen": 0.891,
+          "punct": 0.721,
+          "funcword": 0.572,
+          "rhetoric": 0.566
+        },
+        "hist_jsd": 0.0871
+      },
+      "to_yinyue": {
+        "distance": 1.232,
+        "families": {
+          "sentlen": 0.859,
+          "punct": 0.858,
+          "funcword": 1.941,
+          "rhetoric": 1.27
+        },
+        "hist_jsd": 0.0214
+      }
+    },
+    "data/heldout/real_weekly300_essay.md": {
+      "to_natural_LOO": {
+        "distance": 1.208,
+        "families": {
+          "sentlen": 0.535,
+          "punct": 1.305,
+          "funcword": 0.74,
+          "rhetoric": 2.254
+        },
+        "hist_jsd": 0.0608
+      },
+      "to_yinyue": {
+        "distance": 1.674,
+        "families": {
+          "sentlen": 0.679,
+          "punct": 2.27,
+          "funcword": 1.739,
+          "rhetoric": 2.009
+        },
+        "hist_jsd": 0.1409
+      }
+    }
+  },
+  "drift": {
+    "splice_exemplar": {
+      "mode": "exemplar",
+      "n_windows": 6,
+      "series": [
+        0.656,
+        0.528,
+        0.94,
+        1.078,
+        0.889,
+        1.358
+      ],
+      "threshold": 0.929,
+      "null_n": 6,
+      "drift_windows": [
+        2,
+        3,
+        5
+      ],
+      "change_point": {
+        "index": 2,
+        "stat": 0.548,
+        "mean_before": 0.592,
+        "mean_after": 1.066
+      }
+    },
+    "control_exemplar": {
+      "mode": "exemplar",
+      "n_windows": 6,
+      "series": [
+        0.656,
+        0.528,
+        0.52,
+        0.611,
+        0.596,
+        0.446
+      ],
+      "threshold": 0.929,
+      "null_n": 6,
+      "drift_windows": [],
+      "change_point": {
+        "index": 4,
+        "stat": 0.067,
+        "mean_before": 0.579,
+        "mean_after": 0.521
+      }
+    },
+    "splice_self_anchor": {
+      "mode": "self_anchor",
+      "n_windows": 6,
+      "series": [
+        0.223,
+        0.223,
+        0.828,
+        1.235,
+        1.242,
+        1.731
+      ],
+      "threshold": 1.0,
+      "null_n": 0,
+      "drift_windows": [
+        3,
+        4,
+        5
+      ],
+      "change_point": {
+        "index": 3,
+        "stat": 1.198,
+        "mean_before": 0.425,
+        "mean_after": 1.403
+      }
+    },
+    "control_self_anchor": {
+      "mode": "self_anchor",
+      "n_windows": 6,
+      "series": [
+        0.223,
+        0.223,
+        0.506,
+        1.292,
+        1.28,
+        0.938
+      ],
+      "threshold": 1.0,
+      "null_n": 0,
+      "drift_windows": [
+        3,
+        4
+      ],
+      "change_point": {
+        "index": 3,
+        "stat": 1.044,
+        "mean_before": 0.317,
+        "mean_after": 1.17
+      }
+    }
+  },
+  "upcr": {
+    "rev_after_good.md": {
+      "UPCR": 0.0,
+      "UPCR_weighted": 0.0,
+      "insert_rate": 0.0,
+      "anchored_success": true,
+      "statuses": [
+        "unchanged",
+        "unchanged",
+        "unchanged",
+        "unchanged",
+        "modified",
+        "unchanged"
+      ]
+    },
+    "rev_after_drift.md": {
+      "UPCR": 0.6,
+      "UPCR_weighted": 0.453,
+      "insert_rate": 0.0,
+      "anchored_success": true,
+      "statuses": [
+        "rewritten",
+        "modified",
+        "unchanged",
+        "unchanged",
+        "modified",
+        "rewritten"
+      ]
+    }
+  },
+  "shuffle": {
+    "samples/nat_commentary_village.md": {
+      "adjacency_advantage": 0.662,
+      "connective_fit": 0.664
+    },
+    "samples/nat_essay_remote_work.md": {
+      "adjacency_advantage": 0.116,
+      "connective_fit": 0.808
+    },
+    "samples/nat_explainer_electricity.md": {
+      "adjacency_advantage": 0.51,
+      "connective_fit": 0.5
+    },
+    "samples/nat_report_ev_county.md": {
+      "adjacency_advantage": 0.343,
+      "connective_fit": 0.5
+    },
+    "samples/hollow_explainer_hedging.md": {
+      "adjacency_advantage": 0.232,
+      "connective_fit": 0.5
+    },
+    "samples/hollow_report_ev_county.md": {
+      "adjacency_advantage": 0.755,
+      "connective_fit": 0.5
+    },
+    "samples/hollow_subtle_template.md": {
+      "adjacency_advantage": 0.091,
+      "connective_fit": 0.404
+    },
+    "samples/hollow_yinyue_imitation.md": {
+      "adjacency_advantage": 0.205,
+      "connective_fit": 0.5
+    },
+    "samples/style_yinyue_good_village.md": {
+      "adjacency_advantage": 0.914,
+      "connective_fit": 0.5
+    },
+    "samples/style_yinyue_report_ev_county.md": {
+      "adjacency_advantage": 0.63,
+      "connective_fit": 0.5
+    },
+    "data/heldout/real_weekly100_essay.md": {
+      "adjacency_advantage": 0.995,
+      "connective_fit": 0.5
+    },
+    "data/heldout/real_weekly150_essay.md": {
+      "adjacency_advantage": 0.985,
+      "connective_fit": 0.595
+    },
+    "data/heldout/real_weekly300_essay.md": {
+      "adjacency_advantage": 1.0,
+      "connective_fit": 0.233
+    }
+  },
+  "power": {
+    "pairwise_winrate": {
+      "0.55": 783,
+      "0.6": 194,
+      "0.65": 85,
+      "0.7": 47
+    },
+    "paired_d": {
+      "0.2": 199,
+      "0.3": 90,
+      "0.5": 34,
+      "0.8": 15
+    }
+  },
+  "sim_position_bias": {
+    "note": "合成模拟：两系统真实质量相同、judge 有 15% 首位偏好",
+    "winrate_sysA_without_swap": 0.618,
+    "winrate_sysA_with_swap_consistency": 0.461,
+    "tie_rate_with_swap": 0.532
+  }
+}

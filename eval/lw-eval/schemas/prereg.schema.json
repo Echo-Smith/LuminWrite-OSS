@@ -1,0 +1,66 @@
+{
+  "title": "Preregistration",
+  "type": "object",
+  "required": [
+    "exp_id",
+    "hypothesis",
+    "primary_metric",
+    "comparison",
+    "threshold",
+    "n",
+    "frozen_at"
+  ],
+  "properties": {
+    "exp_id": {
+      "type": "string"
+    },
+    "hypothesis": {
+      "type": "string"
+    },
+    "primary_metric": {
+      "type": "string"
+    },
+    "secondary_metrics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "comparison": {
+      "type": "string",
+      "description": "例如 full vs -deai，配对"
+    },
+    "threshold": {
+      "type": "string",
+      "description": "例如 BT 胜率 ≥0.60 且 95% CI 下限 >0.5"
+    },
+    "guardrails": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "不得恶化的指标及容忍度"
+    },
+    "n": {
+      "type": "integer"
+    },
+    "power_calc": {
+      "type": "string"
+    },
+    "judges": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclusions": {
+      "type": "string"
+    },
+    "frozen_at": {
+      "type": "string"
+    },
+    "git_sha": {
+      "type": "string"
+    }
+  }
+}

@@ -73,3 +73,6 @@ ab-test-report.html
 
 # ─── 文档 ───────────────────────────────────────────
 docs/architecture-assessment.md
+
+# lw-eval 原型的示例/留出集数据需要入库（覆盖上面的 data/ 规则）
+!eval/lw-eval/data/

@@ -1,0 +1,117 @@
+{
+  "title": "RunOutput",
+  "type": "object",
+  "required": [
+    "run_id",
+    "task_id",
+    "system",
+    "status"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "system": {
+      "type": "string",
+      "description": "候选配置 id，如 full / -plan / -deai"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "model": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "infra_error",
+        "writing_error",
+        "timeout",
+        "refused"
+      ]
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "text": {
+      "type": "string"
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "research_plan": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "queries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sentence_idx": {
+            "type": "integer"
+          },
+          "sids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "latency_ms": {
+          "type": "integer"
+        }
+      }
+    },
+    "trace_ref": {
+      "type": "string"
+    }
+  }
+}
