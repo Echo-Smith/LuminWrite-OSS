@@ -34,6 +34,7 @@ export type {
   DossierView,
   OwnerRow,
   ProposeOutcome,
+  RegistryEntryRow,
   SessionView,
   TurnView,
   VersionView,
@@ -49,6 +50,7 @@ export {
   SessionScopeError,
   VersionNotFound,
 } from "./database.js";
+export { importEnvCredential } from "./env-credential.js";
 export { migrationSql } from "./migrate.js";
 export {
   authenticateOwnerToken,

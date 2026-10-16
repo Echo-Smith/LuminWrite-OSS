@@ -4,6 +4,7 @@ import { type ServerType, serve } from "@hono/node-server";
 import {
   ensureMasterKey,
   ensureOwner,
+  importEnvCredential,
   openDatabase,
   resolveDatabaseLocation,
 } from "@luminwrite/db";
@@ -13,6 +14,7 @@ import { createWritingRuntime, writingStoreFromDatabase } from "@luminwrite/harn
 import { createApp } from "./app.js";
 import { createOssAuth } from "./auth.js";
 import { listenUrl, resolveListen } from "./listen.js";
+import { ensureDefaultRegistry } from "./model-registry.js";
 
 export interface RunningServer {
   url: string;
@@ -37,6 +39,8 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   try {
     const owner = await ensureOwner(db, { dataDir: location.dataDir });
     const secrets = await ensureMasterKey({ db, dataDir: location.dataDir, env });
+    await importEnvCredential(db, secrets.ring, env, owner.userId);
+    await ensureDefaultRegistry(db, owner.userId, env);
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),

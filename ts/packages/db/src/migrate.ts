@@ -123,11 +123,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_by_type text NOT NULL,
   created_by_id text NOT NULL,
   status text NOT NULL,
+  model_pin text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_session_main ON sessions (document_id) WHERE kind = 'main';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_pin text;
 
 CREATE TABLE IF NOT EXISTS session_reads (
   session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -185,6 +187,25 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
 
 CREATE INDEX IF NOT EXISTS idx_cred_user ON provider_credentials (user_id, provider);
 
+CREATE TABLE IF NOT EXISTS model_registry (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  ref text NOT NULL,
+  kind text NOT NULL,
+  spec jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (owner_id, ref)
+);
+
+CREATE TABLE IF NOT EXISTS model_slot_bindings (
+  owner_id text NOT NULL,
+  slot text NOT NULL,
+  target_ref text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_id, slot)
+);
+
 CREATE TABLE IF NOT EXISTS usage_ledger (
   id text PRIMARY KEY,
   request_id text NOT NULL,
@@ -194,8 +215,27 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
   cost_micros integer NOT NULL,
   api_key_id text,
   api_task_id text,
+  user_id text,
+  credential_id text,
+  model_ref text,
+  tier_ref text,
+  session_id text,
+  turn_id text,
+  cache_read_tokens integer,
+  cache_write_tokens integer,
+  price_known boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS user_id text;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS credential_id text;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS model_ref text;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS tier_ref text;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS session_id text;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS turn_id text;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS cache_read_tokens integer;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS cache_write_tokens integer;
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS price_known boolean NOT NULL DEFAULT true;
 
 CREATE OR REPLACE FUNCTION doc_versions_append_only()
 RETURNS trigger
