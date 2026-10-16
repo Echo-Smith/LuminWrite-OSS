@@ -9,6 +9,13 @@ export interface LwClient {
   restoreDocument(id: string, versionId: string): Promise<{ ok: boolean; versionId?: string }>;
   discardDocument(id: string): Promise<{ discardedAt: string }>;
   undoDiscard(id: string): Promise<{ discardedAt: null }>;
+  uploadSource(input: {
+    filename: string;
+    dataBase64: string;
+    mime?: string;
+    title?: string;
+  }): Promise<{ sourceId: string; status: "indexed" | "duplicate" }>;
+  searchSources(query: string): Promise<{ note: string; hits: Array<{ sourceId: string }> }>;
 }
 
 export function createClient(
@@ -72,6 +79,23 @@ export function createClient(
       });
       if (!response.ok) throw new Error(`撤销丢弃失败 ${response.status}`);
       return (await response.json()) as { discardedAt: null };
+    },
+    async uploadSource(input) {
+      const response = await fetchImpl(`${root}/api/v1/sources`, {
+        method: "POST",
+        headers: { ...authHeaders(options), "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) throw new Error(`上传资料失败 ${response.status}`);
+      return (await response.json()) as { sourceId: string; status: "indexed" | "duplicate" };
+    },
+    async searchSources(query) {
+      const response = await fetchImpl(
+        `${root}/api/v1/sources/search?q=${encodeURIComponent(query)}`,
+        { headers: authHeaders(options) },
+      );
+      if (!response.ok) throw new Error(`检索资料失败 ${response.status}`);
+      return (await response.json()) as { note: string; hits: Array<{ sourceId: string }> };
     },
   };
 }

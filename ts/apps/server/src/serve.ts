@@ -12,10 +12,13 @@ import {
 } from "@luminwrite/db";
 import type { WritingRuntime } from "@luminwrite/harness";
 import { createWritingRuntime, writingStoreFromDatabase } from "@luminwrite/harness";
+import { createKnowledgeBase } from "@luminwrite/kb";
 import { createClosedModels } from "@luminwrite/models";
 
 import { createApp } from "./app.js";
 import { createOssAuth } from "./auth.js";
+import { kbEmbedderFor } from "./kb-embed.js";
+import { sessionKnowledge } from "./kb-session.js";
 import { listenUrl, resolveListen } from "./listen.js";
 import { ensureDefaultRegistry, resolveTurnChain, turnSpendFor } from "./model-registry.js";
 
@@ -46,6 +49,10 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     await ensureDefaultRegistry(db, owner.userId, env);
     const models = createClosedModels();
     const registry = { db, env, keyring: secrets.ring, models };
+    const kb = createKnowledgeBase({
+      db,
+      embedder: kbEmbedderFor({ db, keyring: secrets.ring, env }),
+    });
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),
@@ -54,6 +61,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       env,
       resolveTurn: (input) => resolveTurnChain(registry, input),
       turnSpend: (actor) => turnSpendFor(registry, actor),
+      knowledge: sessionKnowledge(db, kb),
     });
     const app = createApp({
       db,
@@ -62,6 +70,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       keyring: secrets.ring,
       env,
       models,
+      kb,
     });
     const address = await new Promise<AddressInfo>((resolve, reject) => {
       const listening = serve(
