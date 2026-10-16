@@ -245,7 +245,8 @@ describe("监听", () => {
     });
     try {
       expect(running.url.startsWith("http://127.0.0.1:")).toBe(true);
-      expect(running.warning).toBeUndefined();
+      expect(running.warning).toContain("secrets.key");
+      expect(running.warning).not.toContain("所有者令牌");
       const health = await fetch(`${running.url}/health`);
       expect(health.status).toBe(200);
       const denied = await fetch(`${running.url}/api/v1/documents`);

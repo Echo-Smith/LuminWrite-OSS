@@ -53,6 +53,7 @@ const {
   usageLedger,
   apiKeys,
   apiKeyPolicies,
+  providerCredentials,
   sessions,
   sessionReads,
   documentDossier,
@@ -135,6 +136,36 @@ export interface ApiKeyRecord {
   allowedTiers: string[] | null;
   defaultApplyMode: "auto" | "proposal";
   webhookSecret: string | null;
+}
+
+export interface CredentialRow {
+  id: string;
+  userId: string;
+  provider: string;
+  label: string;
+  baseUrl: string | null;
+  ciphertext: Buffer;
+  nonce: Buffer;
+  keyVersion: number;
+  fingerprint: string;
+  status: "active" | "disabled" | "invalid";
+  lastVerifiedAt: Date | null;
+  lastErrorCode: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface NewCredentialRow {
+  id: string;
+  userId: string;
+  provider: string;
+  label: string;
+  baseUrl: string | null;
+  ciphertext: Buffer;
+  nonce: Buffer;
+  keyVersion: number;
+  fingerprint: string;
+  status: "active" | "disabled" | "invalid";
 }
 
 export interface NewApiKeyRow {
@@ -796,6 +827,90 @@ export class LwDatabase {
     return "revoked";
   }
 
+  async insertCredential(input: NewCredentialRow): Promise<void> {
+    const now = new Date();
+    await this.orm.insert(providerCredentials).values({
+      id: input.id,
+      userId: input.userId,
+      provider: input.provider,
+      label: input.label,
+      baseUrl: input.baseUrl,
+      ciphertext: input.ciphertext,
+      nonce: input.nonce,
+      keyVersion: input.keyVersion,
+      fingerprint: input.fingerprint,
+      status: input.status,
+      lastVerifiedAt: null,
+      lastErrorCode: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async getCredential(id: string): Promise<CredentialRow | undefined> {
+    const rows = await this.orm
+      .select()
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, id))
+      .limit(1);
+    const row = rows[0];
+    return row ? toCredential(row) : undefined;
+  }
+
+  async listCredentials(userId: string): Promise<CredentialRow[]> {
+    const rows = await this.orm
+      .select()
+      .from(providerCredentials)
+      .where(eq(providerCredentials.userId, userId))
+      .orderBy(desc(providerCredentials.createdAt));
+    return rows.map(toCredential);
+  }
+
+  async listCredentialRows(): Promise<CredentialRow[]> {
+    const rows = await this.orm.select().from(providerCredentials);
+    return rows.map(toCredential);
+  }
+
+  async updateCredentialSeal(
+    id: string,
+    seal: { ciphertext: Buffer; nonce: Buffer; keyVersion: number; fingerprint: string },
+  ): Promise<void> {
+    await this.orm
+      .update(providerCredentials)
+      .set({
+        ciphertext: seal.ciphertext,
+        nonce: seal.nonce,
+        keyVersion: seal.keyVersion,
+        fingerprint: seal.fingerprint,
+        updatedAt: new Date(),
+      })
+      .where(eq(providerCredentials.id, id));
+  }
+
+  async updateCredentialMeta(
+    id: string,
+    patch: {
+      label?: string;
+      baseUrl?: string | null;
+      status?: "active" | "disabled" | "invalid";
+      lastVerifiedAt?: Date | null;
+      lastErrorCode?: string | null;
+    },
+  ): Promise<void> {
+    await this.orm
+      .update(providerCredentials)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(providerCredentials.id, id));
+  }
+
+  async deleteCredential(id: string, userId: string): Promise<"deleted" | "missing"> {
+    const rows = await this.orm
+      .delete(providerCredentials)
+      .where(and(eq(providerCredentials.id, id), eq(providerCredentials.userId, userId)))
+      .returning({ id: providerCredentials.id });
+    return rows.length > 0 ? "deleted" : "missing";
+  }
+
   async resolveSession(req: TurnRequest): Promise<SessionView> {
     if (req.sessionId) {
       const session = await this.getSession(req.sessionId);
@@ -1391,6 +1506,37 @@ function asStringArray(value: unknown): string[] {
     return inner ? inner.split(",") : [];
   }
   return [];
+}
+
+function asBuffer(value: Buffer | Uint8Array | string): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  const hex = value.startsWith("\\x") ? value.slice(2) : value;
+  return Buffer.from(hex, "hex");
+}
+
+function asCredentialStatus(value: string): CredentialRow["status"] {
+  if (value === "disabled" || value === "invalid") return value;
+  return "active";
+}
+
+function toCredential(row: typeof providerCredentials.$inferSelect): CredentialRow {
+  return {
+    id: row.id,
+    userId: row.userId,
+    provider: row.provider,
+    label: row.label,
+    baseUrl: row.baseUrl,
+    ciphertext: asBuffer(row.ciphertext),
+    nonce: asBuffer(row.nonce),
+    keyVersion: row.keyVersion,
+    fingerprint: row.fingerprint,
+    status: asCredentialStatus(row.status),
+    lastVerifiedAt: asDate(row.lastVerifiedAt),
+    lastErrorCode: row.lastErrorCode,
+    createdAt: asDate(row.createdAt) ?? new Date(0),
+    updatedAt: asDate(row.updatedAt) ?? new Date(0),
+  };
 }
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];

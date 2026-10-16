@@ -13,10 +13,22 @@ export {
 } from "./api-keys.js";
 export type { DatabaseLocation } from "./config.js";
 export { pgliteDataDir, resolveDatabaseLocation } from "./config.js";
+export type { CredentialView } from "./credentials.js";
+export {
+  assertCredentialBaseUrl,
+  CredentialInputError,
+  createCredential,
+  deleteCredential,
+  listCredentialViews,
+  revealCredential,
+  updateCredential,
+  verifyCredential,
+} from "./credentials.js";
 export type {
   ApiKeyRecord,
   ApplyOutcome,
   BlockView,
+  CredentialRow,
   DerivedDocumentView,
   DocumentView,
   DossierView,
@@ -48,3 +60,15 @@ export {
   rotateOwnerToken,
 } from "./owner.js";
 export * as schema from "./schema.js";
+export { Secret } from "./secret.js";
+export type { MasterKeyring } from "./vault.js";
+export {
+  CredentialCryptoError,
+  decodeMasterKey,
+  ensureMasterKey,
+  loadMasterKey,
+  openSecret,
+  rotateMasterKey,
+  sealSecret,
+  secretsKeyPath,
+} from "./vault.js";
