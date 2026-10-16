@@ -31,6 +31,22 @@ describe("进程内队列", () => {
     await jobs.close();
   });
 
+  it("后一次投递不推迟已经排队的任务", async () => {
+    const jobs = createInlineJobs();
+    const seen: unknown[] = [];
+    await jobs.work("doc.index", async (data) => {
+      seen.push(data);
+    });
+    await jobs.send("doc.index", { n: 1 }, { singletonKey: "doc", startAfterSeconds: 60 });
+    await jobs.advance(10_000);
+    await jobs.send("doc.index", { n: 2 }, { singletonKey: "doc", startAfterSeconds: 60 });
+    await jobs.advance(49_000);
+    expect(seen).toEqual([]);
+    await jobs.advance(1_000);
+    expect(seen).toEqual([{ n: 2 }]);
+    await jobs.close();
+  });
+
   it("startAfterSeconds 到点才执行", async () => {
     const jobs = createInlineJobs();
     let ran = 0;

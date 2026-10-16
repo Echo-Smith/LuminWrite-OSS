@@ -16,7 +16,7 @@ async function ownerOf(db: LwDatabase, sessionId: string) {
   return { ownerId: document.ownerId, documentId: document.id };
 }
 
-/** 工具不接收 ownerId。当前会话的文档默认排除，避免把正在写的稿子当成资料。 */
+/** 工具不接收 ownerId。当前文档和它的派生血缘默认排除，避免把正在写的稿子当成外部资料。 */
 export function sessionKnowledge(db: LwDatabase, kb: KnowledgeBase): SessionKnowledge {
   return {
     async search(input) {
@@ -28,13 +28,15 @@ export function sessionKnowledge(db: LwDatabase, kb: KnowledgeBase): SessionKnow
         days !== undefined && Number.isFinite(days) && days > 0
           ? new Date(Date.now() - days * 86_400_000).toISOString()
           : undefined;
+      const related = await db.relatedDocumentIds(owner.documentId);
       const hits = await kb.search({
         ownerId: owner.ownerId,
         text: input.query,
         limit: input.limit ?? 5,
         ...(kinds && kinds.length > 0 ? { kinds } : {}),
         ...(publishedAfter ? { publishedAfter } : {}),
-        excludeDocumentIds: [owner.documentId],
+        ...(input.library ? { library: true } : {}),
+        excludeDocumentIds: [owner.documentId, ...related],
       });
       return { note: retrievalDataNote, hits };
     },

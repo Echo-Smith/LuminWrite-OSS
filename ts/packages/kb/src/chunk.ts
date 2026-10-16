@@ -1,9 +1,18 @@
+import { normalizeBody } from "./parse.js";
+
 export interface TextChunk {
   text: string;
   charStart: number;
   charEnd: number;
   page: number | null;
   headingPath: string[];
+}
+
+export interface BlockChunk {
+  text: string;
+  charStart: number;
+  charEnd: number;
+  blockIds: string[];
 }
 
 const TARGET_MIN = 600;
@@ -56,6 +65,58 @@ export function chunkText(body: string): TextChunk[] {
     index = end - index > 1 ? end - 1 : end;
   }
   return chunks;
+}
+
+/**
+ * 文档按相邻块打包。偏移是拼接正文里的位置，块本身不再切开，相邻块之间不重叠。
+ */
+export function chunkBlocks(blocks: { blockId: string; text: string }[]): {
+  body: string;
+  chunks: BlockChunk[];
+} {
+  const cleaned = blocks
+    .map((block) => ({ blockId: block.blockId, text: block.text.replace(/\r\n/g, "\n").trim() }))
+    .filter((block) => block.text.length > 0);
+  const body = normalizeBody(cleaned.map((block) => block.text).join("\n\n"));
+  if (!body) return { body: "", chunks: [] };
+  const located: { blockId: string; start: number; end: number }[] = [];
+  let cursor = 0;
+  for (const block of cleaned) {
+    const start = body.indexOf(block.text, cursor);
+    if (start < 0) continue;
+    located.push({ blockId: block.blockId, start, end: start + block.text.length });
+    cursor = start + block.text.length;
+  }
+  const chunks: BlockChunk[] = [];
+  let index = 0;
+  while (index < located.length) {
+    const origin = located[index];
+    if (!origin) break;
+    let end = index;
+    let length = 0;
+    while (end < located.length) {
+      const next = located[end];
+      if (!next) break;
+      const span = next.end - origin.start;
+      if (length >= TARGET_MIN && span > TARGET_MAX) break;
+      length = span;
+      end += 1;
+      if (length >= 700) break;
+    }
+    if (end === index) end = index + 1;
+    const slice = located.slice(index, end);
+    const first = slice[0];
+    const last = slice[slice.length - 1];
+    if (!first || !last) break;
+    chunks.push({
+      text: body.slice(first.start, last.end),
+      charStart: first.start,
+      charEnd: last.end,
+      blockIds: slice.map((item) => item.blockId),
+    });
+    index = end;
+  }
+  return { body, chunks };
 }
 
 function splitOversized(paragraph: Paragraph): Paragraph[] {

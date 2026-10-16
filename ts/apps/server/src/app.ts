@@ -94,6 +94,16 @@ const RollbackBody = z.object({
   versionId: z.string().min(1),
 });
 
+const KbExcludedBody = z.object({
+  excluded: z.boolean(),
+});
+
+const CiteBody = z.object({
+  sourceId: z.string().min(1),
+  quote: z.string().min(1).max(4_000),
+  blockId: z.string().min(1).optional(),
+});
+
 const TurnBody = TurnRequestSchema.omit({ documentId: true, actor: true, applyMode: true }).extend({
   applyMode: z.enum(["auto", "proposal"]).optional(),
   model: z.string().min(1).optional(),
@@ -374,6 +384,57 @@ export function createApp(deps: AppDeps): Hono<Env> {
       return c.json(await deps.db.undoDiscard(c.req.param("id")));
     } catch (error) {
       const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/documents/:id/kb", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const parsed = KbExcludedBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "知识库开关参数不合法" }, 400);
+    try {
+      return c.json(await deps.db.setKbExcluded(c.req.param("id"), parsed.data.excluded));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/documents/:id/citations", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = CiteBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "引用参数不合法" }, 400);
+    try {
+      const evidence = await kb.citeDocument({
+        ownerId: userId,
+        citingDocumentId: c.req.param("id"),
+        sourceId: parsed.data.sourceId,
+        quote: parsed.data.quote,
+        ...(parsed.data.blockId ? { blockId: parsed.data.blockId } : {}),
+      });
+      return c.json(evidence, 201);
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.get("/documents/:id/citations/:evidenceId", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    try {
+      return c.json(await kb.resolveEvidence(userId, c.req.param("evidenceId")));
+    } catch (error) {
+      const mapped = kbFailure(error);
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
     }
@@ -971,12 +1032,14 @@ export function createApp(deps: AppDeps): Hono<Env> {
       ?.split(",")
       .map((id) => id.trim())
       .filter((id) => id.length > 0);
+    const library = c.req.query("library") === "1" || c.req.query("library") === "true";
     const hits = await kb.search({
       ownerId: userId,
       text,
       limit: Number.isFinite(limit) ? limit : 5,
       ...(kinds && kinds.length > 0 ? { kinds } : {}),
       ...(folderIds && folderIds.length > 0 ? { folderIds } : {}),
+      ...(library ? { library: true } : {}),
     });
     return c.json({ note: retrievalDataNote, hits });
   });

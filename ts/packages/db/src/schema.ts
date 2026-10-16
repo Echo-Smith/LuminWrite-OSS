@@ -67,6 +67,7 @@ export const documents = pgTable("documents", {
   savedAt: timestamp("saved_at", { withTimezone: true }),
   savedVersionId: text("saved_version_id"),
   discardedAt: timestamp("discarded_at", { withTimezone: true }),
+  kbExcluded: boolean("kb_excluded").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
