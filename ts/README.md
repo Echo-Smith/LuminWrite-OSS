@@ -4,6 +4,8 @@
 
 M0 打的是地基：块锚点修订、只追加的版本链。会话属于文档：一篇文档有一个主会话，也可以有分叉、接口和协同会话。派生文档是另一篇独立文档，不跟分叉会话混在一起。不需要模型密钥就能安装、构建、测试和跑演示。
 
+本机默认一个所有者。首次 `lw init` 或 `lw serve` 会在数据目录写下 `owner.token`（权限 0600），库里只留令牌的 SHA-256。`/api/v1` 的调用者由这把令牌推出，请求体里的 `actor` 和 `ownerId` 会被忽略。默认只监听 `127.0.0.1`。
+
 ## 环境
 
 - Node.js 24（见 `.nvmrc`）
@@ -26,16 +28,16 @@ pnpm demo
 | 包 | M0 状态 |
 |---|---|
 | `contracts` `doc-model` `plainspeak` | 浏览器和 Node 共用的文档模型与空话检测 |
-| `db` | Drizzle schema。测试和演示用 PGlite，`openPostgres` 留给 `DATABASE_URL` |
+| `db` | Drizzle schema。运行时默认是数据目录里的 PGlite，设置 `LW_DATABASE_URL` 才连 Postgres |
 | `models` | 档位路由、可重试回退、用量账本接口 |
 | `harness` | `HarnessPort` 后面的 pi-durable 1.3.0。一个会话一个 SQLite 对话，不按文档复用 |
 | `style` | 默认文风 `plain-professional`，说人话地板不可关 |
 | `eval-adapter` | 确定性说人话冒烟，负对照排最后 |
 | `edition` | 开源扩展口：授权、提案策略、实时通道 |
-| `server` `cli` | 最小 HTTP 和演示 |
+| `server` `cli` | HTTP（`/api/v1`，所有者令牌）、`lw init` / `lw owner rotate-token` / `lw serve`，以及演示 |
 | `jobs` `prefs` `kb` `sources` `research` `roles` `library` | 空桩，留给后续里程碑 |
 
-M0 的验证记录见 `docs/m0-verification.md`。会话和派生文档见 `docs/m1-sessions.md`。
+M0 的验证记录见 `docs/m0-verification.md`。会话和派生文档见 `docs/m1-sessions.md`。PGlite 上的 pg-boss 和 pgvector 见 `docs/m1-pglite-findings.md`。
 
 ## 密钥扫描
 

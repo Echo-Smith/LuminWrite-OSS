@@ -1,3 +1,3 @@
-/** 定时任务留到 M1 之后。M0 不跑队列。 */
+/** JobPort 还没落地。PGlite 上的队列结论见 docs/m1-pglite-findings.md。 */
 export const phase = "stub" as const;
-export const note = "定时任务留到 M1 之后。M0 不跑队列。";
+export const note = "JobPort 留到知识库任务。PGlite 上的队列结论见 docs/m1-pglite-findings.md。";
