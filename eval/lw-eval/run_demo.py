@@ -34,10 +34,29 @@ v01 = aitone.AIToneDetector(gate_rhetoric=False)
 calib = []
 for f in files:
     t = R(f)
-    sp = stylepack.check(t, "yinyue")
+    sp = stylepack.check_voice(t, "yinyue")
     calib.append({"file": f, "aitone_v01": v01.analyze(t).aitone_score, "aitone_v02": det.analyze(t).aitone_score,
-                  "yinyue_adherence": sp["adherence"], "checks": sp["checks"]})
+                  "yinyue_required_v02": stylepack.legacy_required_v02(t),
+                  "yinyue_voice_v03": sp["voice_adherence"], "per1k": sp["per1k"],
+                  "progression_used": sp["optional_devices"]["progression"], "checks": sp["checks"]})
 res["calibration"] = calib
+
+# 1c) 文风 × 文体（v0.3）：2×2 解耦检查 + 去掉递进格的对照
+grid = {"印月 × 评论": "samples/style_yinyue_good_village.md", "印月 × 调研报告": "samples/style_yinyue_report_ev_county.md",
+        "平实 × 评论": "samples/nat_commentary_village.md", "平实 × 调研报告": "samples/nat_report_ev_county.md"}
+vg = []
+for cell, f in grid.items():
+    t = R(f)
+    vg.append({"cell": cell, "file": f,
+               "voice_yinyue": stylepack.check_voice(t, "yinyue")["voice_adherence"],
+               "voice_plain": stylepack.check_voice(t, "plain_professional")["voice_adherence"],
+               "genre_commentary": stylepack.check_genre(t, "commentary")["genre_conformance"],
+               "genre_report": stylepack.check_genre(t, "report")["genre_conformance"]})
+_g = R("samples/style_yinyue_good_village.md")
+_n = _g.replace("首在", "先要").replace("重在", "关键是").replace("贵在", "难在")
+res["voice_genre"] = {"grid": vg, "progression_ablation": {
+    "with_progression": {"v02_required": stylepack.legacy_required_v02(_g), "v03_voice": stylepack.check_voice(_g, "yinyue")["voice_adherence"]},
+    "without_progression": {"v02_required": stylepack.legacy_required_v02(_n), "v03_voice": stylepack.check_voice(_n, "yinyue")["voice_adherence"]}}}
 
 # 2) 注入灵敏度
 inj = {}
@@ -111,13 +130,21 @@ json.dump(res, open("results/demo_results.json", "w"), ensure_ascii=False, inden
 
 # ---- Markdown ----
 L = ["# 原型运行结果（自动生成，请勿手改）", "",
-     "> samples/ 为原型作者编写的虚构样本（非真实人类文本）：nat_*=平实自然、style_*=高质量印月三谈风格（修辞承载具体内容）、hollow_*=空话套话（含一篇'只有修辞外壳、没有内容'的印月仿写）、control_filler_*=lweval.filler 生成的中性模板空话（负对照）。data/heldout/ 为真实人类文本留出集（阮一峰周刊 3 篇、2024 政府工作报告节选 2 段）。检测器版本 aitone-zh.v0.2。", ""]
+     "> samples/ 为原型作者编写的虚构样本（非真实人类文本）：nat_*=平实自然、style_*=高质量印月三谈文风（修辞承载具体内容；village 为评论文体并使用可选的递进格，report 为调研报告文体、不用递进格）、hollow_*=空话套话（含一篇'只有修辞外壳、没有内容'的印月仿写）、control_filler_*=lweval.filler 生成的中性模板空话（负对照）。data/heldout/ 为真实人类文本留出集（阮一峰周刊 3 篇、2024 政府工作报告节选 2 段）。检测器版本 aitone-zh.v0.2；风格包检查 stylepack v0.3（文风 × 文体）。", ""]
 L += ["## 1. 说人话 / AI 腔检测（v0.2）", "", "| 文件 | 字数 | AI腔分(0-100) | 空洞 raw | 修辞 raw(未折减) | 修辞 raw(折减后) | 具体性/百字 | 空话句占比 | 可删句占比(启发式) | 主要命中 |", "|---|---|---|---|---|---|---|---|---|---|"]
 for r in rows:
     L.append(f"| {r['file']} | {r['chars']} | {r['aitone_score']} | {r['hollow_raw']} | {r['rhetoric_raw']} | {r['rhetoric_gated']} | {r['concreteness']} | {r['hollow_ratio']} | {r['deletable_ratio']} | {r['top_categories']} |")
-L += ["", "## 1b. 修辞校准与两轴（印月风格遵循 × 说人话）", "", "| 文件 | AI腔分 v0.1(修辞不折减) | AI腔分 v0.2(修辞按具体性折减) | 印月遵循度(规则版 0-1) |", "|---|---|---|---|"]
+L += ["", "## 1b. 修辞校准与两轴（印月文风遵循 × 说人话）", "",
+      "印月文风遵循：v0.2 = 四项必需手法（含首在-重在-贵在）全有才满分；v0.3 = 比喻/排比/设问按每千字密度区间判定，递进格为可选手法、只记录不计分。", "",
+      "| 文件 | AI腔分 v0.1(修辞不折减) | AI腔分 v0.2(修辞按具体性折减) | 印月遵循 v0.2(必需手法) | 印月文风遵循 v0.3(密度区间) | 每千字密度 | 用了递进格 |", "|---|---|---|---|---|---|---|"]
 for c in calib:
-    L.append(f"| {c['file']} | {c['aitone_v01']} | {c['aitone_v02']} | {c['yinyue_adherence']} |")
+    L.append(f"| {c['file']} | {c['aitone_v01']} | {c['aitone_v02']} | {c['yinyue_required_v02']} | {c['yinyue_voice_v03']} | {c['per1k']} | {c['progression_used']} |")
+L += ["", "## 1c. 文风 × 文体（v0.3，两项分开打分）", "", "| 组合 | 文件 | 文风遵循:印月 | 文风遵循:平实 | 文体合规:评论 | 文体合规:调研报告 |", "|---|---|---|---|---|---|"]
+for r in vg:
+    L.append(f"| {r['cell']} | {r['file']} | {r['voice_yinyue']} | {r['voice_plain']} | {r['genre_commentary']} | {r['genre_report']} |")
+_pa = res["voice_genre"]["progression_ablation"]
+L += ["", f"- 去掉递进格对照（style_yinyue_good_village 把首在/重在/贵在换成中性说法）：v0.2 必需手法 {_pa['with_progression']['v02_required']} → {_pa['without_progression']['v02_required']}；v0.3 文风遵循 {_pa['with_progression']['v03_voice']} → {_pa['without_progression']['v03_voice']}",
+      "- 平实文风包的修辞上限较宽（每千字 ≤3 次），对印月样本区分度有限，正式版靠 pairwise_style judge 补足。"]
 L += ["", "## 2. 注入 AI 腔短语的灵敏度（5 个随机位置种子平均）", "", "| 文件 | k=0 | 1 | 2 | 4 | 8 |", "|---|---|---|---|---|---|"]
 for f, v in inj.items():
     L.append(f"| {f} | " + " | ".join(str(v[k]) for k in (0, 1, 2, 4, 8)) + " |")

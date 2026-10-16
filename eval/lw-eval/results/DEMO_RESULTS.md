@@ -1,6 +1,6 @@
 # 原型运行结果（自动生成，请勿手改）
 
-> samples/ 为原型作者编写的虚构样本（非真实人类文本）：nat_*=平实自然、style_*=高质量印月三谈风格（修辞承载具体内容）、hollow_*=空话套话（含一篇'只有修辞外壳、没有内容'的印月仿写）、control_filler_*=lweval.filler 生成的中性模板空话（负对照）。data/heldout/ 为真实人类文本留出集（阮一峰周刊 3 篇、2024 政府工作报告节选 2 段）。检测器版本 aitone-zh.v0.2。
+> samples/ 为原型作者编写的虚构样本（非真实人类文本）：nat_*=平实自然、style_*=高质量印月三谈文风（修辞承载具体内容；village 为评论文体并使用可选的递进格，report 为调研报告文体、不用递进格）、hollow_*=空话套话（含一篇'只有修辞外壳、没有内容'的印月仿写）、control_filler_*=lweval.filler 生成的中性模板空话（负对照）。data/heldout/ 为真实人类文本留出集（阮一峰周刊 3 篇、2024 政府工作报告节选 2 段）。检测器版本 aitone-zh.v0.2；风格包检查 stylepack v0.3（文风 × 文体）。
 
 ## 1. 说人话 / AI 腔检测（v0.2）
 
@@ -13,6 +13,7 @@
 | samples/hollow_subtle_template.md | 313 | 80.6 | 51.12 | 14.38 | 14.38 | 0.0 | 0.529 | 0.0 | {'template_connector': 8, 'hollow_summary': 4, 'rhetorical_q': 1, 'parallel_paragraph_openers': 1} |
 | samples/hollow_yinyue_imitation.md | 379 | 99.5 | 147.76 | 60.69 | 60.69 | 0.0 | 0.875 | 0.188 | {'slogan': 28, 'buzzword': 5, 'cliche_metaphor': 5, 'rhetorical_q': 3} |
 | samples/style_yinyue_good_village.md | 363 | 14.8 | 0.0 | 34.44 | 6.41 | 4.13 | 0.0 | 0.0 | {'rhetoric_frame': 3, 'cliche_metaphor': 1, 'rhetorical_q': 1, 'parallel_clause_run': 1} |
+| samples/style_yinyue_report_ev_county.md | 441 | 7.3 | 0.0 | 7.94 | 3.03 | 4.31 | 0.0 | 0.045 | {'rhetorical_q': 1, 'parallel_clause_run': 1} |
 | samples/nat_commentary_village.md | 327 | 0.0 | 0.0 | 0.0 | 0.0 | 3.98 | 0.0 | 0.0 | {} |
 | samples/nat_essay_remote_work.md | 305 | 0.0 | 0.0 | 0.0 | 0.0 | 3.61 | 0.0 | 0.0 | {} |
 | samples/nat_explainer_electricity.md | 309 | 0.0 | 0.0 | 0.0 | 0.0 | 5.5 | 0.0 | 0.133 | {} |
@@ -23,26 +24,41 @@
 | data/heldout/real_weekly150_essay.md | 861 | 2.9 | 0.0 | 0.0 | 0.0 | 1.74 | 0.0 | 0.0 | {'bold': 2} |
 | data/heldout/real_weekly300_essay.md | 530 | 20.2 | 3.77 | 5.66 | 0.53 | 6.79 | 0.0 | 0.0 | {'bold': 5, 'idiom_chain': 2, 'hollow_summary': 1} |
 
-## 1b. 修辞校准与两轴（印月风格遵循 × 说人话）
+## 1b. 修辞校准与两轴（印月文风遵循 × 说人话）
 
-| 文件 | AI腔分 v0.1(修辞不折减) | AI腔分 v0.2(修辞按具体性折减) | 印月遵循度(规则版 0-1) |
-|---|---|---|---|
-| samples/control_filler_ev_county.md | 89.7 | 89.7 | 0.0 |
-| samples/control_filler_village.md | 92.1 | 92.1 | 0.0 |
-| samples/hollow_explainer_hedging.md | 93.9 | 93.9 | 0.0 |
-| samples/hollow_report_ev_county.md | 95.5 | 95.5 | 0.0 |
-| samples/hollow_subtle_template.md | 80.6 | 80.6 | 0.5 |
-| samples/hollow_yinyue_imitation.md | 99.5 | 99.5 | 1.0 |
-| samples/style_yinyue_good_village.md | 57.7 | 14.8 | 1.0 |
-| samples/nat_commentary_village.md | 0.0 | 0.0 | 0.0 |
-| samples/nat_essay_remote_work.md | 0.0 | 0.0 | 0.0 |
-| samples/nat_explainer_electricity.md | 0.0 | 0.0 | 0.0 |
-| samples/nat_report_ev_county.md | 0.0 | 0.0 | 0.0 |
-| data/heldout/real_gov2024_review.md | 26.8 | 20.4 | 0.0 |
-| data/heldout/real_gov2024_tasks.md | 42.2 | 42.2 | 0.0 |
-| data/heldout/real_weekly100_essay.md | 11.9 | 11.9 | 0.0 |
-| data/heldout/real_weekly150_essay.md | 2.9 | 2.9 | 0.0 |
-| data/heldout/real_weekly300_essay.md | 29.8 | 20.2 | 0.0 |
+印月文风遵循：v0.2 = 四项必需手法（含首在-重在-贵在）全有才满分；v0.3 = 比喻/排比/设问按每千字密度区间判定，递进格为可选手法、只记录不计分。
+
+| 文件 | AI腔分 v0.1(修辞不折减) | AI腔分 v0.2(修辞按具体性折减) | 印月遵循 v0.2(必需手法) | 印月文风遵循 v0.3(密度区间) | 每千字密度 | 用了递进格 |
+|---|---|---|---|---|---|---|
+| samples/control_filler_ev_county.md | 89.7 | 89.7 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| samples/control_filler_village.md | 92.1 | 92.1 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| samples/hollow_explainer_hedging.md | 93.9 | 93.9 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| samples/hollow_report_ev_county.md | 95.5 | 95.5 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| samples/hollow_subtle_template.md | 80.6 | 80.6 | 0.5 | 0.667 | {'metaphor': 0.0, 'parallelism': 3.19, 'rhetorical_question': 3.19} | False |
+| samples/hollow_yinyue_imitation.md | 99.5 | 99.5 | 1.0 | 0.983 | {'metaphor': 15.83, 'parallelism': 2.64, 'rhetorical_question': 7.92} | True |
+| samples/style_yinyue_good_village.md | 57.7 | 14.8 | 1.0 | 1.0 | {'metaphor': 2.75, 'parallelism': 5.51, 'rhetorical_question': 8.26} | True |
+| samples/style_yinyue_report_ev_county.md | 18.0 | 7.3 | 0.75 | 1.0 | {'metaphor': 4.54, 'parallelism': 2.27, 'rhetorical_question': 2.27} | False |
+| samples/nat_commentary_village.md | 0.0 | 0.0 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| samples/nat_essay_remote_work.md | 0.0 | 0.0 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| samples/nat_explainer_electricity.md | 0.0 | 0.0 | 0.0 | 0.333 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 3.24} | False |
+| samples/nat_report_ev_county.md | 0.0 | 0.0 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| data/heldout/real_gov2024_review.md | 26.8 | 20.4 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| data/heldout/real_gov2024_tasks.md | 42.2 | 42.2 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+| data/heldout/real_weekly100_essay.md | 11.9 | 11.9 | 0.0 | 0.333 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 1.69} | False |
+| data/heldout/real_weekly150_essay.md | 2.9 | 2.9 | 0.0 | 0.333 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 2.32} | False |
+| data/heldout/real_weekly300_essay.md | 29.8 | 20.2 | 0.0 | 0.0 | {'metaphor': 0.0, 'parallelism': 0.0, 'rhetorical_question': 0.0} | False |
+
+## 1c. 文风 × 文体（v0.3，两项分开打分）
+
+| 组合 | 文件 | 文风遵循:印月 | 文风遵循:平实 | 文体合规:评论 | 文体合规:调研报告 |
+|---|---|---|---|---|---|
+| 印月 × 评论 | samples/style_yinyue_good_village.md | 1.0 | 0.818 | 1.0 | 0.333 |
+| 印月 × 调研报告 | samples/style_yinyue_report_ev_county.md | 1.0 | 0.943 | 0.5 | 1.0 |
+| 平实 × 评论 | samples/nat_commentary_village.md | 0.0 | 1.0 | 1.0 | 0.333 |
+| 平实 × 调研报告 | samples/nat_report_ev_county.md | 0.0 | 1.0 | 0.5 | 1.0 |
+
+- 去掉递进格对照（style_yinyue_good_village 把首在/重在/贵在换成中性说法）：v0.2 必需手法 1.0 → 0.75；v0.3 文风遵循 1.0 → 1.0
+- 平实文风包的修辞上限较宽（每千字 ≤3 次），对印月样本区分度有限，正式版靠 pairwise_style judge 补足。
 
 ## 2. 注入 AI 腔短语的灵敏度（5 个随机位置种子平均）
 
@@ -69,6 +85,7 @@
 | samples/hollow_subtle_template.md | 1.562 | {'sentlen': 0.983, 'punct': 0.643, 'funcword': 1.174, 'rhetoric': 3.45} | 1.426 |
 | samples/hollow_yinyue_imitation.md | 1.51 | {'sentlen': 0.693, 'punct': 1.233, 'funcword': 0.733, 'rhetoric': 3.381} | 1.446 |
 | samples/style_yinyue_good_village.md | 1.091 | {'sentlen': 0.433, 'punct': 0.882, 'funcword': 0.866, 'rhetoric': 2.182} | 0.205 |
+| samples/style_yinyue_report_ev_county.md | 0.729 | {'sentlen': 0.763, 'punct': 0.411, 'funcword': 0.495, 'rhetoric': 1.247} | 1.01 |
 | samples/control_filler_ev_county.md | 1.093 | {'sentlen': 0.88, 'punct': 0.369, 'funcword': 1.056, 'rhetoric': 2.067} | 1.389 |
 | samples/control_filler_village.md | 1.129 | {'sentlen': 1.069, 'punct': 0.327, 'funcword': 1.054, 'rhetoric': 2.067} | 1.464 |
 | data/heldout/real_gov2024_review.md | 1.514 | {'sentlen': 1.482, 'punct': 1.225, 'funcword': 0.782, 'rhetoric': 2.566} | 1.642 |
@@ -102,6 +119,7 @@
 | samples/hollow_subtle_template.md | 0.091 | 0.404 |
 | samples/hollow_yinyue_imitation.md | 0.205 | 0.5 |
 | samples/style_yinyue_good_village.md | 0.914 | 0.5 |
+| samples/style_yinyue_report_ev_county.md | 0.63 | 0.5 |
 | data/heldout/real_weekly100_essay.md | 0.995 | 0.5 |
 | data/heldout/real_weekly150_essay.md | 0.985 | 0.595 |
 | data/heldout/real_weekly300_essay.md | 1.0 | 0.233 |

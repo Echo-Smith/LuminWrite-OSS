@@ -52,11 +52,26 @@
     "audience": {
       "type": "string"
     },
+    "voice_pack": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "文风包 id（v0.3），如 yinyue、plain_professional；只管语气、修辞、用词"
+    },
+    "genre_pack": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "文体包 id（v0.3），如 commentary、report；只管结构、篇幅、标题。省略时按 genre 字段取同名文体包"
+    },
     "style_pack": {
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "description": "v0.2 旧字段，等同 voice_pack；新任务请用 voice_pack + genre_pack"
     },
     "source_pack_id": {
       "type": [

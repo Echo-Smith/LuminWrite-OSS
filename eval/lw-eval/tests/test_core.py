@@ -80,14 +80,74 @@ class TestRhetoricCalibration(unittest.TestCase):
         self.assertGreater(filler, max(content))
 
     def test_stylepack_two_axes(self):
+        # 文风遵循只回答"像不像"：空壳仿写的修辞外壳也像，好坏交给说人话轴
         from lweval import stylepack
         self.assertEqual(stylepack.check(rd("style_yinyue_good_village.md"))["adherence"], 1.0)
-        self.assertEqual(stylepack.check(rd("hollow_yinyue_imitation.md"))["adherence"], 1.0)
+        self.assertGreaterEqual(stylepack.check(rd("hollow_yinyue_imitation.md"))["adherence"], 0.9)
         self.assertEqual(stylepack.check(rd("nat_commentary_village.md"))["adherence"], 0.0)
 
     def test_filler_deterministic(self):
         from lweval import filler
         self.assertEqual(filler.generate("测试主题", 5, 3), filler.generate("测试主题", 5, 3))
+
+
+class TestVoiceGenre(unittest.TestCase):
+    """v0.3：文风 × 文体分离；首在-重在-贵在是可选手法。"""
+
+    def setUp(self):
+        from lweval import stylepack
+        self.sp = stylepack
+
+    def test_progression_optional(self):
+        # 去掉递进格（换成中性说法），文风遵循不变；可选手法只记录，不计分
+        good = rd("style_yinyue_good_village.md")
+        neutral = good.replace("首在", "先要").replace("重在", "关键是").replace("贵在", "难在")
+        a, b = self.sp.check_voice(good, "yinyue"), self.sp.check_voice(neutral, "yinyue")
+        self.assertTrue(a["optional_devices"]["progression"])
+        self.assertFalse(b["optional_devices"]["progression"])
+        self.assertEqual(a["voice_adherence"], b["voice_adherence"])
+        self.assertNotIn("progression", a["checks"])
+
+    def test_progression_alone_not_enough(self):
+        # 只有递进格、没有比喻/排比/设问的平实文，文风遵循仍然低
+        t = "推进这件事，首在摸清谁在用。全村412人，APP装了37个。\n\n重在算清省了谁的事。老人少跑一趟县城。\n\n贵在耐得住不好看。上门教老人用手机。"
+        self.assertLess(self.sp.check_voice(t, "yinyue")["voice_adherence"], 0.5)
+
+    def test_frequency_range(self):
+        self.assertEqual(self.sp._range_score(3.0, 2.0, 15.0), 1.0)
+        self.assertEqual(self.sp._range_score(1.0, 2.0, 15.0), 0.5)
+        self.assertEqual(self.sp._range_score(30.0, 2.0, 15.0), 0.5)  # 过密同样扣分
+
+    def test_yinyue_voice_on_report_genre(self):
+        # 印月文风写调研报告：文风遵循仍高，文体按报告判也合规
+        r = self.sp.score(rd("style_yinyue_report_ev_county.md"), "yinyue", "report")
+        self.assertGreaterEqual(r["voice_adherence"], 0.9)
+        self.assertGreaterEqual(r["genre_conformance"], 0.9)
+
+    def test_voice_genre_independence_2x2(self):
+        # 2 文风 × 2 文体：文风分随文风变、不随文体变；文体分随文体变、不随文风变
+        grid = {("yinyue", "commentary"): "style_yinyue_good_village.md",
+                ("yinyue", "report"): "style_yinyue_report_ev_county.md",
+                ("plain_professional", "commentary"): "nat_commentary_village.md",
+                ("plain_professional", "report"): "nat_report_ev_county.md"}
+        v = {k: self.sp.check_voice(rd(f), "yinyue")["voice_adherence"] for k, f in grid.items()}
+        g = {k: {gn: self.sp.check_genre(rd(f), gn)["genre_conformance"] for gn in ("commentary", "report")} for k, f in grid.items()}
+        for genre in ("commentary", "report"):
+            self.assertGreater(v[("yinyue", genre)] - v[("plain_professional", genre)], 0.7)
+        self.assertLessEqual(abs(v[("yinyue", "commentary")] - v[("yinyue", "report")]), 0.1)
+        for voice in ("yinyue", "plain_professional"):
+            self.assertGreaterEqual(g[(voice, "commentary")]["commentary"], 0.8)
+            self.assertGreaterEqual(g[(voice, "report")]["report"], 0.8)
+            self.assertLessEqual(g[(voice, "commentary")]["report"], 0.5)
+            self.assertLessEqual(g[(voice, "report")]["commentary"], 0.5)
+        # 交互效应：同一文体下，两种文风的文体分相差不大
+        for genre in ("commentary", "report"):
+            self.assertLessEqual(abs(g[("yinyue", genre)][genre] - g[("plain_professional", genre)][genre]), 0.2)
+
+    def test_genre_rules_not_in_voice(self):
+        # 篇幅/结构类检查只在文体包里出现
+        for pack in self.sp.VOICE_PACKS.values():
+            self.assertFalse((set(pack["devices"]) | set(pack["flags"])) & {"length", "three_part", "title_len"})
 
 
 class TestUPCR(unittest.TestCase):

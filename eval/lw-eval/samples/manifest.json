@@ -1,5 +1,5 @@
 {
-  "note": "全部样本均为原型作者（Grok Bot）为测试检测器而撰写的虚构示例（control_filler_* 由 lweval/filler.py 生成）。文中地名、人物、数字均为虚构，不构成事实陈述。nat_* 是'模仿自然人写作'的样本，并非真实人类文本——正式评测必须使用真实人类语料。「印月三谈」是正当的评论/杂文风格包；hollow_yinyue_imitation 代表的是'只有修辞外壳、没有内容'的劣质仿写，而不是这个风格本身。",
+  "note": "全部样本均为原型作者（Grok Bot）为测试检测器而撰写的虚构示例（control_filler_* 由 lweval/filler.py 生成）。文中地名、人物、数字均为虚构，不构成事实陈述。nat_* 是'模仿自然人写作'的样本，并非真实人类文本——正式评测必须使用真实人类语料。「印月三谈」是正当的文风包（v0.3 起与文体解耦，可配评论、报告等任意文体）；hollow_yinyue_imitation 代表的是'只有修辞外壳、没有内容'的劣质仿写，而不是这个风格本身。",
   "samples": {
     "control_filler_village.md": {
       "label": "negative_control",
@@ -13,8 +13,13 @@
     },
     "style_yinyue_good_village.md": {
       "label": "style_calibration_good",
-      "kind": "高质量印月三谈风格（首在-重在-贵在、比喻、排比、反问，且每段承载具体信息）：风格遵循应高、说人话应达标",
+      "kind": "高质量印月三谈文风 × 评论文体（比喻、排比、反问，且每段承载具体信息；用了可选的首在-重在-贵在递进格）：文风遵循应高、说人话应达标",
       "pair": "hollow_yinyue_imitation.md"
+    },
+    "style_yinyue_report_ev_county.md": {
+      "label": "style_calibration_good",
+      "kind": "印月三谈文风 × 调研报告文体（不用递进格；与 nat_report_ev_county 同一虚构素材）：用于检查文风与文体解耦——文风遵循应高，按报告判文体合规也应高",
+      "pair": "nat_report_ev_county.md"
     },
     "hollow_yinyue_imitation.md": {
       "label": "hollow",

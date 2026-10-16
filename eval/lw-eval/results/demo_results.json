@@ -127,6 +127,22 @@
       }
     },
     {
+      "file": "samples/style_yinyue_report_ev_county.md",
+      "chars": 441,
+      "aitone_score": 7.3,
+      "aitone_raw": 3.03,
+      "hollow_raw": 0.0,
+      "rhetoric_raw": 7.94,
+      "rhetoric_gated": 3.03,
+      "concreteness": 4.31,
+      "hollow_ratio": 0.0,
+      "deletable_ratio": 0.045,
+      "top_categories": {
+        "rhetorical_q": 1,
+        "parallel_clause_run": 1
+      }
+    },
+    {
       "file": "samples/nat_commentary_village.md",
       "chars": 327,
       "aitone_score": 0.0,
@@ -267,195 +283,355 @@
       "file": "samples/control_filler_ev_county.md",
       "aitone_v01": 89.7,
       "aitone_v02": 89.7,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "samples/control_filler_village.md",
       "aitone_v01": 92.1,
       "aitone_v02": 92.1,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "samples/hollow_explainer_hedging.md",
       "aitone_v01": 93.9,
       "aitone_v02": 93.9,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "samples/hollow_report_ev_county.md",
       "aitone_v01": 95.5,
       "aitone_v02": 95.5,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "samples/hollow_subtle_template.md",
       "aitone_v01": 80.6,
       "aitone_v02": 80.6,
-      "yinyue_adherence": 0.5,
+      "yinyue_required_v02": 0.5,
+      "yinyue_voice_v03": 0.667,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 3.19,
+        "rhetorical_question": 3.19
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": true,
-        "rhetorical_question": true
+        "metaphor": 0.0,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
       }
     },
     {
       "file": "samples/hollow_yinyue_imitation.md",
       "aitone_v01": 99.5,
       "aitone_v02": 99.5,
-      "yinyue_adherence": 1.0,
+      "yinyue_required_v02": 1.0,
+      "yinyue_voice_v03": 0.983,
+      "per1k": {
+        "metaphor": 15.83,
+        "parallelism": 2.64,
+        "rhetorical_question": 7.92
+      },
+      "progression_used": true,
       "checks": {
-        "frame_shou_zhong_gui": true,
-        "metaphor": true,
-        "parallelism": true,
-        "rhetorical_question": true
+        "metaphor": 0.948,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
       }
     },
     {
       "file": "samples/style_yinyue_good_village.md",
       "aitone_v01": 57.7,
       "aitone_v02": 14.8,
-      "yinyue_adherence": 1.0,
+      "yinyue_required_v02": 1.0,
+      "yinyue_voice_v03": 1.0,
+      "per1k": {
+        "metaphor": 2.75,
+        "parallelism": 5.51,
+        "rhetorical_question": 8.26
+      },
+      "progression_used": true,
       "checks": {
-        "frame_shou_zhong_gui": true,
-        "metaphor": true,
-        "parallelism": true,
-        "rhetorical_question": true
+        "metaphor": 1.0,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
+      }
+    },
+    {
+      "file": "samples/style_yinyue_report_ev_county.md",
+      "aitone_v01": 18.0,
+      "aitone_v02": 7.3,
+      "yinyue_required_v02": 0.75,
+      "yinyue_voice_v03": 1.0,
+      "per1k": {
+        "metaphor": 4.54,
+        "parallelism": 2.27,
+        "rhetorical_question": 2.27
+      },
+      "progression_used": false,
+      "checks": {
+        "metaphor": 1.0,
+        "parallelism": 1.0,
+        "rhetorical_question": 1.0
       }
     },
     {
       "file": "samples/nat_commentary_village.md",
       "aitone_v01": 0.0,
       "aitone_v02": 0.0,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "samples/nat_essay_remote_work.md",
       "aitone_v01": 0.0,
       "aitone_v02": 0.0,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "samples/nat_explainer_electricity.md",
       "aitone_v01": 0.0,
       "aitone_v02": 0.0,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.333,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 3.24
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.0
       }
     },
     {
       "file": "samples/nat_report_ev_county.md",
       "aitone_v01": 0.0,
       "aitone_v02": 0.0,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "data/heldout/real_gov2024_review.md",
       "aitone_v01": 26.8,
       "aitone_v02": 20.4,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "data/heldout/real_gov2024_tasks.md",
       "aitone_v01": 42.2,
       "aitone_v02": 42.2,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     },
     {
       "file": "data/heldout/real_weekly100_essay.md",
       "aitone_v01": 11.9,
       "aitone_v02": 11.9,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.333,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.69
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.0
       }
     },
     {
       "file": "data/heldout/real_weekly150_essay.md",
       "aitone_v01": 2.9,
       "aitone_v02": 2.9,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.333,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 2.32
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 1.0
       }
     },
     {
       "file": "data/heldout/real_weekly300_essay.md",
       "aitone_v01": 29.8,
       "aitone_v02": 20.2,
-      "yinyue_adherence": 0.0,
+      "yinyue_required_v02": 0.0,
+      "yinyue_voice_v03": 0.0,
+      "per1k": {
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
+      },
+      "progression_used": false,
       "checks": {
-        "frame_shou_zhong_gui": false,
-        "metaphor": false,
-        "parallelism": false,
-        "rhetorical_question": false
+        "metaphor": 0.0,
+        "parallelism": 0.0,
+        "rhetorical_question": 0.0
       }
     }
   ],
+  "voice_genre": {
+    "grid": [
+      {
+        "cell": "印月 × 评论",
+        "file": "samples/style_yinyue_good_village.md",
+        "voice_yinyue": 1.0,
+        "voice_plain": 0.818,
+        "genre_commentary": 1.0,
+        "genre_report": 0.333
+      },
+      {
+        "cell": "印月 × 调研报告",
+        "file": "samples/style_yinyue_report_ev_county.md",
+        "voice_yinyue": 1.0,
+        "voice_plain": 0.943,
+        "genre_commentary": 0.5,
+        "genre_report": 1.0
+      },
+      {
+        "cell": "平实 × 评论",
+        "file": "samples/nat_commentary_village.md",
+        "voice_yinyue": 0.0,
+        "voice_plain": 1.0,
+        "genre_commentary": 1.0,
+        "genre_report": 0.333
+      },
+      {
+        "cell": "平实 × 调研报告",
+        "file": "samples/nat_report_ev_county.md",
+        "voice_yinyue": 0.0,
+        "voice_plain": 1.0,
+        "genre_commentary": 0.5,
+        "genre_report": 1.0
+      }
+    ],
+    "progression_ablation": {
+      "with_progression": {
+        "v02_required": 1.0,
+        "v03_voice": 1.0
+      },
+      "without_progression": {
+        "v02_required": 0.75,
+        "v03_voice": 1.0
+      }
+    }
+  },
   "injection": {
     "samples/nat_commentary_village.md": {
       "0": 0.0,
@@ -704,6 +880,28 @@
           "rhetoric": 0.132
         },
         "hist_jsd": 0.0206
+      }
+    },
+    "samples/style_yinyue_report_ev_county.md": {
+      "to_natural_LOO": {
+        "distance": 0.729,
+        "families": {
+          "sentlen": 0.763,
+          "punct": 0.411,
+          "funcword": 0.495,
+          "rhetoric": 1.247
+        },
+        "hist_jsd": 0.0305
+      },
+      "to_yinyue": {
+        "distance": 1.01,
+        "families": {
+          "sentlen": 0.91,
+          "punct": 1.102,
+          "funcword": 1.411,
+          "rhetoric": 0.618
+        },
+        "hist_jsd": 0.1171
       }
     },
     "samples/control_filler_ev_county.md": {
@@ -1023,6 +1221,10 @@
     },
     "samples/style_yinyue_good_village.md": {
       "adjacency_advantage": 0.914,
+      "connective_fit": 0.5
+    },
+    "samples/style_yinyue_report_ev_county.md": {
+      "adjacency_advantage": 0.63,
       "connective_fit": 0.5
     },
     "data/heldout/real_weekly100_essay.md": {
