@@ -16,6 +16,14 @@ export {
   EditOpSchema,
   OpErrorCodeSchema,
 } from "./edit-op.js";
+export type {
+  ModelListItem,
+  ModelRef,
+  ModelSlot,
+  RegistryEntrySpec,
+  ResolvedModel,
+  TokenRates,
+} from "./models.js";
 export type { OpenSessionKind, SessionKind } from "./session.js";
 export { editBatchTarget, OpenSessionKindSchema, SessionKindSchema } from "./session.js";
 export type { Actor, RunEvent, TurnKind, TurnRequest, TurnStatus } from "./turn.js";

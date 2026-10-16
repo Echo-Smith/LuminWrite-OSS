@@ -10,6 +10,7 @@ const OWNER_ONLY_PREFIXES = [
   "/me/writing-notes",
   "/me/preferences",
   "/me/model-slots",
+  "/me/registry",
   "/me/feeds",
   "/me/subscriptions",
   "/feeds",
@@ -52,6 +53,7 @@ export function requiredScope(method: string, path: string): ApiScope | "owner-o
   if (/^\/documents\/[^/]+\/turns$/.test(normalized)) {
     return verb === "POST" ? "tasks:write" : "deny";
   }
+  if (normalized === "/models" && verb === "GET") return "documents:read";
   if (hasPrefix(normalized, "/documents") || hasPrefix(normalized, "/sessions")) {
     return verb === "GET" ? "documents:read" : "documents:write";
   }

@@ -166,7 +166,7 @@ describe("凭据接口", () => {
       const key = "lwtest_verify_secret";
       const created = await createCredential(ctx.db, ctx.ring, {
         userId: ctx.owner.userId,
-        provider: "anthropic",
+        provider: "test",
         label: "核对",
         key,
       });

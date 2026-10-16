@@ -8,7 +8,9 @@ M0 打的是地基：块锚点修订、只追加的版本链。会话属于文�
 
 外部 Agent 用所有者签发的 API Key（`lw keys create` 或 `POST /api/v1/me/api-keys`）。明文只在创建时出现一次，库里只存 SHA-256。密钥带 scope 和策略；不能管理凭据、写作笔记、模型 slot、订阅源，也不能再签发密钥。按密钥的请求速率是进程内令牌桶，重启清零。人改过的文档上，外部 Agent 的回合默认挂成提案。
 
-模型供应商的 BYOK 密钥用 AES-256-GCM 存在 `provider_credentials`。没有 `secrets.key` 时用 `LW_SECRETS_KEY`（32 字节 base64）；都没有就首次启动生成数据目录里的 `secrets.key`（权限 0600）。轮换之后以密钥文件为准。`lw secrets rotate` 会换主密钥并重加密。接口和 `lw credentials` 只返回指纹和元数据，不返回密钥。凭据库不读取供应商环境变量；没有 `LW_LLM_ENABLE=1` 时，模型客户端也不会用它们。
+模型供应商的 BYOK 密钥用 AES-256-GCM 存在 `provider_credentials`。没有 `secrets.key` 时用 `LW_SECRETS_KEY`（32 字节 base64）；都没有就首次启动生成数据目录里的 `secrets.key`（权限 0600）。轮换之后以密钥文件为准。`lw secrets rotate` 会换主密钥并重加密。接口和 `lw credentials` 只返回指纹和元数据，不返回密钥。凭据库不读取供应商环境变量。只有 `LW_LLM_ENABLE=1` 时，启动才会把 `LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）加密导入成 `label=env` 的凭据；否则这些变量不会被读。
+
+模型目录用 pi-ai 自带的 models.dev 快照，所有者的 `model_registry` 条目可以覆盖它。价格优先级是用户手填、注册表声明、目录价。一把凭据对应一个 `byok_<credentialId>` provider。回退只发生在第一个 token 之前，成功后钉在 `sessions.model_pin`。`GET /api/v1/models` 只返回引用和是否可用。测试里的探测走 `test/faux`，不访问真实模型。
 
 ## 环境
 
