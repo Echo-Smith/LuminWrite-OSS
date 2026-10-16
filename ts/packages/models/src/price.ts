@@ -79,3 +79,46 @@ export function ownerSpendAllowed(spentMicros: number, capUsd: string | undefine
   if (!Number.isFinite(cap) || cap < 0) return true;
   return spentMicros < Math.round(cap * 1_000_000);
 }
+
+export class TurnSpendError extends Error {
+  readonly retryAfterSeconds: number;
+  constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.name = "TurnSpendError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+export function secondsUntilUtcMidnight(now = new Date()): number {
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
+}
+
+/** 已知价用该模型的单价。未知价用档位里已知最贵成员的价，记入当日上限。 */
+export function chargeMicros(
+  priceKnown: boolean,
+  rates: FullRates,
+  conservative: FullRates,
+  usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number },
+): number {
+  const chosen = priceKnown ? rates : conservative;
+  return costMicros({ cost: chosen }, usage, chosen);
+}
+
+export function assertTurnSpend(input: {
+  userMicros: number;
+  keyMicros: number;
+  ownerCapUsd?: string;
+  keyCapUsd?: number | null;
+  retryAfterSeconds: number;
+}): void {
+  if (!ownerSpendAllowed(input.userMicros, input.ownerCapUsd)) {
+    throw new TurnSpendError("已到今日费用上限", input.retryAfterSeconds);
+  }
+  if (input.keyCapUsd != null && Number.isFinite(input.keyCapUsd) && input.keyCapUsd >= 0) {
+    const capMicros = Math.round(input.keyCapUsd * 1_000_000);
+    if (input.keyMicros >= capMicros) {
+      throw new TurnSpendError("已达到当日成本上限", input.retryAfterSeconds);
+    }
+  }
+}

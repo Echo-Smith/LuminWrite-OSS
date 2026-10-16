@@ -10,7 +10,7 @@ M0 打的是地基：块锚点修订、只追加的版本链。会话属于文�
 
 模型供应商的 BYOK 密钥用 AES-256-GCM 存在 `provider_credentials`。没有 `secrets.key` 时用 `LW_SECRETS_KEY`（32 字节 base64）；都没有就首次启动生成数据目录里的 `secrets.key`（权限 0600）。轮换之后以密钥文件为准。`lw secrets rotate` 会换主密钥并重加密。接口和 `lw credentials` 只返回指纹和元数据，不返回密钥。凭据库不读取供应商环境变量。只有 `LW_LLM_ENABLE=1` 时，启动才会把 `LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）加密导入成 `label=env` 的凭据；否则这些变量不会被读。
 
-模型目录用 pi-ai 自带的 models.dev 快照，所有者的 `model_registry` 条目可以覆盖它。价格优先级是用户手填、注册表声明、目录价。一把凭据对应一个 `byok_<credentialId>` provider。回退只发生在第一个 token 之前，成功后钉在 `sessions.model_pin`。`GET /api/v1/models` 只返回引用和是否可用。测试里的探测走 `test/faux`，不访问真实模型。
+模型目录用 pi-ai 自带的 models.dev 快照，所有者的 `model_registry` 条目可以覆盖它。价格优先级是用户手填、注册表声明、目录价。一把凭据对应一个 `byok_<credentialId>` provider。回退只发生在第一个 token 之前，成功后钉在 `sessions.model_pin`。换了槽位之后，新回合走新链；槽位没变就沿用钉住的模型。`turns` 记下 `model_ref` / `tier_ref`。用量带上 `user_id` 和 `api_key_id`。所有者的 `LW_DAILY_COST_CAP_USD` 和密钥的 `daily_cost_cap_usd` 都会挡住回合。`GET /api/v1/models` 只返回引用和是否可用。测试里的探测和写作回合走 `test/faux`，不访问真实模型。真实供应商只在库里有对应凭据时才会被调用。
 
 ## 环境
 
@@ -27,7 +27,7 @@ pnpm demo
 
 `pnpm demo` 会建一篇文档。主会话只改第 3 段；从旧版本分出的会话再改第 3 段会被拒绝，改第 5 段可以落下。然后从旧版本派生一篇新文档，派生文档自己的修改不会回到源文档。把段落写回源文档必须用源文档当前的块锚点。成功时输出 `DEMO_OK`。
 
-真实模型不会在测试或演示里被调用。只有同时设置 `LW_LLM_ENABLE=1` 和 `LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）时，`@luminwrite/models` 才会构造 OpenAI 兼容客户端。M0 的写作回合使用 Pi 的 faux 提供者，修订内容由确定性计划函数提出，服务端负责校验锚点和说人话。
+真实模型不会在测试或演示里被调用。`lw serve` 的回合先走注册表；没有凭据、又没打开 `LW_ALLOW_FAUX` 时，回合失败，不会去读环境里的供应商密钥。测试和 `pnpm demo` 没有注册表解析器时，仍用进程内的 `test/faux` 计划函数提出修订，服务端负责校验锚点和说人话。`LW_LIVE=1` 的冒烟测试才会碰真实模型。
 
 ## 包
 
