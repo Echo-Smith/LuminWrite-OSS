@@ -10,6 +10,8 @@ import {
   readOwnerToken,
   revealCredential,
 } from "@luminwrite/db";
+import { createKnowledgeBase } from "@luminwrite/kb";
+import { createFeedService } from "@luminwrite/sources";
 import { describe, expect, it } from "vitest";
 
 import { runLw } from "./lw.js";
@@ -144,6 +146,49 @@ describe("lw", () => {
     if (!row) throw new Error("没有凭据");
     expect(revealCredential(row, secrets.ring).reveal()).toBe(key);
     await db.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("feeds list、export、remove 不访问网络", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lw-feeds-cli-"));
+    const env = { LW_DATA_DIR: dir };
+    let out = "";
+    const stdout = {
+      write: (chunk: string) => {
+        out += chunk;
+      },
+    };
+    const stderr = { write: () => {} };
+    expect(await runLw(["init"], env, stdout, stderr)).toBe(0);
+    const db = await openDatabase({ kind: "pglite", dataDir: dir });
+    let feedId = "";
+    try {
+      const owner = await db.getOwner();
+      if (!owner) throw new Error("没有所有者");
+      const kb = createKnowledgeBase({ db });
+      const feeds = createFeedService({
+        db,
+        kb,
+        fetch: async () => {
+          throw new Error("测试不访问网络");
+        },
+      });
+      const feed = await feeds.subscribe(owner.id, { url: "https://example.com/feed.xml" });
+      feedId = feed.id;
+    } finally {
+      await db.close();
+    }
+    out = "";
+    expect(await runLw(["feeds", "list"], env, stdout, stderr)).toBe(0);
+    expect(out).toContain(feedId);
+    expect(out).toContain("https://example.com/feed.xml");
+    out = "";
+    expect(await runLw(["feeds", "export"], env, stdout, stderr)).toBe(0);
+    expect(out).toContain("https://example.com/feed.xml");
+    expect(await runLw(["feeds", "remove", feedId], env, stdout, stderr)).toBe(0);
+    out = "";
+    expect(await runLw(["feeds", "list"], env, stdout, stderr)).toBe(0);
+    expect(out).toContain("没有订阅");
     await rm(dir, { recursive: true, force: true });
   });
 });

@@ -355,4 +355,43 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunk_owner ON chunks (owner_id);
 CREATE INDEX IF NOT EXISTS idx_chunk_fts ON chunks USING gin (to_tsvector('simple', search_text));
 CREATE INDEX IF NOT EXISTS idx_chunk_vec ON chunks USING hnsw (embedding vector_cosine_ops);
+
+CREATE TABLE IF NOT EXISTS feeds (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  url text NOT NULL,
+  folder_id text NOT NULL,
+  title text,
+  etag text,
+  last_modified text,
+  full_text boolean NOT NULL DEFAULT false,
+  is_hotspot boolean NOT NULL DEFAULT false,
+  max_items_per_tick integer NOT NULL DEFAULT 3,
+  retain_days integer NOT NULL DEFAULT 180,
+  fail_count integer NOT NULL DEFAULT 0,
+  last_error text,
+  last_fetched_at timestamptz,
+  UNIQUE (owner_id, url)
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  citing_document_id text NOT NULL,
+  session_id text,
+  turn_id text,
+  plan_id text,
+  question_id text,
+  source_id text NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  source_revision integer NOT NULL,
+  chunk_id text,
+  cited_version_id text,
+  quote text NOT NULL,
+  locator jsonb NOT NULL,
+  authority smallint NOT NULL,
+  citation_status text NOT NULL DEFAULT 'unverified',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_source ON evidence (source_id);
 `;

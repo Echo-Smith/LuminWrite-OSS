@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
   createApiKey,
@@ -18,7 +18,9 @@ import {
   rotateOwnerToken,
   updateCredential,
 } from "@luminwrite/db";
+import { createKnowledgeBase } from "@luminwrite/kb";
 import { startServer } from "@luminwrite/server";
+import { createFeedService, safeFetch } from "@luminwrite/sources";
 
 type Writer = { write(chunk: string): void };
 
@@ -35,13 +37,14 @@ export async function runLw(
     if (command === "keys") return await keys(argv.slice(1), env, stdout);
     if (command === "credentials") return await credentials(argv.slice(1), env, stdout);
     if (command === "secrets" && sub === "rotate") return await rotateSecrets(env, stdout);
+    if (command === "feeds") return await feedsCommand(argv.slice(1), env, stdout);
     if (command === "serve") return await serve(env, stdout, stderr);
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : "命令失败"}\n`);
     return 1;
   }
   stderr.write(
-    "用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw credentials add|list|update|remove | lw secrets rotate | lw serve\n",
+    "用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw credentials add|list|update|remove | lw secrets rotate | lw feeds add|list|remove|import|export | lw serve\n",
   );
   return 1;
 }
@@ -284,6 +287,71 @@ async function rotateSecrets(env: NodeJS.ProcessEnv, stdout: Writer): Promise<nu
     stdout.write(`密钥文件 ${rotated.path}\n`);
     stdout.write("备份数据库时要另外备份这个文件，丢了只能重新录入 key。\n");
     return 0;
+  } finally {
+    await db.close();
+  }
+}
+
+async function feedsCommand(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  stdout: Writer,
+): Promise<number> {
+  const [sub, ...rest] = argv;
+  const location = resolveDatabaseLocation(env);
+  const db = await openDatabase(location);
+  try {
+    const owner = await ensureOwner(db, { dataDir: location.dataDir });
+    const kb = createKnowledgeBase({ db });
+    const feeds = createFeedService({
+      db,
+      kb,
+      fetch: (url, options) =>
+        safeFetch(url, { ...options, allowPrivate: env.LW_ALLOW_PRIVATE_FETCH === "1" }),
+    });
+    if (sub === "list") {
+      const rows = await feeds.list(owner.userId);
+      if (rows.length === 0) stdout.write("没有订阅\n");
+      for (const feed of rows) {
+        stdout.write(`${feed.id} ${feed.title ?? ""} ${feed.url}\n`);
+      }
+      return 0;
+    }
+    if (sub === "add") {
+      const url = rest.find((arg) => !arg.startsWith("--"));
+      if (!url) throw new Error("用法：lw feeds add <url> [--full-text]");
+      const feed = await feeds.subscribe(owner.userId, {
+        url,
+        fullText: rest.includes("--full-text"),
+      });
+      const outcome = await feeds.refresh(feed.id);
+      stdout.write(`${feed.id} ${feed.url} 新增 ${outcome.added}\n`);
+      return 0;
+    }
+    if (sub === "remove") {
+      const id = rest.find((arg) => !arg.startsWith("--"));
+      if (!id) throw new Error("用法：lw feeds remove <id> [--keep-items]");
+      await feeds.unsubscribe(id, {
+        keepItems: rest.includes("--keep-items"),
+        ownerId: owner.userId,
+      });
+      stdout.write(`已取消 ${id}\n`);
+      return 0;
+    }
+    if (sub === "import") {
+      const file = rest[0];
+      if (!file) throw new Error("用法：lw feeds import <file.opml>");
+      const xml = await readFile(file, "utf8");
+      const outcome = await feeds.importOpml(owner.userId, xml);
+      stdout.write(`导入 ${outcome.added}，失败 ${outcome.failed.length}\n`);
+      return 0;
+    }
+    if (sub === "export") {
+      const xml = await feeds.exportOpml(owner.userId);
+      stdout.write(xml.endsWith("\n") ? xml : `${xml}\n`);
+      return 0;
+    }
+    throw new Error("用法：lw feeds add|list|remove|import|export");
   } finally {
     await db.close();
   }
