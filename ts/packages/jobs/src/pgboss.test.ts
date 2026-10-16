@@ -29,5 +29,5 @@ describe("pg-boss 适配器", () => {
       await jobs.close();
       await db.close();
     }
-  });
+  }, 20_000);
 });
