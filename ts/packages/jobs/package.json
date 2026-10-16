@@ -14,6 +14,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@electric-sql/pglite": "catalog:",
+    "@luminwrite/db": "workspace:*",
+    "pg-boss": "catalog:"
+  },
   "devDependencies": {
     "typescript": "catalog:",
     "vitest": "catalog:"

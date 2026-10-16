@@ -29,6 +29,18 @@ export interface KnowledgeBase {
     folderId?: string;
     title?: string;
   }): Promise<{ sourceId: string; status: "indexed" | "duplicate" }>;
+  saveText(input: {
+    ownerId: string;
+    kind: "upload" | "url" | "rss_item";
+    title: string;
+    body: string;
+    url?: string;
+    publisher?: string;
+    publishedAt?: string | null;
+    folderId?: string;
+    feedId?: string;
+    feedGuid?: string;
+  }): Promise<{ sourceId: string; status: "indexed" | "duplicate" | "updated" }>;
   indexDocument(documentId: string): Promise<{ status: "indexed" | "skipped"; sourceId?: string }>;
   search(query: {
     ownerId: string;
@@ -105,6 +117,81 @@ export function createKnowledgeBase(input: { db: LwDatabase; embedder?: Embedder
       } catch (error) {
         if (!isUniqueViolation(error)) throw error;
         const raced = await findHash(db, upload.ownerId, hash);
+        if (raced) return { sourceId: raced, status: "duplicate" };
+        throw error;
+      }
+      return { sourceId, status: "indexed" };
+    },
+
+    async saveText(input) {
+      if (input.folderId) await assertFolder(db, input.ownerId, input.folderId);
+      const body = normalizeBody(input.body);
+      if (!body) throw new KbInputError("文件里没有正文");
+      const title = input.title.trim().slice(0, 200) || "未命名";
+      const hash = contentHash(body);
+      const meta = {
+        url: input.url ?? null,
+        publisher: input.publisher ?? null,
+        publishedAt: input.publishedAt ?? null,
+        feedId: input.feedId ?? null,
+        feedGuid: input.feedGuid ?? null,
+      };
+      const embedder = await embedderFor(input.ownerId);
+      if (input.kind === "rss_item" && input.feedId && input.feedGuid) {
+        const existing = await findFeedItem(db, input.ownerId, input.feedId, input.feedGuid);
+        if (existing) {
+          if (existing.content_hash === hash) {
+            return { sourceId: existing.id, status: "duplicate" };
+          }
+          try {
+            await writeSource(db, {
+              id: existing.id,
+              ownerId: input.ownerId,
+              kind: "rss_item",
+              title,
+              body,
+              hash,
+              authority: 2,
+              folderId: input.folderId ?? null,
+              documentId: null,
+              versionId: null,
+              blockIds: null,
+              embedder,
+              revision: num(existing.revision) + 1,
+              ...meta,
+            });
+          } catch (error) {
+            if (!isUniqueViolation(error)) throw error;
+            const raced = await findHash(db, input.ownerId, hash);
+            if (raced) return { sourceId: raced, status: "duplicate" };
+            throw error;
+          }
+          return { sourceId: existing.id, status: "updated" };
+        }
+      }
+      const hashed = await findHash(db, input.ownerId, hash);
+      if (hashed) return { sourceId: hashed, status: "duplicate" };
+      const sourceId = newId("src");
+      try {
+        await writeSource(db, {
+          id: sourceId,
+          ownerId: input.ownerId,
+          kind: input.kind,
+          title,
+          body,
+          hash,
+          authority: 2,
+          folderId: input.folderId ?? null,
+          documentId: null,
+          versionId: null,
+          blockIds: null,
+          embedder,
+          revision: 1,
+          ...meta,
+        });
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        const raced = await findHash(db, input.ownerId, hash);
         if (raced) return { sourceId: raced, status: "duplicate" };
         throw error;
       }
@@ -369,6 +456,22 @@ async function findHash(
   return rows[0]?.id;
 }
 
+async function findFeedItem(
+  db: LwDatabase,
+  ownerId: string,
+  feedId: string,
+  feedGuid: string,
+): Promise<{ id: string; revision: number | string; content_hash: string } | undefined> {
+  const rows = await db.query<{ id: string; revision: number | string; content_hash: string }>(
+    `SELECT id, revision, content_hash
+     FROM sources
+     WHERE owner_id = $1 AND feed_id = $2 AND feed_guid = $3 AND kind = 'rss_item'
+     LIMIT 1`,
+    [ownerId, feedId, feedGuid],
+  );
+  return rows[0];
+}
+
 async function findDocumentSource(
   db: LwDatabase,
   ownerId: string,
@@ -397,6 +500,11 @@ async function writeSource(
     blockIds: string[] | null;
     embedder: EmbeddingPort | null;
     revision: number;
+    url?: string | null;
+    publisher?: string | null;
+    publishedAt?: string | null;
+    feedId?: string | null;
+    feedGuid?: string | null;
   },
 ) {
   const chunks = chunkText(input.body);
@@ -418,13 +526,20 @@ async function writeSource(
   await db.transaction(async (query) => {
     await query(
       `INSERT INTO sources (
-         id, owner_id, kind, title, authority, folder_id, document_id, indexed_version_id,
+         id, owner_id, kind, title, url, publisher, published_at, authority, folder_id,
+         feed_id, feed_guid, document_id, indexed_version_id,
          body, revision, content_hash, status, last_error
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'indexed', $12
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'indexed', $17
        )
        ON CONFLICT (id) DO UPDATE SET
          title = EXCLUDED.title,
+         url = EXCLUDED.url,
+         publisher = EXCLUDED.publisher,
+         published_at = EXCLUDED.published_at,
+         folder_id = EXCLUDED.folder_id,
+         feed_id = EXCLUDED.feed_id,
+         feed_guid = EXCLUDED.feed_guid,
          body = EXCLUDED.body,
          revision = EXCLUDED.revision,
          content_hash = EXCLUDED.content_hash,
@@ -437,8 +552,13 @@ async function writeSource(
         input.ownerId,
         input.kind,
         input.title,
+        input.url ?? null,
+        input.publisher ?? null,
+        input.publishedAt ?? null,
         input.authority,
         input.folderId,
+        input.feedId ?? null,
+        input.feedGuid ?? null,
         input.documentId,
         input.versionId,
         input.body,

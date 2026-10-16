@@ -21,7 +21,9 @@
   "dependencies": {
     "@luminwrite/db": "workspace:*",
     "@luminwrite/harness": "workspace:*",
-    "@luminwrite/server": "workspace:*"
+    "@luminwrite/kb": "workspace:*",
+    "@luminwrite/server": "workspace:*",
+    "@luminwrite/sources": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

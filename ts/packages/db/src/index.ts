@@ -29,6 +29,7 @@ export type {
   ApplyOutcome,
   BlockView,
   CredentialRow,
+  DatabaseDriver,
   DerivedDocumentView,
   DocumentListItem,
   DocumentView,
