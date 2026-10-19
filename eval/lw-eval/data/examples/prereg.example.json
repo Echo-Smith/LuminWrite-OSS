@@ -1,0 +1,27 @@
+{
+  "exp_id": "EXP-N1-deai",
+  "hypothesis": "去 AI 腔子代理使输出在朗读测试中更像人话，且不损害事实忠实与逻辑",
+  "primary_metric": "pairwise_naturalness 的 BT 胜率（full vs -deai，跨 2 家 judge，位置互换一致才计）",
+  "secondary_metrics": [
+    "aitone_score 配对差",
+    "hollow_ratio",
+    "人类朗读测试胜率（gold 子集）"
+  ],
+  "comparison": "full vs -deai，同任务同种子配对",
+  "threshold": "胜率 ≥0.60 且 95% CI 下限 >0.50；人类子集方向一致",
+  "guardrails": [
+    "claim 无支持率不升高超过 2 个百分点",
+    "逻辑清单 L3/L5 失败率不升高",
+    "长度变化在 ±15% 内（超出则做长度匹配复评）"
+  ],
+  "n": 200,
+  "power_calc": "去平局后检测胜率 0.60 需约 194 对（α=0.05 双侧，power=0.8，lweval power）",
+  "judges": [
+    "deepseek-v3.x",
+    "qwen-max-class",
+    "glm-class（不得与生成模型同源）"
+  ],
+  "exclusions": "status=infra_error 的样本单独报告，不计入；两版本任一失败的配对整对剔除并报告剔除率",
+  "frozen_at": "<提交时填写>",
+  "git_sha": "<提交时填写>"
+}
