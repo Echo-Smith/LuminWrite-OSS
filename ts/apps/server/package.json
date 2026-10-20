@@ -25,6 +25,7 @@
     "@luminwrite/harness": "workspace:*",
     "@luminwrite/jobs": "workspace:*",
     "@luminwrite/kb": "workspace:*",
+    "@luminwrite/library": "workspace:*",
     "@luminwrite/models": "workspace:*",
     "@luminwrite/research": "workspace:*",
     "@luminwrite/sources": "workspace:*",

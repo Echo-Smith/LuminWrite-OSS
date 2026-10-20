@@ -35,7 +35,7 @@ export function isOwnerOnlyPath(path: string): boolean {
   return OWNER_ONLY_PREFIXES.some((prefix) => hasPrefix(path, prefix));
 }
 
-/** 现有路由需要的 scope。还没实现的任务、文库、信源也先按 scope 归类，缺权限是 403 而不是 404。 */
+/** 现有路由需要的 scope。还没实现的任务和信源也先按 scope 归类，缺权限是 403 而不是 404。 */
 export function requiredScope(method: string, path: string): ApiScope | "owner-only" | "deny" {
   const normalized = normalizeApiPath(path);
   if (isOwnerOnlyPath(normalized)) return "owner-only";
@@ -43,7 +43,10 @@ export function requiredScope(method: string, path: string): ApiScope | "owner-o
   if (hasPrefix(normalized, "/tasks")) {
     return verb === "GET" ? "tasks:read" : "tasks:write";
   }
-  if (hasPrefix(normalized, "/library")) return "library:read";
+  if (normalized === "/library/purge") return "owner-only";
+  if (hasPrefix(normalized, "/library")) {
+    return verb === "GET" ? "library:read" : "documents:write";
+  }
   if (hasPrefix(normalized, "/kb")) return "kb:write";
   if (hasPrefix(normalized, "/sources")) {
     return verb === "GET" ? "sources:read" : "kb:write";

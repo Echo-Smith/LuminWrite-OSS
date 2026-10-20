@@ -27,6 +27,7 @@ export {
 export type {
   ApiKeyRecord,
   ApplyOutcome,
+  ArticleView,
   BlockView,
   CredentialRow,
   DatabaseDriver,
