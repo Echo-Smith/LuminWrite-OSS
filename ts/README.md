@@ -6,7 +6,7 @@ M0 打的是地基：块锚点修订、只追加的版本链。会话属于文�
 
 本机默认一个所有者。首次 `lw init` 或 `lw serve` 会在数据目录写下 `owner.token`（权限 0600），库里只留令牌的 SHA-256。`/api/v1` 的调用者由这把令牌推出，请求体里的 `actor` 和 `ownerId` 会被忽略。默认只监听 `127.0.0.1`。
 
-外部 Agent 用所有者签发的 API Key（`lw keys create` 或 `POST /api/v1/me/api-keys`）。明文只在创建时出现一次，库里只存 SHA-256。密钥带 scope 和策略；不能管理凭据、写作笔记、模型 slot、订阅源，也不能再签发密钥。按密钥的请求速率是进程内令牌桶，重启清零。人改过的文档上，外部 Agent 的回合默认挂成提案。
+外部 Agent 用所有者签发的 API Key（`lw keys create` 或 `POST /api/v1/me/api-keys`）。明文只在创建时出现一次，库里只存 SHA-256。密钥带 scope 和策略；不能管理凭据、写作笔记、模型 slot、订阅源，也不能再签发密钥。按密钥的请求速率是进程内令牌桶，重启清零。人改过的文档上，外部 Agent 的回合和 `POST /ops` 默认挂成提案。提案按块接受或拒绝。锚点还能接到当前正文时，接受会把旧锚点重放上去；接不上，或者文档回滚之后，这块标成过期。每接受一块就新开一个版本。`GET /documents/:id/proposals` 列出提案和块。
 
 模型供应商的 BYOK 密钥用 AES-256-GCM 存在 `provider_credentials`。没有 `secrets.key` 时用 `LW_SECRETS_KEY`（32 字节 base64）；都没有就首次启动生成数据目录里的 `secrets.key`（权限 0600）。轮换之后以密钥文件为准。`lw secrets rotate` 会换主密钥并重加密。接口和 `lw credentials` 只返回指纹和元数据，不返回密钥。凭据库不读取供应商环境变量。只有 `LW_LLM_ENABLE=1` 时，启动才会把 `LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）加密导入成 `label=env` 的凭据；否则这些变量不会被读。
 
