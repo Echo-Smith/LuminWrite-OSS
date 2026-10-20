@@ -3,10 +3,15 @@ import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import type {
   Actor,
+  ApiTaskErrorBody,
+  ApiTaskNeedsInput,
+  ApiTaskPhase,
+  ApiTaskState,
   BlockId,
   DossierContent,
   DossierOp,
   EditOp,
+  NormalizedCreateTask,
   OpError,
   RunEvent,
   SessionKind,
@@ -69,6 +74,8 @@ const {
   users,
   sources,
   evidence,
+  apiTasks,
+  apiTaskEvents,
 } = schema;
 
 export interface ResearchPlanRow {
@@ -339,6 +346,34 @@ export interface HunkView {
   id: string;
   status: string;
   op: EditOp;
+}
+
+export interface ApiTaskRecord {
+  id: string;
+  userId: string;
+  apiKeyId: string;
+  idempotencyKey: string;
+  kind: "write" | "revise";
+  state: ApiTaskState;
+  phase: ApiTaskPhase | null;
+  documentId: string | null;
+  sessionId: string | null;
+  turnId: string | null;
+  resultVersionId: string | null;
+  proposalId: string | null;
+  needsInput: ApiTaskNeedsInput | null;
+  input: NormalizedCreateTask;
+  error: ApiTaskErrorBody | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApiTaskEventRecord {
+  seq: number;
+  taskId: string;
+  type: string;
+  payload: unknown;
+  createdAt: string;
 }
 
 export interface ProposalView {
@@ -2598,6 +2633,274 @@ export class LwDatabase {
     };
   }
 
+  async findApiTaskByIdempotency(
+    apiKeyId: string,
+    idempotencyKey: string,
+  ): Promise<ApiTaskRecord | undefined> {
+    const rows = await this.orm
+      .select()
+      .from(apiTasks)
+      .where(and(eq(apiTasks.apiKeyId, apiKeyId), eq(apiTasks.idempotencyKey, idempotencyKey)))
+      .limit(1);
+    const row = rows[0];
+    return row ? toApiTask(row) : undefined;
+  }
+
+  async getApiTask(id: string): Promise<ApiTaskRecord | undefined> {
+    const rows = await this.orm.select().from(apiTasks).where(eq(apiTasks.id, id)).limit(1);
+    const row = rows[0];
+    return row ? toApiTask(row) : undefined;
+  }
+
+  async countActiveApiTasks(apiKeyId: string): Promise<number> {
+    const rows = await this.orm
+      .select({ n: sql<number>`count(*)::int` })
+      .from(apiTasks)
+      .where(
+        and(
+          eq(apiTasks.apiKeyId, apiKeyId),
+          inArray(apiTasks.state, ["submitted", "working", "input_required"]),
+        ),
+      );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async latestApiSessionId(apiKeyId: string, documentId: string): Promise<string | undefined> {
+    const rows = await this.orm
+      .select({ sessionId: apiTasks.sessionId })
+      .from(apiTasks)
+      .where(
+        and(
+          eq(apiTasks.apiKeyId, apiKeyId),
+          eq(apiTasks.documentId, documentId),
+          isNotNull(apiTasks.sessionId),
+        ),
+      )
+      .orderBy(desc(apiTasks.createdAt), desc(apiTasks.id))
+      .limit(1);
+    return rows[0]?.sessionId ?? undefined;
+  }
+
+  async claimApiTask(input: {
+    userId: string;
+    apiKeyId: string;
+    idempotencyKey: string;
+    kind: "write" | "revise";
+    state: "submitted" | "input_required";
+    phase?: ApiTaskPhase | null;
+    documentId: string;
+    sessionId: string;
+    input: NormalizedCreateTask;
+    needsInput: ApiTaskNeedsInput | null;
+    maxConcurrent: number | null;
+  }): Promise<{ status: "created" | "replay"; task: ApiTaskRecord } | { status: "limited" }> {
+    try {
+      return await this.orm.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(apiTasks)
+          .where(
+            and(
+              eq(apiTasks.apiKeyId, input.apiKeyId),
+              eq(apiTasks.idempotencyKey, input.idempotencyKey),
+            ),
+          )
+          .limit(1);
+        const prior = existing[0];
+        if (prior) return { status: "replay" as const, task: toApiTask(prior) };
+        if (input.maxConcurrent != null) {
+          const active = await tx
+            .select({ n: sql<number>`count(*)::int` })
+            .from(apiTasks)
+            .where(
+              and(
+                eq(apiTasks.apiKeyId, input.apiKeyId),
+                inArray(apiTasks.state, ["submitted", "working", "input_required"]),
+              ),
+            );
+          if (Number(active[0]?.n ?? 0) >= input.maxConcurrent)
+            return { status: "limited" as const };
+        }
+        const now = new Date();
+        const id = newId("tsk");
+        await tx.insert(apiTasks).values({
+          id,
+          userId: input.userId,
+          apiKeyId: input.apiKeyId,
+          idempotencyKey: input.idempotencyKey,
+          kind: input.kind,
+          state: input.state,
+          phase: input.phase ?? null,
+          documentId: input.documentId,
+          sessionId: input.sessionId,
+          turnId: null,
+          resultVersionId: null,
+          proposalId: null,
+          needsInput: input.needsInput,
+          input: taskInputRecord(input.input),
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        await this.appendApiTaskEventTx(tx, id, "task.submitted", {
+          state: "submitted",
+          documentId: input.documentId,
+        });
+        if (input.state === "input_required" && input.needsInput) {
+          await this.appendApiTaskEventTx(tx, id, "task.input_required", {
+            state: "input_required",
+            needsInput: input.needsInput,
+          });
+        }
+        const created = await tx.select().from(apiTasks).where(eq(apiTasks.id, id)).limit(1);
+        const row = created[0];
+        if (!row) throw new Error("任务没有写入");
+        return { status: "created" as const, task: toApiTask(row) };
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const found = await this.findApiTaskByIdempotency(input.apiKeyId, input.idempotencyKey);
+      if (!found) throw error;
+      return { status: "replay", task: found };
+    }
+  }
+
+  async transitionApiTask(
+    id: string,
+    from: readonly ApiTaskState[],
+    patch: {
+      state: ApiTaskState;
+      phase?: ApiTaskPhase | null;
+      turnId?: string | null;
+      resultVersionId?: string | null;
+      proposalId?: string | null;
+      needsInput?: ApiTaskNeedsInput | null;
+      error?: ApiTaskErrorBody | null;
+    },
+    event: { type: string; payload: unknown },
+  ): Promise<ApiTaskRecord | undefined> {
+    return this.orm.transaction(async (tx) => {
+      const updated = await tx
+        .update(apiTasks)
+        .set({
+          state: patch.state,
+          updatedAt: new Date(),
+          ...("phase" in patch ? { phase: patch.phase ?? null } : {}),
+          ...("turnId" in patch ? { turnId: patch.turnId ?? null } : {}),
+          ...("resultVersionId" in patch ? { resultVersionId: patch.resultVersionId ?? null } : {}),
+          ...("proposalId" in patch ? { proposalId: patch.proposalId ?? null } : {}),
+          ...("needsInput" in patch ? { needsInput: patch.needsInput ?? null } : {}),
+          ...("error" in patch ? { error: patch.error ?? null } : {}),
+        })
+        .where(and(eq(apiTasks.id, id), inArray(apiTasks.state, [...from])))
+        .returning();
+      const row = updated[0];
+      if (!row) return undefined;
+      await this.appendApiTaskEventTx(tx, id, event.type, event.payload);
+      return toApiTask(row);
+    });
+  }
+
+  async patchApiTaskInput(id: string, input: NormalizedCreateTask): Promise<void> {
+    await this.orm
+      .update(apiTasks)
+      .set({ input: taskInputRecord(input), updatedAt: new Date() })
+      .where(eq(apiTasks.id, id));
+  }
+
+  async appendApiTaskEvent(taskId: string, type: string, payload: unknown): Promise<void> {
+    await this.orm.transaction(async (tx) => {
+      await this.appendApiTaskEventTx(tx, taskId, type, payload);
+    });
+  }
+
+  async taskEventsAfter(taskId: string, afterSeq: number): Promise<ApiTaskEventRecord[]> {
+    const rows = await this.orm
+      .select()
+      .from(apiTaskEvents)
+      .where(eq(apiTaskEvents.taskId, taskId))
+      .orderBy(apiTaskEvents.seq);
+    return rows
+      .filter((row) => row.seq > afterSeq)
+      .map((row) => ({
+        seq: row.seq,
+        taskId: row.taskId,
+        type: row.type,
+        payload: row.payload,
+        createdAt: stamp(row.createdAt),
+      }));
+  }
+
+  async proposalForTurn(turnId: string): Promise<ProposalView | undefined> {
+    const rows = await this.orm
+      .select()
+      .from(proposals)
+      .where(eq(proposals.turnId, turnId))
+      .limit(1);
+    const row = rows[0];
+    return row ? this.proposalView(row) : undefined;
+  }
+
+  async usageTotalsForTurn(turnId: string): Promise<{
+    inputTokens: number;
+    outputTokens: number;
+    costMicros: number;
+  }> {
+    const rows = await this.orm
+      .select({
+        inputTokens: sql<number>`coalesce(sum(${usageLedger.inputTokens}), 0)`,
+        outputTokens: sql<number>`coalesce(sum(${usageLedger.outputTokens}), 0)`,
+        costMicros: sql<number>`coalesce(sum(${usageLedger.costMicros}), 0)`,
+      })
+      .from(usageLedger)
+      .where(eq(usageLedger.turnId, turnId));
+    const row = rows[0];
+    return {
+      inputTokens: Number(row?.inputTokens ?? 0),
+      outputTokens: Number(row?.outputTokens ?? 0),
+      costMicros: Number(row?.costMicros ?? 0),
+    };
+  }
+
+  async attachUsageToTask(turnId: string, apiTaskId: string): Promise<void> {
+    await this.orm.update(usageLedger).set({ apiTaskId }).where(eq(usageLedger.turnId, turnId));
+  }
+
+  async setDocumentMeta(
+    id: string,
+    meta: { styleRef?: string; brief?: Record<string, unknown>; tierRef?: string },
+  ): Promise<void> {
+    const patch: { styleRef?: string; brief?: Record<string, unknown>; tierRef?: string } = {};
+    if (meta.styleRef) patch.styleRef = meta.styleRef;
+    if (meta.brief) patch.brief = meta.brief;
+    if (meta.tierRef) patch.tierRef = meta.tierRef;
+    if (!patch.styleRef && !patch.brief && !patch.tierRef) return;
+    await this.orm.update(documents).set(patch).where(eq(documents.id, id));
+  }
+
+  private async appendApiTaskEventTx(
+    tx: Tx,
+    taskId: string,
+    type: string,
+    payload: unknown,
+  ): Promise<void> {
+    const latest = await tx
+      .select({ seq: apiTaskEvents.seq })
+      .from(apiTaskEvents)
+      .where(eq(apiTaskEvents.taskId, taskId))
+      .orderBy(desc(apiTaskEvents.seq))
+      .limit(1);
+    const seq = (latest[0]?.seq ?? 0) + 1;
+    await tx.insert(apiTaskEvents).values({
+      id: newId("evt"),
+      taskId,
+      seq,
+      type,
+      payload: payload ?? {},
+      createdAt: new Date(),
+    });
+  }
+
   private async selectApiKeys(where: SQL): Promise<ApiKeyRecord[]> {
     const rows = await this.orm
       .select({
@@ -2691,6 +2994,119 @@ function toCredential(row: typeof providerCredentials.$inferSelect): CredentialR
 }
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
+
+const TASK_STATES: readonly ApiTaskState[] = [
+  "submitted",
+  "working",
+  "input_required",
+  "completed",
+  "failed",
+  "canceled",
+  "rejected",
+];
+
+const TASK_PHASES: readonly ApiTaskPhase[] = [
+  "planning",
+  "researching",
+  "outlining",
+  "drafting",
+  "reviewing",
+  "revising",
+];
+
+function taskInputRecord(input: NormalizedCreateTask): Record<string, unknown> {
+  return { ...input };
+}
+
+function asTaskState(value: string): ApiTaskState {
+  for (const state of TASK_STATES) {
+    if (state === value) return state;
+  }
+  return "failed";
+}
+
+function asTaskPhase(value: string | null): ApiTaskPhase | null {
+  if (!value) return null;
+  for (const phase of TASK_PHASES) {
+    if (phase === value) return phase;
+  }
+  return null;
+}
+
+function asTaskKind(value: string): "write" | "revise" {
+  return value === "revise" ? "revise" : "write";
+}
+
+function asNeedsInput(value: unknown): ApiTaskNeedsInput | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "outline_approval" && record.kind !== "clarification") return null;
+  if (typeof record.prompt !== "string") return null;
+  return {
+    kind: record.kind,
+    prompt: record.prompt,
+    ...(record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+      ? { payload: record.payload as Record<string, unknown> }
+      : {}),
+  };
+}
+
+function asTaskError(value: unknown): ApiTaskErrorBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.code !== "string" || typeof record.message !== "string") return null;
+  if (typeof record.retryable !== "boolean") return null;
+  return { code: record.code, message: record.message, retryable: record.retryable };
+}
+
+function asTaskInput(value: unknown, kind: "write" | "revise"): NormalizedCreateTask {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const input = record as NormalizedCreateTask;
+  const sources = input.sources;
+  return {
+    kind,
+    ...(input.documentId ? { documentId: input.documentId } : {}),
+    ...(input.brief ? { brief: input.brief } : {}),
+    ...(input.instruction ? { instruction: input.instruction } : {}),
+    ...(input.anchors ? { anchors: input.anchors } : {}),
+    ...(input.styleRef ? { styleRef: input.styleRef } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    sources: {
+      kb: sources?.kb ?? true,
+      rss: sources?.rss ?? true,
+      library: sources?.library ?? false,
+      web: sources?.web ?? false,
+      urls: sources?.urls ?? [],
+    },
+    review: { outlineApproval: input.review?.outlineApproval ?? false },
+    ...(input.applyMode ? { applyMode: input.applyMode } : {}),
+    ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
+    ...(input.answer ? { answer: input.answer } : {}),
+  };
+}
+
+function toApiTask(row: typeof apiTasks.$inferSelect): ApiTaskRecord {
+  const kind = asTaskKind(row.kind);
+  return {
+    id: row.id,
+    userId: row.userId,
+    apiKeyId: row.apiKeyId,
+    idempotencyKey: row.idempotencyKey,
+    kind,
+    state: asTaskState(row.state),
+    phase: asTaskPhase(row.phase),
+    documentId: row.documentId,
+    sessionId: row.sessionId,
+    turnId: row.turnId,
+    resultVersionId: row.resultVersionId,
+    proposalId: row.proposalId,
+    needsInput: asNeedsInput(row.needsInput),
+    input: asTaskInput(row.input, kind),
+    error: asTaskError(row.error),
+    createdAt: stamp(row.createdAt),
+    updatedAt: stamp(row.updatedAt),
+  };
+}
 
 function toVersion(row: typeof docVersions.$inferSelect): VersionView {
   return {

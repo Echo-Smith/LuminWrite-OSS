@@ -16,6 +16,24 @@ export interface LwClient {
     title?: string;
   }): Promise<{ sourceId: string; status: "indexed" | "duplicate" }>;
   searchSources(query: string): Promise<{ note: string; hits: Array<{ sourceId: string }> }>;
+  submitTask(body: Record<string, unknown>, idempotencyKey: string): Promise<ClientTask>;
+  getTask(id: string): Promise<ClientTask>;
+  answerTask(id: string, message: string): Promise<ClientTask>;
+  cancelTask(id: string): Promise<ClientTask>;
+  taskEvents(id: string, after?: number): Promise<string>;
+}
+
+export interface ClientTask {
+  id: string;
+  state: string;
+  phase?: string;
+  documentId?: string;
+  resultVersionId?: string;
+  proposalId?: string;
+  usage: { inputTokens: number; outputTokens: number; costUsd: number };
+  error?: { code: string; message: string; retryable: boolean };
+  createdAt: string;
+  updatedAt: string;
 }
 
 export function createClient(
@@ -96,6 +114,50 @@ export function createClient(
       );
       if (!response.ok) throw new Error(`检索资料失败 ${response.status}`);
       return (await response.json()) as { note: string; hits: Array<{ sourceId: string }> };
+    },
+    async submitTask(body, idempotencyKey) {
+      const response = await fetchImpl(`${root}/api/v1/tasks`, {
+        method: "POST",
+        headers: {
+          ...authHeaders(options),
+          "content-type": "application/json",
+          "idempotency-key": idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(`提交任务失败 ${response.status}`);
+      return (await response.json()) as ClientTask;
+    },
+    async getTask(id) {
+      const response = await fetchImpl(`${root}/api/v1/tasks/${id}`, {
+        headers: authHeaders(options),
+      });
+      if (!response.ok) throw new Error(`读取任务失败 ${response.status}`);
+      return (await response.json()) as ClientTask;
+    },
+    async answerTask(id, message) {
+      const response = await fetchImpl(`${root}/api/v1/tasks/${id}/messages`, {
+        method: "POST",
+        headers: { ...authHeaders(options), "content-type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      if (!response.ok) throw new Error(`回复任务失败 ${response.status}`);
+      return (await response.json()) as ClientTask;
+    },
+    async cancelTask(id) {
+      const response = await fetchImpl(`${root}/api/v1/tasks/${id}/cancel`, {
+        method: "POST",
+        headers: authHeaders(options),
+      });
+      if (!response.ok) throw new Error(`取消任务失败 ${response.status}`);
+      return (await response.json()) as ClientTask;
+    },
+    async taskEvents(id, after) {
+      const headers = authHeaders(options);
+      if (after !== undefined) headers["last-event-id"] = String(after);
+      const response = await fetchImpl(`${root}/api/v1/tasks/${id}/events`, { headers });
+      if (!response.ok) throw new Error(`读取任务事件失败 ${response.status}`);
+      return response.text();
     },
   };
 }

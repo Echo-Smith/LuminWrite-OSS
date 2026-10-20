@@ -48,6 +48,11 @@ describe("客户端", () => {
     await client.undoDiscard("doc_1");
     await client.uploadSource({ filename: "a.md", dataBase64: "YQ==" });
     await client.searchSources("春茶");
+    await client.submitTask({ kind: "write", brief: { topic: "推理成本" } }, "k1");
+    await client.getTask("tsk_1");
+    await client.taskEvents("tsk_1", 2);
+    await client.answerTask("tsk_1", "按这个大纲写");
+    await client.cancelTask("tsk_1");
     expect(seen).toEqual([
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/save",
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/restore",
@@ -55,6 +60,35 @@ describe("客户端", () => {
       "POST http://127.0.0.1:8787/api/v1/documents/doc_1/discard/undo",
       "POST http://127.0.0.1:8787/api/v1/sources",
       "GET http://127.0.0.1:8787/api/v1/sources/search?q=%E6%98%A5%E8%8C%B6",
+      "POST http://127.0.0.1:8787/api/v1/tasks",
+      "GET http://127.0.0.1:8787/api/v1/tasks/tsk_1",
+      "GET http://127.0.0.1:8787/api/v1/tasks/tsk_1/events",
+      "POST http://127.0.0.1:8787/api/v1/tasks/tsk_1/messages",
+      "POST http://127.0.0.1:8787/api/v1/tasks/tsk_1/cancel",
     ]);
+  });
+
+  it("提交任务带 Idempotency-Key，续传带 Last-Event-ID", async () => {
+    const seen: Array<{ url: string; idempotency: string | null; lastEvent: string | null }> = [];
+    const client = createClient(
+      "http://127.0.0.1:8787",
+      async (input, init) => {
+        const headers = new Headers(init?.headers);
+        seen.push({
+          url: String(input),
+          idempotency: headers.get("idempotency-key"),
+          lastEvent: headers.get("last-event-id"),
+        });
+        return new Response(JSON.stringify({ id: "tsk_1", state: "submitted", usage: {} }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+      { token: "lw_test" },
+    );
+    await client.submitTask({ kind: "write" }, "k1");
+    await client.taskEvents("tsk_1", 4);
+    expect(seen[0]?.idempotency).toBe("k1");
+    expect(seen[0]?.url).toBe("http://127.0.0.1:8787/api/v1/tasks");
+    expect(seen[1]?.lastEvent).toBe("4");
   });
 });

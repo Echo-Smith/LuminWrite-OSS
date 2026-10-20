@@ -234,6 +234,46 @@ export const apiKeys = pgTable(
   (table) => [uniqueIndex("uk_api_keys_hash").on(table.hash)],
 );
 
+export const apiTasks = pgTable(
+  "api_tasks",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    apiKeyId: text("api_key_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    kind: text("kind").notNull(),
+    state: text("state").notNull(),
+    phase: text("phase"),
+    documentId: text("document_id"),
+    sessionId: text("session_id"),
+    turnId: text("turn_id"),
+    resultVersionId: text("result_version_id"),
+    proposalId: text("proposal_id"),
+    needsInput: jsonb("needs_input").$type<Record<string, unknown> | null>(),
+    input: jsonb("input").$type<Record<string, unknown>>().notNull(),
+    error: jsonb("error").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uk_api_task_idem").on(table.apiKeyId, table.idempotencyKey),
+    index("idx_api_task_key_state").on(table.apiKeyId, table.state),
+  ],
+);
+
+export const apiTaskEvents = pgTable(
+  "api_task_events",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    seq: integer("seq").notNull(),
+    type: text("type").notNull(),
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("uk_api_task_event_seq").on(table.taskId, table.seq)],
+);
+
 export const apiKeyPolicies = pgTable("api_key_policies", {
   apiKeyId: text("api_key_id")
     .primaryKey()

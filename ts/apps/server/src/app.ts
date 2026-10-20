@@ -51,9 +51,11 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { agentCard } from "./agent-card.js";
 import { enforceApiKey, resolveApiApplyMode } from "./api-access.js";
 import { bindSlot, listForUser, probeCredential, saveRegistryEntry } from "./model-registry.js";
 import { defaultRateLimiter, TaskConcurrency, type TokenBucketLimiter } from "./rate-limit.js";
+import { registerTaskRoutes } from "./tasks.js";
 
 const CreateDocument = z.object({
   title: z.string().min(1),
@@ -276,6 +278,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const feeds = deps.feeds ?? createFeedService({ db: deps.db, kb, fetch: pageFetch });
 
   app.get("/health", (c) => c.json({ ok: true, service: "luminwrite-ts" }));
+  app.get("/.well-known/agent-card.json", (c) => {
+    const origin = new URL(c.req.url).origin;
+    return c.json(agentCard(origin));
+  });
 
   const api = new Hono<Env>();
   api.use("*", async (c, next) => {
@@ -1270,6 +1276,8 @@ export function createApp(deps: AppDeps): Hono<Env> {
       throw error;
     }
   });
+
+  registerTaskRoutes(api, { db: deps.db, runtime: deps.runtime }, authorizer);
 
   app.route("/api/v1", api);
   app.onError((error, c) => {

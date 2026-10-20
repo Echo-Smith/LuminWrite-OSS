@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyDossierOps,
+  CreateTaskBodySchema,
   DossierOpSchema,
   dossierForDerived,
   EditOpSchema,
   emptyDossier,
+  normalizeCreateTask,
   TurnRequestSchema,
 } from "./index.js";
 
@@ -63,5 +65,20 @@ describe("contracts", () => {
       actor: { type: "user", userId: "user_1" },
     });
     expect(parsed.kind).toBe("revise");
+  });
+
+  it("任务体用 model，旧文引用默认关闭", () => {
+    const parsed = normalizeCreateTask(
+      CreateTaskBodySchema.parse({
+        kind: "write",
+        brief: { topic: "推理成本" },
+        model: "tier/balanced",
+      }),
+    );
+    expect(parsed.model).toBe("tier/balanced");
+    expect(parsed.sources.library).toBe(false);
+    expect(parsed.sources.rss).toBe(true);
+    expect(parsed.review.outlineApproval).toBe(false);
+    expect("tier" in parsed).toBe(false);
   });
 });
