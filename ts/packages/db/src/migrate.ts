@@ -408,4 +408,23 @@ CREATE TABLE IF NOT EXISTS research_plans (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_research_plan_turn ON research_plans (turn_id);
 CREATE INDEX IF NOT EXISTS idx_research_plan_session ON research_plans (session_id);
+
+CREATE TABLE IF NOT EXISTS subagent_runs (
+  id text PRIMARY KEY,
+  turn_id text NOT NULL,
+  parent_id text,
+  session_id text NOT NULL,
+  pi_conversation_id text,
+  pi_task_id text NOT NULL,
+  agent_ref text NOT NULL,
+  slot text NOT NULL,
+  model_ref text,
+  input jsonb NOT NULL,
+  output jsonb,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_subagent_run_task ON subagent_runs (pi_task_id);
+CREATE INDEX IF NOT EXISTS idx_subagent_run_turn ON subagent_runs (turn_id);
 `;

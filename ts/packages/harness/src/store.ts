@@ -81,6 +81,36 @@ export interface WritingStore {
     plan: unknown;
     gaps: string[];
   }): Promise<{ id: string }>;
+  saveSubagentRun(input: {
+    turnId: string;
+    parentId?: string | null;
+    sessionId: string;
+    piConversationId?: string | null;
+    piTaskId: string;
+    agentRef: string;
+    slot: string;
+    modelRef?: string | null;
+    input: unknown;
+    output: unknown;
+    status: "succeeded" | "failed" | "cancelled" | "budget_exceeded";
+  }): Promise<{ id: string }>;
+  listSubagentRuns(documentId: string): Promise<
+    Array<{
+      id: string;
+      turnId: string;
+      parentId: string | null;
+      sessionId: string;
+      piConversationId: string | null;
+      piTaskId: string;
+      agentRef: string;
+      slot: string;
+      modelRef: string | null;
+      input: unknown;
+      output: unknown;
+      status: string;
+      createdAt: string;
+    }>
+  >;
   appendEvent(
     documentId: string,
     event: { turnId?: string; type: string; payload: unknown },

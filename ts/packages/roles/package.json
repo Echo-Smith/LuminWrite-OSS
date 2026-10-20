@@ -10,9 +10,13 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && cp -r src/builtin dist/builtin",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@luminwrite/contracts": "workspace:*",
+    "typebox": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:",

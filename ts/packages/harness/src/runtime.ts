@@ -41,7 +41,9 @@ import {
   UpstreamModelError,
 } from "@luminwrite/models";
 import { acceptPlan, type CitedEvidence, fauxResearchPlan, flagClaims } from "@luminwrite/research";
+import { builtinRoles, outsideScope, type RoleDef } from "@luminwrite/roles";
 
+import { bindDelegate } from "./delegate.js";
 import type { SessionKnowledge } from "./knowledge.js";
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
 import type { HarnessChange, HarnessPort } from "./port.js";
@@ -84,6 +86,7 @@ function promptFor(
   dossier: DossierContent,
   blocks: PlanBlock[],
   scopeIds: string[],
+  roleIds: readonly string[],
 ): string {
   const payload = {
     documentId: turn.documentId,
@@ -102,6 +105,8 @@ function promptFor(
     "先读文档档案，不要依赖更早的聊天记录。",
     "引用用 [[cite:证据id]]。证据由 cite_evidence 记下，修订号和版本由服务端钉住。",
     "没有证据，或校验不是 verified / fuzzy 的句子，回合结束时会被标出。",
+    "需要研究员、事实核查、引用审计或审校时，调用 delegate。选哪个角色、问什么、圈哪些块，由你决定。",
+    `可调用的 id：${roleIds.join("、")}。`,
   ];
   if (turn.kind === "research") {
     lines.push(
@@ -148,6 +153,95 @@ function slotFor(kind: TurnRequest["kind"]): ModelSlot {
   if (kind === "research") return "research.plan";
   if (kind === "review") return "role.reviewer";
   return "writer.main";
+}
+
+function shortenBlock(text: string): string {
+  const sentence = text.split("。")[0];
+  const next = sentence ? `${sentence}。` : text;
+  if (next !== text) return next;
+  return `${text}改短。`;
+}
+
+function fauxDelegated(raw: string) {
+  let job: {
+    question?: string;
+    output?: string;
+    blockIds?: string[];
+    writable?: PlanBlock[];
+    readable?: PlanBlock[];
+    documentId?: string;
+    sessionId?: string;
+    turnId?: string;
+    applyMode?: "auto" | "proposal";
+    actor?: TurnRequest["actor"];
+  };
+  try {
+    job = JSON.parse(raw) as typeof job;
+  } catch {
+    return fauxAssistantMessage("委托信息不完整。");
+  }
+  if (!job.documentId || !job.sessionId || !job.turnId || !job.applyMode || !job.actor) {
+    return fauxAssistantMessage("委托信息不完整。");
+  }
+  const documentId = job.documentId;
+  const sessionId = job.sessionId;
+  const turnId = job.turnId;
+  const applyMode = job.applyMode;
+  const actor = job.actor;
+  const call = (ops: unknown[], summary: string) =>
+    fauxAssistantMessage(
+      [
+        fauxToolCall("propose_edits", {
+          documentId,
+          sessionId,
+          turnId,
+          applyMode,
+          summary,
+          actorJson: JSON.stringify(actor),
+          scopeJson: "[]",
+          opsJson: JSON.stringify(ops),
+        }),
+      ],
+      { stopReason: "toolUse" },
+    );
+  if ((job.question ?? "").includes("越界")) {
+    const target = (job.readable ?? []).find(
+      (block) => !(job.blockIds ?? []).includes(block.blockId),
+    );
+    const sample = target ?? job.writable?.[0];
+    if (!sample) return fauxAssistantMessage("没有可对照的段落。");
+    return call(
+      [
+        {
+          op: "replace_text",
+          blockId: target?.blockId ?? "blk_outside00000001",
+          contentHash: sample.contentHash,
+          expectedOldText: sample.text,
+          newText: "不该改这里。",
+          reason: "越界",
+        },
+      ],
+      "越界",
+    );
+  }
+  if (job.output === "proposal" || job.output === "findings+proposal") {
+    const block = job.writable?.[0];
+    if (!block) return fauxAssistantMessage("没有可改的段落。");
+    return call(
+      [
+        {
+          op: "replace_text",
+          blockId: block.blockId,
+          contentHash: block.contentHash,
+          expectedOldText: block.text,
+          newText: shortenBlock(block.text),
+          reason: "缩短",
+        },
+      ],
+      "缩短",
+    );
+  }
+  return fauxAssistantMessage("已看过。");
 }
 
 function usesFaux(model: PricedModel): boolean {
@@ -221,8 +315,15 @@ export async function createWritingRuntime(options: {
   knowledge?: SessionKnowledge;
   /** 回合结束时用它读已钉住的证据。不传就只根据正文和档案本身标缺口。 */
   loadEvidence?(documentId: string): Promise<CitedEvidence[]>;
+  /** 缺省用内置四个角色。测试可以塞一个预算为 0 的角色。 */
+  roles?: RoleDef[];
 }): Promise<WritingRuntime> {
   const planner = options.planner ?? planOps;
+  const roles = options.roles ?? builtinRoles();
+  let delegate: ReturnType<typeof bindDelegate> | undefined;
+  function admit(conversationId: ConversationId, name: string): string | undefined {
+    return delegate?.charge(conversationId, name);
+  }
   const storage = await openNodeSqliteStorage(options.sqlitePath);
   const models = options.models ?? createClosedModels();
   const faux = fauxFor(models);
@@ -232,6 +333,8 @@ export async function createWritingRuntime(options: {
     faux.appendResponses([respond]);
     if (toolRanAfterLatestUser(context.messages)) return fauxAssistantMessage("已处理这一回合。");
     const text = latestUserText(context.messages);
+    const delegated = parseTag(text, "delegate");
+    if (delegated) return fauxDelegated(delegated);
     const turn = JSON.parse(parseTag(text, "turn") || "{}") as {
       documentId?: string;
       sessionId?: string;
@@ -253,6 +356,26 @@ export async function createWritingRuntime(options: {
       !turn.actor
     ) {
       return fauxAssistantMessage("回合信息不完整。");
+    }
+    const handoff = /^委托\s+([A-Za-z0-9_-]+)\s+([\s\S]+)$/.exec(turn.instruction ?? "");
+    if (handoff?.[1] && handoff[2]) {
+      const block = blocks[0];
+      if (!block) return fauxAssistantMessage("没有可委托的段落。");
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("delegate", {
+            agent: handoff[1],
+            question: handoff[2].trim(),
+            blockIds: [block.blockId],
+            sessionId: turn.sessionId,
+            turnId: turn.turnId,
+            documentId: turn.documentId,
+            applyMode: turn.applyMode,
+            actorJson: JSON.stringify(turn.actor),
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
     }
     const related = /^读取关联档案\s+(\S+)/.exec(turn.instruction ?? "");
     if (related?.[1]) {
@@ -310,7 +433,9 @@ export async function createWritingRuntime(options: {
     description: "读取文档当前块的 id、哈希和文本。",
     parameters: Type.Object({ sessionId: Type.String(), documentId: Type.String() }),
     replay: "safe",
-    async execute(args) {
+    async execute(args, api) {
+      const denied = admit(api.conversationId, "read_blocks");
+      if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
       const allowed = await options.store.canRead(args.sessionId, args.documentId);
       if (!allowed) {
         return { isError: true, output: [{ type: "text", text: "这个会话不能读这篇文档" }] };
@@ -325,7 +450,9 @@ export async function createWritingRuntime(options: {
     description: "只读有血缘或已授权文档的当前档案。不复制、不同步到本篇。",
     parameters: Type.Object({ sessionId: Type.String(), documentId: Type.String() }),
     replay: "safe",
-    async execute(args) {
+    async execute(args, api) {
+      const denied = admit(api.conversationId, "read_related_dossier");
+      if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
       try {
         const dossier = await options.store.readRelatedDossier(args.sessionId, args.documentId);
         return {
@@ -365,6 +492,18 @@ export async function createWritingRuntime(options: {
         return { isError: true, output: [{ type: "text", text: "修订格式不合法" }] };
       }
       const ops = parsedOps.data as EditOp[];
+      const framed = delegate?.frameFor(api.conversationId);
+      if (framed) {
+        const denied = admit(api.conversationId, "propose_edits");
+        if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
+        if (ops.some((op) => outsideScope(op, framed.blockIds))) {
+          framed.rejection = "out_of_scope";
+          return {
+            isError: true,
+            output: [{ type: "text", text: JSON.stringify({ code: "out_of_scope" }) }],
+          };
+        }
+      }
       const report = screenOps(ops);
       if (!report.pass) {
         await options.store.markTurn(args.turnId, {
@@ -375,7 +514,9 @@ export async function createWritingRuntime(options: {
       }
       const cached = await api.memo("result", context);
       if (cached !== undefined) return { output: [{ type: "text", text: JSON.stringify(cached) }] };
-      const scope = (JSON.parse(args.scopeJson) as string[]).map((id) => asBlockId(id));
+      const scope = (framed ? framed.blockIds : (JSON.parse(args.scopeJson) as string[])).map(
+        (id) => asBlockId(id),
+      );
       const outcome = await options.store.propose({
         documentId: args.documentId,
         sessionId: args.sessionId,
@@ -412,7 +553,9 @@ export async function createWritingRuntime(options: {
           library: Type.Optional(Type.Boolean()),
         }),
         replay: "safe",
-        async execute(args) {
+        async execute(args, api) {
+          const denied = admit(api.conversationId, "search_kb");
+          if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
           try {
             const hits = await knowledge.search({
               sessionId: args.sessionId,
@@ -440,7 +583,9 @@ export async function createWritingRuntime(options: {
           charEnd: Type.Optional(Type.Number()),
         }),
         replay: "safe",
-        async execute(args) {
+        async execute(args, api) {
+          const denied = admit(api.conversationId, "read_source");
+          if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
           try {
             const source = await knowledge.readSource({
               sessionId: args.sessionId,
@@ -466,7 +611,9 @@ export async function createWritingRuntime(options: {
       planJson: Type.String(),
     }),
     replay: "safe",
-    async execute(args) {
+    async execute(args, api) {
+      const denied = admit(api.conversationId, "record_research_plan");
+      if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
       const session = await options.store.getSession(args.sessionId);
       const turn = await options.store.getTurn(args.turnId);
       const sameDocument = Boolean(turn && session && turn.documentId === session.documentId);
@@ -520,7 +667,9 @@ export async function createWritingRuntime(options: {
           blockId: Type.Optional(Type.String()),
         }),
         replay: "safe",
-        async execute(args) {
+        async execute(args, api) {
+          const denied = admit(api.conversationId, "cite_evidence");
+          if (denied) return { isError: true, output: [{ type: "text", text: denied }] };
           try {
             const cited = await knowledge.cite?.({
               sessionId: args.sessionId,
@@ -541,6 +690,44 @@ export async function createWritingRuntime(options: {
       })
     : undefined;
 
+  let opened: Harness | undefined;
+  const bound = bindDelegate({
+    store: options.store,
+    roles,
+    async resolveModel(role, actor) {
+      if (!options.resolveTurn) return LOCAL_FAUX;
+      const choice = await options.resolveTurn({
+        actor,
+        slot: role.model.slot,
+        sessionPin: null,
+        now: Date.now(),
+        cooldownUntil,
+      });
+      const model = choice.chain[0];
+      if (model) return model;
+      if (fauxAllowed(options.env)) return LOCAL_FAUX;
+      return undefined;
+    },
+    usesFaux,
+    appendFaux: () => {
+      faux.appendResponses([respond]);
+    },
+    harness: () => {
+      if (!opened) throw new Error("写作运行时还没打开");
+      return opened;
+    },
+    tools: () => [
+      readBlocks,
+      readRelatedDossier,
+      proposeEdits,
+      recordResearchPlan,
+      ...(searchKb ? [searchKb] : []),
+      ...(readSource ? [readSource] : []),
+      ...(citeEvidence ? [citeEvidence] : []),
+      bound.tool,
+    ],
+  });
+  delegate = bound;
   const registry = createRegistry();
   registry.install(
     defineExtension({
@@ -553,6 +740,7 @@ export async function createWritingRuntime(options: {
         ...(searchKb ? [searchKb] : []),
         ...(readSource ? [readSource] : []),
         ...(citeEvidence ? [citeEvidence] : []),
+        bound.tool,
       ],
     }),
   );
@@ -565,6 +753,7 @@ export async function createWritingRuntime(options: {
     },
     ctx,
   );
+  opened = harness;
   harness.resume();
   const seenEntries = new Set<string>();
 
@@ -695,6 +884,7 @@ export async function createWritingRuntime(options: {
         dossier.content,
         blocks,
         scoped ? [scoped] : [],
+        roles.map((role) => role.id),
       );
       await options.store.appendEvent(req.documentId, {
         turnId: begun.turnId,

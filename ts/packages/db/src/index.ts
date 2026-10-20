@@ -41,6 +41,7 @@ export type {
   ResearchPlanRow,
   SessionView,
   SqlQuery,
+  SubagentRunRow,
   TurnView,
   VersionDetail,
   VersionView,

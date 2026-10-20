@@ -438,6 +438,12 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json(rows.map((row) => readStoredPlan(row)));
   });
 
+  api.get("/documents/:id/subagent-runs", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    return c.json(await deps.db.listSubagentRuns(c.req.param("id")));
+  });
+
   api.get("/documents/:id/citations/:evidenceId", async (c) => {
     const denied = await requireDocument(c, c.req.param("id"));
     if (denied) return denied;
