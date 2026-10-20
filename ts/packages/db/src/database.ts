@@ -67,6 +67,15 @@ const {
   evidence,
 } = schema;
 
+export interface ResearchPlanRow {
+  id: string;
+  turnId: string;
+  sessionId: string;
+  plan: unknown;
+  gaps: unknown;
+  createdAt: string;
+}
+
 export class DocumentNotFound extends Error {
   constructor(id: string) {
     super(`找不到文档 ${id}`);
@@ -1526,6 +1535,58 @@ export class LwDatabase {
     };
   }
 
+  async saveResearchPlan(input: {
+    turnId: string;
+    sessionId: string;
+    plan: unknown;
+    gaps: string[];
+  }): Promise<{ id: string }> {
+    const id = newId("rpl");
+    await this.query(
+      `INSERT INTO research_plans (id, turn_id, session_id, plan, gaps)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+       ON CONFLICT (turn_id) DO UPDATE
+         SET session_id = EXCLUDED.session_id,
+             plan = EXCLUDED.plan,
+             gaps = EXCLUDED.gaps`,
+      [id, input.turnId, input.sessionId, JSON.stringify(input.plan), JSON.stringify(input.gaps)],
+    );
+    const rows = await this.query<{ id: string }>(
+      `SELECT id FROM research_plans WHERE turn_id = $1`,
+      [input.turnId],
+    );
+    const saved = rows[0];
+    if (!saved) throw new Error("研究计划没有写入");
+    return { id: saved.id };
+  }
+
+  async listResearchPlans(documentId: string): Promise<ResearchPlanRow[]> {
+    const rows = await this.query<{
+      id: string;
+      turn_id: string;
+      session_id: string;
+      plan: unknown;
+      gaps: unknown;
+      created_at: Date | string;
+    }>(
+      `SELECT p.id, p.turn_id, p.session_id, p.plan, p.gaps, p.created_at
+       FROM research_plans p
+       JOIN sessions s ON s.id = p.session_id
+       WHERE s.document_id = $1
+       ORDER BY p.created_at, p.id`,
+      [documentId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      turnId: row.turn_id,
+      sessionId: row.session_id,
+      plan: row.plan,
+      gaps: row.gaps,
+      createdAt:
+        row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    }));
+  }
+
   async applyDossier(input: {
     documentId: string;
     expectedVersion: number;
@@ -1715,6 +1776,11 @@ export class LwDatabase {
   }
 
   private async purgeOne(tx: Tx, id: string) {
+    await tx.execute(
+      sql`DELETE FROM research_plans WHERE session_id IN (
+        SELECT id FROM sessions WHERE document_id = ${id}
+      )`,
+    );
     await tx.delete(evidence).where(eq(evidence.citingDocumentId, id));
     await tx.delete(sources).where(eq(sources.documentId, id));
     const ses = await tx

@@ -70,6 +70,7 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
       };
     },
     propose: (input) => db.propose(input),
+    saveResearchPlan: (input) => db.saveResearchPlan(input),
     appendEvent: (documentId, event) => db.appendEvent(documentId, event),
     eventsAfter: (documentId, afterSeq) => db.eventsAfter(documentId, afterSeq),
   };

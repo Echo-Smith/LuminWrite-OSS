@@ -40,6 +40,7 @@ import {
   secondsUntilUtcMidnight,
   UpstreamModelError,
 } from "@luminwrite/models";
+import { acceptPlan, type CitedEvidence, fauxResearchPlan, flagClaims } from "@luminwrite/research";
 
 import type { SessionKnowledge } from "./knowledge.js";
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
@@ -96,13 +97,24 @@ function promptFor(
     scopeIds,
     baseVersionId: session.baseVersionId,
   };
-  return [
+  const lines = [
     "只通过 propose_edits 提交修订。锚点来自会话的基准版本，服务端按文档当前版本校验。",
     "先读文档档案，不要依赖更早的聊天记录。",
+    "引用用 [[cite:证据id]]。证据由 cite_evidence 记下，修订号和版本由服务端钉住。",
+    "没有证据，或校验不是 verified / fuzzy 的句子，回合结束时会被标出。",
+  ];
+  if (turn.kind === "research") {
+    lines.push(
+      "请调用 record_research_plan 写下检索计划。子问题怎么拆、先查哪一路由你决定。",
+      "可以先查知识库，再查 RSS，再查旧文。web 和 academic 这一版没有检索。",
+    );
+  }
+  lines.push(
     `<dossier>${JSON.stringify(dossier)}</dossier>`,
     `<turn>${JSON.stringify(payload)}</turn>`,
     `<blocks>${JSON.stringify(blocks)}</blocks>`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 export interface TurnResult {
@@ -207,6 +219,8 @@ export async function createWritingRuntime(options: {
   }>;
   /** 不传就不注册 search_kb / read_source，已有回合测试保持原样。 */
   knowledge?: SessionKnowledge;
+  /** 回合结束时用它读已钉住的证据。不传就只根据正文和档案本身标缺口。 */
+  loadEvidence?(documentId: string): Promise<CitedEvidence[]>;
 }): Promise<WritingRuntime> {
   const planner = options.planner ?? planOps;
   const storage = await openNodeSqliteStorage(options.sqlitePath);
@@ -247,6 +261,20 @@ export async function createWritingRuntime(options: {
           fauxToolCall("read_related_dossier", {
             sessionId: turn.sessionId,
             documentId: related[1],
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+    if (turn.kind === "research") {
+      const accepted = acceptPlan(fauxResearchPlan(turn.instruction ?? ""));
+      if (!accepted.ok) return fauxAssistantMessage(accepted.issues.join("；"));
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("record_research_plan", {
+            sessionId: turn.sessionId,
+            turnId: turn.turnId,
+            planJson: JSON.stringify(accepted.plan),
           }),
         ],
         { stopReason: "toolUse" },
@@ -429,6 +457,90 @@ export async function createWritingRuntime(options: {
       })
     : undefined;
 
+  const recordResearchPlan = defineTool({
+    name: "record_research_plan",
+    description: "记下这一回合的检索计划。计划正文由模型写，服务端只检查结构和问题 id。",
+    parameters: Type.Object({
+      sessionId: Type.String(),
+      turnId: Type.String(),
+      planJson: Type.String(),
+    }),
+    replay: "safe",
+    async execute(args) {
+      const session = await options.store.getSession(args.sessionId);
+      const turn = await options.store.getTurn(args.turnId);
+      const sameDocument = Boolean(turn && session && turn.documentId === session.documentId);
+      if (session?.status !== "open" || !turn || !sameDocument) {
+        await options.store.markTurn(args.turnId, { status: "failed", error: "找不到这一回合" });
+        return { isError: true, output: [{ type: "text", text: "找不到这一回合" }] };
+      }
+      let raw: unknown;
+      try {
+        raw = JSON.parse(args.planJson) as unknown;
+      } catch {
+        raw = undefined;
+      }
+      const accepted = acceptPlan(raw);
+      if (!accepted.ok) {
+        await options.store.markTurn(args.turnId, {
+          status: "failed",
+          error: accepted.issues.join("；"),
+        });
+        return { isError: true, output: [{ type: "text", text: accepted.issues.join("；") }] };
+      }
+      const saved = await options.store.saveResearchPlan({
+        turnId: args.turnId,
+        sessionId: session.id,
+        plan: accepted.plan,
+        gaps: accepted.gaps,
+      });
+      await options.store.markTurn(args.turnId, { status: "applied" });
+      await options.store.appendEvent(session.documentId, {
+        turnId: args.turnId,
+        type: "research.plan",
+        payload: { planId: saved.id, gaps: accepted.gaps },
+      });
+      return {
+        output: [{ type: "text", text: JSON.stringify({ planId: saved.id, gaps: accepted.gaps }) }],
+      };
+    },
+  });
+
+  const citeEvidence = knowledge?.cite
+    ? defineTool({
+        name: "cite_evidence",
+        description: "把一句原文钉成证据。校验结果和版本由服务端写，模型不自报 verified。",
+        parameters: Type.Object({
+          sessionId: Type.String(),
+          sourceId: Type.String(),
+          quote: Type.String(),
+          turnId: Type.String(),
+          questionId: Type.Optional(Type.String()),
+          planId: Type.Optional(Type.String()),
+          blockId: Type.Optional(Type.String()),
+        }),
+        replay: "safe",
+        async execute(args) {
+          try {
+            const cited = await knowledge.cite?.({
+              sessionId: args.sessionId,
+              sourceId: args.sourceId,
+              quote: args.quote,
+              turnId: args.turnId,
+              ...(args.questionId ? { questionId: args.questionId } : {}),
+              ...(args.planId ? { planId: args.planId } : {}),
+              ...(args.blockId ? { blockId: args.blockId } : {}),
+            });
+            if (!cited) return { isError: true, output: [{ type: "text", text: "不能记录证据" }] };
+            return { output: [{ type: "text", text: JSON.stringify(cited) }] };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "不能记录证据";
+            return { isError: true, output: [{ type: "text", text: message }] };
+          }
+        },
+      })
+    : undefined;
+
   const registry = createRegistry();
   registry.install(
     defineExtension({
@@ -437,8 +549,10 @@ export async function createWritingRuntime(options: {
         readBlocks,
         readRelatedDossier,
         proposeEdits,
+        recordResearchPlan,
         ...(searchKb ? [searchKb] : []),
         ...(readSource ? [readSource] : []),
+        ...(citeEvidence ? [citeEvidence] : []),
       ],
     }),
   );
@@ -743,6 +857,7 @@ export async function createWritingRuntime(options: {
       if (turn?.status === "applied" && turn.resultVersionId) {
         await options.store.advanceSessionBase(session.id, turn.resultVersionId);
       }
+      await auditClaims(req.documentId, begun.turnId);
       return {
         turnId: begun.turnId,
         status: turn?.status ?? "failed",
@@ -751,6 +866,24 @@ export async function createWritingRuntime(options: {
       };
     },
   };
+
+  async function auditClaims(documentId: string, turnId: string): Promise<void> {
+    const blocks = await options.store.readBlocks(documentId);
+    const dossier = await options.store.readDossier(documentId);
+    const evidence = options.loadEvidence ? await options.loadEvidence(documentId) : [];
+    const flags = flagClaims({
+      documentId,
+      blocks: blocks.map((block) => ({ blockId: block.blockId, text: block.text })),
+      dossier: dossier.content,
+      evidence,
+    });
+    if (flags.length === 0) return;
+    await options.store.appendEvent(documentId, {
+      turnId,
+      type: "claim.flags",
+      payload: { flags },
+    });
+  }
 
   async function* watchConversation(sessionId: string): AsyncGenerator<HarnessChange> {
     const session = await options.store.getSession(sessionId);

@@ -38,6 +38,7 @@ export type {
   OwnerRow,
   ProposeOutcome,
   RegistryEntryRow,
+  ResearchPlanRow,
   SessionView,
   SqlQuery,
   TurnView,

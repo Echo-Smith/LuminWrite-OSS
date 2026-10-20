@@ -19,6 +19,21 @@ export interface SessionKnowledge {
     recencyDays?: number;
     library?: boolean;
   }): Promise<{ note: string; hits: KnowledgeHit[] }>;
+  cite?(input: {
+    sessionId: string;
+    sourceId: string;
+    quote: string;
+    turnId: string;
+    questionId?: string;
+    planId?: string;
+    blockId?: string;
+  }): Promise<{
+    evidenceId: string;
+    citationStatus: string;
+    note?: string;
+    citedVersionId: string | null;
+    sourceHasNewerVersion: boolean;
+  }>;
   readSource(input: {
     sessionId: string;
     sourceId: string;

@@ -14,7 +14,7 @@ M0 打的是地基：块锚点修订、只追加的版本链。会话属于文�
 
 文档没有定稿。所有者新建的文档要 `POST /api/v1/documents/:id/save` 才进列表；之后的人工修订自动保存，同一 actor 在 30 秒内的连续 manual 改动合成一个版本。AI 回合、接受提案和回滚各自成版。`GET /documents/:id/versions`、`GET /versions/:id` 和 `GET /documents/:id/diff?from=&to=` 看历史。`POST /documents/:id/restore`（`/rollback` 仍可用）用旧内容新建 `origin=restore` 的版本。外部 Agent、导入和派生在创建时就算已保存。丢弃是 `discarded_at`：列表和知识库检索都跳过它，保留期内可以撤销。到期后进程内清退任务才删版本，普通写入仍然只追加。保留天数是 `LW_DISCARD_RETENTION_DAYS`，默认 30。
 
-知识库接受 MD、TXT、PDF、DOCX，也可以用 `safeFetch` 导入网页。正文用 jieba 切开，大约 600–800 字一块，再用全文和向量做 RRF。`kb.embed` 槽绑了 BYOK 凭据时才请求 OpenAI 兼容的 `/embeddings`；没有凭据就只做全文，不报错。重复上传返回 `duplicate`。`search_kb` 和 `read_source` 只读，结果标明是资料而不是指令。已保存文档按最新版本进知识库，后续改动经 `doc.index` 每 60 秒最多索引一次。未保存、已丢弃或 `kb_excluded` 的文档不参与检索。`search_kb` 默认不含文档类来源，`library=true` 才放开，并且排除正在写的这篇和它的派生血缘。引用钉住当时索引的版本。
+知识库接受 MD、TXT、PDF、DOCX，也可以用 `safeFetch` 导入网页。正文用 jieba 切开，大约 600–800 字一块，再用全文和向量做 RRF。`kb.embed` 槽绑了 BYOK 凭据时才请求 OpenAI 兼容的 `/embeddings`；没有凭据就只做全文，不报错。重复上传返回 `duplicate`。`search_kb` 和 `read_source` 只读，结果标明是资料而不是指令。已保存文档按最新版本进知识库，后续改动经 `doc.index` 每 60 秒最多索引一次。未保存、已丢弃或 `kb_excluded` 的文档不参与检索。`search_kb` 默认不含文档类来源，`library=true` 才放开，并且排除正在写的这篇和它的派生血缘。引用钉住当时索引的版本。检索计划由模型写入 `research_plans`，服务端只校验问题 id 和证据钉。`GET /api/v1/documents/:id/plans` 给 H2 读这份计划。正文里的 `[[cite:证据id]]` 和档案引用在回合结束时核对：对得上是 `verified` 或 `fuzzy`，对不上会记一条 `claim.flags`。RSS 条目改稿后，旧引用判 `mismatch`；钉住文档版本的引用仍是 `verified`，并标出来源已有新版本。
 
 RSS 按所有者订阅，条目进同一套知识库，这个用户的所有会话和文档都能检索。抓取会解析 DNS，拒绝私网、环回和链路本地，并限制重定向、体积和时长。`lw feeds` 和 `/api/v1/feeds` 只有所有者能改。带 `sources:read` 的 API key 可以检索这些条目，不能加订阅。开源版没有中文热榜。轮询走 pg-boss，默认每 15 分钟。
 
@@ -50,7 +50,8 @@ pnpm demo
 | `kb` | 上传、分块、全文与向量混合检索。没有嵌入凭据时只做全文 |
 | `jobs` | `JobPort`。运行时是 pg-boss，测试用进程内队列 |
 | `sources` | `safeFetch` 和按所有者隔离的 RSS。没有中文热榜 |
-| `prefs` `research` `roles` `library` | 空桩，留给后续里程碑 |
+| `research` | 检索计划校验、引用核对（`verified` / `fuzzy` / `not_found` / `mismatch`） |
+| `prefs` `roles` `library` | 空桩，留给后续里程碑 |
 
 M0 的验证记录见 `docs/m0-verification.md`。会话和派生文档见 `docs/m1-sessions.md`。PGlite 上的 pg-boss 和 pgvector 见 `docs/m1-pglite-findings.md`。
 

@@ -15,7 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@luminwrite/plainspeak": "workspace:*"
+    "@luminwrite/plainspeak": "workspace:*",
+    "@luminwrite/research": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

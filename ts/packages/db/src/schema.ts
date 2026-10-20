@@ -335,6 +335,15 @@ export const feeds = pgTable(
   (table) => [uniqueIndex("uk_feed_owner_url").on(table.ownerId, table.url)],
 );
 
+export const researchPlans = pgTable("research_plans", {
+  id: text("id").primaryKey(),
+  turnId: text("turn_id").notNull().unique(),
+  sessionId: text("session_id").notNull(),
+  plan: jsonb("plan").notNull(),
+  gaps: jsonb("gaps").notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const evidence = pgTable("evidence", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),

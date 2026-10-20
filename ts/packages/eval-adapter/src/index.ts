@@ -1,4 +1,5 @@
 import { analyzePlain } from "@luminwrite/plainspeak";
+import { readStoredPlan, type StoredResearchPlan } from "@luminwrite/research";
 
 export interface SmokeSample {
   id: string;
@@ -23,6 +24,20 @@ export const smokeSamples: SmokeSample[] = [
 export interface SmokeReport {
   pass: boolean;
   ranking: Array<{ id: string; hollowScore: number }>;
+}
+
+/** H2 读 `research_plans` 时走这里。只重校验结构，不重算缺口。 */
+export function readResearchPlansForEval(
+  rows: Array<{
+    id: string;
+    turnId: string;
+    sessionId: string;
+    plan: unknown;
+    gaps: unknown;
+    createdAt: string;
+  }>,
+): StoredResearchPlan[] {
+  return rows.map((row) => readStoredPlan(row));
 }
 
 export function runDeterministicSmoke(): SmokeReport {

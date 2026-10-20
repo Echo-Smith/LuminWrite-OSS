@@ -23,7 +23,8 @@
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/edition": "workspace:*",
     "@luminwrite/models": "workspace:*",
-    "@luminwrite/plainspeak": "workspace:*"
+    "@luminwrite/plainspeak": "workspace:*",
+    "@luminwrite/research": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

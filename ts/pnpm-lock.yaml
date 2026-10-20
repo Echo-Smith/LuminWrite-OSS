@@ -329,6 +329,9 @@ importers:
       '@luminwrite/models':
         specifier: workspace:*
         version: link:../../packages/models
+      '@luminwrite/research':
+        specifier: workspace:*
+        version: link:../../packages/research
       '@luminwrite/sources':
         specifier: workspace:*
         version: link:../../packages/sources
@@ -457,6 +460,9 @@ importers:
       '@luminwrite/plainspeak':
         specifier: workspace:*
         version: link:../plainspeak
+      '@luminwrite/research':
+        specifier: workspace:*
+        version: link:../research
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -494,6 +500,9 @@ importers:
       '@luminwrite/plainspeak':
         specifier: workspace:*
         version: link:../plainspeak
+      '@luminwrite/research':
+        specifier: workspace:*
+        version: link:../research
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -526,6 +535,9 @@ importers:
       '@luminwrite/db':
         specifier: workspace:*
         version: link:../db
+      '@luminwrite/research':
+        specifier: workspace:*
+        version: link:../research
       '@node-rs/jieba':
         specifier: 'catalog:'
         version: 2.0.4
@@ -590,6 +602,10 @@ importers:
         version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2))
 
   packages/research:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'

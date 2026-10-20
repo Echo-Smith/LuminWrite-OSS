@@ -40,6 +40,28 @@ export function sessionKnowledge(db: LwDatabase, kb: KnowledgeBase): SessionKnow
       });
       return { note: retrievalDataNote, hits };
     },
+    async cite(input) {
+      const owner = await ownerOf(db, input.sessionId);
+      if (!owner) throw new Error("找不到会话");
+      const evidence = await kb.recordEvidence({
+        ownerId: owner.ownerId,
+        citingDocumentId: owner.documentId,
+        sourceId: input.sourceId,
+        quote: input.quote,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        ...(input.questionId ? { questionId: input.questionId } : {}),
+        ...(input.planId ? { planId: input.planId } : {}),
+        ...(input.blockId ? { blockId: input.blockId } : {}),
+      });
+      return {
+        evidenceId: evidence.id,
+        citationStatus: evidence.citationStatus,
+        citedVersionId: evidence.citedVersionId,
+        sourceHasNewerVersion: evidence.sourceHasNewerVersion,
+        ...(evidence.note ? { note: evidence.note } : {}),
+      };
+    },
     async readSource(input) {
       const owner = await ownerOf(db, input.sessionId);
       if (!owner) throw new Error("找不到会话");
