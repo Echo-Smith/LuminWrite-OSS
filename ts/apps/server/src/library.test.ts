@@ -152,7 +152,7 @@ describe("文章库 API", () => {
         method: "POST",
         body: JSON.stringify({ retentionDays: 0 }),
       });
-      expect(await purged.json()).toEqual({ purged: [documentId] });
+      expect(((await purged.json()) as { purged: string[] }).purged).toEqual([documentId]);
       expect((await ctx.request(`/api/v1/library/articles/${documentId}`)).status).toBe(404);
       expect(await ctx.request("/api/v1/library/tags").then((response) => response.json())).toEqual(
         [],

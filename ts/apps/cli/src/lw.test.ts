@@ -191,4 +191,37 @@ describe("lw", () => {
     expect(out).toContain("没有订阅");
     await rm(dir, { recursive: true, force: true });
   });
+
+  it("notes 能添加、列出和删除，删除后输出里没有原文", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lw-notes-cli-"));
+    const env = { LW_DATA_DIR: dir };
+    let out = "";
+    const stdout = {
+      write: (chunk: string) => {
+        out += chunk;
+      },
+    };
+    const stderr = { write: () => {} };
+    expect(await runLw(["init"], env, stdout, stderr)).toBe(0);
+    out = "";
+    expect(
+      await runLw(
+        ["notes", "add", "--text", "先写结论，再写依据。", "--kind", "habit"],
+        env,
+        stdout,
+        stderr,
+      ),
+    ).toBe(0);
+    const id = out.trim().split("\t")[0] ?? "";
+    expect(id.startsWith("prf_")).toBe(true);
+    out = "";
+    expect(await runLw(["notes", "list"], env, stdout, stderr)).toBe(0);
+    expect(out).toContain("先写结论，再写依据。");
+    expect(await runLw(["notes", "forget", id], env, stdout, stderr)).toBe(0);
+    out = "";
+    expect(await runLw(["notes", "list"], env, stdout, stderr)).toBe(0);
+    expect(out).not.toContain("先写结论，再写依据。");
+    expect(out).toContain("还没有写作笔记");
+    await rm(dir, { recursive: true, force: true });
+  });
 });

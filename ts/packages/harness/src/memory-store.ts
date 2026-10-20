@@ -146,6 +146,24 @@ export class MemoryWritingStore implements WritingStore {
     return versionId;
   }
 
+  openApi(documentId: string): string {
+    const doc = this.docs.get(documentId);
+    const versionId = doc?.versions.at(-1)?.id;
+    if (!versionId) throw new Error("找不到文档");
+    const id = nid("ses");
+    this.sessions.set(id, {
+      id,
+      documentId,
+      kind: "api",
+      baseVersionId: versionId,
+      piConversationId: null,
+      modelPin: null,
+      status: "open",
+      reads: new Set(),
+    });
+    return id;
+  }
+
   openFork(documentId: string, baseVersionId: string): string {
     const doc = this.docs.get(documentId);
     if (!doc?.versions.some((version) => version.id === baseVersionId)) {

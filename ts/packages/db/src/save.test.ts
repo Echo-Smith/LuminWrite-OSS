@@ -246,19 +246,19 @@ describe("保存、自动保存、丢弃", () => {
     expect((await db.getDocument(created.id))?.discardedAt).toBe(discarded.discardedAt);
 
     now = new Date(now.getTime() + 29 * 24 * 60 * 60 * 1000);
-    expect(await db.purgeDiscarded({ retentionDays: 30, now })).toEqual({ purged: [] });
+    expect((await db.purgeDiscarded({ retentionDays: 30, now })).purged).toEqual([]);
     expect(await db.getDocument(created.id)).toBeTruthy();
 
     await db.undoDiscard(created.id);
     now = new Date("2026-06-01T00:00:00.000Z");
-    expect(await db.purgeDiscarded({ retentionDays: 30, now })).toEqual({ purged: [] });
+    expect((await db.purgeDiscarded({ retentionDays: 30, now })).purged).toEqual([]);
     expect((await db.listDocuments("user_1")).map((item) => item.id).sort()).toEqual(
       [created.id, kept.id].sort(),
     );
 
     await db.discardDocument(created.id);
     now = new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000);
-    expect(await db.purgeDiscarded({ retentionDays: 30, now })).toEqual({ purged: [created.id] });
+    expect((await db.purgeDiscarded({ retentionDays: 30, now })).purged).toEqual([created.id]);
     expect(await db.getDocument(created.id)).toBeUndefined();
     expect(await db.getVersion(created.versionId)).toBeUndefined();
     expect((await db.listDocuments("user_1")).map((item) => item.id)).toEqual([kept.id]);

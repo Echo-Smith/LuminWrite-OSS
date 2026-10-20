@@ -133,12 +133,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_by_id text NOT NULL,
   status text NOT NULL,
   model_pin text,
+  discarded_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_session_main ON sessions (document_id) WHERE kind = 'main';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_pin text;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS discarded_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS session_reads (
   session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -477,4 +479,40 @@ CREATE TABLE IF NOT EXISTS api_task_events (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_api_task_event_seq ON api_task_events (task_id, seq);
+
+CREATE TABLE IF NOT EXISTS preferences (
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  kind text NOT NULL,
+  statement text NOT NULL,
+  rule jsonb,
+  scope_level text NOT NULL DEFAULT 'global',
+  scope_ref text,
+  strength text NOT NULL DEFAULT 'prefer',
+  status text NOT NULL,
+  source text NOT NULL,
+  support integer NOT NULL DEFAULT 0,
+  contradict integer NOT NULL DEFAULT 0,
+  plain_conflict boolean NOT NULL DEFAULT false,
+  version integer NOT NULL DEFAULT 1,
+  superseded_by text,
+  proposed_in_session_id text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pref_user_status ON preferences (user_id, status);
+
+CREATE TABLE IF NOT EXISTS preference_audit (
+  id text PRIMARY KEY,
+  preference_id text NOT NULL,
+  user_id text NOT NULL,
+  action text NOT NULL,
+  actor_type text NOT NULL,
+  actor_id text NOT NULL,
+  before_text text NOT NULL DEFAULT '',
+  after_text text NOT NULL DEFAULT '',
+  at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pref_audit_pref ON preference_audit (preference_id);
 `;

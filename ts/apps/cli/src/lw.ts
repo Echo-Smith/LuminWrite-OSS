@@ -38,13 +38,14 @@ export async function runLw(
     if (command === "credentials") return await credentials(argv.slice(1), env, stdout);
     if (command === "secrets" && sub === "rotate") return await rotateSecrets(env, stdout);
     if (command === "feeds") return await feedsCommand(argv.slice(1), env, stdout);
+    if (command === "notes") return await notesCommand(argv.slice(1), env, stdout);
     if (command === "serve") return await serve(env, stdout, stderr);
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : "命令失败"}\n`);
     return 1;
   }
   stderr.write(
-    "用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw credentials add|list|update|remove | lw secrets rotate | lw feeds add|list|remove|import|export | lw serve\n",
+    "用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw credentials add|list|update|remove | lw secrets rotate | lw feeds add|list|remove|import|export | lw notes list|add|review|correct|forget|export|explain | lw serve\n",
   );
   return 1;
 }
@@ -352,6 +353,118 @@ async function feedsCommand(
       return 0;
     }
     throw new Error("用法：lw feeds add|list|remove|import|export");
+  } finally {
+    await db.close();
+  }
+}
+
+async function notesCommand(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  stdout: Writer,
+): Promise<number> {
+  const [sub, ...rest] = argv;
+  const location = resolveDatabaseLocation(env);
+  const db = await openDatabase(location);
+  try {
+    const owner = await db.getOwner();
+    if (!owner) throw new OwnerNotFound();
+    const store = db.notes();
+    const by = { type: "user", id: owner.id };
+    const { positionals, flags } = parseFlags(rest);
+    if (sub === "list") {
+      const status = flag(flags, "status");
+      const notes = await store.list(
+        owner.id,
+        status
+          ? {
+              status: status.split(",") as Array<
+                "candidate" | "active" | "muted" | "rejected" | "superseded"
+              >,
+            }
+          : undefined,
+      );
+      if (notes.length === 0) {
+        stdout.write("还没有写作笔记。\n");
+        return 0;
+      }
+      for (const note of notes) {
+        const conflict = note.plainConflict ? "\t说人话冲突" : "";
+        stdout.write(
+          `${note.id}\t${note.status}\t${note.kind}\t${note.scope.level}\tv${note.version}\t${note.statement}${conflict}\n`,
+        );
+      }
+      return 0;
+    }
+    if (sub === "add") {
+      const text = flag(flags, "text");
+      const kind = flag(flags, "kind");
+      if (!text || !kind) throw new Error("用法：lw notes add --text <句子> --kind <类型>");
+      const level = flag(flags, "scope") ?? "global";
+      const written = await store.write(
+        owner.id,
+        {
+          text,
+          kind: kind as "habit",
+          scope:
+            level === "global"
+              ? { level: "global" }
+              : { level: level as "genre", ref: flag(flags, "ref") },
+        },
+        by,
+      );
+      stdout.write(`${written.preference.id}\t${written.preference.status}\n`);
+      if (written.factHint) stdout.write("这像事实，建议写进文档档案的要求里\n");
+      return 0;
+    }
+    if (sub === "review") {
+      const [id, action] = positionals;
+      if (!id || !action) throw new Error("用法：lw notes review <id> accept|reject|mute|unmute");
+      const note = await store.review(
+        owner.id,
+        id,
+        action as "accept" | "reject" | "mute" | "unmute",
+        by,
+      );
+      stdout.write(`${note.id}\t${note.status}\n`);
+      return 0;
+    }
+    if (sub === "correct") {
+      const id = positionals[0];
+      const version = flag(flags, "version");
+      const text = flag(flags, "text");
+      if (!id || !version || !text) {
+        throw new Error("用法：lw notes correct <id> --version <n> --text <句子>");
+      }
+      const note = await store.correct(owner.id, id, Number(version), text, by);
+      stdout.write(`${note.id}\tv${note.version}\t${note.statement}\n`);
+      return 0;
+    }
+    if (sub === "forget") {
+      const id = positionals[0];
+      if (!id) throw new Error("用法：lw notes forget <id>");
+      const receipt = await store.forget(owner.id, id, by);
+      stdout.write(`已删除 ${id}\n回执 ${receipt.receiptId}\n`);
+      stdout.write("已有的聊天记录里可能还留有原文。可以另外删除这篇文档的会话记录。\n");
+      return 0;
+    }
+    if (sub === "export") {
+      const notes = await store.list(owner.id, {
+        status: ["candidate", "active", "muted", "rejected", "superseded"],
+      });
+      stdout.write(`${JSON.stringify({ notes }, null, 2)}\n`);
+      return 0;
+    }
+    if (sub === "explain") {
+      const id = positionals[0];
+      if (!id) throw new Error("用法：lw notes explain <id>");
+      const audit = await store.explain(owner.id, id);
+      for (const entry of audit) {
+        stdout.write(`${entry.at}\t${entry.action}\t${entry.actorType}\n`);
+      }
+      return 0;
+    }
+    throw new Error("用法：lw notes list|add|review|correct|forget|export|explain");
   } finally {
     await db.close();
   }

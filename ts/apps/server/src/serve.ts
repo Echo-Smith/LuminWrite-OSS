@@ -24,6 +24,7 @@ import { kbEmbedderFor } from "./kb-embed.js";
 import { sessionKnowledge } from "./kb-session.js";
 import { listenUrl, resolveListen } from "./listen.js";
 import { ensureDefaultRegistry, resolveTurnChain, turnSpendFor } from "./model-registry.js";
+import { writingNotesPort } from "./notes-port.js";
 
 export interface RunningServer {
   url: string;
@@ -78,6 +79,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
         if (!document) return [];
         return kb.listEvidence(document.ownerId, documentId);
       },
+      notes: writingNotesPort(db),
     });
     const app = createApp({
       db,
@@ -110,7 +112,13 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     const retentionDays = discardRetentionDays(env);
     const purgeEvery = discardPurgeIntervalMs(env);
     const purge = () => {
-      void db.purgeDiscarded({ retentionDays }).catch(() => undefined);
+      void (async () => {
+        const result = await db.purgeDiscarded({ retentionDays });
+        const ids = result.purgedSessions
+          .map((session) => session.piConversationId)
+          .filter((id): id is string => Boolean(id));
+        if (ids.length > 0) await opened.purgePiConversations?.(ids);
+      })().catch(() => undefined);
     };
     purge();
     const purgeTimer = purgeEvery > 0 ? setInterval(purge, purgeEvery) : undefined;

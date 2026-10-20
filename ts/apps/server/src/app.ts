@@ -54,6 +54,7 @@ import { z } from "zod";
 import { agentCard } from "./agent-card.js";
 import { enforceApiKey, resolveApiApplyMode } from "./api-access.js";
 import { bindSlot, listForUser, probeCredential, saveRegistryEntry } from "./model-registry.js";
+import { registerNoteRoutes } from "./notes.js";
 import { defaultRateLimiter, TaskConcurrency, type TokenBucketLimiter } from "./rate-limit.js";
 import { registerTaskRoutes } from "./tasks.js";
 
@@ -257,6 +258,23 @@ function kbFailure(error: unknown): { status: 400 | 404; body: { error: string }
   return { status, body: { error: error.message } };
 }
 
+async function purgeDiscarded(
+  deps: AppDeps,
+  retentionDays: number,
+): Promise<{
+  purged: string[];
+  purgedSessions: Array<{ id: string; documentId: string; piConversationId: string | null }>;
+  pi?: { deletedConversationIds: string[]; detachedForkIds: string[]; vacuumed: boolean };
+}> {
+  const result = await deps.db.purgeDiscarded({ retentionDays });
+  const ids = result.purgedSessions
+    .map((session) => session.piConversationId)
+    .filter((id): id is string => Boolean(id));
+  if (ids.length === 0 || !deps.runtime.purgePiConversations) return result;
+  const pi = await deps.runtime.purgePiConversations(ids);
+  return { ...result, pi };
+}
+
 function userIdOf(actor: Actor): string | undefined {
   if (actor.type === "system") return undefined;
   return actor.userId;
@@ -441,7 +459,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
       .safeParse((await readBody(c)) ?? {});
     if (!parsed.success) return c.json({ error: "清退参数不合法" }, 400);
     const retentionDays = parsed.data.retentionDays ?? discardRetentionDays(deps.env ?? {});
-    return c.json(await deps.db.purgeDiscarded({ retentionDays }));
+    return c.json(await purgeDiscarded(deps, retentionDays));
   });
 
   api.post("/documents", async (c) => {
@@ -861,7 +879,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
       .safeParse((await readBody(c)) ?? {});
     if (!parsed.success) return c.json({ error: "清退参数不合法" }, 400);
     const retentionDays = parsed.data.retentionDays ?? discardRetentionDays(deps.env ?? {});
-    return c.json(await deps.db.purgeDiscarded({ retentionDays }));
+    return c.json(await purgeDiscarded(deps, retentionDays));
   });
 
   api.post("/documents/:id/turns", async (c) => {
@@ -1277,6 +1295,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     }
   });
 
+  registerNoteRoutes(api, deps.db, authorizer);
   registerTaskRoutes(api, { db: deps.db, runtime: deps.runtime }, authorizer);
 
   app.route("/api/v1", api);
