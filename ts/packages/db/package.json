@@ -20,6 +20,7 @@
     "@luminwrite/contracts": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/edition": "workspace:*",
+    "@luminwrite/library": "workspace:*",
     "drizzle-orm": "catalog:",
     "nanoid": "catalog:",
     "pg": "catalog:"

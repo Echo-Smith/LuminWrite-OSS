@@ -35,7 +35,9 @@ import {
   remapBlockIds,
 } from "@luminwrite/doc-model";
 import type { UsageEvent } from "@luminwrite/edition";
-import { and, desc, eq, gte, isNotNull, isNull, lte, type SQL, sql } from "drizzle-orm";
+import type { ArticleListQuery } from "@luminwrite/library";
+import { normalizeTagName } from "@luminwrite/library";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, type SQL, sql } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import pg from "pg";
@@ -47,6 +49,8 @@ import * as schema from "./schema.js";
 
 const {
   documents,
+  tags,
+  documentTags,
   docVersions,
   docBlocks,
   turns,
@@ -255,6 +259,22 @@ export interface DocumentListItem {
   title: string;
   status: string;
   savedAt: string;
+  createdVia: string;
+  humanTouched: boolean;
+  headVersionId: string | null;
+  createdAt: string;
+}
+
+/** 文章库里的一篇。status 由 discarded_at 推出，不写 documents.status。 */
+export interface ArticleView {
+  id: string;
+  title: string;
+  genre: string;
+  status: "active" | "archived";
+  tags: string[];
+  savedAt: string;
+  discardedAt: string | null;
+  kbExcluded: boolean;
   createdVia: string;
   humanTouched: boolean;
   headVersionId: string | null;
@@ -616,6 +636,112 @@ export class LwDatabase {
       headVersionId: row.headVersionId,
       createdAt: stamp(row.createdAt),
     }));
+  }
+
+  async listArticles(ownerId: string, query: ArticleListQuery): Promise<ArticleView[]> {
+    const filters: SQL[] = [eq(documents.ownerId, ownerId), isNotNull(documents.savedAt)];
+    if (query.archived === "archived") filters.push(isNotNull(documents.discardedAt));
+    else if (query.archived === "active") filters.push(isNull(documents.discardedAt));
+    if (query.genre) filters.push(eq(documents.genre, query.genre));
+    if (query.createdVia) filters.push(eq(documents.createdVia, query.createdVia));
+    if (query.kbExcluded === true) filters.push(eq(documents.kbExcluded, true));
+    if (query.kbExcluded === false) filters.push(eq(documents.kbExcluded, false));
+    if (query.text) {
+      const pattern = likeContains(query.text);
+      filters.push(sql`(
+        ${documents.title} ilike ${pattern}
+        or exists (
+          select 1 from doc_blocks
+          where doc_blocks.document_id = ${documents.id}
+            and doc_blocks.text ilike ${pattern}
+        )
+      )`);
+    }
+    for (const tag of query.tags) {
+      filters.push(sql`exists (
+        select 1 from document_tags
+        join tags on tags.id = document_tags.tag_id
+        where document_tags.document_id = ${documents.id}
+          and tags.owner_id = ${ownerId}
+          and tags.name = ${tag}
+      )`);
+    }
+    const rows = await this.orm
+      .select()
+      .from(documents)
+      .where(and(...filters))
+      .orderBy(desc(documents.createdAt), desc(documents.id))
+      .limit(query.limit);
+    const names = await this.tagsByDocument(rows.map((row) => row.id));
+    return rows.map((row) => toArticle(row, names.get(row.id) ?? []));
+  }
+
+  async getArticle(ownerId: string, documentId: string): Promise<ArticleView | undefined> {
+    const rows = await this.orm
+      .select()
+      .from(documents)
+      .where(
+        and(
+          eq(documents.id, documentId),
+          eq(documents.ownerId, ownerId),
+          isNotNull(documents.savedAt),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    return toArticle(row, await this.tagNames(row.id));
+  }
+
+  async listTags(ownerId: string): Promise<string[]> {
+    const rows = await this.orm
+      .select({ name: tags.name })
+      .from(tags)
+      .where(eq(tags.ownerId, ownerId))
+      .orderBy(tags.name);
+    return rows.map((row) => row.name);
+  }
+
+  async addDocumentTag(documentId: string, ownerId: string, rawName: string): Promise<string[]> {
+    const name = normalizeTagName(rawName);
+    return this.orm.transaction(async (tx) => {
+      const doc = await this.lock(tx, documentId);
+      if (doc.ownerId !== ownerId) throw new DocumentNotFound(documentId);
+      const existing = await tx
+        .select({ id: tags.id })
+        .from(tags)
+        .where(and(eq(tags.ownerId, ownerId), eq(tags.name, name)))
+        .limit(1);
+      let tagId = existing[0]?.id;
+      if (!tagId) {
+        tagId = newId("tag");
+        await tx.insert(tags).values({ id: tagId, ownerId, name });
+      }
+      await tx.insert(documentTags).values({ documentId, tagId }).onConflictDoNothing();
+      return this.tagNames(documentId, tx);
+    });
+  }
+
+  async removeDocumentTag(documentId: string, ownerId: string, rawName: string): Promise<string[]> {
+    const name = normalizeTagName(rawName);
+    return this.orm.transaction(async (tx) => {
+      const doc = await this.lock(tx, documentId);
+      if (doc.ownerId !== ownerId) throw new DocumentNotFound(documentId);
+      const existing = await tx
+        .select({ id: tags.id })
+        .from(tags)
+        .where(and(eq(tags.ownerId, ownerId), eq(tags.name, name)))
+        .limit(1);
+      const tagId = existing[0]?.id;
+      if (!tagId) throw new Error("找不到标签");
+      const removed = await tx
+        .delete(documentTags)
+        .where(and(eq(documentTags.documentId, documentId), eq(documentTags.tagId, tagId)))
+        .returning({ tagId: documentTags.tagId });
+      if (removed.length === 0) throw new Error("找不到标签");
+      await this.deleteUnusedTags(tx, ownerId);
+      return this.tagNames(documentId, tx);
+    });
   }
 
   async saveDocument(id: string): Promise<{ savedAt: string; already: boolean }> {
@@ -2165,6 +2291,44 @@ export class LwDatabase {
     }
   }
 
+  private async tagNames(documentId: string, tx?: Tx): Promise<string[]> {
+    const query = tx ?? this.orm;
+    const rows = await query
+      .select({ name: tags.name })
+      .from(documentTags)
+      .innerJoin(tags, eq(documentTags.tagId, tags.id))
+      .where(eq(documentTags.documentId, documentId))
+      .orderBy(tags.name);
+    return rows.map((row) => row.name);
+  }
+
+  private async tagsByDocument(ids: string[]): Promise<Map<string, string[]>> {
+    const grouped = new Map<string, string[]>();
+    if (ids.length === 0) return grouped;
+    const rows = await this.orm
+      .select({ documentId: documentTags.documentId, name: tags.name })
+      .from(documentTags)
+      .innerJoin(tags, eq(documentTags.tagId, tags.id))
+      .where(inArray(documentTags.documentId, ids))
+      .orderBy(tags.name);
+    for (const row of rows) {
+      const list = grouped.get(row.documentId) ?? [];
+      list.push(row.name);
+      grouped.set(row.documentId, list);
+    }
+    return grouped;
+  }
+
+  private async deleteUnusedTags(tx: Tx, ownerId: string) {
+    await tx.execute(sql`
+      delete from tags
+      where owner_id = ${ownerId}
+        and not exists (
+          select 1 from document_tags where document_tags.tag_id = tags.id
+        )
+    `);
+  }
+
   private async purgeOne(tx: Tx, id: string) {
     await tx.execute(
       sql`DELETE FROM subagent_runs WHERE session_id IN (
@@ -2198,7 +2362,14 @@ export class LwDatabase {
     await tx.delete(proposals).where(eq(proposals.documentId, id));
     await tx.delete(docBlocks).where(eq(docBlocks.documentId, id));
     await tx.delete(runEvents).where(eq(runEvents.documentId, id));
+    const owner = await tx
+      .select({ ownerId: documents.ownerId })
+      .from(documents)
+      .where(eq(documents.id, id))
+      .limit(1);
     await tx.delete(documents).where(eq(documents.id, id));
+    const ownerId = owner[0]?.ownerId;
+    if (ownerId) await this.deleteUnusedTags(tx, ownerId);
   }
 
   private async sessionInTx(tx: Tx, id: string) {
@@ -2579,6 +2750,27 @@ function stamp(value: Date | string): string {
 function stampOrNull(value: Date | string | null): string | null {
   if (value == null) return null;
   return stamp(value);
+}
+
+function toArticle(row: typeof documents.$inferSelect, tagList: string[]): ArticleView {
+  return {
+    id: row.id,
+    title: row.title,
+    genre: row.genre,
+    status: row.discardedAt ? "archived" : "active",
+    tags: tagList,
+    savedAt: stamp(row.savedAt ?? row.createdAt),
+    discardedAt: stampOrNull(row.discardedAt),
+    kbExcluded: row.kbExcluded,
+    createdVia: row.createdVia,
+    humanTouched: row.humanTouched,
+    headVersionId: row.headVersionId,
+    createdAt: stamp(row.createdAt),
+  };
+}
+
+function likeContains(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
 }
 
 function asOps(value: unknown): EditOp[] {

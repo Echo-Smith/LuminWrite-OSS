@@ -36,6 +36,7 @@ import {
   type KnowledgeBase,
   retrievalDataNote,
 } from "@luminwrite/kb";
+import { ArticleQueryError, parseArticleListQuery, TagNameError } from "@luminwrite/library";
 import { TurnSpendError } from "@luminwrite/models";
 import { readStoredPlan } from "@luminwrite/research";
 import {
@@ -199,6 +200,23 @@ export interface AppDeps {
   pageFetch?: PageFetch;
 }
 
+async function savedArticle(db: LwDatabase, documentId: string): Promise<boolean> {
+  const document = await db.getDocument(documentId);
+  return document?.savedAt != null;
+}
+
+function libraryFailure(
+  error: unknown,
+): { status: 400 | 404 | 409; body: { error: string } } | undefined {
+  if (error instanceof TagNameError || error instanceof ArticleQueryError) {
+    return { status: 400, body: { error: error.message } };
+  }
+  if (error instanceof Error && error.message === "找不到标签") {
+    return { status: 404, body: { error: error.message } };
+  }
+  return httpError(error);
+}
+
 function httpError(error: unknown): { status: 404 | 409; body: { error: string } } | undefined {
   if (
     error instanceof DocumentNotFound ||
@@ -313,6 +331,111 @@ export function createApp(deps: AppDeps): Hono<Env> {
     const userId = userIdOf(c.get("actor"));
     if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
     return c.json(await deps.db.listDocuments(userId));
+  });
+
+  api.get("/library/articles", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    try {
+      const query = parseArticleListQuery({
+        ...(c.req.query("q") ? { q: c.req.query("q") } : {}),
+        tag: c.req.queries("tag") ?? [],
+        ...(c.req.query("genre") ? { genre: c.req.query("genre") } : {}),
+        ...(c.req.query("via") ? { via: c.req.query("via") } : {}),
+        ...(c.req.query("archived") ? { archived: c.req.query("archived") } : {}),
+        ...(c.req.query("kb") ? { kb: c.req.query("kb") } : {}),
+        ...(c.req.query("limit") ? { limit: c.req.query("limit") } : {}),
+      });
+      return c.json(await deps.db.listArticles(userId, query));
+    } catch (error) {
+      const mapped = libraryFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.get("/library/tags", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json(await deps.db.listTags(userId));
+  });
+
+  api.get("/library/articles/:id", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const article = await deps.db.getArticle(userId, c.req.param("id"));
+    if (!article) return c.json({ error: "找不到文章" }, 404);
+    return c.json(article);
+  });
+
+  api.post("/library/articles/:id/tags", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const saved = await savedArticle(deps.db, c.req.param("id"));
+    if (!saved) return c.json({ error: "未保存的文档不在文章库" }, 409);
+    const parsed = z.object({ name: z.string() }).safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "标签参数不合法" }, 400);
+    try {
+      const names = await deps.db.addDocumentTag(c.req.param("id"), userId, parsed.data.name);
+      return c.json({ tags: names });
+    } catch (error) {
+      const mapped = libraryFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.delete("/library/articles/:id/tags/:name", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    try {
+      const names = await deps.db.removeDocumentTag(c.req.param("id"), userId, c.req.param("name"));
+      return c.json({ tags: names });
+    } catch (error) {
+      const mapped = libraryFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/library/articles/:id/archive", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      const result = await deps.db.discardDocument(c.req.param("id"));
+      return c.json({ ...result, status: "archived" });
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/library/articles/:id/archive/undo", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      const result = await deps.db.undoDiscard(c.req.param("id"));
+      return c.json({ ...result, status: "active" });
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/library/purge", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const parsed = z
+      .object({ retentionDays: z.number().nonnegative().optional() })
+      .safeParse((await readBody(c)) ?? {});
+    if (!parsed.success) return c.json({ error: "清退参数不合法" }, 400);
+    const retentionDays = parsed.data.retentionDays ?? discardRetentionDays(deps.env ?? {});
+    return c.json(await deps.db.purgeDiscarded({ retentionDays }));
   });
 
   api.post("/documents", async (c) => {

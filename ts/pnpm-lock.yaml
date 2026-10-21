@@ -329,6 +329,9 @@ importers:
       '@luminwrite/kb':
         specifier: workspace:*
         version: link:../../packages/kb
+      '@luminwrite/library':
+        specifier: workspace:*
+        version: link:../../packages/library
       '@luminwrite/models':
         specifier: workspace:*
         version: link:../../packages/models
@@ -391,6 +394,9 @@ importers:
       '@luminwrite/edition':
         specifier: workspace:*
         version: link:../edition
+      '@luminwrite/library':
+        specifier: workspace:*
+        version: link:../library
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4(@electric-sql/pglite@0.5.10)(@opentelemetry/api@1.9.1)(@types/pg@8.15.5)(pg@8.16.3)

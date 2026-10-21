@@ -427,4 +427,20 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_subagent_run_task ON subagent_runs (pi_task_id);
 CREATE INDEX IF NOT EXISTS idx_subagent_run_turn ON subagent_runs (turn_id);
+
+CREATE TABLE IF NOT EXISTS tags (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  name text NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_tag_owner_name ON tags (owner_id, name);
+
+CREATE TABLE IF NOT EXISTS document_tags (
+  document_id text NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  tag_id text NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (document_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags (tag_id);
 `;

@@ -49,6 +49,28 @@ export const users = pgTable(
   (table) => [uniqueIndex("uk_users_singleton").on(table.singleton)],
 );
 
+export const tags = pgTable(
+  "tags",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+  },
+  (table) => [uniqueIndex("uk_tag_owner_name").on(table.ownerId, table.name)],
+);
+
+export const documentTags = pgTable(
+  "document_tags",
+  {
+    documentId: text("document_id").notNull(),
+    tagId: text("tag_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.documentId, table.tagId] }),
+    index("idx_document_tags_tag").on(table.tagId),
+  ],
+);
+
 export const documents = pgTable("documents", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),
