@@ -79,9 +79,14 @@ CREATE TABLE IF NOT EXISTS turns (
   pi_submission_id text,
   instruction text NOT NULL,
   error text,
+  model_ref text,
+  tier_ref text,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (document_id, idempotency_key)
 );
+
+ALTER TABLE turns ADD COLUMN IF NOT EXISTS model_ref text;
+ALTER TABLE turns ADD COLUMN IF NOT EXISTS tier_ref text;
 
 CREATE TABLE IF NOT EXISTS run_events (
   id text PRIMARY KEY,

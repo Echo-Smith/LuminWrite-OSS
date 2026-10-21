@@ -1,3 +1,4 @@
+import type { MutableModels } from "@earendil-works/pi-ai";
 import {
   type Actor,
   DossierOpSchema,
@@ -28,6 +29,7 @@ import {
 import type { EditAuthorizer } from "@luminwrite/edition";
 import { type AuthPort, ownerAuthorizer } from "@luminwrite/edition";
 import type { WritingRuntime } from "@luminwrite/harness";
+import { TurnSpendError } from "@luminwrite/models";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -127,6 +129,7 @@ export interface AppDeps {
   limiter?: TokenBucketLimiter;
   keyring?: MasterKeyring;
   env?: NodeJS.ProcessEnv;
+  models?: MutableModels;
 }
 
 function httpError(error: unknown): { status: 404 | 409; body: { error: string } } | undefined {
@@ -467,14 +470,21 @@ export function createApp(deps: AppDeps): Hono<Env> {
       }
     }
     try {
+      const requestedModel = model ?? tier;
       const result = await deps.runtime.submitTurn({
         ...rest,
+        ...(requestedModel ? { model: requestedModel } : {}),
         applyMode,
         documentId: c.req.param("id"),
         actor,
       });
       return c.json(result);
     } catch (error) {
+      if (error instanceof TurnSpendError) {
+        return c.json({ error: error.message }, 429, {
+          "Retry-After": String(error.retryAfterSeconds),
+        });
+      }
       const mapped = httpError(error);
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;

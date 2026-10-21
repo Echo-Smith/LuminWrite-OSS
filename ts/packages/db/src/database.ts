@@ -210,6 +210,8 @@ export interface TurnView {
   error: string | null;
   piSubmissionId: string | null;
   idempotencyKey: string;
+  modelRef: string | null;
+  tierRef: string | null;
 }
 
 export interface SessionView {
@@ -527,6 +529,8 @@ export class LwDatabase {
       piSubmissionId?: string;
       resultVersionId?: string;
       error?: string;
+      modelRef?: string;
+      tierRef?: string | null;
     },
   ): Promise<void> {
     const update: Partial<typeof turns.$inferInsert> = {};
@@ -535,6 +539,8 @@ export class LwDatabase {
     if (patch.piSubmissionId) update.piSubmissionId = patch.piSubmissionId;
     if (patch.resultVersionId) update.resultVersionId = patch.resultVersionId;
     if (patch.error) update.error = patch.error;
+    if (patch.modelRef) update.modelRef = patch.modelRef;
+    if (patch.tierRef !== undefined) update.tierRef = patch.tierRef;
     if (Object.keys(update).length === 0) return;
     await this.orm.update(turns).set(update).where(eq(turns.id, turnId));
   }
@@ -802,6 +808,33 @@ export class LwDatabase {
       .from(usageLedger)
       .where(and(eq(usageLedger.userId, userId), gte(usageLedger.createdAt, since)));
     return Number(rows[0]?.total ?? 0);
+  }
+
+  async usageForTurn(turnId: string): Promise<
+    Array<{
+      userId: string | null;
+      apiKeyId: string | null;
+      credentialId: string | null;
+      modelRef: string | null;
+      tierRef: string | null;
+      sessionId: string | null;
+      costMicros: number;
+      priceKnown: boolean;
+      model: string;
+    }>
+  > {
+    const rows = await this.orm.select().from(usageLedger).where(eq(usageLedger.turnId, turnId));
+    return rows.map((row) => ({
+      userId: row.userId,
+      apiKeyId: row.apiKeyId,
+      credentialId: row.credentialId,
+      modelRef: row.modelRef,
+      tierRef: row.tierRef,
+      sessionId: row.sessionId,
+      costMicros: row.costMicros,
+      priceKnown: row.priceKnown,
+      model: row.model,
+    }));
   }
 
   async usageCostMicrosSince(apiKeyId: string, since: Date): Promise<number> {
@@ -1748,6 +1781,8 @@ function toTurn(row: typeof turns.$inferSelect): TurnView {
     error: row.error,
     piSubmissionId: row.piSubmissionId,
     idempotencyKey: row.idempotencyKey,
+    modelRef: row.modelRef,
+    tierRef: row.tierRef,
   };
 }
 

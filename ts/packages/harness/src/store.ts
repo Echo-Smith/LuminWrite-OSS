@@ -19,6 +19,8 @@ export interface TurnSnapshot {
   resultVersionId: string | null;
   error: string | null;
   piSubmissionId: string | null;
+  modelRef: string | null;
+  tierRef: string | null;
 }
 
 /** 会话行不保存正文。正文只在文档版本链里。 */
@@ -29,6 +31,7 @@ export interface SessionSnapshot {
   baseVersionId: string;
   piConversationId: string | null;
   status: "open" | "closed";
+  modelPin: string | null;
 }
 
 export interface DossierSnapshot {
@@ -44,6 +47,7 @@ export interface WritingStore {
   sessionFor(req: TurnRequest): Promise<SessionSnapshot>;
   getSession(sessionId: string): Promise<SessionSnapshot | undefined>;
   setSessionConversation(sessionId: string, piConversationId: string): Promise<void>;
+  setSessionModelPin(sessionId: string, modelPin: string): Promise<void>;
   advanceSessionBase(sessionId: string, versionId: string): Promise<void>;
   canRead(sessionId: string, documentId: string): Promise<boolean>;
   beginTurn(req: TurnRequest): Promise<{ turnId: string; created: boolean; status: TurnStatus }>;
@@ -55,6 +59,8 @@ export interface WritingStore {
       piSubmissionId?: string;
       resultVersionId?: string;
       error?: string;
+      modelRef?: string;
+      tierRef?: string | null;
     },
   ): Promise<void>;
   getTurn(turnId: string): Promise<TurnSnapshot | undefined>;

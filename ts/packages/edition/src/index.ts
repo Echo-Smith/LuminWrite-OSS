@@ -16,6 +16,16 @@ export type UsageEvent = {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costMicros: number;
+  readonly apiKeyId?: string;
+  readonly userId?: string;
+  readonly credentialId?: string;
+  readonly modelRef?: string;
+  readonly tierRef?: string;
+  readonly sessionId?: string;
+  readonly turnId?: string;
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
+  readonly priceKnown?: boolean;
 };
 
 export type UsageSink = {

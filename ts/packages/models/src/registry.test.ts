@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { catalogModels } from "./catalog.js";
 import { defaultRegistryRecords } from "./defaults.js";
 import { runWithFallback, UpstreamModelError } from "./fallback.js";
-import { choosePrice, costMicros, ownerSpendAllowed } from "./price.js";
-import { listModels, resolveModels } from "./registry.js";
+import { chargeMicros, choosePrice, costMicros, ownerSpendAllowed } from "./price.js";
+import { listModels, resolveModels, resolveTurnModels } from "./registry.js";
 
 const env = { NODE_ENV: "test" };
 
@@ -59,6 +59,34 @@ describe("模型注册表", () => {
       sessionPin: "deepseek/deepseek-v4-pro",
     });
     expect(pinned.map((model) => model.ref)).toEqual(["deepseek/deepseek-v4-pro"]);
+  });
+
+  it("换档后不再沿用钉，未换档时只走钉住的模型", () => {
+    const creds = input([
+      { id: "cred_oa", provider: "openai" },
+      { id: "cred_ds", provider: "deepseek" },
+    ]);
+    const stuck = resolveTurnModels({
+      ...creds,
+      slot: "writer.main",
+      sessionPin: "deepseek/deepseek-v4-pro",
+    });
+    expect(stuck.map((model) => model.ref)).toEqual(["deepseek/deepseek-v4-pro"]);
+    const changed = resolveTurnModels({
+      ...creds,
+      slot: "writer.main",
+      prefer: "tier/fast",
+      sessionPin: "deepseek/deepseek-v4-pro",
+    });
+    expect(changed[0]?.ref).toBe("openai/gpt-4.1-nano");
+    expect(changed.some((model) => model.ref === "deepseek/deepseek-v4-pro")).toBe(false);
+    const unknown = chargeMicros(
+      false,
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      { input: 2, output: 8, cacheRead: 0, cacheWrite: 0 },
+      { input: 1_000_000, output: 0 },
+    );
+    expect(unknown).toBe(2_000_000);
   });
 
   it("价格是用户价优先于注册表，再优先于目录", () => {

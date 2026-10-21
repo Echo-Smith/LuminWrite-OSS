@@ -38,6 +38,8 @@ export const TurnRequestSchema = z.object({
   delivery: z.enum(["followup", "steer"]),
   applyMode: z.enum(["auto", "proposal"]),
   idempotencyKey: z.string().min(1).max(200),
+  /** `tier/balanced` 或具体模型。有值时这一回合按它解析，不再沿用会话钉。 */
+  model: z.string().min(1).max(200).optional(),
   actor: ActorSchema,
 });
 export type TurnRequest = z.infer<typeof TurnRequestSchema>;

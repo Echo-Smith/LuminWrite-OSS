@@ -1,9 +1,10 @@
 import type { MutableModels } from "@earendil-works/pi-ai";
-import type { ModelSlot, RegistryEntrySpec } from "@luminwrite/contracts";
+import type { Actor, ModelSlot, RegistryEntrySpec } from "@luminwrite/contracts";
 import { type LwDatabase, type MasterKeyring, revealCredential } from "@luminwrite/db";
 import {
   catalogModels,
   cheapestModel,
+  conservativeRates,
   costMicros,
   createClosedModels,
   defaultRegistryRecords,
@@ -15,6 +16,7 @@ import {
   probeResolved,
   type RegistryRecord,
   resolveModels,
+  resolveTurnModels,
   syncByokProviders,
   validateRegistrySpec,
 } from "@luminwrite/models";
@@ -205,4 +207,69 @@ export async function resolveForUser(
 ) {
   const data = await loaded(deps, input.userId);
   return resolveModels({ ...data, ...input });
+}
+
+async function syncUserProviders(deps: RegistryDeps, userId: string): Promise<void> {
+  if (!deps.keyring) return;
+  const data = await loaded(deps, userId);
+  const ring = deps.keyring;
+  syncByokProviders({
+    models: modelsHandle(deps),
+    credentials: data.credentials,
+    entries: data.entries,
+    env: data.env,
+    openSecret: async (id) => {
+      const stored = await deps.db.getCredential(id);
+      if (!stored || stored.userId !== userId) throw new Error("凭据解不开");
+      return revealCredential(stored, ring);
+    },
+  });
+}
+
+/** 回合前解析。只返回这个用户的凭据，并先把 byok provider 注册到同一个 Models。 */
+export async function resolveTurnChain(
+  deps: RegistryDeps,
+  input: {
+    actor: Actor;
+    slot: ModelSlot;
+    prefer?: string;
+    sessionPin: string | null;
+    now: number;
+    cooldownUntil: ReadonlyMap<string, number>;
+  },
+) {
+  if (input.actor.type === "system") return { chain: [], conservative: conservativeRates([]) };
+  const userId = input.actor.userId;
+  await syncUserProviders(deps, userId);
+  const data = await loaded(deps, userId);
+  const resolveInput = {
+    ...data,
+    slot: input.slot,
+    ...(input.prefer ? { prefer: input.prefer } : {}),
+    ...(input.sessionPin ? { sessionPin: input.sessionPin } : {}),
+    now: input.now,
+    cooldownUntil: input.cooldownUntil,
+  };
+  const chain = resolveTurnModels(resolveInput);
+  const open = resolveModels({ ...resolveInput, sessionPin: undefined });
+  return { chain, conservative: conservativeRates(open.length > 0 ? open : chain) };
+}
+
+export async function turnSpendFor(deps: RegistryDeps, actor: Actor) {
+  if (actor.type === "system") {
+    return { userMicros: 0, keyMicros: 0, ownerCapUsd: deps.env?.LW_DAILY_COST_CAP_USD };
+  }
+  const since = utcDayStart();
+  const userMicros = await deps.db.usageCostMicrosForUser(actor.userId, since);
+  const apiKeyId = actor.type === "api_client" ? actor.keyId : undefined;
+  const keyMicros = apiKeyId ? await deps.db.usageCostMicrosSince(apiKeyId, since) : 0;
+  const key = apiKeyId ? await deps.db.getApiKey(apiKeyId) : undefined;
+  return {
+    userMicros,
+    keyMicros,
+    ...(deps.env?.LW_DAILY_COST_CAP_USD !== undefined
+      ? { ownerCapUsd: deps.env.LW_DAILY_COST_CAP_USD }
+      : {}),
+    keyCapUsd: key?.dailyCostCapUsd ?? null,
+  };
 }

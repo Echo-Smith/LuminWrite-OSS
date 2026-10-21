@@ -29,6 +29,7 @@ export async function runWithFallback<T>(input: {
   chain: readonly PricedModel[];
   now?: number;
   cooldownUntil?: Map<string, number>;
+  onEvent?: (event: FallbackEvent) => void;
   run: (model: PricedModel, markToken: () => void) => Promise<T>;
 }): Promise<{ value: T; used: PricedModel; events: FallbackEvent[] }> {
   const now = input.now ?? Date.now();
@@ -59,13 +60,15 @@ export async function runWithFallback<T>(input: {
         );
       if (sawToken || !retryable || !later) throw error;
       if (status === 429) cooldown.set(model.credentialId, now + COOLDOWN_MS);
-      events.push({
+      const event: FallbackEvent = {
         type: "model.fallback",
         from: model.ref,
         to: later.ref,
         credentialId: model.credentialId,
         reason: status === 429 ? "429" : "retryable",
-      });
+      };
+      events.push(event);
+      input.onEvent?.(event);
     }
   }
   throw lastError instanceof Error ? lastError : new Error("没有可用模型");

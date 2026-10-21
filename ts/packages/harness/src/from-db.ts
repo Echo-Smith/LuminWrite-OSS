@@ -32,6 +32,7 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
         baseVersionId: session.baseVersionId,
         piConversationId: session.piConversationId,
         status: session.status,
+        modelPin: session.modelPin,
       };
     },
     async getSession(sessionId) {
@@ -44,10 +45,12 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
         baseVersionId: session.baseVersionId,
         piConversationId: session.piConversationId,
         status: session.status,
+        modelPin: session.modelPin,
       };
     },
     setSessionConversation: (sessionId, piConversationId) =>
       db.setSessionConversation(sessionId, piConversationId),
+    setSessionModelPin: (sessionId, modelPin) => db.setSessionModelPin(sessionId, modelPin),
     advanceSessionBase: (sessionId, versionId) => db.advanceSessionBase(sessionId, versionId),
     canRead: (sessionId, documentId) => db.canRead(sessionId, documentId),
     beginTurn: (req) => db.beginTurn(req),
@@ -62,6 +65,8 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
         resultVersionId: turn.resultVersionId,
         error: turn.error,
         piSubmissionId: turn.piSubmissionId,
+        modelRef: turn.modelRef,
+        tierRef: turn.tierRef,
       };
     },
     propose: (input) => db.propose(input),

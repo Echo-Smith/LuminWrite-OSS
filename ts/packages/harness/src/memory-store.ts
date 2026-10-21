@@ -49,6 +49,7 @@ interface MemSession {
   kind: SessionKind;
   baseVersionId: string;
   piConversationId: string | null;
+  modelPin: string | null;
   status: "open" | "closed";
   reads: Set<string>;
 }
@@ -94,6 +95,7 @@ export class MemoryWritingStore implements WritingStore {
       kind: "main",
       baseVersionId: versionId,
       piConversationId: null,
+      modelPin: null,
       status: "open",
       reads: new Set(),
     });
@@ -134,6 +136,7 @@ export class MemoryWritingStore implements WritingStore {
       kind: "fork",
       baseVersionId,
       piConversationId: null,
+      modelPin: null,
       status: "open",
       reads: new Set(),
     });
@@ -184,6 +187,12 @@ export class MemoryWritingStore implements WritingStore {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("找不到会话");
     session.piConversationId = piConversationId;
+  }
+
+  async setSessionModelPin(sessionId: string, modelPin: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error("找不到会话");
+    session.modelPin = modelPin;
   }
 
   async advanceSessionBase(sessionId: string, versionId: string): Promise<void> {
@@ -251,6 +260,8 @@ export class MemoryWritingStore implements WritingStore {
       resultVersionId: null,
       error: null,
       piSubmissionId: null,
+      modelRef: null,
+      tierRef: null,
       idempotencyKey: req.idempotencyKey,
     };
     this.turns.set(turn.id, turn);
@@ -264,6 +275,8 @@ export class MemoryWritingStore implements WritingStore {
     if (patch.piSubmissionId) turn.piSubmissionId = patch.piSubmissionId;
     if (patch.resultVersionId) turn.resultVersionId = patch.resultVersionId;
     if (patch.error) turn.error = patch.error;
+    if (patch.modelRef) turn.modelRef = patch.modelRef;
+    if (patch.tierRef !== undefined) turn.tierRef = patch.tierRef;
   }
 
   async getTurn(turnId: string): Promise<TurnSnapshot | undefined> {
@@ -394,6 +407,7 @@ function snapshotOf(session: MemSession): SessionSnapshot {
     baseVersionId: session.baseVersionId,
     piConversationId: session.piConversationId,
     status: session.status,
+    modelPin: session.modelPin,
   };
 }
 
