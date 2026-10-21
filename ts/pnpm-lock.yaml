@@ -409,6 +409,9 @@ importers:
       '@luminwrite/library':
         specifier: workspace:*
         version: link:../library
+      '@luminwrite/prefs':
+        specifier: workspace:*
+        version: link:../prefs
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4(@electric-sql/pglite@0.5.10)(@opentelemetry/api@1.9.1)(@types/pg@8.15.5)(pg@8.16.3)
@@ -617,6 +620,13 @@ importers:
         version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(yaml@2.9.1))
 
   packages/prefs:
+    dependencies:
+      '@luminwrite/plainspeak':
+        specifier: workspace:*
+        version: link:../plainspeak
+      '@luminwrite/style':
+        specifier: workspace:*
+        version: link:../style
     devDependencies:
       typescript:
         specifier: 'catalog:'

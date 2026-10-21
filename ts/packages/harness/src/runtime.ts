@@ -45,6 +45,7 @@ import { builtinRoles, outsideScope, type RoleDef } from "@luminwrite/roles";
 
 import { bindDelegate } from "./delegate.js";
 import type { SessionKnowledge } from "./knowledge.js";
+import { type PiPurgeReport, purgePiConversations as purgePiStorage } from "./pi-purge.js";
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
 import type { HarnessChange, HarnessPort } from "./port.js";
 import { screenOps } from "./screen.js";
@@ -87,10 +88,12 @@ function promptFor(
   blocks: PlanBlock[],
   scopeIds: string[],
   roleIds: readonly string[],
+  notes?: { prose?: string; offer: boolean },
 ): string {
   const payload = {
     documentId: turn.documentId,
     sessionId: session.id,
+    sessionKind: session.kind,
     turnId,
     kind: turn.kind,
     instruction: turn.instruction,
@@ -108,6 +111,11 @@ function promptFor(
     "需要研究员、事实核查、引用审计或审校时，调用 delegate。选哪个角色、问什么、圈哪些块，由你决定。",
     `可调用的 id：${roleIds.join("、")}。`,
   ];
+  if (notes?.offer && session.kind !== "api") {
+    lines.push(
+      "可以 read_writing_notes 看已生效的写作笔记，结果里带 plainConflict。用户明说以后要怎样写时，用 propose_writing_note 提一条候选。人确认之前它不生效。",
+    );
+  }
   if (turn.kind === "research") {
     lines.push(
       "请调用 record_research_plan 写下检索计划。子问题怎么拆、先查哪一路由你决定。",
@@ -119,7 +127,25 @@ function promptFor(
     `<turn>${JSON.stringify(payload)}</turn>`,
     `<blocks>${JSON.stringify(blocks)}</blocks>`,
   );
+  if (notes?.prose) lines.push(`<notes>${notes.prose}</notes>`);
   return lines.join("\n");
+}
+
+export interface WritingNoteView {
+  id: string;
+  kind: string;
+  statement: string;
+  plainConflict: boolean;
+  scope: { level: string; ref?: string };
+}
+
+export interface WritingNotes {
+  proseFor(session: SessionSnapshot): Promise<string | undefined>;
+  read(session: SessionSnapshot): Promise<WritingNoteView[]>;
+  propose(
+    session: SessionSnapshot,
+    input: { text: string; kind: string; scopeLevel: string; scopeRef?: string },
+  ): Promise<{ ok: true; id: string } | { ok: false; reason: string }>;
 }
 
 export interface TurnResult {
@@ -133,6 +159,8 @@ export interface WritingRuntime extends HarnessPort {
   submitTurn(req: TurnRequest): Promise<TurnResult>;
   events(documentId: string, afterSeq?: number): Promise<RunEvent[]>;
   readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
+  /** 关掉 Harness 之后调用最稳妥。文件仍被占用时，行会删掉，但 VACUUM 可能失败。 */
+  purgePiConversations?(ids: readonly string[]): Promise<PiPurgeReport>;
 }
 
 export interface TurnModelChoice {
@@ -317,6 +345,8 @@ export async function createWritingRuntime(options: {
   loadEvidence?(documentId: string): Promise<CitedEvidence[]>;
   /** 缺省用内置四个角色。测试可以塞一个预算为 0 的角色。 */
   roles?: RoleDef[];
+  /** 不传就不注册写作笔记工具，已有回合测试保持原样。 */
+  notes?: WritingNotes;
 }): Promise<WritingRuntime> {
   const planner = options.planner ?? planOps;
   const roles = options.roles ?? builtinRoles();
@@ -338,6 +368,7 @@ export async function createWritingRuntime(options: {
     const turn = JSON.parse(parseTag(text, "turn") || "{}") as {
       documentId?: string;
       sessionId?: string;
+      sessionKind?: SessionSnapshot["kind"];
       turnId?: string;
       kind?: TurnRequest["kind"];
       instruction?: string;
@@ -374,6 +405,30 @@ export async function createWritingRuntime(options: {
             actorJson: JSON.stringify(turn.actor),
           }),
         ],
+        { stopReason: "toolUse" },
+      );
+    }
+    const forcedNote = /^强行记下写作笔记\s+([\s\S]+)$/.exec(turn.instruction ?? "");
+    const noted = forcedNote ?? /^记下写作笔记\s+([\s\S]+)$/.exec(turn.instruction ?? "");
+    if (noted?.[1] && turn.sessionId) {
+      if (!forcedNote && turn.sessionKind === "api") {
+        return fauxAssistantMessage("这个会话不能记笔记。");
+      }
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("propose_writing_note", {
+            sessionId: turn.sessionId,
+            text: noted[1].trim(),
+            kind: "habit",
+            scopeLevel: "global",
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+    if (turn.instruction === "读取写作笔记" && turn.sessionId) {
+      return fauxAssistantMessage(
+        [fauxToolCall("read_writing_notes", { sessionId: turn.sessionId })],
         { stopReason: "toolUse" },
       );
     }
@@ -690,6 +745,52 @@ export async function createWritingRuntime(options: {
       })
     : undefined;
 
+  const notesApi = options.notes;
+  const readWritingNotes = notesApi
+    ? defineTool({
+        name: "read_writing_notes",
+        description: "读取已生效的写作笔记。plainConflict 为 true 的条目可见，但不会写进上下文。",
+        parameters: Type.Object({ sessionId: Type.String() }),
+        replay: "safe",
+        async execute(args) {
+          const session = await options.store.getSession(args.sessionId);
+          if (!session) return { isError: true, output: [{ type: "text", text: "找不到会话" }] };
+          const notes = await notesApi.read(session);
+          return { output: [{ type: "text", text: JSON.stringify(notes) }] };
+        },
+      })
+    : undefined;
+  const proposeWritingNote = notesApi
+    ? defineTool({
+        name: "propose_writing_note",
+        description: "提出一条写作笔记候选。只有所有者确认后才会生效。api 会话不能调用。",
+        parameters: Type.Object({
+          sessionId: Type.String(),
+          text: Type.String(),
+          kind: Type.String(),
+          scopeLevel: Type.String(),
+          scopeRef: Type.Optional(Type.String()),
+        }),
+        replay: "safe",
+        async execute(args) {
+          const session = await options.store.getSession(args.sessionId);
+          if (!session) return { isError: true, output: [{ type: "text", text: "找不到会话" }] };
+          const result = await notesApi.propose(session, {
+            text: args.text,
+            kind: args.kind,
+            scopeLevel: args.scopeLevel,
+            ...(args.scopeRef ? { scopeRef: args.scopeRef } : {}),
+          });
+          if (!result.ok) return { isError: true, output: [{ type: "text", text: result.reason }] };
+          return {
+            output: [
+              { type: "text", text: JSON.stringify({ id: result.id, status: "candidate" }) },
+            ],
+          };
+        },
+      })
+    : undefined;
+
   let opened: Harness | undefined;
   const bound = bindDelegate({
     store: options.store,
@@ -724,6 +825,8 @@ export async function createWritingRuntime(options: {
       ...(searchKb ? [searchKb] : []),
       ...(readSource ? [readSource] : []),
       ...(citeEvidence ? [citeEvidence] : []),
+      ...(readWritingNotes ? [readWritingNotes] : []),
+      ...(proposeWritingNote ? [proposeWritingNote] : []),
       bound.tool,
     ],
   });
@@ -740,6 +843,8 @@ export async function createWritingRuntime(options: {
         ...(searchKb ? [searchKb] : []),
         ...(readSource ? [readSource] : []),
         ...(citeEvidence ? [citeEvidence] : []),
+        ...(readWritingNotes ? [readWritingNotes] : []),
+        ...(proposeWritingNote ? [proposeWritingNote] : []),
         bound.tool,
       ],
     }),
@@ -836,6 +941,9 @@ export async function createWritingRuntime(options: {
     readRelatedDossier(sessionId, documentId) {
       return options.store.readRelatedDossier(sessionId, documentId);
     },
+    async purgePiConversations(ids) {
+      return purgePiStorage(options.sqlitePath, ids);
+    },
     async submitTurn(req) {
       const begun = await options.store.beginTurn(req);
       const existing = await options.store.getTurn(begun.turnId);
@@ -877,6 +985,10 @@ export async function createWritingRuntime(options: {
       const index = targetIndex(req.instruction, blocks, req.selection);
       const scoped = req.kind === "revise" ? blocks[index]?.blockId : undefined;
       const conversation = await conversationFor(session);
+      if (session.kind === "api" && proposeWritingNote) {
+        await conversation.configure({ modelTools: { remove: [proposeWritingNote] } }, ctx);
+      }
+      const notes = notesApi ? { prose: await notesApi.proseFor(session), offer: true } : undefined;
       const prompt = promptFor(
         req,
         begun.turnId,
@@ -885,6 +997,7 @@ export async function createWritingRuntime(options: {
         blocks,
         scoped ? [scoped] : [],
         roles.map((role) => role.id),
+        notes,
       );
       await options.store.appendEvent(req.documentId, {
         turnId: begun.turnId,

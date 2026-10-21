@@ -93,7 +93,7 @@ describe("文章库", () => {
 
     expect(await db.removeDocumentTag(other.id, "user_1", "时租")).toEqual([]);
     expect(await db.listTags("user_1")).toEqual(["成本", "时租"]);
-    expect(await db.purgeDiscarded({ retentionDays: 0 })).toEqual({ purged: [essay.id] });
+    expect((await db.purgeDiscarded({ retentionDays: 0 })).purged).toEqual([essay.id]);
     expect(await db.getArticle("user_1", essay.id)).toBeUndefined();
     expect(await db.listTags("user_1")).toEqual([]);
     expect(await db.getDocument(other.id)).toBeTruthy();

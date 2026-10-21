@@ -21,6 +21,7 @@
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/edition": "workspace:*",
     "@luminwrite/library": "workspace:*",
+    "@luminwrite/prefs": "workspace:*",
     "drizzle-orm": "catalog:",
     "nanoid": "catalog:",
     "pg": "catalog:"

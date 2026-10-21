@@ -248,7 +248,7 @@ describe("文档保存", () => {
         body: JSON.stringify({ retentionDays: 0 }),
       });
       expect(purged.status).toBe(200);
-      expect(await purged.json()).toEqual({ purged: [created.id] });
+      expect(((await purged.json()) as { purged: string[] }).purged).toEqual([created.id]);
       expect((await ctx.request(`/api/v1/documents/${created.id}`)).status).toBe(404);
       expect(await ctx.db.getVersion(created.versionId)).toBeUndefined();
     } finally {

@@ -1,3 +1,18 @@
+export type {
+  Preference,
+  PreferenceAuditEntry,
+  PreferenceKind,
+  PreferenceStatus,
+  PreferenceStore,
+  ReviewAction,
+} from "@luminwrite/prefs";
+export {
+  FactLikeNote,
+  factHintText,
+  PreferenceConflict,
+  PreferenceInputError,
+  PreferenceNotFound,
+} from "@luminwrite/prefs";
 export type { ApiKeyPolicyInput, ApiKeyView, ApiScope, IssuedApiKey } from "./api-keys.js";
 export {
   API_SCOPES,

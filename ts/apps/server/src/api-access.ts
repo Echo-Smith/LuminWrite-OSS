@@ -59,6 +59,9 @@ export function requiredScope(method: string, path: string): ApiScope | "owner-o
     return verb === "POST" ? "tasks:write" : "deny";
   }
   if (normalized === "/models" && verb === "GET") return "documents:read";
+  if (/^\/documents\/[^/]+\/sessions\/[^/]+\/(?:discard|undo-discard)$/.test(normalized)) {
+    return "owner-only";
+  }
   if (/^\/versions\/[^/]+$/.test(normalized)) {
     return verb === "GET" ? "documents:read" : "deny";
   }

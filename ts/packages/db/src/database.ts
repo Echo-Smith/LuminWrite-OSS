@@ -42,7 +42,20 @@ import {
 import type { UsageEvent } from "@luminwrite/edition";
 import type { ArticleListQuery } from "@luminwrite/library";
 import { normalizeTagName } from "@luminwrite/library";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, type SQL, sql } from "drizzle-orm";
+import { createPreferenceStore, type NoteSql, type PreferenceStore } from "@luminwrite/prefs";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import pg from "pg";
@@ -311,6 +324,7 @@ export interface SessionView {
   createdById: string;
   status: "open" | "closed";
   modelPin: string | null;
+  discardedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -846,10 +860,10 @@ export class LwDatabase {
    * 硬删已过保留期的丢弃文档。只在这个事务里把 `lw.version_write` 设成 `purge`，
    * 触发器才放行版本删除。普通 DELETE / UPDATE 仍然失败。
    */
-  async purgeDiscarded(input?: {
-    retentionDays?: number;
-    now?: Date;
-  }): Promise<{ purged: string[] }> {
+  async purgeDiscarded(input?: { retentionDays?: number; now?: Date }): Promise<{
+    purged: string[];
+    purgedSessions: Array<{ id: string; documentId: string; piConversationId: string | null }>;
+  }> {
     const retentionDays = input?.retentionDays ?? DEFAULT_DISCARD_RETENTION_DAYS;
     if (!Number.isFinite(retentionDays) || retentionDays < 0) {
       throw new Error("保留天数不合法");
@@ -857,15 +871,45 @@ export class LwDatabase {
     const now = input?.now ?? this.clock();
     const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
     return this.orm.transaction(async (tx) => {
-      const rows = await tx
+      const docs = await tx
         .select({ id: documents.id })
         .from(documents)
         .where(and(isNotNull(documents.discardedAt), lte(documents.discardedAt, cutoff)));
-      const ids = rows.map((row) => row.id);
-      if (ids.length === 0) return { purged: [] };
+      const ids = docs.map((row) => row.id);
+      const expiredSessions = and(
+        isNotNull(sessions.discardedAt),
+        lte(sessions.discardedAt, cutoff),
+      );
+      const sessionRows = await tx
+        .select({
+          id: sessions.id,
+          documentId: sessions.documentId,
+          piConversationId: sessions.piConversationId,
+        })
+        .from(sessions)
+        .where(
+          ids.length === 0
+            ? expiredSessions
+            : or(inArray(sessions.documentId, ids), expiredSessions),
+        );
+      const purgedSessions = sessionRows.map((row) => ({
+        id: row.id,
+        documentId: row.documentId,
+        piConversationId: row.piConversationId,
+      }));
+      if (ids.length === 0 && purgedSessions.length === 0) {
+        return { purged: [], purgedSessions: [] };
+      }
       await tx.execute(sql`select set_config('lw.version_write', 'purge', true)`);
       for (const id of ids) await this.purgeOne(tx, id);
-      return { purged: ids };
+      for (const session of purgedSessions) {
+        if (ids.includes(session.documentId)) continue;
+        await tx.delete(sessionReads).where(eq(sessionReads.sessionId, session.id));
+        await tx.execute(sql`DELETE FROM research_plans WHERE session_id = ${session.id}`);
+        await tx.execute(sql`DELETE FROM subagent_runs WHERE session_id = ${session.id}`);
+        await tx.delete(sessions).where(eq(sessions.id, session.id));
+      }
+      return { purged: ids, purgedSessions };
     });
   }
 
@@ -1739,11 +1783,12 @@ export class LwDatabase {
       if (session.documentId !== req.documentId) {
         throw new SessionScopeError("会话只能修订自己所属的文档");
       }
-      if (session.status !== "open") throw new SessionClosed(session.id);
+      if (session.discardedAt || session.status !== "open") throw new SessionClosed(session.id);
       return session;
     }
     const main = await this.mainSession(req.documentId);
     if (!main) throw new SessionNotFound(req.documentId);
+    if (main.discardedAt || main.status !== "open") throw new SessionClosed(main.id);
     return main;
   }
 
@@ -1811,6 +1856,40 @@ export class LwDatabase {
       if (!created) throw new SessionNotFound(id);
       return toSession(created);
     });
+  }
+
+  notes(): PreferenceStore {
+    const port: NoteSql = {
+      query: (sqlText, params) => this.query(sqlText, params),
+      transaction: (fn) => this.client.transaction(fn),
+      now: () => this.clock(),
+      preferenceId: () => newId("prf"),
+      auditId: () => newId("aud"),
+    };
+    return createPreferenceStore(port);
+  }
+
+  async discardSession(id: string): Promise<{ discardedAt: string }> {
+    const session = await this.getSession(id);
+    if (!session) throw new SessionNotFound(id);
+    if (session.discardedAt) return { discardedAt: session.discardedAt };
+    const now = this.clock();
+    await this.orm
+      .update(sessions)
+      .set({ discardedAt: now, status: "closed", updatedAt: now })
+      .where(eq(sessions.id, id));
+    return { discardedAt: now.toISOString() };
+  }
+
+  async undoDiscardSession(id: string): Promise<{ discardedAt: null }> {
+    const session = await this.getSession(id);
+    if (!session) throw new SessionNotFound(id);
+    const now = this.clock();
+    await this.orm
+      .update(sessions)
+      .set({ discardedAt: null, status: "open", updatedAt: now })
+      .where(eq(sessions.id, id));
+    return { discardedAt: null };
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -3154,6 +3233,7 @@ function toSession(row: typeof sessions.$inferSelect): SessionView {
     createdById: row.createdById,
     status: row.status === "closed" ? "closed" : "open",
     modelPin: row.modelPin,
+    discardedAt: stampOrNull(row.discardedAt),
     createdAt: stamp(row.createdAt),
     updatedAt: stamp(row.updatedAt),
   };

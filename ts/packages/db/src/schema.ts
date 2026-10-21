@@ -196,6 +196,7 @@ export const sessions = pgTable(
     createdById: text("created_by_id").notNull(),
     status: text("status").notNull(),
     modelPin: text("model_pin"),
+    discardedAt: timestamp("discarded_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -462,6 +463,42 @@ export const chunks = pgTable("chunks", {
   page: integer("page"),
   headingPath: text("heading_path").array(),
   blockIds: text("block_ids").array(),
+});
+
+export const preferences = pgTable(
+  "preferences",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    kind: text("kind").notNull(),
+    statement: text("statement").notNull(),
+    rule: jsonb("rule"),
+    scopeLevel: text("scope_level").notNull(),
+    scopeRef: text("scope_ref"),
+    strength: text("strength").notNull(),
+    status: text("status").notNull(),
+    source: text("source").notNull(),
+    support: integer("support").notNull(),
+    contradict: integer("contradict").notNull(),
+    plainConflict: boolean("plain_conflict").notNull(),
+    version: integer("version").notNull(),
+    supersededBy: text("superseded_by"),
+    proposedInSessionId: text("proposed_in_session_id"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_pref_user_status").on(table.userId, table.status)],
+);
+
+export const preferenceAudit = pgTable("preference_audit", {
+  id: text("id").primaryKey(),
+  preferenceId: text("preference_id").notNull(),
+  userId: text("user_id").notNull(),
+  action: text("action").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorId: text("actor_id").notNull(),
+  beforeText: text("before_text").notNull(),
+  afterText: text("after_text").notNull(),
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const usageLedger = pgTable("usage_ledger", {
