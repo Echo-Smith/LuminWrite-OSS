@@ -1,6 +1,20 @@
+export type { ApiKeyPolicyInput, ApiKeyView, ApiScope, IssuedApiKey } from "./api-keys.js";
+export {
+  API_SCOPES,
+  ApiKeyInputError,
+  authenticateApiKey,
+  createApiKey,
+  DEFAULT_API_SCOPES,
+  hashApiKey,
+  isApiKeyToken,
+  listApiKeys,
+  readActiveApiKey,
+  revokeApiKey,
+} from "./api-keys.js";
 export type { DatabaseLocation } from "./config.js";
 export { pgliteDataDir, resolveDatabaseLocation } from "./config.js";
 export type {
+  ApiKeyRecord,
   ApplyOutcome,
   BlockView,
   DerivedDocumentView,

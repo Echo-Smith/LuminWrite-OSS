@@ -32,7 +32,7 @@ import {
   remapBlockIds,
 } from "@luminwrite/doc-model";
 import type { UsageEvent } from "@luminwrite/edition";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, type SQL, sql } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import pg from "pg";
@@ -51,6 +51,8 @@ const {
   proposals,
   proposalHunks,
   usageLedger,
+  apiKeys,
+  apiKeyPolicies,
   sessions,
   sessionReads,
   documentDossier,
@@ -116,6 +118,37 @@ export interface OwnerRow {
   id: string;
   displayName: string;
   tokenHash: string;
+}
+
+export interface ApiKeyRecord {
+  id: string;
+  userId: string;
+  name: string;
+  prefix: string;
+  hash: string;
+  scopes: string[];
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+  maxConcurrentTasks: number | null;
+  dailyCostCapUsd: number | null;
+  allowedTiers: string[] | null;
+  defaultApplyMode: "auto" | "proposal";
+  webhookSecret: string | null;
+}
+
+export interface NewApiKeyRow {
+  id: string;
+  userId: string;
+  name: string;
+  prefix: string;
+  hash: string;
+  scopes: string[];
+  maxConcurrentTasks: number | null;
+  dailyCostCapUsd: number | null;
+  allowedTiers: string[] | null;
+  defaultApplyMode: "auto" | "proposal";
+  webhookSecret: string | null;
 }
 
 export interface DocumentView {
@@ -696,6 +729,73 @@ export class LwDatabase {
     });
   }
 
+  async usageCostMicrosSince(apiKeyId: string, since: Date): Promise<number> {
+    const rows = await this.orm
+      .select({
+        total: sql<string | number>`coalesce(sum(${usageLedger.costMicros}), 0)`,
+      })
+      .from(usageLedger)
+      .where(and(eq(usageLedger.apiKeyId, apiKeyId), gte(usageLedger.createdAt, since)));
+    return Number(rows[0]?.total ?? 0);
+  }
+
+  async insertApiKey(input: NewApiKeyRow): Promise<void> {
+    const now = new Date();
+    await this.orm.transaction(async (tx) => {
+      await tx.insert(apiKeys).values({
+        id: input.id,
+        userId: input.userId,
+        name: input.name,
+        prefix: input.prefix,
+        hash: input.hash,
+        scopes: input.scopes,
+        createdAt: now,
+        lastUsedAt: null,
+        revokedAt: null,
+      });
+      await tx.insert(apiKeyPolicies).values({
+        apiKeyId: input.id,
+        maxConcurrentTasks: input.maxConcurrentTasks,
+        dailyCostCapUsd: input.dailyCostCapUsd,
+        allowedTiers: input.allowedTiers,
+        defaultApplyMode: input.defaultApplyMode,
+        webhookSecret: input.webhookSecret,
+      });
+    });
+  }
+
+  async findApiKeyByHash(hash: string): Promise<ApiKeyRecord | undefined> {
+    const rows = await this.selectApiKeys(eq(apiKeys.hash, hash));
+    return rows[0];
+  }
+
+  async getApiKey(id: string): Promise<ApiKeyRecord | undefined> {
+    const rows = await this.selectApiKeys(eq(apiKeys.id, id));
+    return rows[0];
+  }
+
+  async listApiKeys(userId: string): Promise<ApiKeyRecord[]> {
+    return this.selectApiKeys(eq(apiKeys.userId, userId));
+  }
+
+  async touchApiKey(id: string, at = new Date()): Promise<void> {
+    await this.orm.update(apiKeys).set({ lastUsedAt: at }).where(eq(apiKeys.id, id));
+  }
+
+  async revokeApiKey(id: string, userId: string): Promise<"revoked" | "missing"> {
+    const rows = await this.orm
+      .select({ id: apiKeys.id, revokedAt: apiKeys.revokedAt })
+      .from(apiKeys)
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return "missing";
+    if (!row.revokedAt) {
+      await this.orm.update(apiKeys).set({ revokedAt: new Date() }).where(eq(apiKeys.id, id));
+    }
+    return "revoked";
+  }
+
   async resolveSession(req: TurnRequest): Promise<SessionView> {
     if (req.sessionId) {
       const session = await this.getSession(req.sessionId);
@@ -1231,6 +1331,66 @@ export class LwDatabase {
       payload: event.payload,
     };
   }
+
+  private async selectApiKeys(where: SQL): Promise<ApiKeyRecord[]> {
+    const rows = await this.orm
+      .select({
+        id: apiKeys.id,
+        userId: apiKeys.userId,
+        name: apiKeys.name,
+        prefix: apiKeys.prefix,
+        hash: apiKeys.hash,
+        scopes: apiKeys.scopes,
+        createdAt: apiKeys.createdAt,
+        lastUsedAt: apiKeys.lastUsedAt,
+        revokedAt: apiKeys.revokedAt,
+        maxConcurrentTasks: apiKeyPolicies.maxConcurrentTasks,
+        dailyCostCapUsd: apiKeyPolicies.dailyCostCapUsd,
+        allowedTiers: apiKeyPolicies.allowedTiers,
+        defaultApplyMode: apiKeyPolicies.defaultApplyMode,
+        webhookSecret: apiKeyPolicies.webhookSecret,
+      })
+      .from(apiKeys)
+      .innerJoin(apiKeyPolicies, eq(apiKeyPolicies.apiKeyId, apiKeys.id))
+      .where(where)
+      .orderBy(desc(apiKeys.createdAt));
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      name: row.name,
+      prefix: row.prefix,
+      hash: row.hash,
+      scopes: asStringArray(row.scopes),
+      createdAt: asDate(row.createdAt) ?? new Date(0),
+      lastUsedAt: asDate(row.lastUsedAt),
+      revokedAt: asDate(row.revokedAt),
+      maxConcurrentTasks: asNumber(row.maxConcurrentTasks),
+      dailyCostCapUsd: asNumber(row.dailyCostCapUsd),
+      allowedTiers: row.allowedTiers == null ? null : asStringArray(row.allowedTiers),
+      defaultApplyMode: row.defaultApplyMode === "proposal" ? "proposal" : "auto",
+      webhookSecret: row.webhookSecret,
+    }));
+  }
+}
+
+function asDate(value: Date | string | null): Date | null {
+  if (value == null) return null;
+  return value instanceof Date ? value : new Date(value);
+}
+
+function asNumber(value: number | string | null): number | null {
+  if (value == null) return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value.startsWith("{") && value.endsWith("}")) {
+    const inner = value.slice(1, -1);
+    return inner ? inner.split(",") : [];
+  }
+  return [];
 }
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];

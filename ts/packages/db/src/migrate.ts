@@ -142,6 +142,30 @@ CREATE TABLE IF NOT EXISTS document_dossier (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS api_keys (
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  name text NOT NULL,
+  prefix text NOT NULL,
+  hash text NOT NULL,
+  scopes text[] NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_api_keys_hash ON api_keys (hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys (user_id);
+
+CREATE TABLE IF NOT EXISTS api_key_policies (
+  api_key_id text PRIMARY KEY REFERENCES api_keys(id),
+  max_concurrent_tasks integer,
+  daily_cost_cap_usd double precision,
+  allowed_tiers text[],
+  default_apply_mode text NOT NULL DEFAULT 'auto',
+  webhook_secret text
+);
+
 CREATE TABLE IF NOT EXISTS usage_ledger (
   id text PRIMARY KEY,
   request_id text NOT NULL,
