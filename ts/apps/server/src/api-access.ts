@@ -35,11 +35,12 @@ export function isOwnerOnlyPath(path: string): boolean {
   return OWNER_ONLY_PREFIXES.some((prefix) => hasPrefix(path, prefix));
 }
 
-/** 现有路由需要的 scope。还没实现的任务和信源也先按 scope 归类，缺权限是 403 而不是 404。 */
+/** 现有路由需要的 scope。对不上的路径拒绝，缺权限是 403 而不是 404。 */
 export function requiredScope(method: string, path: string): ApiScope | "owner-only" | "deny" {
   const normalized = normalizeApiPath(path);
   if (isOwnerOnlyPath(normalized)) return "owner-only";
   const verb = method.toUpperCase();
+  if (normalized === "/openapi.json") return verb === "GET" ? "tasks:read" : "deny";
   if (hasPrefix(normalized, "/tasks")) {
     return verb === "GET" ? "tasks:read" : "tasks:write";
   }
@@ -78,6 +79,17 @@ export interface ApiKeyDenial {
  * human_touched 文档默认提案（D10）。显式 auto 只有在密钥策略也是 auto 时才生效。
  * 策略本身是 proposal 时，请求里的 auto 会被抬成提案。
  */
+/** `allowed_tiers` 里可以写档位名（`balanced`）或完整模型引用。 */
+export function modelWithinAllowedTiers(
+  model: string | undefined,
+  allowed: readonly string[] | null,
+): boolean {
+  if (!model || !allowed) return true;
+  if (allowed.includes(model)) return true;
+  if (model.startsWith("tier/")) return allowed.includes(model.slice("tier/".length));
+  return false;
+}
+
 export function resolveApiApplyMode(input: {
   requested?: "auto" | "proposal";
   humanTouched: boolean;

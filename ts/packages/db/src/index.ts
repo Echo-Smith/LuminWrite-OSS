@@ -26,6 +26,8 @@ export {
 } from "./credentials.js";
 export type {
   ApiKeyRecord,
+  ApiTaskEventRecord,
+  ApiTaskRecord,
   ApplyOutcome,
   ArticleView,
   BlockView,

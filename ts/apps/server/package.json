@@ -18,6 +18,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "catalog:",
     "@hono/node-server": "catalog:",
+    "@hono/zod-openapi": "catalog:",
     "@luminwrite/contracts": "workspace:*",
     "@luminwrite/db": "workspace:*",
     "@luminwrite/edition": "workspace:*",
@@ -33,6 +34,8 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@luminwrite/client": "workspace:*",
+    "@luminwrite/eval-adapter": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -26,6 +26,28 @@ export type {
 } from "./models.js";
 export type { OpenSessionKind, SessionKind } from "./session.js";
 export { editBatchTarget, OpenSessionKindSchema, SessionKindSchema } from "./session.js";
+export type {
+  ApiTask,
+  ApiTaskErrorBody,
+  ApiTaskNeedsInput,
+  ApiTaskPhase,
+  ApiTaskState,
+  CreateTaskBody,
+  NormalizedCreateTask,
+  NormalizedTaskSources,
+  TaskMessageBody,
+} from "./task.js";
+export {
+  ApiTaskErrorSchema,
+  ApiTaskNeedsInputSchema,
+  ApiTaskPhaseSchema,
+  ApiTaskSchema,
+  ApiTaskStateSchema,
+  CreateTaskBodySchema,
+  normalizeCreateTask,
+  TaskMessageBodySchema,
+  taskInstruction,
+} from "./task.js";
 export type { Actor, RunEvent, TurnKind, TurnRequest, TurnStatus } from "./turn.js";
 export {
   ActorSchema,

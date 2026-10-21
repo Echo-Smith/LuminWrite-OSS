@@ -40,6 +40,91 @@ export function readResearchPlansForEval(
   return rows.map((row) => readStoredPlan(row));
 }
 
+export interface TaskApiSurface {
+  submitTask(
+    body: {
+      kind: "write" | "revise";
+      documentId?: string;
+      brief?: { topic: string; genre?: string };
+      instruction?: string;
+      model?: string;
+      callbackUrl?: string;
+      sources?: { library?: boolean };
+    },
+    idempotencyKey: string,
+  ): Promise<TaskApiSnapshot>;
+  getTask(id: string): Promise<TaskApiSnapshot>;
+  restoreDocument(id: string, versionId: string): Promise<{ ok: boolean; versionId?: string }>;
+}
+
+export interface TaskApiSnapshot {
+  id: string;
+  state: string;
+  documentId?: string;
+  resultVersionId?: string;
+  proposalId?: string;
+}
+
+const TASK_DONE = new Set(["completed", "failed", "canceled", "rejected"]);
+
+/**
+ * lw-eval 不在这个仓库里。评测要跑的「写 → 改 → 回滚」走公开任务 API 的这一个入口。
+ * 调用方传入只靠 API Key 的 client。
+ */
+export async function runWriteReviseRollback(
+  api: TaskApiSurface,
+  options?: { timeoutMs?: number },
+): Promise<{ documentId: string; wroteVersionId: string; revisedVersionId: string }> {
+  const timeoutMs = options?.timeoutMs ?? 20_000;
+  const write = await api.submitTask(
+    {
+      kind: "write",
+      brief: { topic: "推理成本", genre: "commentary" },
+      instruction: "写一篇关于推理成本的短评",
+      sources: { library: false },
+    },
+    "eval-write",
+  );
+  const written = await waitForTask(api, write.id, timeoutMs);
+  if (!written.documentId || !written.resultVersionId) throw new Error("写作没有版本");
+  const revise = await api.submitTask(
+    {
+      kind: "revise",
+      documentId: written.documentId,
+      instruction: "把第1段写短",
+    },
+    "eval-revise",
+  );
+  const revised = await waitForTask(api, revise.id, timeoutMs);
+  if (!revised.resultVersionId || revised.resultVersionId === written.resultVersionId) {
+    throw new Error("修订没有新版本");
+  }
+  const restored = await api.restoreDocument(written.documentId, written.resultVersionId);
+  if (!restored.ok) throw new Error("回滚失败");
+  return {
+    documentId: written.documentId,
+    wroteVersionId: written.resultVersionId,
+    revisedVersionId: revised.resultVersionId,
+  };
+}
+
+async function waitForTask(
+  api: TaskApiSurface,
+  id: string,
+  timeoutMs: number,
+): Promise<TaskApiSnapshot> {
+  const started = Date.now();
+  for (;;) {
+    const task = await api.getTask(id);
+    if (TASK_DONE.has(task.state)) {
+      if (task.state !== "completed") throw new Error(`任务结束于 ${task.state}`);
+      return task;
+    }
+    if (Date.now() - started > timeoutMs) throw new Error("任务超时");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 export function runDeterministicSmoke(): SmokeReport {
   const ranking = smokeSamples
     .map((sample) => ({

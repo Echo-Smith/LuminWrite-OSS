@@ -443,4 +443,38 @@ CREATE TABLE IF NOT EXISTS document_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags (tag_id);
+
+CREATE TABLE IF NOT EXISTS api_tasks (
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  api_key_id text NOT NULL,
+  idempotency_key text NOT NULL,
+  kind text NOT NULL,
+  state text NOT NULL,
+  phase text,
+  document_id text,
+  session_id text,
+  turn_id text,
+  result_version_id text,
+  proposal_id text,
+  needs_input jsonb,
+  input jsonb NOT NULL,
+  error jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_api_task_idem ON api_tasks (api_key_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_api_task_key_state ON api_tasks (api_key_id, state);
+
+CREATE TABLE IF NOT EXISTS api_task_events (
+  id text PRIMARY KEY,
+  task_id text NOT NULL REFERENCES api_tasks(id) ON DELETE CASCADE,
+  seq integer NOT NULL,
+  type text NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_api_task_event_seq ON api_task_events (task_id, seq);
 `;
