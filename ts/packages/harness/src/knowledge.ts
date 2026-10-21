@@ -17,6 +17,7 @@ export interface SessionKnowledge {
     limit?: number;
     kinds?: string[];
     recencyDays?: number;
+    library?: boolean;
   }): Promise<{ note: string; hits: KnowledgeHit[] }>;
   readSource(input: {
     sessionId: string;

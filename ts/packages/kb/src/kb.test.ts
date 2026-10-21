@@ -148,7 +148,12 @@ describe("混合检索", () => {
       await db.saveDocument(created.id);
       const indexed = await kb.indexDocument(created.id);
       expect(indexed.status).toBe("indexed");
-      const hits = await kb.search({ ownerId: owner.userId, text: "麒麟在山南", limit: 5 });
+      const hits = await kb.search({
+        ownerId: owner.userId,
+        text: "麒麟在山南",
+        limit: 5,
+        library: true,
+      });
       expect(hits.map((hit) => hit.sourceId)).toEqual([indexed.sourceId]);
       const hidden = await kb.search({
         ownerId: owner.userId,
@@ -161,7 +166,13 @@ describe("混合检索", () => {
       await db.discardDocument(created.id);
       expect(await kb.search({ ownerId: owner.userId, text: "麒麟在山南", limit: 5 })).toEqual([]);
       await db.undoDiscard(created.id);
-      const back = await kb.search({ ownerId: owner.userId, text: "麒麟在山南", limit: 5 });
+      await kb.indexDocument(created.id);
+      const back = await kb.search({
+        ownerId: owner.userId,
+        text: "麒麟在山南",
+        limit: 5,
+        library: true,
+      });
       expect(back.map((hit) => hit.sourceId)).toEqual([indexed.sourceId]);
     } finally {
       await db.close();
