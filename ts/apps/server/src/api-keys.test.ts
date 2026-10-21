@@ -173,7 +173,8 @@ describe("API 密钥策略", () => {
       const addKb = await ctx.request("/api/v1/kb", { method: "POST", body: "{}" }, writer.token);
       expect(addKb.status).toBe(403);
       const ownerCredentials = await ctx.request("/api/v1/me/credentials");
-      expect(ownerCredentials.status).toBe(404);
+      expect(ownerCredentials.status).toBe(200);
+      expect(await ownerCredentials.json()).toEqual([]);
 
       expect(
         (await ctx.request("/api/v1/documents", { method: "GET" }, writer.token)).status,

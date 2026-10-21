@@ -1,7 +1,12 @@
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { type ServerType, serve } from "@hono/node-server";
-import { ensureOwner, openDatabase, resolveDatabaseLocation } from "@luminwrite/db";
+import {
+  ensureMasterKey,
+  ensureOwner,
+  openDatabase,
+  resolveDatabaseLocation,
+} from "@luminwrite/db";
 import type { WritingRuntime } from "@luminwrite/harness";
 import { createWritingRuntime, writingStoreFromDatabase } from "@luminwrite/harness";
 
@@ -31,12 +36,19 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   let server: ServerType | undefined;
   try {
     const owner = await ensureOwner(db, { dataDir: location.dataDir });
+    const secrets = await ensureMasterKey({ db, dataDir: location.dataDir, env });
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),
       usage: { record: (event) => db.recordUsage(event) },
     });
-    const app = createApp({ db, runtime, auth: createOssAuth(db) });
+    const app = createApp({
+      db,
+      runtime,
+      auth: createOssAuth(db),
+      keyring: secrets.ring,
+      env,
+    });
     const address = await new Promise<AddressInfo>((resolve, reject) => {
       const listening = serve(
         {
@@ -52,9 +64,10 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     if (!server) throw new Error("没有拿到监听地址");
     const listening = server;
     const opened = runtime;
+    const warning = [listen.warning, secrets.warning].filter((item) => item).join("\n");
     return {
       url: listenUrl(listen.host, address.port),
-      ...(listen.warning ? { warning: listen.warning } : {}),
+      ...(warning ? { warning } : {}),
       owner,
       async close() {
         await closeServer(listening);
