@@ -77,6 +77,21 @@ export class MemoryWritingStore implements WritingStore {
     plan: unknown;
     gaps: string[];
   }> = [];
+  readonly runs: Array<{
+    id: string;
+    turnId: string;
+    parentId: string | null;
+    sessionId: string;
+    piConversationId: string | null;
+    piTaskId: string;
+    agentRef: string;
+    slot: string;
+    modelRef: string | null;
+    input: unknown;
+    output: unknown;
+    status: string;
+    createdAt: string;
+  }> = [];
   private readonly events: RunEvent[] = [];
   private readonly byTask = new Map<string, ProposeOutcome & { ok: true }>();
 
@@ -393,6 +408,43 @@ export class MemoryWritingStore implements WritingStore {
     const id = nid("rpl");
     this.plans.push({ id, ...input });
     return { id };
+  }
+
+  async saveSubagentRun(
+    input: Parameters<WritingStore["saveSubagentRun"]>[0],
+  ): Promise<{ id: string }> {
+    const existing = this.runs.find((item) => item.piTaskId === input.piTaskId);
+    if (existing) {
+      existing.status = input.status;
+      existing.output = input.output;
+      existing.modelRef = input.modelRef ?? null;
+      existing.piConversationId = input.piConversationId ?? null;
+      existing.slot = input.slot;
+      existing.agentRef = input.agentRef;
+      existing.input = input.input;
+      return { id: existing.id };
+    }
+    const id = nid("sar");
+    this.runs.push({
+      id,
+      turnId: input.turnId,
+      parentId: input.parentId ?? null,
+      sessionId: input.sessionId,
+      piConversationId: input.piConversationId ?? null,
+      piTaskId: input.piTaskId,
+      agentRef: input.agentRef,
+      slot: input.slot,
+      modelRef: input.modelRef ?? null,
+      input: input.input,
+      output: input.output,
+      status: input.status,
+      createdAt: new Date().toISOString(),
+    });
+    return { id };
+  }
+
+  async listSubagentRuns(documentId: string) {
+    return this.runs.filter((run) => this.turns.get(run.turnId)?.documentId === documentId);
   }
 
   async appendEvent(

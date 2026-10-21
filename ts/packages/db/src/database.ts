@@ -76,6 +76,22 @@ export interface ResearchPlanRow {
   createdAt: string;
 }
 
+export interface SubagentRunRow {
+  id: string;
+  turnId: string;
+  parentId: string | null;
+  sessionId: string;
+  piConversationId: string | null;
+  piTaskId: string;
+  agentRef: string;
+  slot: string;
+  modelRef: string | null;
+  input: unknown;
+  output: unknown;
+  status: string;
+  createdAt: string;
+}
+
 export class DocumentNotFound extends Error {
   constructor(id: string) {
     super(`找不到文档 ${id}`);
@@ -1587,6 +1603,100 @@ export class LwDatabase {
     }));
   }
 
+  async saveSubagentRun(input: {
+    turnId: string;
+    parentId?: string | null;
+    sessionId: string;
+    piConversationId?: string | null;
+    piTaskId: string;
+    agentRef: string;
+    slot: string;
+    modelRef?: string | null;
+    input: unknown;
+    output: unknown;
+    status: string;
+  }): Promise<{ id: string }> {
+    const id = newId("sar");
+    await this.query(
+      `INSERT INTO subagent_runs (
+         id, turn_id, parent_id, session_id, pi_conversation_id, pi_task_id,
+         agent_ref, slot, model_ref, input, output, status
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)
+       ON CONFLICT (pi_task_id) DO UPDATE
+         SET status = EXCLUDED.status,
+             output = EXCLUDED.output,
+             model_ref = EXCLUDED.model_ref,
+             pi_conversation_id = EXCLUDED.pi_conversation_id,
+             slot = EXCLUDED.slot,
+             agent_ref = EXCLUDED.agent_ref,
+             input = EXCLUDED.input`,
+      [
+        id,
+        input.turnId,
+        input.parentId ?? null,
+        input.sessionId,
+        input.piConversationId ?? null,
+        input.piTaskId,
+        input.agentRef,
+        input.slot,
+        input.modelRef ?? null,
+        JSON.stringify(input.input),
+        JSON.stringify(input.output),
+        input.status,
+      ],
+    );
+    const rows = await this.query<{ id: string }>(
+      `SELECT id FROM subagent_runs WHERE pi_task_id = $1`,
+      [input.piTaskId],
+    );
+    const saved = rows[0];
+    if (!saved) throw new Error("子代理运行没有写入");
+    return { id: saved.id };
+  }
+
+  async listSubagentRuns(documentId: string): Promise<SubagentRunRow[]> {
+    const rows = await this.query<{
+      id: string;
+      turn_id: string;
+      parent_id: string | null;
+      session_id: string;
+      pi_conversation_id: string | null;
+      pi_task_id: string;
+      agent_ref: string;
+      slot: string;
+      model_ref: string | null;
+      input: unknown;
+      output: unknown;
+      status: string;
+      created_at: Date | string;
+    }>(
+      `SELECT r.id, r.turn_id, r.parent_id, r.session_id, r.pi_conversation_id, r.pi_task_id,
+              r.agent_ref, r.slot, r.model_ref, r.input, r.output, r.status, r.created_at
+       FROM subagent_runs r
+       JOIN turns t ON t.id = r.turn_id
+       WHERE t.document_id = $1
+       ORDER BY r.created_at, r.id`,
+      [documentId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      turnId: row.turn_id,
+      parentId: row.parent_id,
+      sessionId: row.session_id,
+      piConversationId: row.pi_conversation_id,
+      piTaskId: row.pi_task_id,
+      agentRef: row.agent_ref,
+      slot: row.slot,
+      modelRef: row.model_ref,
+      input: row.input,
+      output: row.output,
+      status: row.status,
+      createdAt:
+        row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    }));
+  }
+
   async applyDossier(input: {
     documentId: string;
     expectedVersion: number;
@@ -1776,6 +1886,11 @@ export class LwDatabase {
   }
 
   private async purgeOne(tx: Tx, id: string) {
+    await tx.execute(
+      sql`DELETE FROM subagent_runs WHERE session_id IN (
+        SELECT id FROM sessions WHERE document_id = ${id}
+      )`,
+    );
     await tx.execute(
       sql`DELETE FROM research_plans WHERE session_id IN (
         SELECT id FROM sessions WHERE document_id = ${id}

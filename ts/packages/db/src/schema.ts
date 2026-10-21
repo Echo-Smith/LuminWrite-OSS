@@ -335,6 +335,29 @@ export const feeds = pgTable(
   (table) => [uniqueIndex("uk_feed_owner_url").on(table.ownerId, table.url)],
 );
 
+export const subagentRuns = pgTable(
+  "subagent_runs",
+  {
+    id: text("id").primaryKey(),
+    turnId: text("turn_id").notNull(),
+    parentId: text("parent_id"),
+    sessionId: text("session_id").notNull(),
+    piConversationId: text("pi_conversation_id"),
+    piTaskId: text("pi_task_id").notNull(),
+    agentRef: text("agent_ref").notNull(),
+    slot: text("slot").notNull(),
+    modelRef: text("model_ref"),
+    input: jsonb("input").notNull(),
+    output: jsonb("output"),
+    status: text("status").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uk_subagent_run_task").on(table.piTaskId),
+    index("idx_subagent_run_turn").on(table.turnId),
+  ],
+);
+
 export const researchPlans = pgTable("research_plans", {
   id: text("id").primaryKey(),
   turnId: text("turn_id").notNull().unique(),

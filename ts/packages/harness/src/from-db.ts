@@ -71,6 +71,8 @@ export function writingStoreFromDatabase(db: LwDatabase): WritingStore {
     },
     propose: (input) => db.propose(input),
     saveResearchPlan: (input) => db.saveResearchPlan(input),
+    saveSubagentRun: (input) => db.saveSubagentRun(input),
+    listSubagentRuns: (documentId) => db.listSubagentRuns(documentId),
     appendEvent: (documentId, event) => db.appendEvent(documentId, event),
     eventsAfter: (documentId, afterSeq) => db.eventsAfter(documentId, afterSeq),
   };
