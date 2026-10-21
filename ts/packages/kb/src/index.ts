@@ -20,4 +20,4 @@ export { searchText, segment } from "./segment.js";
 
 export const phase = "foundation" as const;
 export const note =
-  "知识库地基：上传、jieba 分块、全文与向量混合检索。已保存文档按最新版本索引；未保存、已丢弃或移出知识库的不进检索。真实嵌入只走 kb.embed 槽上的 BYOK 凭据；没有凭据时只做全文。";
+  "知识库地基：上传、jieba 分块、全文与向量混合检索。已保存文档按最新版本索引；未保存、已丢弃或移出知识库的不进检索。真实嵌入只走 kb.embed 槽上的 BYOK 凭据；没有凭据时只做全文。引用是否对得上来源由 research 校验。";

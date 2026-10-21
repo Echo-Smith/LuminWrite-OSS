@@ -25,7 +25,7 @@ async function tempDir(): Promise<string> {
 
 function request(
   documentId: string,
-  kind: "outline" | "draft" | "revise" | "research",
+  kind: "outline" | "draft" | "revise" | "research" | "review",
   key: string,
   instruction: string,
 ) {
@@ -114,16 +114,63 @@ describe("写作回合", () => {
     await runtime.close();
   });
 
-  it("研究和审校在 M0 明确失败", async () => {
+  it("检索回合把模型写的计划落下来，审校仍未实现", async () => {
     const dir = await tempDir();
     const store = new MemoryWritingStore();
     const created = store.createDocument({ title: "研究", ownerId: "user_1" });
     const runtime = await createWritingRuntime({ sqlitePath: join(dir, "pi.sqlite"), store });
     const result = await runtime.submitTurn(
-      request(created.id, "research", "research-1", "查资料"),
+      request(created.id, "research", "research-1", "查显卡时租"),
     );
-    expect(result.status).toBe("failed");
-    expect((await store.getTurn(result.turnId))?.error).toBe("尚未实现");
+    expect(result.status).toBe("applied");
+    expect(result.versionId).toBeUndefined();
+    expect(store.plans).toHaveLength(1);
+    expect(store.plans[0]?.gaps).toEqual(["q1: 尚未有通过校验的证据"]);
+    const again = await runtime.submitTurn(
+      request(created.id, "research", "research-1", "查显卡时租"),
+    );
+    expect(again.turnId).toBe(result.turnId);
+    expect(store.plans).toHaveLength(1);
+    const events = await runtime.events(created.id);
+    expect(events.some((event) => event.type === "research.plan")).toBe(true);
+    const review = await runtime.submitTurn(request(created.id, "review", "review-1", "审一审"));
+    expect(review.status).toBe("failed");
+    expect((await store.getTurn(review.turnId))?.error).toBe("尚未实现");
+    await runtime.close();
+  });
+
+  it("没有引用的数字断言在回合结束时被标出", async () => {
+    const dir = await tempDir();
+    const store = new MemoryWritingStore();
+    const created = store.createDocument({ title: "断言", ownerId: "user_1" });
+    const runtime = await createWritingRuntime({
+      sqlitePath: join(dir, "pi.sqlite"),
+      store,
+      planner: () => ({
+        ok: true,
+        summary: "断言",
+        ops: [
+          {
+            op: "insert_block",
+            afterBlockId: null,
+            newMarkdown: "因此可以断定成本下降了 30%。",
+            reason: "写一句",
+          },
+        ],
+      }),
+    });
+    const result = await runtime.submitTurn(request(created.id, "outline", "claim-1", "写一句"));
+    expect(result.status).toBe("applied");
+    const events = await runtime.events(created.id);
+    const flagged = events.find((event) => event.type === "claim.flags");
+    expect(flagged?.payload).toMatchObject({
+      flags: [
+        {
+          status: "unverified",
+          note: "这句话有数字或强判断，但没有 [[cite:]]",
+        },
+      ],
+    });
     await runtime.close();
   });
 

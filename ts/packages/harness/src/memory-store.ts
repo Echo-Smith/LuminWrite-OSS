@@ -70,6 +70,13 @@ export class MemoryWritingStore implements WritingStore {
   private readonly sessions = new Map<string, MemSession>();
   private readonly dossiers = new Map<string, MemDossier>();
   private readonly turns = new Map<string, MemTurn>();
+  readonly plans: Array<{
+    id: string;
+    turnId: string;
+    sessionId: string;
+    plan: unknown;
+    gaps: string[];
+  }> = [];
   private readonly events: RunEvent[] = [];
   private readonly byTask = new Map<string, ProposeOutcome & { ok: true }>();
 
@@ -368,6 +375,24 @@ export class MemoryWritingStore implements WritingStore {
       payload: { versionId },
     });
     return outcome;
+  }
+
+  async saveResearchPlan(input: {
+    turnId: string;
+    sessionId: string;
+    plan: unknown;
+    gaps: string[];
+  }): Promise<{ id: string }> {
+    const existing = this.plans.find((item) => item.turnId === input.turnId);
+    if (existing) {
+      existing.sessionId = input.sessionId;
+      existing.plan = input.plan;
+      existing.gaps = input.gaps;
+      return { id: existing.id };
+    }
+    const id = nid("rpl");
+    this.plans.push({ id, ...input });
+    return { id };
   }
 
   async appendEvent(

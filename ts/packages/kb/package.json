@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@luminwrite/db": "workspace:*",
+    "@luminwrite/research": "workspace:*",
     "@node-rs/jieba": "catalog:",
     "mammoth": "catalog:",
     "unpdf": "catalog:"

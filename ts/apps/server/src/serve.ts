@@ -73,6 +73,11 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       resolveTurn: (input) => resolveTurnChain(registry, input),
       turnSpend: (actor) => turnSpendFor(registry, actor),
       knowledge: sessionKnowledge(db, kb),
+      loadEvidence: async (documentId) => {
+        const document = await db.getDocument(documentId);
+        if (!document) return [];
+        return kb.listEvidence(document.ownerId, documentId);
+      },
     });
     const app = createApp({
       db,

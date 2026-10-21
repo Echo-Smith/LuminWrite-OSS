@@ -37,6 +37,7 @@ import {
   retrievalDataNote,
 } from "@luminwrite/kb";
 import { TurnSpendError } from "@luminwrite/models";
+import { readStoredPlan } from "@luminwrite/research";
 import {
   createFeedService,
   FeedError,
@@ -102,6 +103,8 @@ const CiteBody = z.object({
   sourceId: z.string().min(1),
   quote: z.string().min(1).max(4_000),
   blockId: z.string().min(1).optional(),
+  planId: z.string().min(1).max(80).optional(),
+  questionId: z.string().min(1).max(64).optional(),
 });
 
 const TurnBody = TurnRequestSchema.omit({ documentId: true, actor: true, applyMode: true }).extend({
@@ -411,12 +414,14 @@ export function createApp(deps: AppDeps): Hono<Env> {
     const parsed = CiteBody.safeParse(await readBody(c));
     if (!parsed.success) return c.json({ error: "引用参数不合法" }, 400);
     try {
-      const evidence = await kb.citeDocument({
+      const evidence = await kb.recordEvidence({
         ownerId: userId,
         citingDocumentId: c.req.param("id"),
         sourceId: parsed.data.sourceId,
         quote: parsed.data.quote,
         ...(parsed.data.blockId ? { blockId: parsed.data.blockId } : {}),
+        ...(parsed.data.planId ? { planId: parsed.data.planId } : {}),
+        ...(parsed.data.questionId ? { questionId: parsed.data.questionId } : {}),
       });
       return c.json(evidence, 201);
     } catch (error) {
@@ -424,6 +429,13 @@ export function createApp(deps: AppDeps): Hono<Env> {
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
     }
+  });
+
+  api.get("/documents/:id/plans", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const rows = await deps.db.listResearchPlans(c.req.param("id"));
+    return c.json(rows.map((row) => readStoredPlan(row)));
   });
 
   api.get("/documents/:id/citations/:evidenceId", async (c) => {

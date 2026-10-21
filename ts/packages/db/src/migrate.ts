@@ -396,4 +396,16 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 
 CREATE INDEX IF NOT EXISTS idx_evidence_source ON evidence (source_id);
+
+CREATE TABLE IF NOT EXISTS research_plans (
+  id text PRIMARY KEY,
+  turn_id text NOT NULL,
+  session_id text NOT NULL,
+  plan jsonb NOT NULL,
+  gaps jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_research_plan_turn ON research_plans (turn_id);
+CREATE INDEX IF NOT EXISTS idx_research_plan_session ON research_plans (session_id);
 `;

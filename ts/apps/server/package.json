@@ -26,6 +26,7 @@
     "@luminwrite/jobs": "workspace:*",
     "@luminwrite/kb": "workspace:*",
     "@luminwrite/models": "workspace:*",
+    "@luminwrite/research": "workspace:*",
     "@luminwrite/sources": "workspace:*",
     "hono": "catalog:",
     "zod": "catalog:"

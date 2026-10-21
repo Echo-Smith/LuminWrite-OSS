@@ -75,6 +75,12 @@ export interface WritingStore {
     summary: string;
     scope?: BlockId[];
   }): Promise<ProposeOutcome>;
+  saveResearchPlan(input: {
+    turnId: string;
+    sessionId: string;
+    plan: unknown;
+    gaps: string[];
+  }): Promise<{ id: string }>;
   appendEvent(
     documentId: string,
     event: { turnId?: string; type: string; payload: unknown },
