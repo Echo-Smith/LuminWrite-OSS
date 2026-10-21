@@ -56,7 +56,6 @@ export const documents = pgTable("documents", {
   genre: text("genre").notNull(),
   status: text("status").notNull(),
   headVersionId: text("head_version_id"),
-  finalVersionId: text("final_version_id"),
   styleRef: text("style_ref").notNull(),
   tierRef: text("tier_ref").notNull(),
   brief: jsonb("brief").$type<Record<string, unknown>>().notNull(),
@@ -65,6 +64,9 @@ export const documents = pgTable("documents", {
   humanTouched: boolean("human_touched").notNull(),
   derivedFromDocumentId: text("derived_from_document_id"),
   derivedFromVersionId: text("derived_from_version_id"),
+  savedAt: timestamp("saved_at", { withTimezone: true }),
+  savedVersionId: text("saved_version_id"),
+  discardedAt: timestamp("discarded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -83,6 +85,7 @@ export const docVersions = pgTable(
     content: jsonb("content").$type<PMJSON>().notNull(),
     ops: jsonb("ops").$type<EditOp[]>().notNull().default(sql`'[]'::jsonb`),
     summary: text("summary").notNull(),
+    apiKeyId: text("api_key_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("uk_ver_seq").on(table.documentId, table.seq)],
