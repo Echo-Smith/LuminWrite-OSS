@@ -1,9 +1,12 @@
+export type { DatabaseLocation } from "./config.js";
+export { pgliteDataDir, resolveDatabaseLocation } from "./config.js";
 export type {
   ApplyOutcome,
   BlockView,
   DerivedDocumentView,
   DocumentView,
   DossierView,
+  OwnerRow,
   ProposeOutcome,
   SessionView,
   TurnView,
@@ -12,6 +15,7 @@ export type {
 export {
   DocumentNotFound,
   LwDatabase,
+  openDatabase,
   openMemoryDatabase,
   openPostgres,
   SessionClosed,
@@ -20,4 +24,13 @@ export {
   VersionNotFound,
 } from "./database.js";
 export { migrationSql } from "./migrate.js";
+export {
+  authenticateOwnerToken,
+  ensureOwner,
+  hashOwnerToken,
+  OwnerNotFound,
+  ownerTokenPath,
+  readOwnerToken,
+  rotateOwnerToken,
+} from "./owner.js";
 export * as schema from "./schema.js";

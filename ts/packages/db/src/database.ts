@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import type {
   Actor,
@@ -36,6 +37,7 @@ import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import pg from "pg";
 
+import { type DatabaseLocation, pgliteDataDir } from "./config.js";
 import { newId } from "./ids.js";
 import { migrationSql } from "./migrate.js";
 import * as schema from "./schema.js";
@@ -52,6 +54,7 @@ const {
   sessions,
   sessionReads,
   documentDossier,
+  users,
 } = schema;
 
 export class DocumentNotFound extends Error {
@@ -105,6 +108,14 @@ export interface VersionView {
   summary: string;
   content: PMJSON;
   turnId: string | null;
+  actorType: string;
+  actorId: string;
+}
+
+export interface OwnerRow {
+  id: string;
+  displayName: string;
+  tokenHash: string;
 }
 
 export interface DocumentView {
@@ -200,6 +211,43 @@ export class LwDatabase {
 
   close(): Promise<void> {
     return this.client.close();
+  }
+
+  async getOwner(): Promise<OwnerRow | undefined> {
+    const rows = await this.orm.select().from(users).limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    return { id: row.id, displayName: row.displayName, tokenHash: row.tokenHash };
+  }
+
+  async insertOwner(input: {
+    id: string;
+    displayName: string;
+    tokenHash: string;
+  }): Promise<"inserted" | "exists"> {
+    try {
+      await this.orm.insert(users).values({
+        id: input.id,
+        displayName: input.displayName,
+        tokenHash: input.tokenHash,
+        singleton: true,
+        createdAt: new Date(),
+      });
+      return "inserted";
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const existing = await this.getOwner();
+      if (!existing) throw error;
+      return "exists";
+    }
+  }
+
+  async updateOwnerTokenHash(id: string, tokenHash: string): Promise<void> {
+    await this.orm.update(users).set({ tokenHash }).where(eq(users.id, id));
+  }
+
+  async deleteOwner(id: string): Promise<void> {
+    await this.orm.delete(users).where(eq(users.id, id));
   }
 
   async createDocument(input: {
@@ -1196,7 +1244,27 @@ function toVersion(row: typeof docVersions.$inferSelect): VersionView {
     summary: row.summary,
     content: asDoc(row.content),
     turnId: row.turnId,
+    actorType: row.actorType,
+    actorId: row.actorId,
   };
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const record = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if (record.code === "23505") return true;
+    if (
+      typeof record.message === "string" &&
+      /duplicate key|unique constraint/i.test(record.message)
+    ) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
 }
 
 function toSession(row: typeof sessions.$inferSelect): SessionView {
@@ -1297,6 +1365,23 @@ function prepareOps(
 
 export async function openMemoryDatabase(): Promise<LwDatabase> {
   const client = new PGlite();
+  await client.exec(migrationSql);
+  const orm = drizzle({ client, schema });
+  return new LwDatabase(orm, {
+    exec: (sqlText) => client.exec(sqlText).then(() => undefined),
+    close: () => client.close(),
+  });
+}
+
+/** 本机默认：数据目录里的 PGlite。`location.kind === "postgres"` 时走正式 Postgres。 */
+export async function openDatabase(location: DatabaseLocation): Promise<LwDatabase> {
+  if (location.kind === "postgres") {
+    if (!location.databaseUrl) throw new Error("Postgres 缺少连接串");
+    return openPostgres(location.databaseUrl);
+  }
+  const dir = pgliteDataDir(location.dataDir);
+  await mkdir(dir, { recursive: true });
+  const client = new PGlite(dir);
   await client.exec(migrationSql);
   const orm = drizzle({ client, schema });
   return new LwDatabase(orm, {

@@ -9,6 +9,9 @@
       "import": "./dist/run-demo.js"
     }
   },
+  "bin": {
+    "lw": "./dist/lw.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

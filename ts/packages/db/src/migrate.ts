@@ -1,5 +1,14 @@
 /** 手写 SQL。Drizzle 只负责查询；测试默认跑在 PGlite 上。 */
 export const migrationSql = `
+CREATE TABLE IF NOT EXISTS users (
+  id text PRIMARY KEY,
+  display_name text NOT NULL,
+  token_hash text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  singleton boolean NOT NULL DEFAULT true,
+  CONSTRAINT uk_users_singleton UNIQUE (singleton)
+);
+
 CREATE TABLE IF NOT EXISTS documents (
   id text PRIMARY KEY,
   owner_id text NOT NULL,

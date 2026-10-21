@@ -12,6 +12,22 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+/**
+ * OSS 只有一行。`singleton` 上的唯一约束把“一行”落在库里，商业版多用户时去掉这列即可。
+ * 令牌只存 SHA-256，明文在 `${LW_DATA_DIR}/owner.token`。
+ */
+export const users = pgTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    displayName: text("display_name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    singleton: boolean("singleton").notNull().default(true),
+  },
+  (table) => [uniqueIndex("uk_users_singleton").on(table.singleton)],
+);
+
 export const documents = pgTable("documents", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),
