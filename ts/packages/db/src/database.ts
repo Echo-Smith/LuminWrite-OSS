@@ -54,6 +54,8 @@ const {
   apiKeys,
   apiKeyPolicies,
   providerCredentials,
+  modelRegistry,
+  modelSlotBindings,
   sessions,
   sessionReads,
   documentDossier,
@@ -155,6 +157,14 @@ export interface CredentialRow {
   updatedAt: Date;
 }
 
+export interface RegistryEntryRow {
+  id: string;
+  ownerId: string;
+  ref: string;
+  kind: "model" | "tier";
+  spec: Record<string, unknown>;
+}
+
 export interface NewCredentialRow {
   id: string;
   userId: string;
@@ -211,6 +221,7 @@ export interface SessionView {
   createdByType: string;
   createdById: string;
   status: "open" | "closed";
+  modelPin: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -746,7 +757,21 @@ export class LwDatabase {
       }));
   }
 
-  async recordUsage(event: UsageEvent & { apiKeyId?: string; apiTaskId?: string }): Promise<void> {
+  async recordUsage(
+    event: UsageEvent & {
+      apiKeyId?: string;
+      apiTaskId?: string;
+      userId?: string;
+      credentialId?: string;
+      modelRef?: string;
+      tierRef?: string;
+      sessionId?: string;
+      turnId?: string;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      priceKnown?: boolean;
+    },
+  ): Promise<void> {
     await this.orm.insert(usageLedger).values({
       id: newId("use"),
       requestId: event.requestId,
@@ -756,8 +781,27 @@ export class LwDatabase {
       costMicros: event.costMicros,
       apiKeyId: event.apiKeyId ?? null,
       apiTaskId: event.apiTaskId ?? null,
+      userId: event.userId ?? null,
+      credentialId: event.credentialId ?? null,
+      modelRef: event.modelRef ?? null,
+      tierRef: event.tierRef ?? null,
+      sessionId: event.sessionId ?? null,
+      turnId: event.turnId ?? null,
+      cacheReadTokens: event.cacheReadTokens ?? null,
+      cacheWriteTokens: event.cacheWriteTokens ?? null,
+      priceKnown: event.priceKnown ?? true,
       createdAt: new Date(),
     });
+  }
+
+  async usageCostMicrosForUser(userId: string, since: Date): Promise<number> {
+    const rows = await this.orm
+      .select({
+        total: sql<string | number>`coalesce(sum(${usageLedger.costMicros}), 0)`,
+      })
+      .from(usageLedger)
+      .where(and(eq(usageLedger.userId, userId), gte(usageLedger.createdAt, since)));
+    return Number(rows[0]?.total ?? 0);
   }
 
   async usageCostMicrosSince(apiKeyId: string, since: Date): Promise<number> {
@@ -909,6 +953,87 @@ export class LwDatabase {
       .where(and(eq(providerCredentials.id, id), eq(providerCredentials.userId, userId)))
       .returning({ id: providerCredentials.id });
     return rows.length > 0 ? "deleted" : "missing";
+  }
+
+  async setSessionModelPin(sessionId: string, modelPin: string | null): Promise<void> {
+    await this.orm
+      .update(sessions)
+      .set({ modelPin, updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
+  }
+
+  async listRegistryEntries(ownerId: string): Promise<RegistryEntryRow[]> {
+    const rows = await this.orm
+      .select()
+      .from(modelRegistry)
+      .where(eq(modelRegistry.ownerId, ownerId));
+    return rows.map((row) => ({
+      id: row.id,
+      ownerId: row.ownerId,
+      ref: row.ref,
+      kind: row.kind === "tier" ? "tier" : "model",
+      spec: row.spec,
+    }));
+  }
+
+  async upsertRegistryEntry(input: {
+    ownerId: string;
+    ref: string;
+    kind: "model" | "tier";
+    spec: Record<string, unknown>;
+  }): Promise<void> {
+    const existing = await this.orm
+      .select({ id: modelRegistry.id })
+      .from(modelRegistry)
+      .where(and(eq(modelRegistry.ownerId, input.ownerId), eq(modelRegistry.ref, input.ref)))
+      .limit(1);
+    const now = new Date();
+    const current = existing[0];
+    if (current) {
+      await this.orm
+        .update(modelRegistry)
+        .set({ kind: input.kind, spec: input.spec, updatedAt: now })
+        .where(eq(modelRegistry.id, current.id));
+      return;
+    }
+    await this.orm.insert(modelRegistry).values({
+      id: newId("reg"),
+      ownerId: input.ownerId,
+      ref: input.ref,
+      kind: input.kind,
+      spec: input.spec,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async listSlotBindings(ownerId: string): Promise<Array<{ slot: string; targetRef: string }>> {
+    const rows = await this.orm
+      .select()
+      .from(modelSlotBindings)
+      .where(eq(modelSlotBindings.ownerId, ownerId));
+    return rows.map((row) => ({ slot: row.slot, targetRef: row.targetRef }));
+  }
+
+  async upsertSlotBinding(ownerId: string, slot: string, targetRef: string): Promise<void> {
+    const existing = await this.orm
+      .select({ slot: modelSlotBindings.slot })
+      .from(modelSlotBindings)
+      .where(and(eq(modelSlotBindings.ownerId, ownerId), eq(modelSlotBindings.slot, slot)))
+      .limit(1);
+    if (existing[0]) {
+      await this.orm
+        .update(modelSlotBindings)
+        .set({ targetRef, updatedAt: new Date() })
+        .where(and(eq(modelSlotBindings.ownerId, ownerId), eq(modelSlotBindings.slot, slot)));
+      return;
+    }
+    await this.orm.insert(modelSlotBindings).values({
+      ownerId,
+      slot,
+      targetRef,
+      updatedAt: new Date(),
+    });
   }
 
   async resolveSession(req: TurnRequest): Promise<SessionView> {
@@ -1583,6 +1708,7 @@ function toSession(row: typeof sessions.$inferSelect): SessionView {
     createdByType: row.createdByType,
     createdById: row.createdById,
     status: row.status === "closed" ? "closed" : "open",
+    modelPin: row.modelPin,
     createdAt: stamp(row.createdAt),
     updatedAt: stamp(row.updatedAt),
   };

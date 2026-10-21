@@ -167,6 +167,7 @@ export const sessions = pgTable(
     createdByType: text("created_by_type").notNull(),
     createdById: text("created_by_id").notNull(),
     status: text("status").notNull(),
+    modelPin: text("model_pin"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -237,6 +238,31 @@ export const providerCredentials = pgTable(
   (table) => [index("idx_cred_user").on(table.userId, table.provider)],
 );
 
+export const modelRegistry = pgTable(
+  "model_registry",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id").notNull(),
+    ref: text("ref").notNull(),
+    kind: text("kind").notNull(),
+    spec: jsonb("spec").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("uk_registry_owner_ref").on(table.ownerId, table.ref)],
+);
+
+export const modelSlotBindings = pgTable(
+  "model_slot_bindings",
+  {
+    ownerId: text("owner_id").notNull(),
+    slot: text("slot").notNull(),
+    targetRef: text("target_ref").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.ownerId, table.slot] })],
+);
+
 export const usageLedger = pgTable("usage_ledger", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),
@@ -246,5 +272,14 @@ export const usageLedger = pgTable("usage_ledger", {
   costMicros: integer("cost_micros").notNull(),
   apiKeyId: text("api_key_id"),
   apiTaskId: text("api_task_id"),
+  userId: text("user_id"),
+  credentialId: text("credential_id"),
+  modelRef: text("model_ref"),
+  tierRef: text("tier_ref"),
+  sessionId: text("session_id"),
+  turnId: text("turn_id"),
+  cacheReadTokens: integer("cache_read_tokens"),
+  cacheWriteTokens: integer("cache_write_tokens"),
+  priceKnown: boolean("price_known").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

@@ -127,7 +127,10 @@ export function createOpenAICompatibleProvider(options: {
   };
 }
 
-/** 只有显式打开并且提供了密钥时才构造真实供应商。测试和 CI 不会走到这里。 */
+/**
+ * 旧的直连入口。活路径是凭据库：只有 `LW_LLM_ENABLE=1` 才把环境变量导入成加密凭据。
+ * 这里仍然不在没打开开关时读 key。
+ */
 export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): ModelProvider | undefined {
   if (env.LW_LLM_ENABLE !== "1") return undefined;
   const apiKey = env.LW_LLM_API_KEY ?? env.OPENAI_API_KEY;
@@ -136,3 +139,35 @@ export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): ModelProv
   const model = env.LW_LLM_MODEL ?? "gpt-4.1-mini";
   return createOpenAICompatibleProvider({ id: "env", apiKey, baseUrl, model });
 }
+
+export type { Revealable } from "./byok.js";
+export {
+  byokFromBase,
+  closedAuthContext,
+  createClosedModels,
+  fauxFor,
+  probeResolved,
+  syncByokProviders,
+} from "./byok.js";
+export type { CatalogModel } from "./catalog.js";
+export { catalogModels, fauxAllowed } from "./catalog.js";
+export type { RegistryRecord } from "./defaults.js";
+export {
+  defaultRegistryRecords,
+  defaultSlotBindings,
+  isModelSlot,
+  MODEL_SLOTS,
+} from "./defaults.js";
+export type { FallbackEvent } from "./fallback.js";
+export { runWithFallback, UpstreamModelError } from "./fallback.js";
+export type { FullRates } from "./price.js";
+export { choosePrice, costMicros, fillRates, ownerSpendAllowed, rateSum } from "./price.js";
+export type { CredentialRef, PricedModel, ResolveInput } from "./registry.js";
+export {
+  cheapestModel,
+  conservativeRates,
+  listModels,
+  modelsForCredential,
+  resolveModels,
+  validateRegistrySpec,
+} from "./registry.js";

@@ -16,12 +16,14 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "catalog:",
     "@hono/node-server": "catalog:",
     "@luminwrite/contracts": "workspace:*",
     "@luminwrite/db": "workspace:*",
     "@luminwrite/edition": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/harness": "workspace:*",
+    "@luminwrite/models": "workspace:*",
     "hono": "catalog:",
     "zod": "catalog:"
   },

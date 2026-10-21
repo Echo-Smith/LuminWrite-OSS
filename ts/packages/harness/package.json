@@ -22,6 +22,7 @@
     "@luminwrite/db": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/edition": "workspace:*",
+    "@luminwrite/models": "workspace:*",
     "@luminwrite/plainspeak": "workspace:*"
   },
   "devDependencies": {

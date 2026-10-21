@@ -3,6 +3,7 @@ import {
   DossierOpSchema,
   type EditOp,
   EditOpSchema,
+  type RegistryEntrySpec,
   TurnRequestSchema,
 } from "@luminwrite/contracts";
 import {
@@ -23,7 +24,6 @@ import {
   SessionScopeError,
   updateCredential,
   VersionNotFound,
-  verifyCredential,
 } from "@luminwrite/db";
 import type { EditAuthorizer } from "@luminwrite/edition";
 import { type AuthPort, ownerAuthorizer } from "@luminwrite/edition";
@@ -33,6 +33,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { enforceApiKey, resolveApiApplyMode } from "./api-access.js";
+import { bindSlot, listForUser, probeCredential, saveRegistryEntry } from "./model-registry.js";
 import { defaultRateLimiter, TaskConcurrency, type TokenBucketLimiter } from "./rate-limit.js";
 
 const CreateDocument = z.object({
@@ -87,6 +88,15 @@ const CreateCredentialBody = z.object({
   label: z.string().min(1).max(128),
   key: z.string().min(1).max(4096),
   baseUrl: z.string().max(2048).nullable().optional(),
+});
+
+const SlotBody = z.object({
+  targetRef: z.string().min(1).max(200),
+});
+
+const RegistryBody = z.object({
+  ref: z.string().min(1).max(200),
+  spec: z.record(z.string(), z.unknown()),
 });
 
 const PatchCredentialBody = z.object({
@@ -565,9 +575,46 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (ring instanceof Response) return ring;
     const userId = userIdOf(c.get("actor"));
     if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
-    const verified = await verifyCredential(deps.db, ring, { id: c.req.param("id"), userId });
+    const outcome = await probeCredential(deps, { id: c.req.param("id"), userId });
+    if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
+    const views = await listCredentialViews(deps.db, userId);
+    const verified = views.find((view) => view.id === c.req.param("id"));
     if (!verified) return c.json({ error: "找不到凭据" }, 404);
     return c.json(verified);
+  });
+
+  api.get("/models", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json(await listForUser(deps, userId));
+  });
+
+  api.put("/me/model-slots/:slot", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = SlotBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "槽位参数不合法" }, 400);
+    const bound = await bindSlot(deps, userId, c.req.param("slot"), parsed.data.targetRef);
+    if (!bound.ok) return c.json({ error: bound.error }, 400);
+    return c.json({ slot: bound.slot, targetRef: parsed.data.targetRef });
+  });
+
+  api.put("/me/registry", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = RegistryBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "注册表参数不合法" }, 400);
+    const spec = parsed.data.spec;
+    if (spec.kind !== "model" && spec.kind !== "tier") {
+      return c.json({ error: "注册表参数不合法" }, 400);
+    }
+    try {
+      await saveRegistryEntry(deps, userId, parsed.data.ref, spec as RegistryEntrySpec);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "注册表参数不合法";
+      return c.json({ error: message }, 400);
+    }
+    return c.json({ ref: parsed.data.ref });
   });
 
   api.delete("/me/credentials/:id", async (c) => {
