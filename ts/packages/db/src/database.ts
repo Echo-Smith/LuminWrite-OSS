@@ -343,15 +343,26 @@ function asDoc(value: unknown): PMJSON {
   return value as PMJSON;
 }
 
+export type DatabaseDriver =
+  | { kind: "pglite"; client: PGlite }
+  | { kind: "postgres"; connectionString: string };
+
 export class LwDatabase {
+  readonly driver: DatabaseDriver;
   private readonly orm: Orm;
   private readonly client: Closer;
   private readonly clock: () => Date;
 
-  constructor(orm: Orm, client: Closer, clock: () => Date = () => new Date()) {
+  constructor(
+    orm: Orm,
+    client: Closer,
+    clock: () => Date = () => new Date(),
+    driver?: DatabaseDriver,
+  ) {
     this.orm = orm;
     this.client = client;
     this.clock = clock;
+    this.driver = driver ?? { kind: "postgres", connectionString: "" };
   }
 
   exec(sqlText: string): Promise<void> {
@@ -2137,7 +2148,10 @@ export async function openMemoryDatabase(options?: { now?: () => Date }): Promis
   const client = new PGlite({ extensions: { vector } });
   await client.exec(migrationSql);
   const orm = drizzle({ client, schema });
-  return new LwDatabase(orm, pgliteCloser(client), options?.now);
+  return new LwDatabase(orm, pgliteCloser(client), options?.now ?? (() => new Date()), {
+    kind: "pglite",
+    client,
+  });
 }
 
 /** 本机默认：数据目录里的 PGlite。`location.kind === "postgres"` 时走正式 Postgres。 */
@@ -2151,34 +2165,42 @@ export async function openDatabase(location: DatabaseLocation): Promise<LwDataba
   const client = new PGlite(dir, { extensions: { vector } });
   await client.exec(migrationSql);
   const orm = drizzle({ client, schema });
-  return new LwDatabase(orm, pgliteCloser(client));
+  return new LwDatabase(orm, pgliteCloser(client), () => new Date(), {
+    kind: "pglite",
+    client,
+  });
 }
 
 export async function openPostgres(connectionString: string): Promise<LwDatabase> {
   const pool = new pg.Pool({ connectionString });
   await pool.query(migrationSql);
   const orm = drizzlePg({ client: pool, schema });
-  return new LwDatabase(orm as unknown as Orm, {
-    exec: async (sqlText) => {
-      await pool.query(sqlText);
+  return new LwDatabase(
+    orm as unknown as Orm,
+    {
+      exec: async (sqlText) => {
+        await pool.query(sqlText);
+      },
+      query: async (sqlText, params) => (await pool.query(sqlText, params)).rows,
+      transaction: async (fn) => {
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const result = await fn(
+            async (sqlText, params) => (await client.query(sqlText, params)).rows,
+          );
+          await client.query("commit");
+          return result;
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      },
+      close: () => pool.end().then(() => undefined),
     },
-    query: async (sqlText, params) => (await pool.query(sqlText, params)).rows,
-    transaction: async (fn) => {
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const result = await fn(
-          async (sqlText, params) => (await client.query(sqlText, params)).rows,
-        );
-        await client.query("commit");
-        return result;
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-    close: () => pool.end().then(() => undefined),
-  });
+    () => new Date(),
+    { kind: "postgres", connectionString },
+  );
 }

@@ -313,6 +313,46 @@ export const sources = pgTable("sources", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const feeds = pgTable(
+  "feeds",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id").notNull(),
+    url: text("url").notNull(),
+    folderId: text("folder_id").notNull(),
+    title: text("title"),
+    etag: text("etag"),
+    lastModified: text("last_modified"),
+    fullText: boolean("full_text").notNull().default(false),
+    isHotspot: boolean("is_hotspot").notNull().default(false),
+    maxItemsPerTick: integer("max_items_per_tick").notNull().default(3),
+    retainDays: integer("retain_days").notNull().default(180),
+    failCount: integer("fail_count").notNull().default(0),
+    lastError: text("last_error"),
+    lastFetchedAt: timestamp("last_fetched_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("uk_feed_owner_url").on(table.ownerId, table.url)],
+);
+
+export const evidence = pgTable("evidence", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  citingDocumentId: text("citing_document_id").notNull(),
+  sessionId: text("session_id"),
+  turnId: text("turn_id"),
+  planId: text("plan_id"),
+  questionId: text("question_id"),
+  sourceId: text("source_id").notNull(),
+  sourceRevision: integer("source_revision").notNull(),
+  chunkId: text("chunk_id"),
+  citedVersionId: text("cited_version_id"),
+  quote: text("quote").notNull(),
+  locator: jsonb("locator").notNull(),
+  authority: integer("authority").notNull(),
+  citationStatus: text("citation_status").notNull().default("unverified"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const chunks = pgTable("chunks", {
   id: text("id").primaryKey(),
   sourceId: text("source_id").notNull(),

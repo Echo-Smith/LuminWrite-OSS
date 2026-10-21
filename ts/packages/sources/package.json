@@ -14,6 +14,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@luminwrite/db": "workspace:*",
+    "@luminwrite/jobs": "workspace:*",
+    "@luminwrite/kb": "workspace:*",
+    "@mozilla/readability": "catalog:",
+    "feedsmith": "catalog:",
+    "ipaddr.js": "catalog:",
+    "linkedom": "catalog:",
+    "undici": "catalog:"
+  },
   "devDependencies": {
     "typescript": "catalog:",
     "vitest": "catalog:"

@@ -29,6 +29,11 @@ catalog:
   "@node-rs/jieba": 2.0.4
   unpdf: 1.9.0
   mammoth: 1.13.0
+  undici: 8.12.2
+  ipaddr.js: 2.5.0
+  feedsmith: 3.0.1
+  "@mozilla/readability": 0.6.0
+  linkedom: 0.18.13
 
 minimumReleaseAgeExclude:
   - "@earendil-works/chord@1.3.0"

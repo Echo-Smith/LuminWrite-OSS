@@ -1,3 +1,7 @@
-/** JobPort 还没落地。PGlite 上的队列结论见 docs/m1-pglite-findings.md。 */
-export const phase = "stub" as const;
-export const note = "JobPort 留到知识库任务。PGlite 上的队列结论见 docs/m1-pglite-findings.md。";
+export { createInlineJobs, type InlineJobs } from "./inline.js";
+export { openJobPort } from "./pgboss.js";
+export type { JobPort, JobSendOptions } from "./port.js";
+
+export const phase = "queue" as const;
+export const note =
+  "运行时用 pg-boss（PGlite 走 fromPglite，Postgres 走连接串）。测试用进程内队列，可手动推进时间。";

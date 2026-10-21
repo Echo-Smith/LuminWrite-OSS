@@ -12,8 +12,10 @@ import {
 } from "@luminwrite/db";
 import type { WritingRuntime } from "@luminwrite/harness";
 import { createWritingRuntime, writingStoreFromDatabase } from "@luminwrite/harness";
+import { type JobPort, openJobPort } from "@luminwrite/jobs";
 import { createKnowledgeBase } from "@luminwrite/kb";
 import { createClosedModels } from "@luminwrite/models";
+import { createFeedService, safeFetch } from "@luminwrite/sources";
 
 import { createApp } from "./app.js";
 import { createOssAuth } from "./auth.js";
@@ -42,6 +44,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   const db = await openDatabase(location);
   let runtime: WritingRuntime | undefined;
   let server: ServerType | undefined;
+  let jobs: JobPort | undefined;
   try {
     const owner = await ensureOwner(db, { dataDir: location.dataDir });
     const secrets = await ensureMasterKey({ db, dataDir: location.dataDir, env });
@@ -53,6 +56,11 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       db,
       embedder: kbEmbedderFor({ db, keyring: secrets.ring, env }),
     });
+    jobs = await openJobPort(db.driver);
+    const fetchPage = (url: string, options?: { headers?: Record<string, string> }) =>
+      safeFetch(url, { ...options, allowPrivate: env.LW_ALLOW_PRIVATE_FETCH === "1" });
+    const feeds = createFeedService({ db, kb, fetch: fetchPage, jobs });
+    await feeds.start();
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),
@@ -71,6 +79,8 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       env,
       models,
       kb,
+      feeds,
+      pageFetch: fetchPage,
     });
     const address = await new Promise<AddressInfo>((resolve, reject) => {
       const listening = serve(
@@ -85,8 +95,10 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       listening.on("error", reject);
     });
     if (!server) throw new Error("没有拿到监听地址");
+    if (!jobs) throw new Error("队列没有启动");
     const listening = server;
     const opened = runtime;
+    const queue = jobs;
     const retentionDays = discardRetentionDays(env);
     const purgeEvery = discardPurgeIntervalMs(env);
     const purge = () => {
@@ -101,15 +113,20 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       ...(warning ? { warning } : {}),
       owner,
       async close() {
-        if (purgeTimer) clearInterval(purgeTimer);
-        await closeServer(listening);
-        await opened.close();
-        await db.close();
+        try {
+          if (purgeTimer) clearInterval(purgeTimer);
+          await closeServer(listening);
+          await opened.close();
+          await queue.close();
+        } finally {
+          await db.close();
+        }
       },
     };
   } catch (error) {
     if (server) server.close();
     await runtime?.close();
+    await jobs?.close();
     await db.close();
     throw error;
   }

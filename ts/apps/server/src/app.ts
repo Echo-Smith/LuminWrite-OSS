@@ -37,6 +37,14 @@ import {
   retrievalDataNote,
 } from "@luminwrite/kb";
 import { TurnSpendError } from "@luminwrite/models";
+import {
+  createFeedService,
+  FeedError,
+  type FeedService,
+  importUrl,
+  type PageFetch,
+  SafeFetchError,
+} from "@luminwrite/sources";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -133,6 +141,23 @@ const FolderBody = z.object({
 
 const SOURCE_KINDS = ["upload", "url", "rss_item", "web", "document"] as const;
 
+const SubscribeBody = z.object({
+  url: z.string().min(1).max(2048),
+  fullText: z.boolean().optional(),
+  isHotspot: z.boolean().optional(),
+  folderId: z.string().min(1).optional(),
+});
+
+const OpmlBody = z.object({
+  xml: z.string().min(1).max(1_000_000),
+});
+
+const UrlImportBody = z.object({
+  url: z.string().min(1).max(2048),
+  folderId: z.string().min(1).optional(),
+  title: z.string().max(200).optional(),
+});
+
 const CreateApiKeyBody = z.object({
   name: z.string().min(1).max(128),
   scopes: z.array(z.string()).optional(),
@@ -156,6 +181,8 @@ export interface AppDeps {
   env?: NodeJS.ProcessEnv;
   models?: MutableModels;
   kb?: KnowledgeBase;
+  feeds?: FeedService;
+  pageFetch?: PageFetch;
 }
 
 function httpError(error: unknown): { status: 404 | 409; body: { error: string } } | undefined {
@@ -190,7 +217,8 @@ async function readBody(c: AppContext): Promise<unknown> {
 }
 
 function kbFailure(error: unknown): { status: 400 | 404; body: { error: string } } | undefined {
-  if (!(error instanceof KbInputError)) return undefined;
+  if (error instanceof SafeFetchError) return { status: 400, body: { error: error.message } };
+  if (!(error instanceof KbInputError || error instanceof FeedError)) return undefined;
   const status = error.message.startsWith("找不到") ? 404 : 400;
   return { status, body: { error: error.message } };
 }
@@ -208,6 +236,12 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const limiter = deps.limiter ?? defaultRateLimiter();
   const concurrency = new TaskConcurrency();
   const kb = deps.kb ?? createKnowledgeBase({ db: deps.db });
+  const pageFetch: PageFetch =
+    deps.pageFetch ??
+    (async () => {
+      throw new SafeFetchError("测试不访问网络");
+    });
+  const feeds = deps.feeds ?? createFeedService({ db: deps.db, kb, fetch: pageFetch });
 
   app.get("/health", (c) => c.json({ ok: true, service: "luminwrite-ts" }));
 
@@ -768,6 +802,84 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return new Response(body, { headers: { "content-type": "text/event-stream" } });
   });
 
+  api.post("/feeds/opml", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = OpmlBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "OPML 参数不合法" }, 400);
+    try {
+      return c.json(await feeds.importOpml(userId, parsed.data.xml));
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.get("/feeds/opml", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json({ xml: await feeds.exportOpml(userId) });
+  });
+
+  api.get("/feeds", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json({ feeds: await feeds.list(userId) });
+  });
+
+  api.post("/feeds", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = SubscribeBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "订阅参数不合法" }, 400);
+    try {
+      const feed = await feeds.subscribe(userId, {
+        url: parsed.data.url,
+        ...(parsed.data.fullText !== undefined ? { fullText: parsed.data.fullText } : {}),
+        ...(parsed.data.isHotspot !== undefined ? { isHotspot: parsed.data.isHotspot } : {}),
+        ...(parsed.data.folderId ? { folderId: parsed.data.folderId } : {}),
+      });
+      const outcome = await feeds.refresh(feed.id);
+      return c.json({ feed, ...outcome }, 201);
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/feeds/:id/refresh", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const feed = await feeds.get(c.req.param("id"));
+    if (!feed || feed.ownerId !== userId) return c.json({ error: "找不到订阅" }, 404);
+    try {
+      return c.json(await feeds.refresh(feed.id));
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.delete("/feeds/:id", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const keep = c.req.query("keepItems");
+    try {
+      await feeds.unsubscribe(c.req.param("id"), {
+        keepItems: keep === "1" || keep === "true",
+        ownerId: userId,
+      });
+      return c.json({ ok: true });
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
   api.post("/sources/folders", async (c) => {
     const userId = userIdOf(c.get("actor"));
     if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
@@ -808,6 +920,28 @@ export function createApp(deps: AppDeps): Hono<Env> {
         filename: parsed.data.filename,
         bytes,
         ...(parsed.data.mime ? { mime: parsed.data.mime } : {}),
+        ...(parsed.data.folderId ? { folderId: parsed.data.folderId } : {}),
+        ...(parsed.data.title ? { title: parsed.data.title } : {}),
+      });
+      return c.json(outcome, outcome.status === "indexed" ? 201 : 200);
+    } catch (error) {
+      const mapped = kbFailure(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/sources/url", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = UrlImportBody.safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "网址参数不合法" }, 400);
+    try {
+      const outcome = await importUrl({
+        kb,
+        ownerId: userId,
+        url: parsed.data.url,
+        fetch: pageFetch,
         ...(parsed.data.folderId ? { folderId: parsed.data.folderId } : {}),
         ...(parsed.data.title ? { title: parsed.data.title } : {}),
       });

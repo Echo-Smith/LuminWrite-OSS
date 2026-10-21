@@ -21,7 +21,7 @@
 - 运行时（PGlite 或 `LW_DATABASE_URL` 的 Postgres）用 pg-boss。PGlite 走 `fromPglite`，Postgres 走连接串。
 - 单元测试仍用进程内实现（规格 §6.3：同步执行、可手动推进时间），不另起数据库。
 
-进程内实现留到 M1-08，现在不写。如果以后某版 pg-boss 在 PGlite 上起不来，运行时的 PGlite 适配器改挂这套进程内实现，`JobPort` 的调用方不用改。进程内实现要保住规格里的三件事：`singletonKey` 合并还没开始的同名任务，`startAfterSeconds` 延迟，`schedule` 按 cron 触发。
+M1-08 已把进程内 `JobPort` 落在 `@luminwrite/jobs`。它保住三件事：`singletonKey` 合并还没开始的同名任务并保留最新数据，`startAfterSeconds` 延迟，`schedule` 按 cron 触发。运行时 `startServer` 仍用 pg-boss。如果以后某版 pg-boss 在 PGlite 上起不来，把运行时适配器换成这套进程内实现即可，调用方不用改。
 
 ## M0 的定稿字段
 
