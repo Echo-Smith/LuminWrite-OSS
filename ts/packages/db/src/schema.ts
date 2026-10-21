@@ -268,6 +268,67 @@ export const modelSlotBindings = pgTable(
   (table) => [primaryKey({ columns: [table.ownerId, table.slot] })],
 );
 
+export const folders = pgTable("folders", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  name: text("name").notNull(),
+  parentId: text("parent_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+const vector1024 = customType<{ data: number[]; driverData: string }>({
+  dataType() {
+    return "vector(1024)";
+  },
+  toDriver(value) {
+    return `[${value.join(",")}]`;
+  },
+  fromDriver(value) {
+    const textValue = String(value).replace(/^\[|\]$/g, "");
+    if (!textValue) return [];
+    return textValue.split(",").map((part) => Number(part));
+  },
+});
+
+export const sources = pgTable("sources", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  url: text("url"),
+  publisher: text("publisher"),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  authority: integer("authority").notNull(),
+  folderId: text("folder_id"),
+  feedId: text("feed_id"),
+  feedGuid: text("feed_guid"),
+  documentId: text("document_id"),
+  indexedVersionId: text("indexed_version_id"),
+  body: text("body").notNull(),
+  revision: integer("revision").notNull(),
+  contentHash: text("content_hash").notNull(),
+  status: text("status").notNull(),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const chunks = pgTable("chunks", {
+  id: text("id").primaryKey(),
+  sourceId: text("source_id").notNull(),
+  ownerId: text("owner_id").notNull(),
+  ord: integer("ord").notNull(),
+  text: text("text").notNull(),
+  searchText: text("search_text").notNull(),
+  embedding: vector1024("embedding"),
+  embeddingModel: text("embedding_model"),
+  charStart: integer("char_start").notNull(),
+  charEnd: integer("char_end").notNull(),
+  page: integer("page"),
+  headingPath: text("heading_path").array(),
+  blockIds: text("block_ids").array(),
+});
+
 export const usageLedger = pgTable("usage_ledger", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),

@@ -23,6 +23,7 @@
     "@luminwrite/edition": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/harness": "workspace:*",
+    "@luminwrite/kb": "workspace:*",
     "@luminwrite/models": "workspace:*",
     "hono": "catalog:",
     "zod": "catalog:"

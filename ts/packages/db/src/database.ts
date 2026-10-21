@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
 import type {
   Actor,
   BlockId,
@@ -316,8 +317,15 @@ function readNonNegative(raw: string | undefined, fallback: number): number {
 type Origin = "turn" | "manual" | "restore" | "import" | "api" | "derive";
 type Orm = PgliteDatabase<typeof schema>;
 
+export type SqlQuery = <T = Record<string, unknown>>(
+  sqlText: string,
+  params?: unknown[],
+) => Promise<T[]>;
+
 interface Closer {
   exec(sqlText: string): Promise<void>;
+  query<T>(sqlText: string, params?: unknown[]): Promise<T[]>;
+  transaction<T>(fn: (query: SqlQuery) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -348,6 +356,14 @@ export class LwDatabase {
 
   exec(sqlText: string): Promise<void> {
     return this.client.exec(sqlText);
+  }
+
+  query<T>(sqlText: string, params?: unknown[]): Promise<T[]> {
+    return this.client.query<T>(sqlText, params);
+  }
+
+  transaction<T>(fn: (query: SqlQuery) => Promise<T>): Promise<T> {
+    return this.client.transaction(fn);
   }
 
   close(): Promise<void> {
@@ -2101,18 +2117,27 @@ function prepareOps(
   return { ok: true, doc: applied.doc, ops: rebased };
 }
 
+function pgliteCloser(client: PGlite): Closer {
+  return {
+    exec: (sqlText) => client.exec(sqlText).then(() => undefined),
+    query: async <T>(sqlText: string, params?: unknown[]) =>
+      (await client.query(sqlText, params)).rows as T[],
+    transaction: (fn) =>
+      client.transaction(async (tx) =>
+        fn(
+          async <T>(sqlText: string, params?: unknown[]) =>
+            (await tx.query(sqlText, params)).rows as T[],
+        ),
+      ),
+    close: () => client.close(),
+  };
+}
+
 export async function openMemoryDatabase(options?: { now?: () => Date }): Promise<LwDatabase> {
-  const client = new PGlite();
+  const client = new PGlite({ extensions: { vector } });
   await client.exec(migrationSql);
   const orm = drizzle({ client, schema });
-  return new LwDatabase(
-    orm,
-    {
-      exec: (sqlText) => client.exec(sqlText).then(() => undefined),
-      close: () => client.close(),
-    },
-    options?.now,
-  );
+  return new LwDatabase(orm, pgliteCloser(client), options?.now);
 }
 
 /** 本机默认：数据目录里的 PGlite。`location.kind === "postgres"` 时走正式 Postgres。 */
@@ -2123,13 +2148,10 @@ export async function openDatabase(location: DatabaseLocation): Promise<LwDataba
   }
   const dir = pgliteDataDir(location.dataDir);
   await mkdir(dir, { recursive: true });
-  const client = new PGlite(dir);
+  const client = new PGlite(dir, { extensions: { vector } });
   await client.exec(migrationSql);
   const orm = drizzle({ client, schema });
-  return new LwDatabase(orm, {
-    exec: (sqlText) => client.exec(sqlText).then(() => undefined),
-    close: () => client.close(),
-  });
+  return new LwDatabase(orm, pgliteCloser(client));
 }
 
 export async function openPostgres(connectionString: string): Promise<LwDatabase> {
@@ -2139,6 +2161,23 @@ export async function openPostgres(connectionString: string): Promise<LwDatabase
   return new LwDatabase(orm as unknown as Orm, {
     exec: async (sqlText) => {
       await pool.query(sqlText);
+    },
+    query: async (sqlText, params) => (await pool.query(sqlText, params)).rows,
+    transaction: async (fn) => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const result = await fn(
+          async (sqlText, params) => (await client.query(sqlText, params)).rows,
+        );
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     close: () => pool.end().then(() => undefined),
   });

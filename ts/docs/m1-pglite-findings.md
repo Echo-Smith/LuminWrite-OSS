@@ -10,7 +10,7 @@
 
 能加载。PGlite 构造时传入 `{ extensions: { vector } }`，再执行 `CREATE EXTENSION vector`。`vector(1024)` 列、余弦距离 `<=>`、`hnsw` + `vector_cosine_ops` 都在本机跑通。测试在 `packages/db/src/pglite-capabilities.test.ts`。
 
-扩展必须在构造时挂上。现在的 `openDatabase` 还没挂，知识库（M1-07）打开库时要补上。换嵌入模型仍然要重嵌入；这一轮不建 `chunks` 表。
+扩展必须在构造时挂上。`openDatabase` / `openMemoryDatabase` 现在在构造 PGlite 时传入 `{ extensions: { vector } }`，迁移里再 `CREATE EXTENSION IF NOT EXISTS vector`。换嵌入模型仍然要重嵌入。
 
 ## pg-boss
 
