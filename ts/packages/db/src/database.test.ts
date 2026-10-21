@@ -160,6 +160,295 @@ describe("文档版本", () => {
     });
     await db.close();
   });
+
+  it("按块接受各自成版，锚点能接上就重放，接不上或回滚就过期", async () => {
+    const db = await openMemoryDatabase();
+    const created = await db.createDocument({ title: "逐块", ownerId: "user_1" });
+    const seed = await db.applyManual({
+      documentId: created.id,
+      actor: user,
+      summary: "起稿",
+      ops: [
+        {
+          op: "insert_block",
+          afterBlockId: null,
+          newMarkdown: "第一段待改。\n\n第二段待改。",
+          reason: "起稿",
+        },
+      ],
+    });
+    expect(seed.ok).toBe(true);
+    const before = await db.listVersions(created.id);
+    const head = await db.getDocument(created.id);
+    const doc = head?.head?.content;
+    if (!doc) throw new Error("missing head");
+    const fork = await db.openSession({
+      documentId: created.id,
+      kind: "fork",
+      baseVersionId: head?.headVersionId ?? "",
+      actor: user,
+    });
+    const staged = await db.stageProposal({
+      documentId: created.id,
+      ops: [opOn(doc, 0, "第一段已接受。"), opOn(doc, 1, "第二段已接受。")],
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw new Error("stage");
+    const hunkFor = (newText: string) => {
+      const hunk = staged.proposal.hunks.find(
+        (item) => item.op.op === "replace_text" && item.op.newText === newText,
+      );
+      if (!hunk) throw new Error(newText);
+      return hunk;
+    };
+    const firstHunk = hunkFor("第一段已接受。");
+    const secondHunk = hunkFor("第二段已接受。");
+
+    const accepted = await db.acceptHunk({
+      documentId: created.id,
+      proposalId: staged.proposal.id,
+      hunkId: firstHunk.id,
+      actor: user,
+    });
+    expect(accepted).toMatchObject({ ok: true, already: false, status: "accepted" });
+    const mid = await db.getDocument(created.id);
+    expect(texts(mid?.head?.content ?? { type: "doc" })).toEqual([
+      "第一段已接受。",
+      "第二段待改。",
+    ]);
+    const pending = await db.getProposal(staged.proposal.id);
+    expect(pending?.status).toBe("pending");
+    expect(pending?.hunks.find((hunk) => hunk.id === secondHunk.id)?.status).toBe("pending");
+    expect(await db.listVersions(created.id)).toHaveLength(before.length + 1);
+
+    const replay = await db.acceptHunk({
+      documentId: created.id,
+      proposalId: staged.proposal.id,
+      hunkId: firstHunk.id,
+      actor: user,
+    });
+    expect(replay).toMatchObject({ ok: true, already: true, status: "accepted" });
+    expect(await db.listVersions(created.id)).toHaveLength(before.length + 1);
+
+    const second = await db.acceptHunk({
+      documentId: created.id,
+      proposalId: staged.proposal.id,
+      hunkId: secondHunk.id,
+      actor: user,
+    });
+    expect(second).toMatchObject({ ok: true, already: false, status: "accepted" });
+    const done = await db.getDocument(created.id);
+    expect(texts(done?.head?.content ?? { type: "doc" })).toEqual([
+      "第一段已接受。",
+      "第二段已接受。",
+    ]);
+    const versions = await db.listVersions(created.id);
+    expect(versions).toHaveLength(before.length + 2);
+    expect(versions.at(-1)?.origin).toBe("turn");
+    expect(versions.at(-2)?.origin).toBe("turn");
+    const proposal = await db.getProposal(staged.proposal.id);
+    expect(proposal?.status).toBe("accepted");
+    const main = await db.mainSession(created.id);
+    expect(main?.baseVersionId).toBe(versions.at(-1)?.id);
+    expect((await db.getSession(fork.id))?.baseVersionId).toBe(fork.baseVersionId);
+    expect(done?.humanTouched).toBe(true);
+
+    const rebasedDoc = await db.createDocument({ title: "重放", ownerId: "user_1" });
+    const rebasedSeed = await db.applyManual({
+      documentId: rebasedDoc.id,
+      actor: user,
+      ops: [
+        {
+          op: "insert_block",
+          afterBlockId: null,
+          newMarkdown: "成本按小时计。后半句不动。",
+          reason: "起稿",
+        },
+      ],
+    });
+    expect(rebasedSeed.ok).toBe(true);
+    const rebasedHead = await db.getDocument(rebasedDoc.id);
+    const rebasedContent = rebasedHead?.head?.content;
+    if (!rebasedContent) throw new Error("missing rebase head");
+    const needle = opOn(rebasedContent, 0, "成本按天计。");
+    if (needle.op !== "replace_text") throw new Error("op");
+    const proposalOps = [{ ...needle, expectedOldText: "成本按小时计。" }];
+    const rebaseStaged = await db.stageProposal({ documentId: rebasedDoc.id, ops: proposalOps });
+    expect(rebaseStaged.ok).toBe(true);
+    if (!rebaseStaged.ok) throw new Error("rebase stage");
+    const moved = await db.applyManual({
+      documentId: rebasedDoc.id,
+      actor: user,
+      ops: [opOn(rebasedContent, 0, "成本按小时计。后半句改了。")],
+    });
+    expect(moved.ok).toBe(true);
+    const stillPending = await db.getProposal(rebaseStaged.proposal.id);
+    expect(stillPending?.hunks[0]?.status).toBe("pending");
+    const rebaseHunk = stillPending?.hunks[0];
+    if (!rebaseHunk) throw new Error("rebase hunk");
+    const rebased = await db.acceptHunk({
+      documentId: rebasedDoc.id,
+      proposalId: rebaseStaged.proposal.id,
+      hunkId: rebaseHunk.id,
+      actor: user,
+    });
+    expect(rebased.ok).toBe(true);
+    const rebasedAfter = await db.getDocument(rebasedDoc.id);
+    expect(texts(rebasedAfter?.head?.content ?? { type: "doc" })).toEqual([
+      "成本按天计。后半句改了。",
+    ]);
+
+    const staleDoc = await db.createDocument({ title: "过期", ownerId: "user_1" });
+    const staleSeed = await db.applyManual({
+      documentId: staleDoc.id,
+      actor: user,
+      ops: [
+        {
+          op: "insert_block",
+          afterBlockId: null,
+          newMarkdown: "成本按小时计。",
+          reason: "起稿",
+        },
+      ],
+    });
+    expect(staleSeed.ok).toBe(true);
+    const staleHead = await db.getDocument(staleDoc.id);
+    const staleContent = staleHead?.head?.content;
+    if (!staleContent || !staleSeed.ok) throw new Error("missing stale head");
+    const staleBefore = await db.listVersions(staleDoc.id);
+    const staleStaged = await db.stageProposal({
+      documentId: staleDoc.id,
+      ops: [opOn(staleContent, 0, "成本按天计。")],
+    });
+    expect(staleStaged.ok).toBe(true);
+    if (!staleStaged.ok) throw new Error("stale stage");
+    const overwritten = await db.applyManual({
+      documentId: staleDoc.id,
+      actor: user,
+      ops: [opOn(staleContent, 0, "另一句完全不同。")],
+    });
+    expect(overwritten.ok).toBe(true);
+    const staleProposal = await db.getProposal(staleStaged.proposal.id);
+    expect(staleProposal?.status).toBe("stale");
+    expect(staleProposal?.hunks[0]?.status).toBe("stale");
+    expect(await db.listVersions(staleDoc.id)).toHaveLength(staleBefore.length + 1);
+    const refused = await db.acceptHunk({
+      documentId: staleDoc.id,
+      proposalId: staleStaged.proposal.id,
+      hunkId: staleProposal?.hunks[0]?.id ?? "",
+      actor: user,
+    });
+    expect(refused.ok).toBe(false);
+
+    const restoreDoc = await db.createDocument({ title: "回滚", ownerId: "user_1" });
+    const restoreSeed = await db.applyManual({
+      documentId: restoreDoc.id,
+      actor: user,
+      ops: [
+        {
+          op: "insert_block",
+          afterBlockId: null,
+          newMarkdown: "成本按小时计。后半句不动。",
+          reason: "起稿",
+        },
+      ],
+    });
+    expect(restoreSeed.ok).toBe(true);
+    if (!restoreSeed.ok) throw new Error("restore seed");
+    const restoreHead = await db.getDocument(restoreDoc.id);
+    const restoreContent = restoreHead?.head?.content;
+    if (!restoreContent) throw new Error("missing restore head");
+    const restoreNeedle = opOn(restoreContent, 0, "成本按天计。后半句不动。");
+    if (restoreNeedle.op !== "replace_text") throw new Error("op");
+    const restoreStaged = await db.stageProposal({
+      documentId: restoreDoc.id,
+      ops: [{ ...restoreNeedle, expectedOldText: "成本按小时计。" }],
+    });
+    expect(restoreStaged.ok).toBe(true);
+    if (!restoreStaged.ok) throw new Error("restore stage");
+    expect(restoreStaged.proposal.hunks[0]?.status).toBe("pending");
+    const rolled = await db.rollback({
+      documentId: restoreDoc.id,
+      toVersionId: restoreSeed.versionId,
+      actor: { type: "system" },
+    });
+    expect(rolled.ok).toBe(true);
+    const restored = await db.getDocument(restoreDoc.id);
+    expect(restored?.head?.origin).toBe("restore");
+    expect(texts(restored?.head?.content ?? { type: "doc" })).toEqual([
+      "成本按小时计。后半句不动。",
+    ]);
+    const expired = await db.getProposal(restoreStaged.proposal.id);
+    expect(expired?.status).toBe("stale");
+    expect(expired?.hunks[0]?.status).toBe("stale");
+
+    const turnDoc = await db.createDocument({ title: "回合", ownerId: "user_1" });
+    const turnSeed = await db.applyManual({
+      documentId: turnDoc.id,
+      actor: user,
+      ops: [
+        {
+          op: "insert_block",
+          afterBlockId: null,
+          newMarkdown: "甲待改。\n\n乙待改。",
+          reason: "起稿",
+        },
+      ],
+    });
+    expect(turnSeed.ok).toBe(true);
+    const turnHead = await db.getDocument(turnDoc.id);
+    const turnContent = turnHead?.head?.content;
+    if (!turnContent) throw new Error("missing turn head");
+    const turn = await db.beginTurn({
+      documentId: turnDoc.id,
+      kind: "revise",
+      instruction: "改两段",
+      scope: "document",
+      delivery: "followup",
+      applyMode: "proposal",
+      idempotencyKey: "hunk-turn",
+      actor: user,
+    });
+    const proposed = await db.propose({
+      documentId: turnDoc.id,
+      turnId: turn.turnId,
+      piTaskId: "task_hunks",
+      applyMode: "proposal",
+      actor: { type: "system" },
+      summary: "两块提案",
+      ops: [opOn(turnContent, 0, "甲已接受。"), opOn(turnContent, 1, "乙已接受。")],
+    });
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || !proposed.proposalId) throw new Error("propose");
+    const turnProposal = await db.getProposal(proposed.proposalId);
+    const left = turnProposal?.hunks.find(
+      (hunk) => hunk.op.op === "replace_text" && hunk.op.newText === "甲已接受。",
+    );
+    const right = turnProposal?.hunks.find(
+      (hunk) => hunk.op.op === "replace_text" && hunk.op.newText === "乙已接受。",
+    );
+    if (!left || !right) throw new Error("turn hunks");
+    await db.acceptHunk({
+      documentId: turnDoc.id,
+      proposalId: proposed.proposalId,
+      hunkId: left.id,
+      actor: user,
+    });
+    expect((await db.getTurn(turn.turnId))?.status).toBe("proposed");
+    const finished = await db.acceptHunk({
+      documentId: turnDoc.id,
+      proposalId: proposed.proposalId,
+      hunkId: right.id,
+      actor: user,
+    });
+    expect(finished.ok && finished.status === "accepted" && finished.versionId).toBeTruthy();
+    const appliedTurn = await db.getTurn(turn.turnId);
+    expect(appliedTurn?.status).toBe("applied");
+    if (finished.ok && finished.status === "accepted") {
+      expect(appliedTurn?.resultVersionId).toBe(finished.versionId);
+    }
+    await db.close();
+  });
 });
 
 describe("会话与派生文档", () => {

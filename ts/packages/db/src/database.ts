@@ -315,6 +315,27 @@ export type ProposeOutcome =
     }
   | { ok: false; errors: OpError[] };
 
+export interface HunkView {
+  id: string;
+  status: string;
+  op: EditOp;
+}
+
+export interface ProposalView {
+  id: string;
+  documentId: string;
+  turnId: string | null;
+  baseVersionId: string;
+  status: string;
+  createdAt: string;
+  hunks: HunkView[];
+}
+
+export type HunkOutcome =
+  | { ok: true; already: boolean; status: "accepted"; versionId?: string; seq?: number }
+  | { ok: true; already: boolean; status: "rejected" }
+  | { ok: false; errors: OpError[] };
+
 /** 同一 actor 的连续人工修订合并成一个版本的窗口。 */
 export const AUTOSAVE_WINDOW_MS = 30_000;
 export const DEFAULT_DISCARD_RETENTION_DAYS = 30;
@@ -964,67 +985,257 @@ export class LwDatabase {
   }
 
   async acceptProposal(proposalId: string, actor: Actor): Promise<ApplyOutcome> {
+    const proposal = await this.proposalRow(proposalId);
+    if (!proposal) {
+      return { ok: false, errors: [{ index: 0, code: "schema_invalid", message: "找不到提案" }] };
+    }
+    const pending = (await this.hunkRows(proposalId)).filter((hunk) => hunk.status === "pending");
+    let last: ApplyOutcome | undefined;
+    for (const hunk of pending) {
+      const decided = await this.acceptHunk({
+        documentId: proposal.documentId,
+        proposalId,
+        hunkId: hunk.id,
+        actor,
+      });
+      if (decided.ok && decided.status === "accepted" && decided.versionId && decided.seq) {
+        last = { ok: true, versionId: decided.versionId, seq: decided.seq };
+      }
+    }
+    return (
+      last ?? {
+        ok: false,
+        errors: [{ index: 0, code: "schema_invalid", message: "没有可接受的块" }],
+      }
+    );
+  }
+
+  async rejectProposal(proposalId: string): Promise<void> {
+    const proposal = await this.proposalRow(proposalId);
+    if (!proposal) return;
+    await this.orm.transaction(async (tx) => {
+      await this.lock(tx, proposal.documentId);
+      const hunks = await this.hunkRows(proposalId, tx);
+      for (const hunk of hunks) {
+        if (hunk.status !== "pending") continue;
+        await tx
+          .update(proposalHunks)
+          .set({ status: "rejected" })
+          .where(eq(proposalHunks.id, hunk.id));
+      }
+      await this.refreshProposalStatus(tx, proposalId);
+    });
+  }
+
+  async listProposals(documentId: string): Promise<ProposalView[]> {
+    const rows = await this.orm
+      .select()
+      .from(proposals)
+      .where(eq(proposals.documentId, documentId))
+      .orderBy(proposals.createdAt, proposals.id);
+    const views: ProposalView[] = [];
+    for (const row of rows) views.push(await this.proposalView(row));
+    return views;
+  }
+
+  async getProposal(proposalId: string): Promise<ProposalView | undefined> {
+    const row = await this.proposalRow(proposalId);
+    return row ? this.proposalView(row) : undefined;
+  }
+
+  async stageProposal(input: {
+    documentId: string;
+    ops: EditOp[];
+    sessionId?: string;
+  }): Promise<{ ok: true; proposal: ProposalView } | { ok: false; errors: OpError[] }> {
+    return this.orm.transaction(async (tx) => {
+      const head = await this.headInTx(tx, input.documentId);
+      if (input.sessionId) {
+        const scoped = await this.sessionInTx(tx, input.sessionId);
+        if (!scoped || scoped.documentId !== input.documentId || scoped.status !== "open") {
+          return {
+            ok: false as const,
+            errors: [
+              { index: 0, code: "out_of_scope" as const, message: "会话只能修订自己所属的文档" },
+            ],
+          };
+        }
+      }
+      const proposalId = newId("prp");
+      await tx.insert(proposals).values({
+        id: proposalId,
+        documentId: input.documentId,
+        turnId: null,
+        baseVersionId: head.id,
+        status: "pending",
+        piTaskId: null,
+        createdAt: new Date(),
+      });
+      for (const op of input.ops) {
+        await tx.insert(proposalHunks).values({
+          id: newId("hnk"),
+          proposalId,
+          op,
+          status: "pending",
+          userEdit: null,
+        });
+      }
+      await this.retargetHunks(tx, input.documentId, asDoc(head.content), "rebase");
+      const row = await this.proposalRow(proposalId, tx);
+      if (!row) {
+        return {
+          ok: false as const,
+          errors: [{ index: 0, code: "schema_invalid" as const, message: "提案没有写入" }],
+        };
+      }
+      await this.appendEventTx(tx, input.documentId, {
+        type: "edits.proposed",
+        payload: { proposalId },
+      });
+      return { ok: true as const, proposal: await this.proposalView(row, tx) };
+    });
+  }
+
+  async acceptHunk(input: {
+    documentId: string;
+    proposalId: string;
+    hunkId: string;
+    actor: Actor;
+  }): Promise<HunkOutcome> {
     let documentId: string | undefined;
     const written = await this.orm.transaction(async (tx) => {
-      const found = await tx.select().from(proposals).where(eq(proposals.id, proposalId)).limit(1);
-      const proposal = found[0];
-      if (!proposal) {
+      const proposal = await this.proposalRow(input.proposalId, tx);
+      if (!proposal || proposal.documentId !== input.documentId) {
         return {
           ok: false as const,
           errors: [{ index: 0, code: "schema_invalid" as const, message: "找不到提案" }],
         };
       }
       await this.lock(tx, proposal.documentId);
-      const hunks = await tx
-        .select()
-        .from(proposalHunks)
-        .where(eq(proposalHunks.proposalId, proposalId));
-      const ops = hunks
-        .filter((hunk) => hunk.status === "pending" || hunk.status === "accepted")
-        .map((hunk) => hunk.op);
-      documentId = proposal.documentId;
+      const hunk = await this.hunkRow(input.hunkId, tx);
+      if (!hunk || hunk.proposalId !== proposal.id) {
+        return {
+          ok: false as const,
+          errors: [{ index: 0, code: "schema_invalid" as const, message: "找不到这块修订" }],
+        };
+      }
+      if (hunk.status === "accepted") {
+        return { ok: true as const, already: true, status: "accepted" as const };
+      }
+      if (hunk.status !== "pending") {
+        return {
+          ok: false as const,
+          errors: [{ index: 0, code: "schema_invalid" as const, message: "这块修订已经结束" }],
+        };
+      }
+      await tx
+        .update(proposalHunks)
+        .set({ status: "accepted" })
+        .where(eq(proposalHunks.id, hunk.id));
       const applied = await this.writeOps(tx, {
         documentId: proposal.documentId,
-        ops,
+        ops: [asOp(hunk.op)],
         origin: "turn",
-        actor,
-        summary: "接受提案",
+        actor: input.actor,
+        summary: "接受一块修订",
         turnId: proposal.turnId,
+        piTaskId: null,
       });
       if (!applied.ok) {
         await tx
           .update(proposalHunks)
           .set({ status: "stale" })
-          .where(eq(proposalHunks.proposalId, proposalId));
-        await tx.update(proposals).set({ status: "stale" }).where(eq(proposals.id, proposalId));
+          .where(eq(proposalHunks.id, hunk.id));
+        await this.refreshProposalStatus(tx, proposal.id);
+        await this.appendEventTx(tx, proposal.documentId, {
+          turnId: proposal.turnId,
+          type: "hunk.stale",
+          payload: { proposalId: proposal.id, hunkId: hunk.id },
+        });
         return applied;
       }
-      await tx
-        .update(proposalHunks)
-        .set({ status: "accepted" })
-        .where(eq(proposalHunks.proposalId, proposalId));
-      await tx.update(proposals).set({ status: "accepted" }).where(eq(proposals.id, proposalId));
-      if (proposal.turnId) {
+      await this.refreshProposalStatus(tx, proposal.id);
+      const refreshed = await this.proposalRow(proposal.id, tx);
+      if (refreshed?.status === "accepted" && proposal.turnId) {
         await tx
           .update(turns)
           .set({ status: "applied", resultVersionId: applied.versionId })
           .where(eq(turns.id, proposal.turnId));
       }
-      return applied;
+      const main = await tx
+        .select()
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.documentId, proposal.documentId),
+            eq(sessions.kind, "main"),
+            eq(sessions.status, "open"),
+          ),
+        )
+        .limit(1);
+      if (main[0]) await this.advanceInTx(tx, main[0].id, applied.versionId);
+      await this.appendEventTx(tx, proposal.documentId, {
+        turnId: proposal.turnId,
+        type: "hunk.accepted",
+        payload: { proposalId: proposal.id, hunkId: hunk.id, versionId: applied.versionId },
+      });
+      documentId = proposal.documentId;
+      return {
+        ok: true as const,
+        already: false,
+        status: "accepted" as const,
+        versionId: applied.versionId,
+        seq: applied.seq,
+      };
     });
-    if (written.ok && documentId) await this.afterVersion(documentId);
+    if (written.ok && written.status === "accepted" && written.versionId && documentId) {
+      await this.afterVersion(documentId);
+    }
     return written;
   }
 
-  async rejectProposal(proposalId: string): Promise<void> {
-    await this.orm
-      .update(proposalHunks)
-      .set({ status: "rejected" })
-      .where(eq(proposalHunks.proposalId, proposalId));
-    await this.orm
-      .update(proposals)
-      .set({ status: "rejected" })
-      .where(eq(proposals.id, proposalId));
+  async rejectHunk(input: {
+    documentId: string;
+    proposalId: string;
+    hunkId: string;
+  }): Promise<HunkOutcome> {
+    return this.orm.transaction(async (tx) => {
+      const proposal = await this.proposalRow(input.proposalId, tx);
+      if (!proposal || proposal.documentId !== input.documentId) {
+        return {
+          ok: false as const,
+          errors: [{ index: 0, code: "schema_invalid" as const, message: "找不到提案" }],
+        };
+      }
+      await this.lock(tx, proposal.documentId);
+      const hunk = await this.hunkRow(input.hunkId, tx);
+      if (!hunk || hunk.proposalId !== proposal.id) {
+        return {
+          ok: false as const,
+          errors: [{ index: 0, code: "schema_invalid" as const, message: "找不到这块修订" }],
+        };
+      }
+      if (hunk.status === "rejected") {
+        return { ok: true as const, already: true, status: "rejected" as const };
+      }
+      if (hunk.status !== "pending") {
+        return {
+          ok: false as const,
+          errors: [{ index: 0, code: "schema_invalid" as const, message: "这块修订已经结束" }],
+        };
+      }
+      await tx
+        .update(proposalHunks)
+        .set({ status: "rejected" })
+        .where(eq(proposalHunks.id, hunk.id));
+      await this.refreshProposalStatus(tx, proposal.id);
+      await this.appendEventTx(tx, proposal.documentId, {
+        turnId: proposal.turnId,
+        type: "hunk.rejected",
+        payload: { proposalId: proposal.id, hunkId: hunk.id },
+      });
+      return { ok: true as const, already: false, status: "rejected" as const };
+    });
   }
 
   async appendEvent(
@@ -1885,6 +2096,75 @@ export class LwDatabase {
     return rows[0];
   }
 
+  private async proposalRow(id: string, tx?: Tx) {
+    const query = tx ?? this.orm;
+    const rows = await query.select().from(proposals).where(eq(proposals.id, id)).limit(1);
+    return rows[0];
+  }
+
+  private async hunkRow(id: string, tx?: Tx) {
+    const query = tx ?? this.orm;
+    const rows = await query.select().from(proposalHunks).where(eq(proposalHunks.id, id)).limit(1);
+    return rows[0];
+  }
+
+  private async hunkRows(proposalId: string, tx?: Tx) {
+    const query = tx ?? this.orm;
+    return query
+      .select()
+      .from(proposalHunks)
+      .where(eq(proposalHunks.proposalId, proposalId))
+      .orderBy(proposalHunks.id);
+  }
+
+  private async proposalView(row: typeof proposals.$inferSelect, tx?: Tx): Promise<ProposalView> {
+    const hunks = await this.hunkRows(row.id, tx);
+    return {
+      id: row.id,
+      documentId: row.documentId,
+      turnId: row.turnId,
+      baseVersionId: row.baseVersionId,
+      status: row.status,
+      createdAt: stamp(row.createdAt),
+      hunks: hunks.map((hunk) => ({ id: hunk.id, status: hunk.status, op: asOp(hunk.op) })),
+    };
+  }
+
+  private async refreshProposalStatus(tx: Tx, proposalId: string) {
+    const hunks = await this.hunkRows(proposalId, tx);
+    const pending = hunks.some((hunk) => hunk.status === "pending");
+    const accepted = hunks.some((hunk) => hunk.status === "accepted");
+    const stale = hunks.some((hunk) => hunk.status === "stale");
+    const status = pending ? "pending" : accepted ? "accepted" : stale ? "stale" : "rejected";
+    await tx.update(proposals).set({ status }).where(eq(proposals.id, proposalId));
+  }
+
+  private async retargetHunks(tx: Tx, documentId: string, doc: PMJSON, mode: "rebase" | "all") {
+    const open = await tx.select().from(proposals).where(eq(proposals.documentId, documentId));
+    for (const proposal of open) {
+      const hunks = await this.hunkRows(proposal.id, tx);
+      let changed = false;
+      const newlyStale: string[] = [];
+      for (const hunk of hunks) {
+        if (hunk.status !== "pending") continue;
+        if (mode === "rebase" && canRebase(doc, asOp(hunk.op))) continue;
+        await tx
+          .update(proposalHunks)
+          .set({ status: "stale" })
+          .where(eq(proposalHunks.id, hunk.id));
+        newlyStale.push(hunk.id);
+        changed = true;
+      }
+      if (!changed) continue;
+      await this.refreshProposalStatus(tx, proposal.id);
+      await this.appendEventTx(tx, documentId, {
+        turnId: proposal.turnId,
+        type: "hunk.stale",
+        payload: { proposalId: proposal.id, hunkIds: newlyStale },
+      });
+    }
+  }
+
   private async purgeOne(tx: Tx, id: string) {
     await tx.execute(
       sql`DELETE FROM subagent_runs WHERE session_id IN (
@@ -2048,6 +2328,12 @@ export class LwDatabase {
       .where(eq(documents.id, input.documentId));
     await this.touchHuman(tx, input.documentId, input.actor, input.origin);
     await this.replaceBlocks(tx, input.documentId, input.content);
+    await this.retargetHunks(
+      tx,
+      input.documentId,
+      input.content,
+      input.origin === "restore" ? "all" : "rebase",
+    );
     return { ok: true, versionId, seq };
   }
 
@@ -2084,6 +2370,7 @@ export class LwDatabase {
       .where(eq(docVersions.id, head.id));
     await this.touchHuman(tx, doc.id, input.actor, input.origin);
     await this.replaceBlocks(tx, doc.id, input.content);
+    await this.retargetHunks(tx, doc.id, input.content, "rebase");
     return { ok: true, versionId: head.id, seq: head.seq };
   }
 
@@ -2297,6 +2584,23 @@ function stampOrNull(value: Date | string | null): string | null {
 function asOps(value: unknown): EditOp[] {
   const raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   return Array.isArray(raw) ? (raw as EditOp[]) : [];
+}
+
+function asOp(value: unknown): EditOp {
+  const raw = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  return raw as EditOp;
+}
+
+function canRebase(doc: PMJSON, op: EditOp): boolean {
+  if (op.op === "insert_block") {
+    if (op.afterBlockId && !findBlock(doc, op.afterBlockId)) return false;
+    if (op.parentBlockId && !findBlock(doc, op.parentBlockId)) return false;
+    return true;
+  }
+  const found = findBlock(doc, op.blockId);
+  if (!found) return false;
+  if (blockHashSync(found.node) === op.contentHash) return true;
+  return rebaseOp(op, found.node) !== null;
 }
 
 function parseDossier(value: unknown): DossierContent {

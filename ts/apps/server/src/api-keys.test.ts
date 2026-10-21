@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BlockId, EditOp } from "@luminwrite/contracts";
+import type { BlockId, ContentHash, EditOp } from "@luminwrite/contracts";
 import { ensureOwner, hashApiKey, openMemoryDatabase, readOwnerToken } from "@luminwrite/db";
 import { blockHashSync, blockText, listBlocks, type PMJSON } from "@luminwrite/doc-model";
 import {
@@ -424,6 +424,194 @@ describe("API 密钥策略", () => {
       expect(await turn.json()).toMatchObject({ status: "proposed" });
       const after = await ctx.db.getDocument(documentId);
       expect(after?.headVersionId).toBe(touched?.headVersionId);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe("逐块提案", () => {
+  it("人改过的文档上，API 密钥的 ops 变成提案，接受和拒绝按块进行", async () => {
+    const ctx = await boot({ runtime: stubRuntime() });
+    try {
+      const created = await ctx.request("/api/v1/documents", {
+        method: "POST",
+        body: JSON.stringify({ title: "推理成本" }),
+      });
+      const documentId = ((await created.json()) as { id: string }).id;
+      const seeded = await ctx.request(`/api/v1/documents/${documentId}/ops`, {
+        method: "POST",
+        body: JSON.stringify({
+          ops: [
+            {
+              op: "insert_block",
+              afterBlockId: null,
+              newMarkdown: "第一段待改。\n\n第二段待改。",
+              reason: "起稿",
+            },
+          ],
+        }),
+      });
+      expect(seeded.status).toBe(200);
+      const touched = await ctx.db.getDocument(documentId);
+      expect(touched?.humanTouched).toBe(true);
+      const headVersionId = touched?.headVersionId;
+      const listed = await ctx.request(`/api/v1/documents/${documentId}`);
+      const blocks = (
+        (await listed.json()) as {
+          blocks: Array<{ blockId: string; contentHash: string; text: string }>;
+        }
+      ).blocks;
+      const first = blocks[0];
+      const second = blocks[1];
+      if (!first || !second) throw new Error("blocks");
+      const replace = (
+        block: { blockId: string; contentHash: string; text: string },
+        newText: string,
+      ): EditOp => ({
+        op: "replace_text",
+        blockId: block.blockId as BlockId,
+        contentHash: block.contentHash as ContentHash,
+        expectedOldText: block.text,
+        newText,
+        reason: "外部修订",
+      });
+      const key = await issue(ctx);
+      const proposed = await ctx.request(
+        `/api/v1/documents/${documentId}/ops`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ops: [replace(first, "第一段已接受。"), replace(second, "第二段不该落上。")],
+          }),
+        },
+        key.token,
+      );
+      expect(proposed.status).toBe(200);
+      const staged = (await proposed.json()) as {
+        ok: boolean;
+        status: string;
+        proposal: { id: string; hunks: Array<{ id: string; status: string }> };
+      };
+      expect(staged).toMatchObject({ ok: true, status: "proposed" });
+      expect((await ctx.db.getDocument(documentId))?.headVersionId).toBe(headVersionId);
+      const proposals = await ctx.request(`/api/v1/documents/${documentId}/proposals`);
+      expect(proposals.status).toBe(200);
+      const views = (await proposals.json()) as Array<{
+        id: string;
+        status: string;
+        hunks: Array<{ id: string; status: string }>;
+      }>;
+      expect(views).toHaveLength(1);
+      expect(views[0]?.hunks.every((hunk) => hunk.status === "pending")).toBe(true);
+      const byText = (
+        (await (
+          await ctx.request(`/api/v1/documents/${documentId}/proposals/${staged.proposal.id}`)
+        ).json()) as {
+          hunks: Array<{ id: string; op: { newText?: string } }>;
+        }
+      ).hunks;
+      const keepHunk = byText.find((hunk) => hunk.op.newText === "第一段已接受。");
+      const dropHunk = byText.find((hunk) => hunk.op.newText === "第二段不该落上。");
+      if (!keepHunk || !dropHunk) throw new Error("hunks");
+      const accepted = await ctx.request(
+        `/api/v1/documents/${documentId}/proposals/${staged.proposal.id}/hunks/${keepHunk.id}/accept`,
+        { method: "POST" },
+      );
+      expect(accepted.status).toBe(200);
+      expect(await accepted.json()).toMatchObject({ ok: true, status: "accepted", already: false });
+      const rejected = await ctx.request(
+        `/api/v1/documents/${documentId}/proposals/${staged.proposal.id}/hunks/${dropHunk.id}/reject`,
+        { method: "POST" },
+      );
+      expect(rejected.status).toBe(200);
+      expect(await rejected.json()).toMatchObject({ ok: true, status: "rejected" });
+      const after = await ctx.request(`/api/v1/documents/${documentId}`);
+      const afterBlocks = (
+        (await after.json()) as { blocks: Array<{ text: string }>; headVersionId: string }
+      ).blocks;
+      expect(afterBlocks.map((block) => block.text)).toEqual(["第一段已接受。", "第二段待改。"]);
+      const versions = await ctx.request(`/api/v1/documents/${documentId}/versions`);
+      const versionRows = (await versions.json()) as Array<{ id: string; origin: string }>;
+      expect(versionRows.at(-1)?.origin).toBe("turn");
+      expect(versionRows.at(-1)?.id).not.toBe(headVersionId);
+
+      const ownerEdit = await ctx.request(`/api/v1/documents/${documentId}/ops`, {
+        method: "POST",
+        body: JSON.stringify({
+          ops: [replace({ ...second, text: "第二段待改。" }, "所有者直接改。")],
+        }),
+      });
+      expect(ownerEdit.status).toBe(200);
+      const ownerBody = (await ownerEdit.json()) as {
+        ok?: boolean;
+        status?: string;
+        versionId?: string;
+      };
+      expect(ownerBody.ok).toBe(true);
+      expect(ownerBody.versionId).toBeTruthy();
+      expect(ownerBody.status).toBeUndefined();
+
+      const current = (await (await ctx.request(`/api/v1/documents/${documentId}`)).json()) as {
+        headVersionId: string;
+        blocks: Array<{ blockId: string; contentHash: string; text: string }>;
+      };
+      const live = current.blocks[0];
+      if (!live) throw new Error("live");
+      const again = await ctx.request(
+        `/api/v1/documents/${documentId}/ops`,
+        {
+          method: "POST",
+          body: JSON.stringify({ ops: [replace(live, "这段接不上。")] }),
+        },
+        key.token,
+      );
+      const againBody = (await again.json()) as { proposal: { id: string } };
+      const clash = await ctx.request(`/api/v1/documents/${documentId}/ops`, {
+        method: "POST",
+        body: JSON.stringify({ ops: [replace(live, "所有者改成别的句子。")] }),
+      });
+      expect(clash.status).toBe(200);
+      const staleView = await ctx.request(
+        `/api/v1/documents/${documentId}/proposals/${againBody.proposal.id}`,
+      );
+      expect(await staleView.json()).toMatchObject({
+        status: "stale",
+        hunks: [{ status: "stale" }],
+      });
+
+      const beforeRestore = (await (
+        await ctx.request(`/api/v1/documents/${documentId}`)
+      ).json()) as {
+        blocks: Array<{ blockId: string; contentHash: string; text: string }>;
+      };
+      const tail = beforeRestore.blocks[1];
+      if (!tail) throw new Error("tail");
+      const third = await ctx.request(
+        `/api/v1/documents/${documentId}/ops`,
+        {
+          method: "POST",
+          body: JSON.stringify({ ops: [replace(tail, "回滚前的提案。")] }),
+        },
+        key.token,
+      );
+      const thirdBody = (await third.json()) as { proposal: { id: string } };
+      const restored = await ctx.request(`/api/v1/documents/${documentId}/restore`, {
+        method: "POST",
+        body: JSON.stringify({ versionId: current.headVersionId }),
+      });
+      expect(restored.status).toBe(200);
+      const expired = await ctx.request(
+        `/api/v1/documents/${documentId}/proposals/${thirdBody.proposal.id}`,
+      );
+      expect(await expired.json()).toMatchObject({
+        status: "stale",
+        hunks: [{ status: "stale" }],
+      });
+      const afterRestore = (await (
+        await ctx.request(`/api/v1/documents/${documentId}/versions`)
+      ).json()) as Array<{ origin: string }>;
+      expect(afterRestore.at(-1)?.origin).toBe("restore");
     } finally {
       await ctx.close();
     }

@@ -63,6 +63,7 @@ const OpsBody = z.object({
   ops: z.array(EditOpSchema).min(1),
   summary: z.string().optional(),
   sessionId: z.string().min(1).optional(),
+  applyMode: z.enum(["auto", "proposal"]).optional(),
 });
 
 const OpenSessionBody = z.object({
@@ -477,6 +478,25 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (!parsed.success) return c.json({ error: "修订参数不合法" }, 400);
     const actor = c.get("actor");
     try {
+      if (actor.type === "api_client") {
+        const key = c.get("apiKey");
+        if (!key) return c.json({ error: "密钥已吊销或不存在" }, 401);
+        const document = await deps.db.getDocument(c.req.param("id"));
+        const applyMode = resolveApiApplyMode({
+          ...(parsed.data.applyMode ? { requested: parsed.data.applyMode } : {}),
+          humanTouched: document?.humanTouched ?? false,
+          policyDefault: key.defaultApplyMode,
+        });
+        if (applyMode === "proposal") {
+          const staged = await deps.db.stageProposal({
+            documentId: c.req.param("id"),
+            ops: parsed.data.ops as EditOp[],
+            ...(parsed.data.sessionId ? { sessionId: parsed.data.sessionId } : {}),
+          });
+          if (!staged.ok) return c.json(staged, 409);
+          return c.json({ ok: true, status: "proposed", proposal: staged.proposal });
+        }
+      }
       const result = await deps.db.applyManual({
         documentId: c.req.param("id"),
         ops: parsed.data.ops as EditOp[],
@@ -491,6 +511,53 @@ export function createApp(deps: AppDeps): Hono<Env> {
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
     }
+  });
+
+  api.get("/documents/:id/proposals", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    return c.json(await deps.db.listProposals(c.req.param("id")));
+  });
+
+  api.get("/documents/:id/proposals/:proposalId", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const proposal = await deps.db.getProposal(c.req.param("proposalId"));
+    if (!proposal || proposal.documentId !== c.req.param("id")) {
+      return c.json({ error: "找不到提案" }, 404);
+    }
+    return c.json(proposal);
+  });
+
+  api.post("/documents/:id/proposals/:proposalId/hunks/:hunkId/accept", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const result = await deps.db.acceptHunk({
+      documentId: c.req.param("id"),
+      proposalId: c.req.param("proposalId"),
+      hunkId: c.req.param("hunkId"),
+      actor: c.get("actor"),
+    });
+    if (!result.ok) {
+      const missing = result.errors.some((error) => error.message.startsWith("找不到"));
+      return c.json(result, missing ? 404 : 409);
+    }
+    return c.json(result);
+  });
+
+  api.post("/documents/:id/proposals/:proposalId/hunks/:hunkId/reject", async (c) => {
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const result = await deps.db.rejectHunk({
+      documentId: c.req.param("id"),
+      proposalId: c.req.param("proposalId"),
+      hunkId: c.req.param("hunkId"),
+    });
+    if (!result.ok) {
+      const missing = result.errors.some((error) => error.message.startsWith("找不到"));
+      return c.json(result, missing ? 404 : 409);
+    }
+    return c.json(result);
   });
 
   api.get("/documents/:id/sessions", async (c) => {
