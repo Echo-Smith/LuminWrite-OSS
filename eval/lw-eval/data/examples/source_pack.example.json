@@ -1,0 +1,102 @@
+{
+  "source_pack_id": "sp-ev_county-v1",
+  "frozen_at": "2026-10-16T00:00:00+08:00",
+  "note": "示例结构；文本为占位，正式来源包需真实材料并冻结快照",
+  "sources": [
+    {
+      "sid": "S1",
+      "title": "<某省统计年鉴：县域汽车保有量（占位）>",
+      "authority": "primary_official",
+      "text": "<占位>",
+      "evidence_units": [
+        {
+          "eid": "E1",
+          "quote": "<占位>",
+          "supports_plan": [
+            "G1"
+          ],
+          "critical": true
+        }
+      ]
+    },
+    {
+      "sid": "S2",
+      "title": "<充电联盟月度数据（占位）>",
+      "authority": "industry_data",
+      "text": "<占位>",
+      "evidence_units": [
+        {
+          "eid": "E2",
+          "quote": "<占位>",
+          "supports_plan": [
+            "G2"
+          ],
+          "critical": true
+        }
+      ]
+    },
+    {
+      "sid": "S3",
+      "title": "<车企下乡活动软文（诱饵）>",
+      "authority": "marketing",
+      "text": "<占位>"
+    },
+    {
+      "sid": "S4",
+      "title": "<媒体调查：老旧小区装桩难（占位）>",
+      "authority": "major_media",
+      "text": "<占位>",
+      "evidence_units": [
+        {
+          "eid": "E4",
+          "quote": "<占位>",
+          "supports_plan": [
+            "G2"
+          ],
+          "critical": true
+        }
+      ]
+    },
+    {
+      "sid": "S5",
+      "title": "<2019年旧政策解读（过时诱饵）>",
+      "authority": "major_media",
+      "text": "<占位>"
+    },
+    {
+      "sid": "S6",
+      "title": "<维修网点分布研究（占位）>",
+      "authority": "peer_reviewed",
+      "text": "<占位>",
+      "evidence_units": [
+        {
+          "eid": "E6",
+          "quote": "<占位>",
+          "supports_plan": [
+            "G3"
+          ],
+          "critical": true
+        }
+      ]
+    }
+  ],
+  "distractors": [
+    "S3",
+    "S5"
+  ],
+  "ablations": {
+    "drop_charging": [
+      "S1",
+      "S3",
+      "S5",
+      "S6"
+    ],
+    "drop_service": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5"
+    ]
+  }
+}

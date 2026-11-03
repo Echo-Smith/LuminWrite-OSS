@@ -1,0 +1,103 @@
+{
+  "title": "SourcePack",
+  "type": "object",
+  "required": [
+    "source_pack_id",
+    "sources"
+  ],
+  "properties": {
+    "source_pack_id": {
+      "type": "string"
+    },
+    "frozen_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "sid",
+          "title",
+          "text",
+          "authority"
+        ],
+        "properties": {
+          "sid": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "authority": {
+            "enum": [
+              "primary_official",
+              "peer_reviewed",
+              "industry_data",
+              "major_media",
+              "expert_blog",
+              "self_media",
+              "marketing"
+            ]
+          },
+          "stance": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "evidence_units": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "eid": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                },
+                "supports_plan": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "critical": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "distractors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "诱饵来源 sid：过时/营销/与任务无关，用于测来源甄别"
+    },
+    "ablations": {
+      "type": "object",
+      "description": "扰动版本：移除关键来源后的 sid 列表",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
