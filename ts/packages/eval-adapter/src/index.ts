@@ -1,13 +1,17 @@
 import { analyzePlain } from "@luminwrite/plainspeak";
 import { readStoredPlan, type StoredResearchPlan } from "@luminwrite/research";
 
+export { lwEvalRoot, runLwEval } from "./lweval.js";
+export type { EvalCapture, EvalJudgment } from "./pipeline.js";
+export { judgeCapture, readJsonFile, renderReport } from "./pipeline.js";
+
 export interface SmokeSample {
   id: string;
   text: string;
   role: "clean" | "negative";
 }
 
-/** 本仓库没有 lw-eval，也没有可现场花费的评测额度。M0 用同一份词表做确定性排序。 */
+/** M0 的确定性排序。闸门补跑另外调用仓库里的 `eval/lw-eval`。 */
 export const smokeSamples: SmokeSample[] = [
   {
     id: "clean",
@@ -68,8 +72,8 @@ export interface TaskApiSnapshot {
 const TASK_DONE = new Set(["completed", "failed", "canceled", "rejected"]);
 
 /**
- * lw-eval 不在这个仓库里。评测要跑的「写 → 改 → 回滚」走公开任务 API 的这一个入口。
- * 调用方传入只靠 API Key 的 client。
+ * 「写 → 改 → 回滚」走公开任务 API。调用方传入只靠 API Key 的 client。
+ * 打分在 `judgeCapture`，不在这里。
  */
 export async function runWriteReviseRollback(
   api: TaskApiSurface,

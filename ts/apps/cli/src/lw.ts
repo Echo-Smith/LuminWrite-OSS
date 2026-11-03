@@ -19,7 +19,7 @@ import {
   updateCredential,
 } from "@luminwrite/db";
 import { createKnowledgeBase } from "@luminwrite/kb";
-import { startServer } from "@luminwrite/server";
+import { runEvalCli, startServer } from "@luminwrite/server";
 import { createFeedService, safeFetch } from "@luminwrite/sources";
 
 type Writer = { write(chunk: string): void };
@@ -39,13 +39,14 @@ export async function runLw(
     if (command === "secrets" && sub === "rotate") return await rotateSecrets(env, stdout);
     if (command === "feeds") return await feedsCommand(argv.slice(1), env, stdout);
     if (command === "notes") return await notesCommand(argv.slice(1), env, stdout);
+    if (command === "eval") return await runEvalCli(argv.slice(1), env, stdout, stderr);
     if (command === "serve") return await serve(env, stdout, stderr);
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : "命令失败"}\n`);
     return 1;
   }
   stderr.write(
-    "用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw credentials add|list|update|remove | lw secrets rotate | lw feeds add|list|remove|import|export | lw notes list|add|review|correct|forget|export|explain | lw serve\n",
+    "用法：lw init | lw owner rotate-token | lw keys create|list|revoke | lw credentials add|list|update|remove | lw secrets rotate | lw feeds add|list|remove|import|export | lw notes list|add|review|correct|forget|export|explain | lw eval run|judge|report|gate | lw serve\n",
   );
   return 1;
 }

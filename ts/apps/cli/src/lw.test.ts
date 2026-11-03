@@ -224,4 +224,20 @@ describe("lw", () => {
     expect(out).toContain("还没有写作笔记");
     await rm(dir, { recursive: true, force: true });
   });
+
+  it("eval 没有子命令时说明用法", async () => {
+    let err = "";
+    const code = await runLw(
+      ["eval"],
+      {},
+      { write() {} },
+      {
+        write(chunk) {
+          err += chunk;
+        },
+      },
+    );
+    expect(code).toBe(2);
+    expect(err).toContain("gate");
+  });
 });

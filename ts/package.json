@@ -12,6 +12,7 @@
     "typecheck": "pnpm -r --sort typecheck",
     "lint": "biome check .",
     "demo": "pnpm --filter @luminwrite/cli demo",
+    "eval:gate": "node apps/cli/dist/lw.js eval gate",
     "check:boundary": "node scripts/check-boundary.mjs",
     "check:licenses": "node scripts/check-licenses.mjs"
   },

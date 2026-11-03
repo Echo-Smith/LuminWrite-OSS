@@ -1,0 +1,455 @@
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+
+import { runLwEval, runLwEvalScript } from "./lweval.js";
+
+const NEGATIVE_CONTROL =
+  "在当前行业的背景下，本方案具有重要意义。它能全方位赋能业务，打造增长矩阵。抓手和底层逻辑至关重要，助力闭环。";
+
+export interface EvalCapture {
+  generatedAt: string;
+  model: string;
+  live: boolean;
+  scenarios: {
+    rollback: {
+      ok: boolean;
+      error?: string;
+      restoredMatchesWrite: boolean;
+      beforeText: string;
+      afterText: string;
+    };
+    research: {
+      ok: boolean;
+      error?: string;
+      questionCount: number;
+      gaps: string[];
+      claimFlags: boolean;
+      admittedGap: boolean;
+    };
+    embeddings: {
+      ok: boolean;
+      error?: string;
+      transport: "openai-compatible";
+      endpoint: "env" | "local-stub";
+      model: string;
+      dim: number;
+      requests: number;
+      stored: boolean;
+      searchHit: boolean;
+    };
+    floor: {
+      ok: boolean;
+      error?: string;
+      note: string;
+      plainConflict: boolean;
+      injected: boolean;
+      turnStatus: string;
+      turnError: string | null;
+      documentUnchanged: boolean;
+      hollowLanded: boolean;
+      probe: "faux-hollow" | "live-model";
+    };
+  };
+}
+
+export interface EvalJudgment {
+  generatedAt: string;
+  model: string;
+  live: boolean;
+  pass: boolean;
+  rollback: { pass: boolean; restoredMatchesWrite: boolean };
+  h2: {
+    pass: boolean;
+    questionCount: number;
+    gaps: string[];
+    claimFlags: boolean;
+    admittedGap: boolean;
+    sensitivity: string;
+    criticalCoverage: number | null;
+  };
+  h3: {
+    pass: boolean;
+    upcr: number | null;
+    anchoredSuccess: boolean | null;
+    spliceDriftWindows: number[];
+    controlDriftWindows: number[];
+    draftAitone: number | null;
+    negativeAitone: number | null;
+  };
+  embeddings: EvalCapture["scenarios"]["embeddings"];
+  floor: {
+    pass: boolean;
+    note: string;
+    plainConflict: boolean;
+    injected: boolean;
+    turnStatus: string;
+    turnError: string | null;
+    documentUnchanged: boolean;
+    hollowLanded: boolean;
+    probe: EvalCapture["scenarios"]["floor"]["probe"];
+  };
+  heldout: { ran: boolean; reason?: string; files: Array<{ name: string; aitoneScore: number }> };
+  errors: string[];
+}
+
+const HONEST_GAP_SCRIPT = `
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from lweval.retrieval_metrics import plan_coverage, ablation_sensitivity
+admitted = sys.argv[2] == "1"
+json.dump({
+  "coverage": plan_coverage({"q1": "missed"}, {"q1": True}),
+  "sensitivity": ablation_sensitivity(1.0, 0.0, admitted),
+}, sys.stdout)
+`;
+
+export async function judgeCapture(
+  capture: EvalCapture,
+  options?: { heldoutDir?: string },
+): Promise<EvalJudgment> {
+  const errors: string[] = [];
+  const h2 = await judgeH2(capture, errors);
+  const h3 = await judgeH3(capture, errors);
+  const heldout = await judgeHeldout(options?.heldoutDir, errors);
+  const floorPass = floorHolds(capture.scenarios.floor);
+  const embed = capture.scenarios.embeddings;
+  const embedPass = embed.ok && embed.stored && embed.searchHit && embed.requests > 0;
+  const rollbackPass =
+    capture.scenarios.rollback.ok && capture.scenarios.rollback.restoredMatchesWrite;
+  return {
+    generatedAt: new Date().toISOString(),
+    model: capture.model,
+    live: capture.live,
+    pass: rollbackPass && h2.pass && h3.pass && embedPass && floorPass && errors.length === 0,
+    rollback: {
+      pass: rollbackPass,
+      restoredMatchesWrite: capture.scenarios.rollback.restoredMatchesWrite,
+    },
+    h2,
+    h3,
+    embeddings: embed,
+    floor: {
+      pass: floorPass,
+      note: capture.scenarios.floor.note,
+      plainConflict: capture.scenarios.floor.plainConflict,
+      injected: capture.scenarios.floor.injected,
+      turnStatus: capture.scenarios.floor.turnStatus,
+      turnError: capture.scenarios.floor.turnError,
+      documentUnchanged: capture.scenarios.floor.documentUnchanged,
+      hollowLanded: capture.scenarios.floor.hollowLanded,
+      probe: capture.scenarios.floor.probe,
+    },
+    heldout,
+    errors,
+  };
+}
+
+async function judgeH2(capture: EvalCapture, errors: string[]): Promise<EvalJudgment["h2"]> {
+  const research = capture.scenarios.research;
+  let sensitivity = "";
+  let criticalCoverage: number | null = null;
+  try {
+    const raw = (await runLwEvalScript(HONEST_GAP_SCRIPT, [research.admittedGap ? "1" : "0"])) as {
+      coverage?: { critical_coverage?: number };
+      sensitivity?: string;
+    };
+    sensitivity = raw.sensitivity ?? "";
+    criticalCoverage =
+      typeof raw.coverage?.critical_coverage === "number" ? raw.coverage.critical_coverage : null;
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "H2 指标失败");
+  }
+  const pass =
+    research.ok &&
+    research.questionCount > 0 &&
+    research.admittedGap &&
+    research.claimFlags &&
+    sensitivity === "honest_gap";
+  return {
+    pass,
+    questionCount: research.questionCount,
+    gaps: research.gaps,
+    claimFlags: research.claimFlags,
+    admittedGap: research.admittedGap,
+    sensitivity,
+    criticalCoverage,
+  };
+}
+
+async function judgeH3(capture: EvalCapture, errors: string[]): Promise<EvalJudgment["h3"]> {
+  const empty: EvalJudgment["h3"] = {
+    pass: false,
+    upcr: null,
+    anchoredSuccess: null,
+    spliceDriftWindows: [],
+    controlDriftWindows: [],
+    draftAitone: null,
+    negativeAitone: null,
+  };
+  const dir = await mkdtemp(join(tmpdir(), "lw-eval-h3-"));
+  try {
+    const before = join(dir, "before.md");
+    const after = join(dir, "after.md");
+    const draft = join(dir, "draft.md");
+    const negative = join(dir, "negative.md");
+    await writeFile(before, capture.scenarios.rollback.beforeText, "utf8");
+    await writeFile(after, capture.scenarios.rollback.afterText, "utf8");
+    await writeFile(draft, capture.scenarios.rollback.beforeText, "utf8");
+    await writeFile(negative, NEGATIVE_CONTROL, "utf8");
+    const upcr = (await runLwEval([
+      "upcr",
+      before,
+      after,
+      "--anchor",
+      "显卡时租",
+      "--must-contain",
+      "显卡时租",
+    ])) as { UPCR?: number; anchored_success?: boolean | null };
+    const splice = (await runLwEval([
+      "drift",
+      "results/synthetic_splice_nat_then_ai.md",
+      "--ref",
+      "samples/nat_commentary_village.md",
+      "samples/nat_essay_remote_work.md",
+      "samples/nat_explainer_electricity.md",
+      "--window",
+      "300",
+      "--step",
+      "150",
+    ])) as { drift_windows?: number[] };
+    const control = (await runLwEval([
+      "drift",
+      "results/synthetic_control_nat_then_nat.md",
+      "--ref",
+      "samples/nat_commentary_village.md",
+      "samples/nat_essay_remote_work.md",
+      "samples/nat_explainer_electricity.md",
+      "--window",
+      "300",
+      "--step",
+      "150",
+    ])) as { drift_windows?: number[] };
+    const tones = (await runLwEval(["aitone", draft, negative])) as Record<
+      string,
+      { aitone_score?: number }
+    >;
+    const draftScore = tones[draft]?.aitone_score ?? null;
+    const negativeScore = tones[negative]?.aitone_score ?? null;
+    const spliceWindows = splice.drift_windows ?? [];
+    const controlWindows = control.drift_windows ?? [];
+    const anchored = upcr.anchored_success === true;
+    const product =
+      capture.scenarios.rollback.ok && typeof upcr.UPCR === "number" && upcr.UPCR === 0 && anchored;
+    const meta = spliceWindows.length > 0 && controlWindows.length === 0;
+    const tone = draftScore !== null && negativeScore !== null && draftScore < negativeScore;
+    return {
+      pass: product && meta && tone,
+      upcr: typeof upcr.UPCR === "number" ? upcr.UPCR : null,
+      anchoredSuccess: typeof upcr.anchored_success === "boolean" ? upcr.anchored_success : null,
+      spliceDriftWindows: spliceWindows,
+      controlDriftWindows: controlWindows,
+      draftAitone: draftScore,
+      negativeAitone: negativeScore,
+    };
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "H3 指标失败");
+    return empty;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function judgeHeldout(
+  dir: string | undefined,
+  errors: string[],
+): Promise<EvalJudgment["heldout"]> {
+  if (!dir) return { ran: false, reason: "未设置 LW_EVAL_HELDOUT_DIR", files: [] };
+  let names: string[] = [];
+  try {
+    const info = await stat(dir);
+    if (!info.isDirectory())
+      return { ran: false, reason: "LW_EVAL_HELDOUT_DIR 不是目录", files: [] };
+    names = (await readdir(dir)).filter((name) => name.endsWith(".md") && name !== "SOURCES.md");
+  } catch {
+    return { ran: false, reason: "读不到 LW_EVAL_HELDOUT_DIR", files: [] };
+  }
+  const files: string[] = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 2_000_000) continue;
+    files.push(path);
+  }
+  if (files.length === 0) return { ran: false, reason: "目录里没有留出集原文", files: [] };
+  try {
+    const raw = (await runLwEval(["aitone", ...files])) as Record<
+      string,
+      { aitone_score?: number }
+    >;
+    return {
+      ran: true,
+      files: files.map((path) => ({
+        name: basename(path),
+        aitoneScore: raw[path]?.aitone_score ?? Number.NaN,
+      })),
+    };
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "留出集打分失败");
+    return { ran: false, reason: "留出集打分失败", files: [] };
+  }
+}
+
+function floorHolds(floor: EvalCapture["scenarios"]["floor"]): boolean {
+  if (!floor.ok || floor.plainConflict || !floor.injected || floor.hollowLanded) return false;
+  if (!floor.documentUnchanged) return false;
+  if (floor.probe === "faux-hollow") {
+    return floor.turnStatus === "failed" && (floor.turnError ?? "").includes("说人话");
+  }
+  if (floor.turnStatus === "failed") return (floor.turnError ?? "").includes("说人话");
+  return floor.turnStatus === "completed" || floor.turnStatus === "applied";
+}
+
+export function renderReport(judgment: EvalJudgment): string {
+  const when = judgment.generatedAt.slice(0, 10);
+  const modelLine = judgment.live
+    ? `模型：\`${judgment.model}\`（LW_EVAL_LIVE=1）。`
+    : "模型：`test/faux`。这一跑没有访问真实模型。";
+  const heldout = judgment.heldout.ran
+    ? judgment.heldout.files
+        .map((file) => `- \`${file.name}\`：aitone ${file.aitoneScore}`)
+        .join("\n")
+    : `未跑。${judgment.heldout.reason ? `${judgment.heldout.reason}。` : ""}原文不在仓库里，也不会被写进这份报告。`;
+  const lines = [
+    "# M2-01 H2 / H3 闸门补跑",
+    "",
+    `日期：${when}。${modelLine}`,
+    "",
+    judgment.pass ? "结论：**通过**。" : "结论：**未通过**。",
+    "",
+    "## 写 → 改 → 回滚",
+    "",
+    judgment.rollback.pass
+      ? "外部 Agent 只用任务 API 走完写作、修订和回滚。回滚后的正文与写作版本一致。"
+      : "写、改、回滚没有走完，或回滚后的正文与写作版本不一致。",
+    "",
+    "## H2 检索规划",
+    "",
+    "这一跑没有金标来源包。通过线是：计划落库、没有证据时承认缺口、无支持断言被标出，并且 lw-eval 的 `ablation_sensitivity` 给出 `honest_gap`。`critical_coverage` 记下来，不拿它当通过线。",
+    "",
+    `- 通过：${judgment.h2.pass ? "是" : "否"}`,
+    `- 问题数：${judgment.h2.questionCount}`,
+    `- 缺口：${judgment.h2.gaps.length > 0 ? judgment.h2.gaps.join("；") : "无"}`,
+    `- 承认缺口：${judgment.h2.admittedGap ? "是" : "否"}`,
+    `- claim.flags：${judgment.h2.claimFlags ? "有" : "无"}`,
+    `- ablation_sensitivity：${judgment.h2.sensitivity || "无"}`,
+    `- critical_coverage：${judgment.h2.criticalCoverage ?? "无"}`,
+    "",
+    "## H3 风格稳定",
+    "",
+    "产品修订用 lw-eval 的 UPCR 和锚定编辑。元评测用仓库里的拼接样本和自然对照，不读留出集原文。说人话轴用 lw-eval 的 aitone：具体初稿必须低于中性负对照。",
+    "",
+    `- 通过：${judgment.h3.pass ? "是" : "否"}`,
+    `- UPCR：${judgment.h3.upcr ?? "无"}`,
+    `- 锚定编辑成功：${judgment.h3.anchoredSuccess === null ? "无" : judgment.h3.anchoredSuccess ? "是" : "否"}`,
+    `- 拼接漂移窗口：${formatWindows(judgment.h3.spliceDriftWindows)}`,
+    `- 对照漂移窗口：${formatWindows(judgment.h3.controlDriftWindows)}`,
+    `- 初稿 aitone：${judgment.h3.draftAitone ?? "无"}`,
+    `- 负对照 aitone：${judgment.h3.negativeAitone ?? "无"}`,
+    "",
+    "## 真实嵌入",
+    "",
+    embedParagraph(judgment),
+    "",
+    "## 华丽笔记与说人话地板",
+    "",
+    floorParagraph(judgment),
+    "",
+    "## 留出集",
+    "",
+    heldout,
+    "",
+    "## 真实模型",
+    "",
+    "真实模型不进每个 PR 的 CI。密钥只从环境变量读，不写进仓库、配置、日志或这份报告，也不进产品凭据库的持久数据。这一闸门用单独的临时库。",
+    "",
+    "```bash",
+    "cd ts",
+    "pnpm --filter @luminwrite/cli build",
+    "LW_EVAL_LIVE=1 LW_LLM_ENABLE=1 \\",
+    "  LW_LLM_API_KEY=… LW_LLM_MODEL=… \\",
+    "  pnpm eval:gate -- --out docs/m2-01-h2-h3.md",
+    "```",
+    "",
+    "变量名：",
+    "",
+    "| 变量 | 作用 |",
+    "|---|---|",
+    "| `LW_EVAL_LIVE` | 必须是 `1` 才离开 faux。没设就只跑 `test/faux`，不读供应商密钥 |",
+    "| `LW_LLM_ENABLE` | 必须是 `1` 才读写作密钥 |",
+    "| `LW_LLM_API_KEY` | 写作密钥。没设则在上面两个开关都打开时读 `OPENAI_API_KEY` |",
+    "| `LW_LLM_MODEL` | 写作模型 id。真实模型跑必填 |",
+    "| `LW_LLM_BASE_URL` | OpenAI 兼容端点。没设则是 `https://api.openai.com/v1` |",
+    "| `LW_LLM_PROVIDER` | `openai-compatible`（默认）或 `anthropic-compatible` |",
+    "| `LW_EMBED_API_KEY` | 嵌入密钥。三个嵌入变量要一起设，否则用本机桩 |",
+    "| `LW_EMBED_BASE_URL` | 嵌入端点，OpenAI 兼容的 `/embeddings` |",
+    "| `LW_EMBED_MODEL` | 嵌入模型 id |",
+    "| `LW_EVAL_HELDOUT_DIR` | 留出集原文目录。只在本地读，不提交 |",
+    "",
+    "faux 全程：",
+    "",
+    "```bash",
+    "cd ts",
+    "pnpm --filter @luminwrite/cli build",
+    "pnpm eval:gate -- --out docs/m2-01-h2-h3.md",
+    "```",
+    "",
+    "分步是 `lw eval run`、`lw eval judge`、`lw eval report`。`--dir` 放中间文件，默认在临时目录，不要提交。",
+    "",
+    "## 还没做",
+    "",
+    "- 真实模型冒烟要等密钥。上面的命令配齐变量后再跑，会重写这份报告。",
+    "- H2 还没有金标来源包，所以没有报关键子问题覆盖率是否达标。",
+    "- lw-eval v0.3 的文体包仍是 commentary 和 report。内置库的 5 个文体在 M2-06 用 `gemini-4-argon` 打分，密钥名是 `GEMINI_API_KEY`，这一块不读它。",
+    "",
+  ];
+  if (judgment.errors.length > 0) {
+    lines.push("## 错误", "", ...judgment.errors.map((error) => `- ${error}`), "");
+  }
+  return lines.join("\n");
+}
+
+function formatWindows(windows: number[]): string {
+  return windows.length > 0 ? windows.join(", ") : "无";
+}
+
+function embedParagraph(judgment: EvalJudgment): string {
+  const embed = judgment.embeddings;
+  const where =
+    embed.endpoint === "env"
+      ? "端点来自 `LW_EMBED_BASE_URL`。"
+      : "没有设置嵌入变量，所以打到本机的 OpenAI 兼容桩，不访问外网。";
+  return [
+    `传输：${embed.transport}。${where}`,
+    `模型 id：\`${embed.model}\`。维度 ${embed.dim}。请求 ${embed.requests} 次。向量已写入：${embed.stored ? "是" : "否"}。检索命中：${embed.searchHit ? "是" : "否"}。`,
+  ].join("");
+}
+
+function floorParagraph(judgment: EvalJudgment): string {
+  const floor = judgment.floor;
+  const probe =
+    floor.probe === "faux-hollow"
+      ? "faux 不用真实模型。这一跑换上会照着笔记写出空话的替身，让修订走到 screenOps。真实模型不走这个替身。"
+      : "这一跑把笔记放进提示词，由真实模型写。空话被 screenOps 拒绝，或正文仍然过说人话，都算地板守住。";
+  return [
+    probe,
+    `笔记「${floor.note}」plainConflict=${floor.plainConflict ? "true" : "false"}，注入提示词：${floor.injected ? "是" : "否"}。`,
+    `回合状态：${floor.turnStatus || "无"}${floor.turnError ? `（${floor.turnError}）` : ""}。`,
+    `正文未被空话改写：${floor.documentUnchanged && !floor.hollowLanded ? "是" : "否"}。`,
+    `通过：${floor.pass ? "是" : "否"}。`,
+  ].join("");
+}
+
+export async function readJsonFile<T>(path: string): Promise<T> {
+  return JSON.parse(await readFile(path, "utf8")) as T;
+}

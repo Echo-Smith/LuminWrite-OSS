@@ -56,10 +56,17 @@ pnpm demo
 | `LW_DISCARD_RETENTION_DAYS` | 自动清退的保留天数，默认 30。开关关闭时定时任务不跑 |
 | `LW_DISCARD_PURGE_INTERVAL_MS` | 自动清退的间隔，默认一小时。开关关闭时到点也不删 |
 | `LW_LIVE` | 只有 `1` 才跑真实模型冒烟。测试和 `pnpm demo` 默认不碰网络 |
+| `LW_EVAL_LIVE` | 只有 `1` 时 `lw eval` 才离开 faux。不进每个 PR 的 CI |
+| `LW_EVAL_HELDOUT_DIR` | 留出集原文的本地目录。`lw eval` 只读，不提交 |
+| `LW_EMBED_API_KEY` | 评测用的嵌入密钥。要和 `LW_EMBED_BASE_URL`、`LW_EMBED_MODEL` 一起设，否则闸门用本机桩 |
+| `LW_EMBED_BASE_URL` | 嵌入的 OpenAI 兼容端点 |
+| `LW_EMBED_MODEL` | 嵌入模型 id |
 
 `pnpm demo` 会建一篇文档。主会话只改第 3 段；从旧版本分出的会话再改第 3 段会被拒绝，改第 5 段可以落下。然后从旧版本派生一篇新文档，派生文档自己的修改不会回到源文档。把段落写回源文档必须用源文档当前的块锚点。成功时输出 `DEMO_OK`。
 
 真实模型不会在测试或演示里被调用。`lw serve` 的回合先走注册表；没有凭据、又没打开 `LW_ALLOW_FAUX` 时，回合失败，不会去读环境里的供应商密钥。测试和 `pnpm demo` 没有注册表解析器时，仍用进程内的 `test/faux` 计划函数提出修订，服务端负责校验锚点和说人话。`LW_LIVE=1` 的冒烟测试才会碰真实模型。
+
+`pnpm eval:gate` 用 faux 跑写、改、回滚，接上 `eval/lw-eval` 打 H2 / H3，并用 OpenAI 兼容的 `/embeddings` 走一遍嵌入。先 `pnpm --filter @luminwrite/cli build`。华丽笔记不会放宽说人话地板。真实模型再加 `LW_EVAL_LIVE=1`、`LW_LLM_ENABLE=1`、`LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）和 `LW_LLM_MODEL`。这些开关没齐就不读密钥。嵌入端点用上面的 `LW_EMBED_*`。留出集只从 `LW_EVAL_HELDOUT_DIR` 读。结果说明在 `docs/m2-01-h2-h3.md`。
 
 ## 包
 
@@ -70,9 +77,9 @@ pnpm demo
 | `models` | 档位路由、可重试回退、用量账本接口 |
 | `harness` | `HarnessPort` 后面的 pi-durable 1.3.0。一个会话一个 SQLite 对话，不按文档复用 |
 | `style` | 默认文风 `plain-professional`，说人话地板不可关 |
-| `eval-adapter` | 确定性说人话冒烟，负对照排最后 |
+| `eval-adapter` | 接 `eval/lw-eval` 的 run / judge / report。负对照仍排最后 |
 | `edition` | 开源扩展口：授权、提案策略、实时通道 |
-| `server` `cli` | HTTP（`/api/v1`，所有者令牌或 API Key）、`lw init` / `lw owner rotate-token` / `lw keys` / `lw credentials` / `lw secrets rotate` / `lw feeds` / `lw notes` / `lw serve`，以及演示 |
+| `server` `cli` | HTTP（`/api/v1`，所有者令牌或 API Key）、`lw init` / `lw owner rotate-token` / `lw keys` / `lw credentials` / `lw secrets rotate` / `lw feeds` / `lw notes` / `lw eval` / `lw serve`，以及演示 |
 | `kb` | 上传、分块、全文与向量混合检索。没有嵌入凭据时只做全文 |
 | `jobs` | `JobPort`。运行时是 pg-boss，测试用进程内队列 |
 | `sources` | `safeFetch` 和按所有者隔离的 RSS。没有中文热榜 |

@@ -22,6 +22,7 @@
     "@luminwrite/contracts": "workspace:*",
     "@luminwrite/db": "workspace:*",
     "@luminwrite/edition": "workspace:*",
+    "@luminwrite/eval-adapter": "workspace:*",
     "@luminwrite/doc-model": "workspace:*",
     "@luminwrite/harness": "workspace:*",
     "@luminwrite/jobs": "workspace:*",
@@ -35,7 +36,6 @@
   },
   "devDependencies": {
     "@luminwrite/client": "workspace:*",
-    "@luminwrite/eval-adapter": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
