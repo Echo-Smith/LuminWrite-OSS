@@ -102,7 +102,7 @@ export async function runWriteReviseRollback(
     {
       kind: "revise",
       documentId: written.documentId,
-      instruction: "把第1段写短",
+      instruction: "把正文第1段写短",
     },
     "eval-revise",
   );

@@ -64,6 +64,8 @@ export interface EvalCapture {
       turnError: string | null;
       documentUnchanged: boolean;
       hollowLanded: boolean;
+      /** 华丽笔记回合结束时的正文。报告用来给人看，也用来给真实模型打 aitone。 */
+      afterText: string;
       probe: "faux-hollow" | "live-model";
     };
   };
@@ -103,6 +105,9 @@ export interface EvalJudgment {
     turnError: string | null;
     documentUnchanged: boolean;
     hollowLanded: boolean;
+    afterText: string;
+    afterAitone: number | null;
+    negativeAitone: number | null;
     probe: EvalCapture["scenarios"]["floor"]["probe"];
   };
   heldout: { ran: boolean; reason?: string; files: Array<{ name: string; aitoneScore: number }> };
@@ -130,7 +135,8 @@ export async function judgeCapture(
   const h2 = await judgeH2(capture, errors);
   const h3 = await judgeH3(capture, errors);
   const heldout = await judgeHeldout(options?.heldoutDir, errors);
-  const floorPass = floorHolds(capture.scenarios.floor);
+  const floorScores = await scoreFloor(capture, errors);
+  const floorPass = floorHolds(capture.scenarios.floor, floorScores);
   const embed = capture.scenarios.embeddings;
   const embedPass = embed.ok && embed.stored && embed.searchHit && embed.requests > 0;
   const rollbackPass =
@@ -157,6 +163,9 @@ export async function judgeCapture(
       turnError: capture.scenarios.floor.turnError,
       documentUnchanged: capture.scenarios.floor.documentUnchanged,
       hollowLanded: capture.scenarios.floor.hollowLanded,
+      afterText: capture.scenarios.floor.afterText,
+      afterAitone: floorScores.after,
+      negativeAitone: floorScores.negative,
       probe: capture.scenarios.floor.probe,
     },
     heldout,
@@ -232,15 +241,10 @@ async function judgeH3(capture: EvalCapture, errors: string[]): Promise<EvalJudg
     await writeFile(after, capture.scenarios.rollback.afterText, "utf8");
     await writeFile(draft, capture.scenarios.rollback.beforeText, "utf8");
     await writeFile(negative, NEGATIVE_CONTROL, "utf8");
-    const upcr = (await runLwEval([
-      "upcr",
-      before,
-      after,
-      "--anchor",
-      "显卡时租",
-      "--must-contain",
-      "显卡时租",
-    ])) as { UPCR?: number; anchored_success?: boolean | null };
+    const anchor = bodyAnchor(capture.scenarios.rollback.beforeText);
+    const upcr = (await runLwEval(
+      anchor ? ["upcr", before, after, "--anchor", anchor] : ["upcr", before, after],
+    )) as { UPCR?: number; anchored_success?: boolean | null };
     const splice = (await runLwEval([
       "drift",
       "results/synthetic_splice_nat_then_ai.md",
@@ -370,14 +374,66 @@ export function stripHtml(html: string): string {
     .trim();
 }
 
-function floorHolds(floor: EvalCapture["scenarios"]["floor"]): boolean {
+/** 正文第 1 段的开头。标题（以 # 起行）不算。用来锚定 UPCR，不要求改完仍含这几个字。 */
+export function bodyAnchor(beforeText: string): string | undefined {
+  const paragraphs = beforeText
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+  const body = paragraphs.find((paragraph) => !/^#{1,6}\s/.test(paragraph)) ?? paragraphs[0];
+  if (!body) return undefined;
+  const plain = body.replace(/^#{1,6}\s+/, "").trim();
+  const clause = plain.split(/[，,。！？；：\n]/)[0]?.trim() ?? "";
+  const anchor = (clause.length >= 4 ? clause : plain).slice(0, 24);
+  return anchor.length > 0 ? anchor : undefined;
+}
+
+function floorHolds(
+  floor: EvalCapture["scenarios"]["floor"],
+  scores: { after: number | null; negative: number | null },
+): boolean {
   if (!floor.ok || floor.plainConflict || !floor.injected || floor.hollowLanded) return false;
-  if (!floor.documentUnchanged) return false;
-  if (floor.probe === "faux-hollow") {
-    return floor.turnStatus === "failed" && (floor.turnError ?? "").includes("说人话");
+  if (floor.probe === "faux-hollow" || floor.turnStatus === "failed") {
+    return (
+      floor.documentUnchanged &&
+      floor.turnStatus === "failed" &&
+      (floor.turnError ?? "").includes("说人话")
+    );
   }
-  if (floor.turnStatus === "failed") return (floor.turnError ?? "").includes("说人话");
-  return floor.turnStatus === "completed" || floor.turnStatus === "applied";
+  if (floor.turnStatus !== "completed" && floor.turnStatus !== "applied") return false;
+  return scores.after !== null && scores.negative !== null && scores.after < scores.negative;
+}
+
+async function scoreFloor(
+  capture: EvalCapture,
+  errors: string[],
+): Promise<{ after: number | null; negative: number | null }> {
+  const floor = capture.scenarios.floor;
+  const finished = floor.turnStatus === "completed" || floor.turnStatus === "applied";
+  if (floor.probe !== "live-model" || !finished || !floor.afterText.trim()) {
+    return { after: null, negative: null };
+  }
+  const dir = await mkdtemp(join(tmpdir(), "lw-eval-floor-"));
+  try {
+    const after = join(dir, "after.md");
+    const negative = join(dir, "negative.md");
+    await writeFile(after, floor.afterText, "utf8");
+    await writeFile(negative, NEGATIVE_CONTROL, "utf8");
+    const tones = (await runLwEval(["aitone", after, negative])) as Record<
+      string,
+      { aitone_score?: number }
+    >;
+    return {
+      after: typeof tones[after]?.aitone_score === "number" ? tones[after].aitone_score : null,
+      negative:
+        typeof tones[negative]?.aitone_score === "number" ? tones[negative].aitone_score : null,
+    };
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "地板 aitone 失败");
+    return { after: null, negative: null };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 export function renderReport(judgment: EvalJudgment): string {
@@ -551,8 +607,14 @@ function floorParagraph(judgment: EvalJudgment): string {
     `笔记「${floor.note}」plainConflict=${floor.plainConflict ? "true" : "false"}，注入提示词：${floor.injected ? "是" : "否"}。`,
     `回合状态：${floor.turnStatus || "无"}${floor.turnError ? `（${floor.turnError}）` : ""}。`,
     `正文未被空话改写：${floor.documentUnchanged && !floor.hollowLanded ? "是" : "否"}。`,
+    floor.afterAitone !== null && floor.negativeAitone !== null
+      ? `修订后 aitone：${floor.afterAitone}。负对照 aitone：${floor.negativeAitone}。`
+      : "",
+    floor.afterText ? `修订后正文：\n\n${floor.afterText}` : "",
     `通过：${floor.pass ? "是" : "否"}。`,
-  ].join("");
+  ]
+    .filter((line) => line.length > 0)
+    .join("");
 }
 
 export async function readJsonFile<T>(path: string): Promise<T> {

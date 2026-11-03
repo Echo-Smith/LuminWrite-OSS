@@ -286,10 +286,14 @@ async function runRollback(
         async submitTask(body, key) {
           phase = body.kind === "revise" ? "revise" : "write";
           trace.scenario = phase;
+          const anchors =
+            body.kind === "revise" && body.documentId
+              ? await bodyAnchor(call, body.documentId)
+              : undefined;
           const response = await call("/api/v1/tasks", {
             method: "POST",
             headers: { "idempotency-key": key },
-            body: JSON.stringify(body),
+            body: JSON.stringify(anchors ? { ...body, anchors: [anchors] } : body),
           });
           if (response.status >= 400) throw new Error(messageOf(response.body));
           const created = response.body as TaskApiSnapshot;
@@ -379,6 +383,7 @@ async function runFloor(
       turnError: null,
       documentUnchanged: false,
       hollowLanded: false,
+      afterText: "",
     };
   }
   try {
@@ -406,6 +411,7 @@ async function runFloor(
       turnError: finished.error?.message ?? null,
       documentUnchanged: after === before,
       hollowLanded: textIsHollow(after),
+      afterText: after,
     };
   } catch (error) {
     return {
@@ -416,6 +422,7 @@ async function runFloor(
       turnError: null,
       documentUnchanged: false,
       hollowLanded: false,
+      afterText: "",
     };
   }
 }
@@ -751,18 +758,54 @@ function caller(
   };
 }
 
-async function documentText(
+interface DocBlock {
+  blockId: string;
+  type: string;
+  contentHash: string;
+  text: string;
+}
+
+async function documentBlocks(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   id: string,
-): Promise<string> {
+): Promise<DocBlock[]> {
   let response = await call(`/api/v1/documents/${id}`);
   for (let attempt = 0; response.status === 429 && attempt < 5; attempt += 1) {
     await sleep(retryAfterMs(response.retryAfterSeconds));
     response = await call(`/api/v1/documents/${id}`);
   }
   if (response.status >= 400) throw new Error(messageOf(response.body));
-  const blocks = (response.body as { blocks?: Array<{ text?: string }> }).blocks ?? [];
-  return blocks.map((block) => block.text ?? "").join("\n\n");
+  return (response.body as { blocks?: DocBlock[] }).blocks ?? [];
+}
+
+function renderDocument(blocks: readonly DocBlock[]): string {
+  return blocks
+    .map((block) => (block.type === "heading" ? `# ${block.text ?? ""}` : (block.text ?? "")))
+    .join("\n\n");
+}
+
+async function documentText(
+  call: (path: string, init?: RequestInit) => Promise<Reply>,
+  id: string,
+): Promise<string> {
+  return renderDocument(await documentBlocks(call, id));
+}
+
+/** 正文第一段，跳过标题。修订任务把它当作锚点，避免模型去改标题。 */
+async function bodyAnchor(
+  call: (path: string, init?: RequestInit) => Promise<Reply>,
+  id: string,
+): Promise<{ blockId: string; contentHash: string; quote: string } | undefined> {
+  const blocks = await documentBlocks(call, id);
+  const block = blocks.find((item) => item.type !== "heading" && item.text.trim().length > 0);
+  if (!block) return undefined;
+  if (!/^blk_[A-Za-z0-9_-]{8,64}$/.test(block.blockId)) return undefined;
+  if (!/^sha256:[0-9a-f]{64}$/.test(block.contentHash)) return undefined;
+  return {
+    blockId: block.blockId,
+    contentHash: block.contentHash,
+    quote: block.text.trim().slice(0, 40),
+  };
 }
 
 async function waitTask(

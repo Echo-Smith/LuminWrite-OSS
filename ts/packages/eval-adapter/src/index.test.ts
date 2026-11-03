@@ -154,6 +154,7 @@ function emptyCapture(): EvalCapture {
         turnError: null,
         documentUnchanged: false,
         hollowLanded: false,
+        afterText: "",
         probe: "faux-hollow",
       },
     },
