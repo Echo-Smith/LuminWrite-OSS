@@ -11,6 +11,7 @@ import {
   type Provider,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
@@ -107,6 +108,93 @@ export function byokFromBase(
   };
 }
 
+/**
+ * 严格的中转不接受 OpenAI 才有的字段。`store: false` 和
+ * `stream_options.include_usage` 都会让它 400 或 406。官方 api.openai.com 仍照旧发送。
+ * Gemini 的文档 base 以斜杠结尾；openai 7 在路径以 `/` 开头时不加斜杠也能拼对。
+ */
+export const GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+const OPENAI_COMPLETIONS_ACCEPT = { accept: "text/event-stream" } as const;
+
+function isOfficialOpenAi(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+/** `models/gemini-4-argon` 和 `gemini-4-argon` 都落到路径里的那一节。 */
+export function geminiModelId(modelId: string): string {
+  return modelId.trim().replace(/^models\//, "");
+}
+
+export function geminiOpenAiEndpoint(baseUrl: string): {
+  baseUrl: string;
+  compat?: { supportsStore: false; supportsUsageInStreaming: false };
+} {
+  let host = "";
+  let path = "";
+  try {
+    const url = new URL(baseUrl);
+    host = url.hostname;
+    path = url.pathname;
+  } catch {
+    return { baseUrl };
+  }
+  if (host !== "generativelanguage.googleapis.com" || !path.includes("/openai")) {
+    return { baseUrl };
+  }
+  return {
+    baseUrl: baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`,
+    compat: { supportsStore: false, supportsUsageInStreaming: false },
+  };
+}
+
+/** 非官方 OpenAI 主机不发 store 和 stream_options。流式请求的 Accept 一律是 SSE。 */
+export function openAiCompletionsTuning(baseUrl: string): {
+  baseUrl: string;
+  headers: { accept: "text/event-stream" };
+  compat?: { supportsStore: false; supportsUsageInStreaming: false };
+} {
+  const gemini = geminiOpenAiEndpoint(baseUrl);
+  if (isOfficialOpenAi(gemini.baseUrl)) {
+    return { baseUrl: gemini.baseUrl, headers: OPENAI_COMPLETIONS_ACCEPT };
+  }
+  return {
+    baseUrl: gemini.baseUrl,
+    headers: OPENAI_COMPLETIONS_ACCEPT,
+    compat: gemini.compat ?? { supportsStore: false, supportsUsageInStreaming: false },
+  };
+}
+
+function geminiNativeModel(
+  record: RegistryRecord,
+  providerId: string,
+  baseUrl: string,
+): Model<"google-generative-ai"> | undefined {
+  if (record.spec.kind !== "model") return undefined;
+  const spec = record.spec;
+  return {
+    id: geminiModelId(spec.modelId),
+    name: geminiModelId(spec.modelId),
+    api: "google-generative-ai",
+    provider: providerId,
+    baseUrl,
+    input: spec.input ?? ["text"],
+    cost: {
+      input: spec.cost?.input ?? 0,
+      output: spec.cost?.output ?? 0,
+      cacheRead: spec.cost?.cacheRead ?? 0,
+      cacheWrite: spec.cost?.cacheWrite ?? 0,
+    },
+    reasoning: spec.reasoning ?? false,
+    contextWindow: spec.contextWindow ?? 128000,
+    maxTokens: spec.maxTokens ?? 4096,
+  };
+}
+
 function compatibleModel(
   record: RegistryRecord,
   providerId: string,
@@ -115,12 +203,14 @@ function compatibleModel(
   if (record.spec.kind !== "model") return undefined;
   const spec = record.spec;
   const api = spec.api ?? "openai-completions";
+  const resolved = spec.baseUrl ?? baseUrl;
+  const tuned = api === "openai-completions" ? openAiCompletionsTuning(resolved) : undefined;
   return {
     id: spec.modelId,
     name: spec.modelId,
     api,
     provider: providerId,
-    baseUrl: spec.baseUrl ?? baseUrl,
+    baseUrl: tuned?.baseUrl ?? resolved,
     input: spec.input ?? ["text"],
     cost: {
       input: spec.cost?.input ?? 0,
@@ -131,6 +221,8 @@ function compatibleModel(
     reasoning: spec.reasoning ?? false,
     contextWindow: spec.contextWindow ?? 8192,
     maxTokens: spec.maxTokens ?? 1024,
+    ...(tuned ? { headers: { ...tuned.headers } } : {}),
+    ...(tuned?.compat ? { compat: tuned.compat } : {}),
   };
 }
 
@@ -147,6 +239,31 @@ function providerForCredential(
   if (credential.provider === "test") {
     if (!fauxAllowed(options.env)) return undefined;
     return byokFromBase(fauxFor(options.models).provider, credential, open);
+  }
+  if (credential.provider === "gemini") {
+    const id = `byok_${credential.id}`;
+    const baseUrl = (credential.baseUrl ?? GEMINI_NATIVE_BASE).replace(/\/$/, "");
+    const models = options.entries
+      .filter((entry) => entry.spec.kind === "model" && entry.spec.provider === "gemini")
+      .map((entry) => geminiNativeModel(entry, id, baseUrl))
+      .filter((model): model is Model<"google-generative-ai"> => model !== undefined);
+    if (models.length === 0) return undefined;
+    return createProvider({
+      id,
+      name: credential.label,
+      baseUrl,
+      auth: {
+        apiKey: {
+          name: credential.label,
+          resolve: async () => ({
+            auth: { apiKey: (await open()).reveal() },
+            source: "vault",
+          }),
+        },
+      },
+      models,
+      api: googleGenerativeAIApi(),
+    });
   }
   if (
     credential.provider === "openai-compatible" ||

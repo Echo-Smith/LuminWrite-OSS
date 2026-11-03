@@ -326,6 +326,9 @@ importers:
       '@luminwrite/edition':
         specifier: workspace:*
         version: link:../../packages/edition
+      '@luminwrite/eval-adapter':
+        specifier: workspace:*
+        version: link:../../packages/eval-adapter
       '@luminwrite/harness':
         specifier: workspace:*
         version: link:../../packages/harness
@@ -357,9 +360,6 @@ importers:
       '@luminwrite/client':
         specifier: workspace:*
         version: link:../../packages/client
-      '@luminwrite/eval-adapter':
-        specifier: workspace:*
-        version: link:../../packages/eval-adapter
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

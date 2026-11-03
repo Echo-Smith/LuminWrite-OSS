@@ -1,13 +1,17 @@
 import { analyzePlain } from "@luminwrite/plainspeak";
 import { readStoredPlan, type StoredResearchPlan } from "@luminwrite/research";
 
+export { lwEvalRoot, runLwEval } from "./lweval.js";
+export type { EvalCapture, EvalJudgment, ModelExchange } from "./pipeline.js";
+export { judgeCapture, readJsonFile, renderReport, stripHtml } from "./pipeline.js";
+
 export interface SmokeSample {
   id: string;
   text: string;
   role: "clean" | "negative";
 }
 
-/** 本仓库没有 lw-eval，也没有可现场花费的评测额度。M0 用同一份词表做确定性排序。 */
+/** M0 的确定性排序。闸门补跑另外调用仓库里的 `eval/lw-eval`。 */
 export const smokeSamples: SmokeSample[] = [
   {
     id: "clean",
@@ -55,6 +59,8 @@ export interface TaskApiSurface {
   ): Promise<TaskApiSnapshot>;
   getTask(id: string): Promise<TaskApiSnapshot>;
   restoreDocument(id: string, versionId: string): Promise<{ ok: boolean; versionId?: string }>;
+  /** 超时放弃时取消任务，免得它继续打模型。 */
+  cancelTask?(id: string): Promise<unknown>;
 }
 
 export interface TaskApiSnapshot {
@@ -63,19 +69,24 @@ export interface TaskApiSnapshot {
   documentId?: string;
   resultVersionId?: string;
   proposalId?: string;
+  error?: { code?: string; message?: string; retryable?: boolean };
+  /** getTask 撞上 429。调用方应等 retryAfterSeconds 再查，不要当成任务失败。 */
+  rateLimited?: boolean;
+  retryAfterSeconds?: number;
 }
 
 const TASK_DONE = new Set(["completed", "failed", "canceled", "rejected"]);
 
 /**
- * lw-eval 不在这个仓库里。评测要跑的「写 → 改 → 回滚」走公开任务 API 的这一个入口。
- * 调用方传入只靠 API Key 的 client。
+ * 「写 → 改 → 回滚」走公开任务 API。调用方传入只靠 API Key 的 client。
+ * 打分在 `judgeCapture`，不在这里。
  */
 export async function runWriteReviseRollback(
   api: TaskApiSurface,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; pollMs?: number },
 ): Promise<{ documentId: string; wroteVersionId: string; revisedVersionId: string }> {
   const timeoutMs = options?.timeoutMs ?? 20_000;
+  const pollMs = options?.pollMs ?? 50;
   const write = await api.submitTask(
     {
       kind: "write",
@@ -85,17 +96,17 @@ export async function runWriteReviseRollback(
     },
     "eval-write",
   );
-  const written = await waitForTask(api, write.id, timeoutMs);
+  const written = await waitForTask(api, write.id, timeoutMs, pollMs);
   if (!written.documentId || !written.resultVersionId) throw new Error("写作没有版本");
   const revise = await api.submitTask(
     {
       kind: "revise",
       documentId: written.documentId,
-      instruction: "把第1段写短",
+      instruction: "把正文第1段写短",
     },
     "eval-revise",
   );
-  const revised = await waitForTask(api, revise.id, timeoutMs);
+  const revised = await waitForTask(api, revise.id, timeoutMs, pollMs);
   if (!revised.resultVersionId || revised.resultVersionId === written.resultVersionId) {
     throw new Error("修订没有新版本");
   }
@@ -112,17 +123,43 @@ async function waitForTask(
   api: TaskApiSurface,
   id: string,
   timeoutMs: number,
+  pollMs: number,
 ): Promise<TaskApiSnapshot> {
   const started = Date.now();
   for (;;) {
     const task = await api.getTask(id);
+    if (task.rateLimited) {
+      if (Date.now() - started > timeoutMs) {
+        await api.cancelTask?.(id).catch(() => undefined);
+        throw new Error("任务超时");
+      }
+      await sleep(secondsToMs(task.retryAfterSeconds));
+      continue;
+    }
     if (TASK_DONE.has(task.state)) {
-      if (task.state !== "completed") throw new Error(`任务结束于 ${task.state}`);
+      if (task.state !== "completed") {
+        const detail = task.error?.message?.trim();
+        throw new Error(
+          detail ? `任务结束于 ${task.state}：${detail}` : `任务结束于 ${task.state}`,
+        );
+      }
       return task;
     }
-    if (Date.now() - started > timeoutMs) throw new Error("任务超时");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (Date.now() - started > timeoutMs) {
+      await api.cancelTask?.(id).catch(() => undefined);
+      throw new Error("任务超时");
+    }
+    await sleep(pollMs);
   }
+}
+
+function secondsToMs(seconds: number | undefined): number {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return 1_000;
+  return Math.min(60_000, Math.ceil(seconds * 1000));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function runDeterministicSmoke(): SmokeReport {

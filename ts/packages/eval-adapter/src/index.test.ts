@@ -1,12 +1,17 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { analyzePlain } from "@luminwrite/plainspeak";
 import { fauxResearchPlan } from "@luminwrite/research";
 import { describe, expect, it } from "vitest";
-
 import {
+  type EvalCapture,
+  judgeCapture,
   readResearchPlansForEval,
   runDeterministicSmoke,
   runWriteReviseRollback,
   smokeSamples,
+  stripHtml,
 } from "./index.js";
 
 describe("评测冒烟", () => {
@@ -68,4 +73,90 @@ describe("评测冒烟", () => {
       "restore doc_1 ver_2",
     ]);
   });
+
+  it("失败任务带上存下来的供应商错误", async () => {
+    await expect(
+      runWriteReviseRollback({
+        async submitTask() {
+          return { id: "tsk_w", state: "submitted" };
+        },
+        async getTask() {
+          return {
+            id: "tsk_w",
+            state: "failed",
+            error: { message: 'model_error 400：Unknown name "store"' },
+          };
+        },
+        async restoreDocument() {
+          return { ok: false };
+        },
+      }),
+    ).rejects.toThrow(/任务结束于 failed：model_error 400/);
+  });
 });
+
+describe("留出集", () => {
+  it("去掉网页标签", () => {
+    expect(stripHtml("<p>赋能</p><script>secret</script>")).toBe("赋能");
+  });
+
+  it("读 txt 和 html，跳过 SOURCES.md", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lw-heldout-"));
+    await writeFile(join(dir, "gov2024_full.txt"), "显卡时租按小时计费。", "utf8");
+    await writeFile(
+      join(dir, "raw_gov2024.html"),
+      "<html><body><p>赋能闭环。</p></body></html>",
+      "utf8",
+    );
+    await writeFile(join(dir, "SOURCES.md"), "只是清单", "utf8");
+    const judgment = await judgeCapture(emptyCapture(), { heldoutDir: dir });
+    expect(judgment.heldout.files.map((file) => file.name).sort()).toEqual([
+      "gov2024_full.txt",
+      "raw_gov2024.html",
+    ]);
+    const html = judgment.heldout.files.find((file) => file.name.endsWith(".html"));
+    expect(html?.aitoneScore).toBeGreaterThan(0);
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+function emptyCapture(): EvalCapture {
+  return {
+    generatedAt: "2026-11-03T00:00:00.000Z",
+    model: "test/faux",
+    live: false,
+    exchanges: [],
+    scenarios: {
+      rollback: {
+        ok: false,
+        error: "没有正文",
+        restoredMatchesWrite: false,
+        beforeText: "",
+        afterText: "",
+      },
+      research: { ok: false, questionCount: 0, gaps: [], claimFlags: false, admittedGap: false },
+      embeddings: {
+        ok: false,
+        transport: "openai-compatible",
+        endpoint: "local-stub",
+        model: "fake",
+        dim: 1024,
+        requests: 0,
+        stored: false,
+        searchHit: false,
+      },
+      floor: {
+        ok: false,
+        note: "写得华丽一点",
+        plainConflict: false,
+        injected: false,
+        turnStatus: "",
+        turnError: null,
+        documentUnchanged: false,
+        hollowLanded: false,
+        afterText: "",
+        probe: "faux-hollow",
+      },
+    },
+  };
+}

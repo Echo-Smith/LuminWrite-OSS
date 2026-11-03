@@ -235,11 +235,14 @@ export function bindDelegate(deps: {
       args.blockIds.length <= role.scope.maxBlocks &&
       args.blockIds.every((id) => known.has(id));
     if (!inRange) {
+      const ids = blocks.map((block) => block.blockId);
+      const hint =
+        ids.length === 0
+          ? "这篇文档还没有块，不能委托。"
+          : `只能委托当前文档里的块：${ids.slice(0, 12).join("、")}`;
       return finish({
         runStatus: "failed",
-        turnStatus: "failed",
-        error: "out_of_scope",
-        output: { code: "out_of_scope" },
+        output: { code: "out_of_scope", hint },
         slot: role.model.slot,
         modelRef: null,
         conversationId: null,
