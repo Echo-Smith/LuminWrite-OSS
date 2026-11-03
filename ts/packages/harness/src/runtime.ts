@@ -128,9 +128,13 @@ function promptFor(
     "先读文档档案，不要依赖更早的聊天记录。",
     "引用用 [[cite:证据id]]。证据由 cite_evidence 记下，修订号和版本由服务端钉住。",
     "没有证据，或校验不是 verified / fuzzy 的句子，回合结束时会被标出。",
-    "需要研究员、事实核查、引用审计或审校时，调用 delegate。选哪个角色、问什么、圈哪些块，由你决定。",
-    `可调用的 id：${roleIds.join("、")}。`,
   ];
+  if (turn.kind !== "research" && blocks.length >= MIN_BLOCKS_FOR_DELEGATE) {
+    lines.push(
+      "需要研究员、事实核查、引用审计或审校时，调用 delegate。选哪个角色、问什么、圈哪些块，由你决定。",
+      `可调用的 id：${roleIds.join("、")}。`,
+    );
+  }
   if (notes?.offer && session.kind !== "api") {
     lines.push(
       "可以 read_writing_notes 看已生效的写作笔记，结果里带 plainConflict。用户明说以后要怎样写时，用 propose_writing_note 提一条候选。人确认之前它不生效。",
@@ -1126,9 +1130,11 @@ export async function createWritingRuntime(options: {
       const index = targetIndex(req.instruction, blocks, req.selection);
       const scoped = req.kind === "revise" ? blocks[index]?.blockId : undefined;
       const conversation = await conversationFor(session);
-      if (session.kind === "api" && proposeWritingNote) {
-        await conversation.configure({ modelTools: { remove: [proposeWritingNote] } }, ctx);
-      }
+      const hidden = [
+        ...(session.kind === "api" && proposeWritingNote ? [proposeWritingNote] : []),
+        ...(req.kind === "research" || blocks.length < MIN_BLOCKS_FOR_DELEGATE ? [bound.tool] : []),
+      ];
+      await conversation.configure({ modelTools: { remove: hidden } }, ctx);
       const notes = notesApi ? { prose: await notesApi.proseFor(session), offer: true } : undefined;
       const prompt = promptFor(
         req,
@@ -1381,6 +1387,8 @@ export async function createWritingRuntime(options: {
 }
 
 const EDIT_REPAIR = "请再调用一次 propose_edits。opsJson 是修订数组的 JSON，不要用代码围栏。";
+/** 不足两块时没有可圈的范围，不把 delegate 交给模型。研究回合只记检索计划。 */
+const MIN_BLOCKS_FOR_DELEGATE = 2;
 
 function watchTool(
   tool: {
@@ -1462,6 +1470,7 @@ function withEditReason(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => withEditReason(item));
   if (!value || typeof value !== "object") return value;
   const op = { ...(value as Record<string, unknown>) };
+  if (typeof op.op !== "string" && typeof op.type === "string") op.op = op.type;
   if (typeof op.op !== "string") return value;
   const reason = typeof op.reason === "string" ? op.reason.trim() : "";
   op.reason = reason ? reason.slice(0, 500) : "修订";

@@ -38,6 +38,7 @@ import { kbEmbedderFor } from "./kb-embed.js";
 import { sessionKnowledge } from "./kb-session.js";
 import { ensureDefaultRegistry, resolveTurnChain, turnSpendFor } from "./model-registry.js";
 import { writingNotesPort } from "./notes-port.js";
+import { TokenBucketLimiter } from "./rate-limit.js";
 
 const FLOWERY_NOTE = "写得华丽一点";
 const FLOWERY_INSTRUCTION = "按笔记写华丽";
@@ -48,7 +49,7 @@ const USAGE =
   "用法：lw eval run [--dir DIR] | lw eval judge --dir DIR | lw eval report --dir DIR [--out FILE] | lw eval gate [--dir DIR] [--out FILE]\n";
 
 type Writer = { write(chunk: string): void };
-type Reply = { status: number; body: unknown };
+type Reply = { status: number; body: unknown; retryAfterSeconds?: number };
 
 export async function runEvalCli(
   argv: readonly string[],
@@ -207,6 +208,7 @@ async function captureEval(
       keyring: secrets.ring,
       env,
       models,
+      limiter: new TokenBucketLimiter({ capacity: 10_000, refillPerSecond: 1_000 }),
       kb,
     });
     const ownerToken = await readOwnerToken(dataDir);
@@ -221,7 +223,8 @@ async function captureEval(
       noted.status === 201 && Boolean((noted.body as { plainConflict?: boolean }).plainConflict);
     const layer = await db.notes().compileOverlay(owner.userId, {});
     const injected = layer.prose?.includes(FLOWERY_NOTE) ?? false;
-    const rollback = await runRollback(apiCall, trace, timeoutMs);
+    const pollMs = live ? 1_000 : 50;
+    const rollback = await runRollback(apiCall, trace, timeoutMs, pollMs);
     const floor = await runFloor(
       apiCall,
       rollback,
@@ -232,6 +235,7 @@ async function captureEval(
       },
       trace,
       timeoutMs,
+      pollMs,
     );
     const research = await runResearch(ownerCall, trace);
     const embeddings = await runEmbeddings(db, owner.userId, ownerCall, embed, calls, trace);
@@ -271,6 +275,7 @@ async function runRollback(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   trace: { scenario: string },
   timeoutMs: number,
+  pollMs: number,
 ): Promise<EvalCapture["scenarios"]["rollback"]> {
   let phase: "write" | "revise" = "write";
   let beforeText = "";
@@ -296,6 +301,14 @@ async function runRollback(
         },
         async getTask(id) {
           const response = await call(`/api/v1/tasks/${id}`);
+          if (response.status === 429) {
+            return {
+              id,
+              state: "working",
+              rateLimited: true,
+              retryAfterSeconds: response.retryAfterSeconds ?? 1,
+            };
+          }
           const task = response.body as TaskApiSnapshot;
           if (task.state === "completed" && task.documentId) {
             const text = await documentText(call, task.documentId);
@@ -313,7 +326,7 @@ async function runRollback(
           return response.body as { ok: boolean; versionId?: string };
         },
       },
-      { timeoutMs },
+      { timeoutMs, pollMs },
     );
     const restored = beforeText ? await documentText(call, await onlyDocumentId(call)) : "";
     return {
@@ -349,6 +362,7 @@ async function runFloor(
   input: { plainConflict: boolean; injected: boolean; live: boolean },
   trace: { scenario: string },
   timeoutMs: number,
+  pollMs: number,
 ): Promise<EvalCapture["scenarios"]["floor"]> {
   const base = {
     note: FLOWERY_NOTE,
@@ -383,7 +397,7 @@ async function runFloor(
     if (submitted.status >= 400) throw new Error(messageOf(submitted.body));
     const created = submitted.body as TaskApiSnapshot;
     trace.scenario = `floor ${created.id}`;
-    const finished = await waitTask(call, created.id, timeoutMs);
+    const finished = await waitTask(call, created.id, timeoutMs, pollMs);
     const after = await documentText(call, documentId);
     return {
       ...base,
@@ -725,7 +739,15 @@ function caller(
         body = text;
       }
     }
-    return { status: response.status, body };
+    const retryHeader = response.headers.get("retry-after");
+    const retryAfterSeconds = retryHeader === null ? undefined : Number(retryHeader);
+    return {
+      status: response.status,
+      body,
+      ...(retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds)
+        ? { retryAfterSeconds }
+        : {}),
+    };
   };
 }
 
@@ -733,7 +755,11 @@ async function documentText(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   id: string,
 ): Promise<string> {
-  const response = await call(`/api/v1/documents/${id}`);
+  let response = await call(`/api/v1/documents/${id}`);
+  for (let attempt = 0; response.status === 429 && attempt < 5; attempt += 1) {
+    await sleep(retryAfterMs(response.retryAfterSeconds));
+    response = await call(`/api/v1/documents/${id}`);
+  }
   if (response.status >= 400) throw new Error(messageOf(response.body));
   const blocks = (response.body as { blocks?: Array<{ text?: string }> }).blocks ?? [];
   return blocks.map((block) => block.text ?? "").join("\n\n");
@@ -743,18 +769,36 @@ async function waitTask(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   id: string,
   timeoutMs: number,
+  pollMs: number,
 ): Promise<{ state?: string; error?: { message?: string } }> {
   const started = Date.now();
   for (;;) {
     const response = await call(`/api/v1/tasks/${id}`);
+    if (response.status === 429) {
+      if (Date.now() - started > timeoutMs) {
+        await call(`/api/v1/tasks/${id}/cancel`, { method: "POST" }).catch(() => undefined);
+        throw new Error("任务超时");
+      }
+      await sleep(retryAfterMs(response.retryAfterSeconds));
+      continue;
+    }
     const task = response.body as { state?: string; error?: { message?: string } };
     if (task.state !== "submitted" && task.state !== "working") return task;
     if (Date.now() - started > timeoutMs) {
       await call(`/api/v1/tasks/${id}/cancel`, { method: "POST" }).catch(() => undefined);
       throw new Error("任务超时");
     }
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await sleep(pollMs);
   }
+}
+
+function retryAfterMs(seconds: number | undefined): number {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return 1_000;
+  return Math.min(60_000, Math.ceil(seconds * 1000));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function taskTimeoutMs(env: NodeJS.ProcessEnv): number {
