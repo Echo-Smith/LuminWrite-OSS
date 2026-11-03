@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { MockAgent } from "undici";
 import { describe, expect, it } from "vitest";
 
@@ -110,6 +112,52 @@ describe("safeFetch", () => {
       ).rejects.toThrow("请求超时");
     } finally {
       await agent.close();
+    }
+  });
+
+  it("丢掉 304 和重定向正文时不会冒出未处理的中断", async () => {
+    const crashes: string[] = [];
+    const onCrash = (error: unknown) => {
+      crashes.push(error instanceof Error ? error.message : String(error));
+    };
+    process.on("uncaughtException", onCrash);
+    process.on("unhandledRejection", onCrash);
+    const server = createServer((req, res) => {
+      if (req.url === "/feed") {
+        res.writeHead(304, { etag: "v1" });
+        res.end();
+        return;
+      }
+      if (req.url === "/go") {
+        res.writeHead(302, { location: "/ok" });
+        res.end("go");
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("hello");
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address() as AddressInfo;
+    try {
+      const notModified = await safeFetch(`http://127.0.0.1:${address.port}/feed`, {
+        allowPrivate: true,
+      });
+      expect(notModified).toMatchObject({ status: 304, body: null, etag: "v1" });
+      const followed = await safeFetch(`http://127.0.0.1:${address.port}/go`, {
+        allowPrivate: true,
+      });
+      expect(followed).toMatchObject({ status: 200, body: "hello" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(crashes).toEqual([]);
+    } finally {
+      process.off("uncaughtException", onCrash);
+      process.off("unhandledRejection", onCrash);
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   });
 

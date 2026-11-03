@@ -1126,6 +1126,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
     const parsed = SubscribeBody.safeParse(await readBody(c));
     if (!parsed.success) return c.json({ error: "订阅参数不合法" }, 400);
+    const known = new Set((await feeds.list(userId)).map((row) => row.id));
+    let createdId: string | undefined;
+    let createdFolderId: string | undefined;
     try {
       const feed = await feeds.subscribe(userId, {
         url: parsed.data.url,
@@ -1133,9 +1136,32 @@ export function createApp(deps: AppDeps): Hono<Env> {
         ...(parsed.data.isHotspot !== undefined ? { isHotspot: parsed.data.isHotspot } : {}),
         ...(parsed.data.folderId ? { folderId: parsed.data.folderId } : {}),
       });
+      // 创建时的抓取是校验，不是一次可以记入 last_error 的后续轮询。
+      // 失败要和「没有订阅」一致：新行和这次新建的空文件夹都删掉。
+      // 已经存在的订阅只刷新，失败仍留在库里。
+      if (!known.has(feed.id)) {
+        createdId = feed.id;
+        if (!parsed.data.folderId) createdFolderId = feed.folderId;
+      }
       const outcome = await feeds.refresh(feed.id);
       return c.json({ feed, ...outcome }, 201);
     } catch (error) {
+      if (createdId) {
+        await feeds
+          .unsubscribe(createdId, { keepItems: false, ownerId: userId })
+          .catch(() => undefined);
+        if (createdFolderId) {
+          await deps.db
+            .query(
+              `DELETE FROM folders
+               WHERE id = $1 AND owner_id = $2
+                 AND NOT EXISTS (SELECT 1 FROM feeds WHERE folder_id = folders.id)
+                 AND NOT EXISTS (SELECT 1 FROM sources WHERE folder_id = folders.id)`,
+              [createdFolderId, userId],
+            )
+            .catch(() => undefined);
+        }
+      }
       const mapped = kbFailure(error);
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;

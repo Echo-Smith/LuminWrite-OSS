@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createApiKey, ensureOwner, openMemoryDatabase, readOwnerToken } from "@luminwrite/db";
 import type { WritingRuntime } from "@luminwrite/harness";
 import { createKnowledgeBase } from "@luminwrite/kb";
-import { createFeedService, type PageFetch } from "@luminwrite/sources";
+import { createFeedService, type PageFetch, SafeFetchError } from "@luminwrite/sources";
 import { describe, expect, it } from "vitest";
 
 import { createApp } from "./app.js";
@@ -120,6 +120,73 @@ describe("订阅和网址导入", () => {
       expect((await exported.json()) as { xml: string }).toMatchObject({
         xml: expect.stringContaining("https://example.com/feed.xml"),
       });
+    } finally {
+      await runtime.close();
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("创建时抓取失败不会留下订阅", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lw-feeds-reject-"));
+    const dataDir = join(dir, "data");
+    const db = await openMemoryDatabase();
+    const owner = await ensureOwner(db, { dataDir });
+    const token = await readOwnerToken(dataDir);
+    const runtime = stubRuntime();
+    let open = false;
+    const fetchPage: PageFetch = async (url) => {
+      if (!open) throw new SafeFetchError("地址被拒绝");
+      return { status: 200, body: FEED, finalUrl: url, etag: "v1" };
+    };
+    const kb = createKnowledgeBase({ db });
+    const feeds = createFeedService({ db, kb, fetch: fetchPage });
+    const app = createApp({
+      db,
+      runtime,
+      auth: createOssAuth(db),
+      kb,
+      feeds,
+      pageFetch: fetchPage,
+    });
+    const request = (path: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      headers.set("authorization", `Bearer ${token}`);
+      if (init?.body && !headers.has("content-type")) {
+        headers.set("content-type", "application/json");
+      }
+      return app.request(path, { ...init, headers });
+    };
+    try {
+      const denied = await request("/api/v1/feeds", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://example.com/secret.xml" }),
+      });
+      expect(denied.status).toBe(400);
+      expect(await denied.json()).toEqual({ error: "地址被拒绝" });
+      expect(await db.query(`SELECT id FROM feeds`)).toEqual([]);
+      expect(await db.query(`SELECT id FROM folders`)).toEqual([]);
+
+      open = true;
+      const created = await request("/api/v1/feeds", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://example.com/feed.xml" }),
+      });
+      expect(created.status).toBe(201);
+      const feedId = ((await created.json()) as { feed: { id: string } }).feed.id;
+
+      open = false;
+      const again = await request("/api/v1/feeds", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://example.com/feed.xml" }),
+      });
+      expect(again.status).toBe(400);
+      const listed = (await (await request("/api/v1/feeds")).json()) as {
+        feeds: Array<{ id: string; ownerId: string }>;
+      };
+      expect(listed.feeds.map((feed) => feed.id)).toEqual([feedId]);
+      expect(listed.feeds[0]?.ownerId).toBe(owner.userId);
+      expect(await db.query(`SELECT id FROM folders`)).toHaveLength(1);
     } finally {
       await runtime.close();
       await db.close();

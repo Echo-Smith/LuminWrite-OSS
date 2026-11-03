@@ -123,6 +123,20 @@ function header(headers: IncomingHttpHeaders, name: string): string | undefined 
   return value?.trim() || undefined;
 }
 
+/**
+ * undici 在正文还没结束时把无参 destroy() 变成 RequestAbortedError，
+ * 下一拍用 error 事件抛出。没有监听者时 Node 直接退出进程。
+ * 这不是 Promise 拒绝，刷新任务上的 catch 接不住。
+ */
+function discardBody(body: object): void {
+  const stream = body as {
+    on?: (event: "error", listener: (error: unknown) => void) => void;
+    destroy?: (error?: Error) => void;
+  };
+  if (typeof stream.on === "function") stream.on("error", () => undefined);
+  if (typeof stream.destroy === "function") stream.destroy();
+}
+
 async function readBody(
   body: AsyncIterable<Uint8Array | string>,
   maxBytes: number,
@@ -133,7 +147,7 @@ async function readBody(
     const buffer = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
     total += buffer.length;
     if (total > maxBytes) {
-      if ("destroy" in body && typeof body.destroy === "function") body.destroy();
+      discardBody(body);
       throw new SafeFetchError("响应超过 8MB");
     }
     chunks.push(buffer);
@@ -208,7 +222,7 @@ export async function safeFetch(
       const status = response.statusCode;
       if (status >= 300 && status < 400 && status !== 304) {
         const location = header(response.headers, "location");
-        response.body.destroy();
+        discardBody(response.body);
         if (!location) throw new SafeFetchError("重定向没有目标");
         if (hop === maxRedirects) throw new SafeFetchError("重定向次数过多");
         current = new URL(location, current);
@@ -218,7 +232,7 @@ export async function safeFetch(
       const lastModified = header(response.headers, "last-modified");
       const contentType = header(response.headers, "content-type");
       if (status === 304) {
-        response.body.destroy();
+        discardBody(response.body);
         return {
           status,
           body: null,
@@ -230,7 +244,7 @@ export async function safeFetch(
       }
       const declared = Number(header(response.headers, "content-length"));
       if (Number.isFinite(declared) && declared > maxBytes) {
-        response.body.destroy();
+        discardBody(response.body);
         throw new SafeFetchError("响应超过 8MB");
       }
       try {
@@ -244,7 +258,7 @@ export async function safeFetch(
           ...(contentType ? { contentType } : {}),
         };
       } catch (error) {
-        response.body.destroy();
+        discardBody(response.body);
         mapTransport(error);
       }
     } finally {
