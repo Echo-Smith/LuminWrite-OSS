@@ -109,11 +109,21 @@ export function byokFromBase(
 }
 
 /**
- * Gemini 的 OpenAI 兼容端点不认识 `store`。pi-ai 对「普通」兼容端点默认带
- * `store: false`，Google 会回 400。官方 base 以斜杠结尾；openai 7 在路径以
- * `/` 开头时不加斜杠也能拼对 `/chat/completions`，这里仍收成文档里的形式。
+ * 严格的中转不接受 OpenAI 才有的字段。`store: false` 和
+ * `stream_options.include_usage` 都会让它 400 或 406。官方 api.openai.com 仍照旧发送。
+ * Gemini 的文档 base 以斜杠结尾；openai 7 在路径以 `/` 开头时不加斜杠也能拼对。
  */
 export const GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+const OPENAI_COMPLETIONS_ACCEPT = { accept: "text/event-stream" } as const;
+
+function isOfficialOpenAi(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
 
 /** `models/gemini-4-argon` 和 `gemini-4-argon` 都落到路径里的那一节。 */
 export function geminiModelId(modelId: string): string {
@@ -122,7 +132,7 @@ export function geminiModelId(modelId: string): string {
 
 export function geminiOpenAiEndpoint(baseUrl: string): {
   baseUrl: string;
-  compat?: { supportsStore: false };
+  compat?: { supportsStore: false; supportsUsageInStreaming: false };
 } {
   let host = "";
   let path = "";
@@ -138,7 +148,24 @@ export function geminiOpenAiEndpoint(baseUrl: string): {
   }
   return {
     baseUrl: baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`,
-    compat: { supportsStore: false },
+    compat: { supportsStore: false, supportsUsageInStreaming: false },
+  };
+}
+
+/** 非官方 OpenAI 主机不发 store 和 stream_options。流式请求的 Accept 一律是 SSE。 */
+export function openAiCompletionsTuning(baseUrl: string): {
+  baseUrl: string;
+  headers: { accept: "text/event-stream" };
+  compat?: { supportsStore: false; supportsUsageInStreaming: false };
+} {
+  const gemini = geminiOpenAiEndpoint(baseUrl);
+  if (isOfficialOpenAi(gemini.baseUrl)) {
+    return { baseUrl: gemini.baseUrl, headers: OPENAI_COMPLETIONS_ACCEPT };
+  }
+  return {
+    baseUrl: gemini.baseUrl,
+    headers: OPENAI_COMPLETIONS_ACCEPT,
+    compat: gemini.compat ?? { supportsStore: false, supportsUsageInStreaming: false },
   };
 }
 
@@ -177,14 +204,13 @@ function compatibleModel(
   const spec = record.spec;
   const api = spec.api ?? "openai-completions";
   const resolved = spec.baseUrl ?? baseUrl;
-  const gemini =
-    api === "openai-completions" ? geminiOpenAiEndpoint(resolved) : { baseUrl: resolved };
+  const tuned = api === "openai-completions" ? openAiCompletionsTuning(resolved) : undefined;
   return {
     id: spec.modelId,
     name: spec.modelId,
     api,
     provider: providerId,
-    baseUrl: gemini.baseUrl,
+    baseUrl: tuned?.baseUrl ?? resolved,
     input: spec.input ?? ["text"],
     cost: {
       input: spec.cost?.input ?? 0,
@@ -195,7 +221,8 @@ function compatibleModel(
     reasoning: spec.reasoning ?? false,
     contextWindow: spec.contextWindow ?? 8192,
     maxTokens: spec.maxTokens ?? 1024,
-    ...(gemini.compat ? { compat: gemini.compat } : {}),
+    ...(tuned ? { headers: { ...tuned.headers } } : {}),
+    ...(tuned?.compat ? { compat: tuned.compat } : {}),
   };
 }
 

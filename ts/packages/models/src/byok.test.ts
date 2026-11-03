@@ -113,7 +113,7 @@ describe("Gemini", () => {
       "https://generativelanguage.googleapis.com/v1beta/openai",
     );
     expect(endpoint.baseUrl.endsWith("/openai/")).toBe(true);
-    expect(endpoint.compat).toEqual({ supportsStore: false });
+    expect(endpoint.compat).toEqual({ supportsStore: false, supportsUsageInStreaming: false });
     expect(geminiOpenAiEndpoint("https://api.openai.com/v1").compat).toBeUndefined();
     expect(geminiModelId("models/gemini-4-argon")).toBe("gemini-4-argon");
   });
