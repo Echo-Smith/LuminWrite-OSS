@@ -134,11 +134,14 @@ async function captureEval(
   log: (line: string) => void,
 ): Promise<EvalCapture> {
   const live = env.LW_EVAL_LIVE === "1";
+  const timeoutMs = taskTimeoutMs(env);
+  const trace = { scenario: "boot" };
   const exchanges: ModelExchange[] = [];
   const stopWatch = watchModelFetch({
     debug: env.LW_EVAL_DEBUG === "1",
     secrets: secretValues(env),
     exchanges,
+    scenario: () => trace.scenario,
     log,
   });
   const dir = await mkdtemp(join(tmpdir(), "lw-eval-data-"));
@@ -207,14 +210,20 @@ async function captureEval(
       noted.status === 201 && Boolean((noted.body as { plainConflict?: boolean }).plainConflict);
     const layer = await db.notes().compileOverlay(owner.userId, {});
     const injected = layer.prose?.includes(FLOWERY_NOTE) ?? false;
-    const rollback = await runRollback(apiCall);
-    const floor = await runFloor(apiCall, rollback, {
-      plainConflict,
-      injected,
-      live,
-    });
-    const research = await runResearch(ownerCall);
-    const embeddings = await runEmbeddings(db, owner.userId, ownerCall, embed, calls);
+    const rollback = await runRollback(apiCall, trace, timeoutMs);
+    const floor = await runFloor(
+      apiCall,
+      rollback,
+      {
+        plainConflict,
+        injected,
+        live,
+      },
+      trace,
+      timeoutMs,
+    );
+    const research = await runResearch(ownerCall, trace);
+    const embeddings = await runEmbeddings(db, owner.userId, ownerCall, embed, calls, trace);
     return {
       generatedAt: new Date().toISOString(),
       model: live ? (env.LW_LLM_MODEL ?? "live") : "test/faux",
@@ -249,41 +258,52 @@ function gatePlanner(input: Parameters<typeof planOps>[0]) {
 
 async function runRollback(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
+  trace: { scenario: string },
+  timeoutMs: number,
 ): Promise<EvalCapture["scenarios"]["rollback"]> {
   let phase: "write" | "revise" = "write";
   let beforeText = "";
   let afterText = "";
   try {
-    await runWriteReviseRollback({
-      async submitTask(body, key) {
-        if (body.kind === "revise") phase = "revise";
-        const response = await call("/api/v1/tasks", {
-          method: "POST",
-          headers: { "idempotency-key": key },
-          body: JSON.stringify(body),
-        });
-        if (response.status >= 400) throw new Error(messageOf(response.body));
-        return response.body as TaskApiSnapshot;
+    await runWriteReviseRollback(
+      {
+        async submitTask(body, key) {
+          phase = body.kind === "revise" ? "revise" : "write";
+          trace.scenario = phase;
+          const response = await call("/api/v1/tasks", {
+            method: "POST",
+            headers: { "idempotency-key": key },
+            body: JSON.stringify(body),
+          });
+          if (response.status >= 400) throw new Error(messageOf(response.body));
+          const created = response.body as TaskApiSnapshot;
+          trace.scenario = `${phase} ${created.id}`;
+          return created;
+        },
+        async cancelTask(id) {
+          await call(`/api/v1/tasks/${id}/cancel`, { method: "POST" });
+        },
+        async getTask(id) {
+          const response = await call(`/api/v1/tasks/${id}`);
+          const task = response.body as TaskApiSnapshot;
+          if (task.state === "completed" && task.documentId) {
+            const text = await documentText(call, task.documentId);
+            if (phase === "write") beforeText = text;
+            else afterText = text;
+          }
+          return task;
+        },
+        async restoreDocument(id, versionId) {
+          const response = await call(`/api/v1/documents/${id}/restore`, {
+            method: "POST",
+            body: JSON.stringify({ versionId }),
+          });
+          if (response.status >= 400) return { ok: false };
+          return response.body as { ok: boolean; versionId?: string };
+        },
       },
-      async getTask(id) {
-        const response = await call(`/api/v1/tasks/${id}`);
-        const task = response.body as TaskApiSnapshot;
-        if (task.state === "completed" && task.documentId) {
-          const text = await documentText(call, task.documentId);
-          if (phase === "write") beforeText = text;
-          else afterText = text;
-        }
-        return task;
-      },
-      async restoreDocument(id, versionId) {
-        const response = await call(`/api/v1/documents/${id}/restore`, {
-          method: "POST",
-          body: JSON.stringify({ versionId }),
-        });
-        if (response.status >= 400) return { ok: false };
-        return response.body as { ok: boolean; versionId?: string };
-      },
-    });
+      { timeoutMs },
+    );
     const restored = beforeText ? await documentText(call, await onlyDocumentId(call)) : "";
     return {
       ok: beforeText.length > 0 && afterText.length > 0 && afterText !== beforeText,
@@ -316,6 +336,8 @@ async function runFloor(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   rollback: EvalCapture["scenarios"]["rollback"],
   input: { plainConflict: boolean; injected: boolean; live: boolean },
+  trace: { scenario: string },
+  timeoutMs: number,
 ): Promise<EvalCapture["scenarios"]["floor"]> {
   const base = {
     note: FLOWERY_NOTE,
@@ -337,6 +359,7 @@ async function runFloor(
   try {
     const documentId = await onlyDocumentId(call);
     const before = await documentText(call, documentId);
+    trace.scenario = "floor";
     const submitted = await call("/api/v1/tasks", {
       method: "POST",
       headers: { "idempotency-key": "eval-flowery" },
@@ -348,7 +371,8 @@ async function runFloor(
     });
     if (submitted.status >= 400) throw new Error(messageOf(submitted.body));
     const created = submitted.body as TaskApiSnapshot;
-    const finished = await waitTask(call, created.id);
+    trace.scenario = `floor ${created.id}`;
+    const finished = await waitTask(call, created.id, timeoutMs);
     const after = await documentText(call, documentId);
     return {
       ...base,
@@ -373,7 +397,9 @@ async function runFloor(
 
 async function runResearch(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
+  trace: { scenario: string },
 ): Promise<EvalCapture["scenarios"]["research"]> {
+  trace.scenario = "research";
   try {
     const created = await call("/api/v1/documents", {
       method: "POST",
@@ -453,7 +479,9 @@ async function runEmbeddings(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   embed: { endpoint: "env" | "local-stub"; model: string; baseUrl: string },
   calls: { n: number },
+  trace: { scenario: string },
 ): Promise<EvalCapture["scenarios"]["embeddings"]> {
+  trace.scenario = "embed";
   const base = {
     transport: "openai-compatible" as const,
     endpoint: embed.endpoint,
@@ -703,15 +731,28 @@ async function documentText(
 async function waitTask(
   call: (path: string, init?: RequestInit) => Promise<Reply>,
   id: string,
+  timeoutMs: number,
 ): Promise<{ state?: string; error?: { message?: string } }> {
   const started = Date.now();
   for (;;) {
     const response = await call(`/api/v1/tasks/${id}`);
     const task = response.body as { state?: string; error?: { message?: string } };
     if (task.state !== "submitted" && task.state !== "working") return task;
-    if (Date.now() - started > 20_000) throw new Error("任务超时");
+    if (Date.now() - started > timeoutMs) {
+      await call(`/api/v1/tasks/${id}/cancel`, { method: "POST" }).catch(() => undefined);
+      throw new Error("任务超时");
+    }
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
+}
+
+function taskTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.LW_EVAL_TASK_TIMEOUT_MS?.trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return env.LW_EVAL_LIVE === "1" ? 180_000 : 20_000;
 }
 
 function textIsHollow(text: string): boolean {
@@ -792,24 +833,35 @@ function watchModelFetch(input: {
   debug: boolean;
   secrets: readonly string[];
   exchanges: ModelExchange[];
+  scenario: () => string;
   log: (line: string) => void;
 }): () => void {
   const original = globalThis.fetch;
   globalThis.fetch = async (request, init) => {
     const described = describeFetch(request, init);
+    const scenario = input.scenario();
     const response = await original(request, init);
     if (!described || !isModelPath(described.path)) return response;
-    let bodyExcerpt: string | undefined;
-    if (!response.ok) {
-      bodyExcerpt = redact(truncate(await response.clone().text(), 500), input.secrets);
+    let rawBody: string | undefined;
+    if (!response.ok || input.debug) {
+      try {
+        rawBody = await response.clone().text();
+      } catch {
+        rawBody = undefined;
+      }
     }
+    const bodyExcerpt =
+      !response.ok && rawBody ? redact(truncate(rawBody, 500), input.secrets) : undefined;
+    const usage = input.debug && rawBody ? tokenUsage(rawBody) : undefined;
     if (!response.ok || input.debug) {
       const exchange: ModelExchange = {
         method: described.method,
         path: described.path,
         ...(described.model ? { model: described.model } : {}),
         status: response.status,
+        ...(scenario ? { scenario } : {}),
         ...(described.auth ? { auth: described.auth } : {}),
+        ...(usage ? { usage } : {}),
         ...(bodyExcerpt ? { bodyExcerpt } : {}),
       };
       input.exchanges.push(exchange);
@@ -883,10 +935,78 @@ function isModelPath(path: string): boolean {
 }
 
 function formatExchange(exchange: ModelExchange): string {
+  const scenario = exchange.scenario ? `[${exchange.scenario}] ` : "";
   const model = exchange.model ? ` model=${exchange.model}` : "";
   const auth = exchange.auth ? ` ${exchange.auth}` : "";
+  const usage = exchange.usage ? ` ${exchange.usage}` : "";
   const body = exchange.bodyExcerpt ? ` ${exchange.bodyExcerpt}` : "";
-  return `${exchange.method} ${exchange.path}${model}${auth} HTTP ${exchange.status}${body}`;
+  return `${scenario}${exchange.method} ${exchange.path}${model}${auth} HTTP ${exchange.status}${usage}${body}`;
+}
+
+function tokenUsage(text: string): string | undefined {
+  const raw = lastJsonObject(text, "usageMetadata") ?? lastJsonObject(text, "usage");
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const input = usageCount(
+      parsed.prompt_tokens ?? parsed.promptTokenCount ?? parsed.input_tokens,
+    );
+    const output = usageCount(
+      parsed.completion_tokens ?? parsed.candidatesTokenCount ?? parsed.output_tokens,
+    );
+    const total = usageCount(parsed.total_tokens ?? parsed.totalTokenCount);
+    const parts: string[] = [];
+    if (input !== undefined) parts.push(`in=${input}`);
+    if (output !== undefined) parts.push(`out=${output}`);
+    if (total !== undefined) parts.push(`total=${total}`);
+    return parts.length > 0 ? `usage ${parts.join(" ")}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function usageCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function lastJsonObject(text: string, key: string): string | undefined {
+  const needle = `"${key}"`;
+  let from = 0;
+  let found: string | undefined;
+  for (;;) {
+    const at = text.indexOf(needle, from);
+    if (at < 0) return found;
+    const brace = text.indexOf("{", at + needle.length);
+    if (brace < 0 || brace - at > needle.length + 8) {
+      from = at + needle.length;
+      continue;
+    }
+    const end = matchBrace(text, brace);
+    if (end > brace) found = text.slice(brace, end + 1);
+    from = at + needle.length;
+  }
+}
+
+function matchBrace(text: string, open: number): number {
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = open; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') quoted = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
 function truncate(text: string, max: number): string {

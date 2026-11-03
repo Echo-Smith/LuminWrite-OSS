@@ -14,6 +14,10 @@ export interface ModelExchange {
   status: number;
   /** 只写头名和 `[redacted]`，不写头的值。 */
   auth?: string;
+  /** 这一次调用属于哪个场景或任务。 */
+  scenario?: string;
+  /** 响应里带了用量时记 in/out/total。 */
+  usage?: string;
   bodyExcerpt?: string;
 }
 
@@ -479,7 +483,8 @@ export function renderReport(judgment: EvalJudgment): string {
     "| `LW_EMBED_BASE_URL` | 嵌入端点，OpenAI 兼容的 `/embeddings` |",
     "| `LW_EMBED_MODEL` | 嵌入模型 id |",
     "| `LW_EVAL_HELDOUT_DIR` | 留出集原文目录。读 `.md`、`.txt`、`.html`，不提交 |",
-    "| `LW_EVAL_DEBUG` | `1` 时把每次模型请求的方法、路径、模型 id 和状态码打到 stderr。`x-goog-api-key` 和 `Authorization` 只记 `[redacted]`。失败响应带抹掉密钥的摘录 |",
+    "| `LW_EVAL_TASK_TIMEOUT_MS` | 单个任务的等待毫秒数。不设时真实模型 180000，faux 20000。超时会取消任务 |",
+    "| `LW_EVAL_DEBUG` | `1` 时把每次模型请求的场景或任务、方法、路径、模型 id、状态码打到 stderr。响应里有用量也记下。`x-goog-api-key` 和 `Authorization` 只记 `[redacted]`。失败响应带抹掉密钥的摘录 |",
     "",
     "faux 全程：",
     "",
@@ -507,10 +512,12 @@ export function renderReport(judgment: EvalJudgment): string {
 function failureLines(judgment: EvalJudgment): string[] {
   const stored = judgment.failures.map((row) => `- ${row}`);
   const http = judgment.exchanges.map((item) => {
+    const scenario = item.scenario ? `[${item.scenario}] ` : "";
     const model = item.model ? ` model=${item.model}` : "";
     const auth = item.auth ? ` ${item.auth}` : "";
+    const usage = item.usage ? ` ${item.usage}` : "";
     const body = item.bodyExcerpt ? ` ${item.bodyExcerpt}` : "";
-    return `- ${item.method} ${item.path}${model}${auth} HTTP ${item.status}${body}`;
+    return `- ${scenario}${item.method} ${item.path}${model}${auth} HTTP ${item.status}${usage}${body}`;
   });
   if (stored.length === 0 && http.length === 0) return [];
   const failed = stored.length > 0 || judgment.exchanges.some((item) => item.status >= 400);

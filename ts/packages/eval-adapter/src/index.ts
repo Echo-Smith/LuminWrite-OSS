@@ -59,6 +59,8 @@ export interface TaskApiSurface {
   ): Promise<TaskApiSnapshot>;
   getTask(id: string): Promise<TaskApiSnapshot>;
   restoreDocument(id: string, versionId: string): Promise<{ ok: boolean; versionId?: string }>;
+  /** 超时放弃时取消任务，免得它继续打模型。 */
+  cancelTask?(id: string): Promise<unknown>;
 }
 
 export interface TaskApiSnapshot {
@@ -130,7 +132,10 @@ async function waitForTask(
       }
       return task;
     }
-    if (Date.now() - started > timeoutMs) throw new Error("任务超时");
+    if (Date.now() - started > timeoutMs) {
+      await api.cancelTask?.(id).catch(() => undefined);
+      throw new Error("任务超时");
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
