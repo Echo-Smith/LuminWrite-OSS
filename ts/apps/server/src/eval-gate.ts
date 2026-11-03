@@ -188,6 +188,17 @@ async function captureEval(
         return kb.listEvidence(document.ownerId, documentId);
       },
       notes: writingNotesPort(db),
+      ...(env.LW_EVAL_DEBUG === "1"
+        ? {
+            onToolResult(event: { name: string; isError: boolean; text: string }) {
+              const scenario = trace.scenario ? `[${trace.scenario}] ` : "";
+              const excerpt = redact(truncate(event.text, 200), secretValues(env));
+              log(
+                `${scenario}${event.name} isError=${event.isError ? "true" : "false"}${excerpt ? ` ${excerpt}` : ""}`,
+              );
+            },
+          }
+        : {}),
     });
     const app = createApp({
       db,

@@ -122,7 +122,9 @@ function promptFor(
     baseVersionId: session.baseVersionId,
   };
   const lines = [
-    "只通过 propose_edits 提交修订。锚点来自会话的基准版本，服务端按文档当前版本校验。",
+    blocks.length === 0
+      ? "这篇文档还没有块。只通过 propose_edits 写入初稿：opsJson 里放 insert_block，afterBlockId 必须是 JSON null，newMarkdown 是正文。不要编造块 id，不要用 replace_text。scopeJson 用 []。"
+      : "只通过 propose_edits 提交修订。blockId 和 contentHash 只能来自本提示末尾的块列表。replace_text 的 expectedOldText 必须是该块原文里唯一的一段。服务端按文档当前版本校验。",
     "先读文档档案，不要依赖更早的聊天记录。",
     "引用用 [[cite:证据id]]。证据由 cite_evidence 记下，修订号和版本由服务端钉住。",
     "没有证据，或校验不是 verified / fuzzy 的句子，回合结束时会被标出。",
@@ -370,6 +372,8 @@ export async function createWritingRuntime(options: {
   roles?: RoleDef[];
   /** 不传就不注册写作笔记工具，已有回合测试保持原样。 */
   notes?: WritingNotes;
+  /** 评测调试用。每个工具返回时调用一次，不改变工具结果。 */
+  onToolResult?(event: { name: string; isError: boolean; text: string }): void;
 }): Promise<WritingRuntime> {
   const planner = options.planner ?? planOps;
   const roles = options.roles ?? builtinRoles();
@@ -381,6 +385,8 @@ export async function createWritingRuntime(options: {
   const notedTurns = new Set<string>();
   /** 第一次格式失败只把改正说明交回模型。第二次才把回合标失败。 */
   const formatRepairs = new Map<string, string>();
+  /** propose 拒绝也一样：第二次不再交回模型，并结束这一轮工具调用。 */
+  const applyRepairs = new Map<string, string>();
   async function rejectFormat(turnId: string, issue: string, repair: string) {
     if (formatRepairs.has(turnId)) {
       await options.store.markTurn(turnId, { status: "failed", error: issue });
@@ -391,6 +397,22 @@ export async function createWritingRuntime(options: {
     return {
       isError: true as const,
       output: [{ type: "text" as const, text: `${issue}\n${repair}` }],
+    };
+  }
+  async function rejectApply(turnId: string, issue: string) {
+    if (applyRepairs.has(turnId)) {
+      await options.store.markTurn(turnId, { status: "failed", error: issue });
+      applyRepairs.set(turnId, issue);
+      return {
+        isError: true as const,
+        output: [{ type: "text" as const, text: issue }],
+        control: { terminate: true as const },
+      };
+    }
+    applyRepairs.set(turnId, issue);
+    return {
+      isError: true as const,
+      output: [{ type: "text" as const, text: `${issue}\n请按说明再调用一次 propose_edits。` }],
     };
   }
   const storage = await openNodeSqliteStorage(options.sqlitePath);
@@ -566,7 +588,8 @@ export async function createWritingRuntime(options: {
 
   const proposeEdits = defineTool({
     name: "propose_edits",
-    description: "提交块锚点修订。哈希和说人话由服务端校验。",
+    description:
+      "提交修订。opsJson 是 JSON 数组。空文档只用 insert_block，afterBlockId 为 null，newMarkdown 为正文，scopeJson 为 []。已有块时用 replace_text，blockId 和 contentHash 必须来自当前块列表。哈希和说人话由服务端校验。",
     parameters: Type.Object({
       documentId: Type.String(),
       sessionId: Type.String(),
@@ -610,7 +633,17 @@ export async function createWritingRuntime(options: {
           EDIT_REPAIR,
         );
       }
-      const ops = parsedOps.data as EditOp[];
+      let ops = parsedOps.data as EditOp[];
+      let currentBlocks: PlanBlock[] = [];
+      try {
+        currentBlocks = await options.store.readBlocks(args.documentId);
+      } catch {
+        currentBlocks = [];
+      }
+      if (currentBlocks.length === 0) {
+        const opened = asFirstInsert(ops);
+        if (opened) ops = opened;
+      }
       const framed = delegate?.frameFor(api.conversationId);
       if (framed) {
         const denied = admit(api.conversationId, "propose_edits");
@@ -665,16 +698,18 @@ export async function createWritingRuntime(options: {
         applyMode: args.applyMode,
         actor: parsedActor.data,
         summary: args.summary,
-        ...(scope.length > 0 ? { scope } : {}),
+        ...(currentBlocks.length === 0 || scope.length === 0 ? {} : { scope }),
       });
       const saved = await api.memo(
         "result",
         JSON.parse(JSON.stringify(outcome)) as JsonValue,
         context,
       );
-      if (!outcome.ok)
-        return { isError: true, output: [{ type: "text", text: JSON.stringify(outcome.errors) }] };
+      if (!outcome.ok) {
+        return rejectApply(args.turnId, applyIssue(outcome.errors, anchorText(currentBlocks)));
+      }
       formatRepairs.delete(args.turnId);
+      applyRepairs.delete(args.turnId);
       return { output: [{ type: "text", text: JSON.stringify(saved) }] };
     },
   });
@@ -913,6 +948,20 @@ export async function createWritingRuntime(options: {
     ],
   });
   delegate = bound;
+  for (const tool of [
+    readBlocks,
+    readRelatedDossier,
+    proposeEdits,
+    recordResearchPlan,
+    searchKb,
+    readSource,
+    citeEvidence,
+    readWritingNotes,
+    proposeWritingNote,
+    bound.tool,
+  ]) {
+    if (tool) watchTool(tool, options.onToolResult);
+  }
   const registry = createRegistry();
   registry.install(
     defineExtension({
@@ -1201,6 +1250,7 @@ export async function createWritingRuntime(options: {
         await options.store.markTurn(begun.turnId, { status: "failed", error: message });
         notedTurns.delete(begun.turnId);
         formatRepairs.delete(begun.turnId);
+        applyRepairs.delete(begun.turnId);
         turnBySession.delete(session.id);
         return { turnId: begun.turnId, status: "failed", submissionId: "", error: message };
       }
@@ -1226,7 +1276,7 @@ export async function createWritingRuntime(options: {
       await translate(conversation, req.documentId, begun.turnId);
       let turn = await options.store.getTurn(begun.turnId);
       if (turn && (turn.status === "running" || turn.status === "queued")) {
-        const pending = formatRepairs.get(begun.turnId);
+        const pending = applyRepairs.get(begun.turnId) ?? formatRepairs.get(begun.turnId);
         if (notedTurns.has(begun.turnId)) {
           await options.store.markTurn(begun.turnId, { status: "no_change" });
         } else {
@@ -1239,6 +1289,7 @@ export async function createWritingRuntime(options: {
       }
       notedTurns.delete(begun.turnId);
       formatRepairs.delete(begun.turnId);
+      applyRepairs.delete(begun.turnId);
       turnBySession.delete(session.id);
       const tokens = outcome.value.usage;
       await options.usage?.record({
@@ -1331,6 +1382,29 @@ export async function createWritingRuntime(options: {
 
 const EDIT_REPAIR = "请再调用一次 propose_edits。opsJson 是修订数组的 JSON，不要用代码围栏。";
 
+function watchTool(
+  tool: {
+    name: string;
+    execute: (...args: never[]) => Promise<unknown>;
+  },
+  report: ((event: { name: string; isError: boolean; text: string }) => void) | undefined,
+): void {
+  if (!report) return;
+  const run = tool.execute.bind(tool);
+  tool.execute = async (...args: never[]) => {
+    const result = (await run(...args)) as {
+      isError?: boolean;
+      output?: Array<{ type?: string; text?: string }>;
+    };
+    const text = (result.output ?? [])
+      .filter((item) => item.type === "text")
+      .map((item) => item.text ?? "")
+      .join(" ");
+    report({ name: tool.name, isError: result.isError === true, text });
+    return result;
+  };
+}
+
 function schemaIssue(
   label: string,
   raw: string,
@@ -1391,7 +1465,62 @@ function withEditReason(value: unknown): unknown {
   if (typeof op.op !== "string") return value;
   const reason = typeof op.reason === "string" ? op.reason.trim() : "";
   op.reason = reason ? reason.slice(0, 500) : "修订";
+  if (op.op === "insert_block" || op.op === "move_block") {
+    op.afterBlockId = nullIfBlank(op.afterBlockId);
+  }
   return op;
+}
+
+function nullIfBlank(value: unknown): unknown {
+  if (value == null) return null;
+  if (typeof value !== "string") return value;
+  const text = value.trim().toLowerCase();
+  if (text === "" || text === "null" || text === "none" || text === "undefined") return null;
+  return value.trim();
+}
+
+/** 空文档没有锚点。把带正文的操作收成一次插到开头的 insert_block。 */
+function asFirstInsert(ops: EditOp[]): EditOp[] | undefined {
+  const chunks: string[] = [];
+  let reason = "写初稿";
+  for (const op of ops) {
+    if (op.op === "insert_block") {
+      chunks.push(op.newMarkdown);
+      reason = op.reason;
+    } else if (op.op === "replace_text") {
+      chunks.push(op.newText);
+      reason = op.reason;
+    } else if (op.op === "replace_block") {
+      chunks.push(op.newMarkdown);
+      reason = op.reason;
+    }
+  }
+  if (chunks.length === 0) return undefined;
+  return [
+    {
+      op: "insert_block",
+      afterBlockId: null,
+      newMarkdown: chunks.join("\n\n"),
+      reason,
+    },
+  ];
+}
+
+function applyIssue(errors: unknown, hint: string): string {
+  const raw = typeof errors === "string" ? errors : JSON.stringify(errors);
+  const text = `修订没有落下：${excerptOf(raw)}。${hint}`;
+  return text.length <= 500 ? text : `${text.slice(0, 500)}…`;
+}
+
+function anchorText(blocks: readonly PlanBlock[]): string {
+  if (blocks.length === 0) {
+    return "文档没有块。请用 insert_block，afterBlockId 为 null，newMarkdown 写正文。不要编造块 id。";
+  }
+  const listed = blocks.slice(0, 6).map((block) => {
+    const text = block.text.replace(/\s+/g, " ").trim().slice(0, 40);
+    return `${block.blockId} ${block.contentHash}${text ? `「${text}」` : ""}`;
+  });
+  return `请改用这些锚点：${listed.join("；")}`;
 }
 
 function toChange(sessionId: string, entries: readonly { kind: string }[]): HarnessChange {

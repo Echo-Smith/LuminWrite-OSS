@@ -57,7 +57,7 @@ pnpm demo
 | `LW_DISCARD_PURGE_INTERVAL_MS` | 自动清退的间隔，默认一小时。开关关闭时到点也不删 |
 | `LW_LIVE` | 只有 `1` 才跑真实模型冒烟。测试和 `pnpm demo` 默认不碰网络 |
 | `LW_EVAL_LIVE` | 只有 `1` 时 `lw eval` 才离开 faux。不进每个 PR 的 CI |
-| `LW_EVAL_DEBUG` | `1` 时把每次模型请求的场景或任务、方法、路径、模型 id、状态码打到 stderr。响应里有用量也记下。`x-goog-api-key` 和 `Authorization` 只记 `[redacted]` |
+| `LW_EVAL_DEBUG` | `1` 时把每次模型请求的场景或任务、方法、路径、模型 id、状态码打到 stderr，响应里有用量也记下。每次工具返回一行：场景、工具名、isError、最多 200 字的摘录。`x-goog-api-key` 和 `Authorization` 只记 `[redacted]` |
 | `LW_EVAL_TASK_TIMEOUT_MS` | 评测里单个任务的等待毫秒数。不设时真实模型 180000，faux 20000。到点会取消任务 |
 | `LW_EVAL_HELDOUT_DIR` | 留出集原文的本地目录。读 `.md`、`.txt`、`.html`，不提交 |
 | `LW_EMBED_API_KEY` | 评测用的嵌入密钥。要和 `LW_EMBED_BASE_URL`、`LW_EMBED_MODEL` 一起设，否则闸门用本机桩 |
