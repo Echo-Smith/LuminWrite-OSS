@@ -46,7 +46,7 @@ pnpm demo
 | `LW_SECRETS_KEY` | 32 字节 base64 主密钥。没有它、也没有 `secrets.key` 时，首次启动生成密钥文件 |
 | `LW_LLM_ENABLE` | 只有 `1` 时才把环境里的供应商密钥导入凭据库 |
 | `LW_LLM_API_KEY` | `LW_LLM_ENABLE=1` 时导入的密钥。未设置则用 `OPENAI_API_KEY` |
-| `LW_LLM_PROVIDER` | 导入凭据的供应商，默认 `openai` |
+| `LW_LLM_PROVIDER` | 评测里是 `gemini`、`openai-compatible` 或 `anthropic-compatible`。`lw serve` 导入凭据时默认 `openai` |
 | `LW_LLM_BASE_URL` | 导入凭据的基址，默认 `https://api.openai.com/v1` |
 | `LW_LLM_MODEL` | 旧的直连入口用的模型名，默认 `gpt-4.1-mini`。正常回合走注册表和凭据 |
 | `LW_ALLOW_PRIVATE_FETCH` | `1` 时 `safeFetch` 允许私网、环回和链路本地。RSS 和网址导入默认拒绝这些地址 |
@@ -57,7 +57,8 @@ pnpm demo
 | `LW_DISCARD_PURGE_INTERVAL_MS` | 自动清退的间隔，默认一小时。开关关闭时到点也不删 |
 | `LW_LIVE` | 只有 `1` 才跑真实模型冒烟。测试和 `pnpm demo` 默认不碰网络 |
 | `LW_EVAL_LIVE` | 只有 `1` 时 `lw eval` 才离开 faux。不进每个 PR 的 CI |
-| `LW_EVAL_HELDOUT_DIR` | 留出集原文的本地目录。`lw eval` 只读，不提交 |
+| `LW_EVAL_DEBUG` | `1` 时把每次模型请求的方法、路径、模型 id、状态码打到 stderr。`x-goog-api-key` 和 `Authorization` 只记 `[redacted]` |
+| `LW_EVAL_HELDOUT_DIR` | 留出集原文的本地目录。读 `.md`、`.txt`、`.html`，不提交 |
 | `LW_EMBED_API_KEY` | 评测用的嵌入密钥。要和 `LW_EMBED_BASE_URL`、`LW_EMBED_MODEL` 一起设，否则闸门用本机桩 |
 | `LW_EMBED_BASE_URL` | 嵌入的 OpenAI 兼容端点 |
 | `LW_EMBED_MODEL` | 嵌入模型 id |
@@ -66,7 +67,7 @@ pnpm demo
 
 真实模型不会在测试或演示里被调用。`lw serve` 的回合先走注册表；没有凭据、又没打开 `LW_ALLOW_FAUX` 时，回合失败，不会去读环境里的供应商密钥。测试和 `pnpm demo` 没有注册表解析器时，仍用进程内的 `test/faux` 计划函数提出修订，服务端负责校验锚点和说人话。`LW_LIVE=1` 的冒烟测试才会碰真实模型。
 
-`pnpm eval:gate` 用 faux 跑写、改、回滚，接上 `eval/lw-eval` 打 H2 / H3，并用 OpenAI 兼容的 `/embeddings` 走一遍嵌入。先 `pnpm --filter @luminwrite/cli build`。华丽笔记不会放宽说人话地板。真实模型再加 `LW_EVAL_LIVE=1`、`LW_LLM_ENABLE=1`、`LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）和 `LW_LLM_MODEL`。这些开关没齐就不读密钥。嵌入端点用上面的 `LW_EMBED_*`。留出集只从 `LW_EVAL_HELDOUT_DIR` 读。结果说明在 `docs/m2-01-h2-h3.md`。
+`pnpm eval:gate` 用 faux 跑写、改、回滚，接上 `eval/lw-eval` 打 H2 / H3，并用 OpenAI 兼容的 `/embeddings` 走一遍嵌入。先 `pnpm --filter "@luminwrite/cli..." build`，引号里的 `...` 会把依赖的工作区包一起编出来；只写 `@luminwrite/cli` 时那些包还没编，命令会失败。华丽笔记不会放宽说人话地板。真实模型再加 `LW_EVAL_LIVE=1`、`LW_LLM_ENABLE=1`、`LW_LLM_API_KEY`（或 `OPENAI_API_KEY`）和 `LW_LLM_MODEL`。这些开关没齐就不读密钥。`LW_LLM_PROVIDER=gemini` 走原生 `generateContent`，密钥在 `x-goog-api-key` 头里。嵌入端点用上面的 `LW_EMBED_*`。留出集只从 `LW_EVAL_HELDOUT_DIR` 读。结果说明在 `docs/m2-01-h2-h3.md`。
 
 ## 包
 

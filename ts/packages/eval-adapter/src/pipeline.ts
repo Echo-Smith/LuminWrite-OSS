@@ -1,16 +1,28 @@
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, extname, join } from "node:path";
 
 import { runLwEval, runLwEvalScript } from "./lweval.js";
 
 const NEGATIVE_CONTROL =
   "在当前行业的背景下，本方案具有重要意义。它能全方位赋能业务，打造增长矩阵。抓手和底层逻辑至关重要，助力闭环。";
 
+export interface ModelExchange {
+  method: string;
+  path: string;
+  model?: string;
+  status: number;
+  /** 只写头名和 `[redacted]`，不写头的值。 */
+  auth?: string;
+  bodyExcerpt?: string;
+}
+
 export interface EvalCapture {
   generatedAt: string;
   model: string;
   live: boolean;
+  /** 失败的模型请求。LW_EVAL_DEBUG=1 时也包括成功的。 */
+  exchanges: ModelExchange[];
   scenarios: {
     rollback: {
       ok: boolean;
@@ -90,6 +102,8 @@ export interface EvalJudgment {
     probe: EvalCapture["scenarios"]["floor"]["probe"];
   };
   heldout: { ran: boolean; reason?: string; files: Array<{ name: string; aitoneScore: number }> };
+  failures: string[];
+  exchanges: ModelExchange[];
   errors: string[];
 }
 
@@ -117,6 +131,7 @@ export async function judgeCapture(
   const embedPass = embed.ok && embed.stored && embed.searchHit && embed.requests > 0;
   const rollbackPass =
     capture.scenarios.rollback.ok && capture.scenarios.rollback.restoredMatchesWrite;
+  const failures = failureNotes(capture);
   return {
     generatedAt: new Date().toISOString(),
     model: capture.model,
@@ -141,8 +156,24 @@ export async function judgeCapture(
       probe: capture.scenarios.floor.probe,
     },
     heldout,
+    failures,
+    exchanges: capture.exchanges ?? [],
     errors,
   };
+}
+
+function failureNotes(capture: EvalCapture): string[] {
+  const notes: string[] = [];
+  const rollback = capture.scenarios.rollback.error;
+  if (rollback) notes.push(`写改回滚：${rollback}`);
+  const research = capture.scenarios.research.error;
+  if (research) notes.push(`检索计划：${research}`);
+  const embed = capture.scenarios.embeddings.error;
+  if (embed) notes.push(`嵌入：${embed}`);
+  const floor = capture.scenarios.floor;
+  if (floor.error) notes.push(`华丽笔记：${floor.error}`);
+  else if (floor.turnError) notes.push(`华丽笔记：${floor.turnStatus}：${floor.turnError}`);
+  return notes;
 }
 
 async function judgeH2(capture: EvalCapture, errors: string[]): Promise<EvalJudgment["h2"]> {
@@ -270,7 +301,7 @@ async function judgeHeldout(
     const info = await stat(dir);
     if (!info.isDirectory())
       return { ran: false, reason: "LW_EVAL_HELDOUT_DIR 不是目录", files: [] };
-    names = (await readdir(dir)).filter((name) => name.endsWith(".md") && name !== "SOURCES.md");
+    names = (await readdir(dir)).filter(isHeldoutFile);
   } catch {
     return { ran: false, reason: "读不到 LW_EVAL_HELDOUT_DIR", files: [] };
   }
@@ -282,14 +313,26 @@ async function judgeHeldout(
     files.push(path);
   }
   if (files.length === 0) return { ran: false, reason: "目录里没有留出集原文", files: [] };
+  const scratch = await mkdtemp(join(tmpdir(), "lw-eval-heldout-"));
   try {
-    const raw = (await runLwEval(["aitone", ...files])) as Record<
+    const scored: string[] = [];
+    for (const path of files) {
+      const rawText = await readFile(path, "utf8");
+      const text =
+        extname(path).toLowerCase() === ".html" || extname(path) === ".htm"
+          ? stripHtml(rawText)
+          : rawText;
+      const copy = join(scratch, basename(path));
+      await writeFile(copy, text, "utf8");
+      scored.push(copy);
+    }
+    const raw = (await runLwEval(["aitone", ...scored])) as Record<
       string,
       { aitone_score?: number }
     >;
     return {
       ran: true,
-      files: files.map((path) => ({
+      files: scored.map((path) => ({
         name: basename(path),
         aitoneScore: raw[path]?.aitone_score ?? Number.NaN,
       })),
@@ -297,7 +340,30 @@ async function judgeHeldout(
   } catch (error) {
     errors.push(error instanceof Error ? error.message : "留出集打分失败");
     return { ran: false, reason: "留出集打分失败", files: [] };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
+}
+
+const HELDOUT_EXT = new Set([".md", ".txt", ".html", ".htm"]);
+
+function isHeldoutFile(name: string): boolean {
+  if (name === "SOURCES.md") return false;
+  return HELDOUT_EXT.has(extname(name).toLowerCase());
+}
+
+/** 留出集里的网页只评正文。不把标签送进检测器。 */
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function floorHolds(floor: EvalCapture["scenarios"]["floor"]): boolean {
@@ -327,6 +393,7 @@ export function renderReport(judgment: EvalJudgment): string {
     "",
     judgment.pass ? "结论：**通过**。" : "结论：**未通过**。",
     "",
+    ...failureLines(judgment),
     "## 写 → 改 → 回滚",
     "",
     judgment.rollback.pass
@@ -373,11 +440,28 @@ export function renderReport(judgment: EvalJudgment): string {
     "",
     "真实模型不进每个 PR 的 CI。密钥只从环境变量读，不写进仓库、配置、日志或这份报告，也不进产品凭据库的持久数据。这一闸门用单独的临时库。",
     "",
+    "原生 Gemini：",
+    "",
     "```bash",
     "cd ts",
-    "pnpm --filter @luminwrite/cli build",
+    'pnpm --filter "@luminwrite/cli..." build',
+    "LW_EVAL_LIVE=1 LW_LLM_ENABLE=1 LW_EVAL_DEBUG=1 \\",
+    "  LW_LLM_PROVIDER=gemini \\",
+    "  LW_LLM_API_KEY=… LW_LLM_MODEL=gemini-4-argon \\",
+    "  pnpm eval:gate -- --out docs/m2-01-h2-h3.md",
+    "```",
+    "",
+    "`LW_LLM_BASE_URL` 不设时是 `https://generativelanguage.googleapis.com/v1beta`。密钥放在 `x-goog-api-key` 头里，不放进 URL。",
+    "",
+    "OpenAI 兼容端点（例如 Gemini 的 `/openai`）仍用 `LW_LLM_PROVIDER=openai-compatible`：",
+    "",
+    "```bash",
+    "cd ts",
+    'pnpm --filter "@luminwrite/cli..." build',
     "LW_EVAL_LIVE=1 LW_LLM_ENABLE=1 \\",
-    "  LW_LLM_API_KEY=… LW_LLM_MODEL=… \\",
+    "  LW_LLM_PROVIDER=openai-compatible \\",
+    "  LW_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai \\",
+    "  LW_LLM_API_KEY=… LW_LLM_MODEL=gemini-4-argon \\",
     "  pnpm eval:gate -- --out docs/m2-01-h2-h3.md",
     "```",
     "",
@@ -389,18 +473,19 @@ export function renderReport(judgment: EvalJudgment): string {
     "| `LW_LLM_ENABLE` | 必须是 `1` 才读写作密钥 |",
     "| `LW_LLM_API_KEY` | 写作密钥。没设则在上面两个开关都打开时读 `OPENAI_API_KEY` |",
     "| `LW_LLM_MODEL` | 写作模型 id。真实模型跑必填 |",
-    "| `LW_LLM_BASE_URL` | OpenAI 兼容端点。没设则是 `https://api.openai.com/v1` |",
-    "| `LW_LLM_PROVIDER` | `openai-compatible`（默认）或 `anthropic-compatible` |",
+    "| `LW_LLM_BASE_URL` | 原生 Gemini 不设则是 `https://generativelanguage.googleapis.com/v1beta`。OpenAI 兼容不设则是 `https://api.openai.com/v1` |",
+    "| `LW_LLM_PROVIDER` | `gemini`（原生 generateContent）、`openai-compatible`（默认）或 `anthropic-compatible` |",
     "| `LW_EMBED_API_KEY` | 嵌入密钥。三个嵌入变量要一起设，否则用本机桩 |",
     "| `LW_EMBED_BASE_URL` | 嵌入端点，OpenAI 兼容的 `/embeddings` |",
     "| `LW_EMBED_MODEL` | 嵌入模型 id |",
-    "| `LW_EVAL_HELDOUT_DIR` | 留出集原文目录。只在本地读，不提交 |",
+    "| `LW_EVAL_HELDOUT_DIR` | 留出集原文目录。读 `.md`、`.txt`、`.html`，不提交 |",
+    "| `LW_EVAL_DEBUG` | `1` 时把每次模型请求的方法、路径、模型 id 和状态码打到 stderr。`x-goog-api-key` 和 `Authorization` 只记 `[redacted]`。失败响应带抹掉密钥的摘录 |",
     "",
     "faux 全程：",
     "",
     "```bash",
     "cd ts",
-    "pnpm --filter @luminwrite/cli build",
+    'pnpm --filter "@luminwrite/cli..." build',
     "pnpm eval:gate -- --out docs/m2-01-h2-h3.md",
     "```",
     "",
@@ -417,6 +502,19 @@ export function renderReport(judgment: EvalJudgment): string {
     lines.push("## 错误", "", ...judgment.errors.map((error) => `- ${error}`), "");
   }
   return lines.join("\n");
+}
+
+function failureLines(judgment: EvalJudgment): string[] {
+  const stored = judgment.failures.map((row) => `- ${row}`);
+  const http = judgment.exchanges.map((item) => {
+    const model = item.model ? ` model=${item.model}` : "";
+    const auth = item.auth ? ` ${item.auth}` : "";
+    const body = item.bodyExcerpt ? ` ${item.bodyExcerpt}` : "";
+    return `- ${item.method} ${item.path}${model}${auth} HTTP ${item.status}${body}`;
+  });
+  if (stored.length === 0 && http.length === 0) return [];
+  const failed = stored.length > 0 || judgment.exchanges.some((item) => item.status >= 400);
+  return [`## ${failed ? "失败" : "模型请求"}`, "", ...stored, ...http, ""];
 }
 
 function formatWindows(windows: number[]): string {

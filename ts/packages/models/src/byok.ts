@@ -11,6 +11,7 @@ import {
   type Provider,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
@@ -107,6 +108,66 @@ export function byokFromBase(
   };
 }
 
+/**
+ * Gemini 的 OpenAI 兼容端点不认识 `store`。pi-ai 对「普通」兼容端点默认带
+ * `store: false`，Google 会回 400。官方 base 以斜杠结尾；openai 7 在路径以
+ * `/` 开头时不加斜杠也能拼对 `/chat/completions`，这里仍收成文档里的形式。
+ */
+export const GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+/** `models/gemini-4-argon` 和 `gemini-4-argon` 都落到路径里的那一节。 */
+export function geminiModelId(modelId: string): string {
+  return modelId.trim().replace(/^models\//, "");
+}
+
+export function geminiOpenAiEndpoint(baseUrl: string): {
+  baseUrl: string;
+  compat?: { supportsStore: false };
+} {
+  let host = "";
+  let path = "";
+  try {
+    const url = new URL(baseUrl);
+    host = url.hostname;
+    path = url.pathname;
+  } catch {
+    return { baseUrl };
+  }
+  if (host !== "generativelanguage.googleapis.com" || !path.includes("/openai")) {
+    return { baseUrl };
+  }
+  return {
+    baseUrl: baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`,
+    compat: { supportsStore: false },
+  };
+}
+
+function geminiNativeModel(
+  record: RegistryRecord,
+  providerId: string,
+  baseUrl: string,
+): Model<"google-generative-ai"> | undefined {
+  if (record.spec.kind !== "model") return undefined;
+  const spec = record.spec;
+  return {
+    id: geminiModelId(spec.modelId),
+    name: geminiModelId(spec.modelId),
+    api: "google-generative-ai",
+    provider: providerId,
+    baseUrl,
+    input: spec.input ?? ["text"],
+    cost: {
+      input: spec.cost?.input ?? 0,
+      output: spec.cost?.output ?? 0,
+      cacheRead: spec.cost?.cacheRead ?? 0,
+      cacheWrite: spec.cost?.cacheWrite ?? 0,
+    },
+    reasoning: spec.reasoning ?? false,
+    contextWindow: spec.contextWindow ?? 128000,
+    maxTokens: spec.maxTokens ?? 4096,
+  };
+}
+
 function compatibleModel(
   record: RegistryRecord,
   providerId: string,
@@ -115,12 +176,15 @@ function compatibleModel(
   if (record.spec.kind !== "model") return undefined;
   const spec = record.spec;
   const api = spec.api ?? "openai-completions";
+  const resolved = spec.baseUrl ?? baseUrl;
+  const gemini =
+    api === "openai-completions" ? geminiOpenAiEndpoint(resolved) : { baseUrl: resolved };
   return {
     id: spec.modelId,
     name: spec.modelId,
     api,
     provider: providerId,
-    baseUrl: spec.baseUrl ?? baseUrl,
+    baseUrl: gemini.baseUrl,
     input: spec.input ?? ["text"],
     cost: {
       input: spec.cost?.input ?? 0,
@@ -131,6 +195,7 @@ function compatibleModel(
     reasoning: spec.reasoning ?? false,
     contextWindow: spec.contextWindow ?? 8192,
     maxTokens: spec.maxTokens ?? 1024,
+    ...(gemini.compat ? { compat: gemini.compat } : {}),
   };
 }
 
@@ -147,6 +212,31 @@ function providerForCredential(
   if (credential.provider === "test") {
     if (!fauxAllowed(options.env)) return undefined;
     return byokFromBase(fauxFor(options.models).provider, credential, open);
+  }
+  if (credential.provider === "gemini") {
+    const id = `byok_${credential.id}`;
+    const baseUrl = (credential.baseUrl ?? GEMINI_NATIVE_BASE).replace(/\/$/, "");
+    const models = options.entries
+      .filter((entry) => entry.spec.kind === "model" && entry.spec.provider === "gemini")
+      .map((entry) => geminiNativeModel(entry, id, baseUrl))
+      .filter((model): model is Model<"google-generative-ai"> => model !== undefined);
+    if (models.length === 0) return undefined;
+    return createProvider({
+      id,
+      name: credential.label,
+      baseUrl,
+      auth: {
+        apiKey: {
+          name: credential.label,
+          resolve: async () => ({
+            auth: { apiKey: (await open()).reveal() },
+            source: "vault",
+          }),
+        },
+      },
+      models,
+      api: googleGenerativeAIApi(),
+    });
   }
   if (
     credential.provider === "openai-compatible" ||

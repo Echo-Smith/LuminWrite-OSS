@@ -16,6 +16,7 @@ import {
   type EvalCapture,
   type EvalJudgment,
   judgeCapture,
+  type ModelExchange,
   readJsonFile,
   renderReport,
   runWriteReviseRollback,
@@ -71,7 +72,7 @@ export async function runEvalCli(
     await mkdir(dir, { recursive: true });
     let capture: EvalCapture;
     if (parsed.command === "run" || parsed.command === "gate") {
-      capture = await captureEval(env);
+      capture = await captureEval(env, (line) => stderr.write(`${line}\n`));
       await writeFile(
         join(dir, "capture.json"),
         `${redact(JSON.stringify(capture, null, 2), secrets)}\n`,
@@ -128,8 +129,18 @@ function captureFailed(capture: EvalCapture): boolean {
   );
 }
 
-async function captureEval(env: NodeJS.ProcessEnv): Promise<EvalCapture> {
+async function captureEval(
+  env: NodeJS.ProcessEnv,
+  log: (line: string) => void,
+): Promise<EvalCapture> {
   const live = env.LW_EVAL_LIVE === "1";
+  const exchanges: ModelExchange[] = [];
+  const stopWatch = watchModelFetch({
+    debug: env.LW_EVAL_DEBUG === "1",
+    secrets: secretValues(env),
+    exchanges,
+    log,
+  });
   const dir = await mkdtemp(join(tmpdir(), "lw-eval-data-"));
   const dataDir = join(dir, "data");
   const db = await openMemoryDatabase();
@@ -208,9 +219,11 @@ async function captureEval(env: NodeJS.ProcessEnv): Promise<EvalCapture> {
       generatedAt: new Date().toISOString(),
       model: live ? (env.LW_LLM_MODEL ?? "live") : "test/faux",
       live,
+      exchanges,
       scenarios: { rollback, research, embeddings, floor },
     };
   } finally {
+    stopWatch();
     await runtime?.close();
     await db.close();
     await stub?.close();
@@ -394,7 +407,19 @@ async function runResearch(
       }),
     });
     if (turn.status >= 400) throw new Error(messageOf(turn.body));
-    const status = (turn.body as { status?: string }).status;
+    const turned = turn.body as { status?: string; error?: string };
+    const status = turned.status;
+    if (status && status !== "applied") {
+      const detail = turned.error?.trim();
+      return {
+        ok: false,
+        error: detail ? `回合结束于 ${status}：${detail}` : `回合结束于 ${status}`,
+        questionCount: 0,
+        gaps: [],
+        claimFlags: false,
+        admittedGap: false,
+      };
+    }
     const plans = await call(`/api/v1/documents/${documentId}/plans`);
     const stored = plans.body as Array<{
       plan?: { questions?: unknown[] };
@@ -484,10 +509,13 @@ async function installLiveModel(
   env: NodeJS.ProcessEnv,
   userId: string,
 ): Promise<void> {
-  const provider =
-    env.LW_LLM_PROVIDER === "anthropic-compatible" ? "anthropic-compatible" : "openai-compatible";
-  const baseUrl = env.LW_LLM_BASE_URL?.trim() || "https://api.openai.com/v1";
-  const modelId = env.LW_LLM_MODEL?.trim() ?? "";
+  const provider = liveProvider(env);
+  const baseUrl =
+    env.LW_LLM_BASE_URL?.trim() ||
+    (provider === "gemini"
+      ? "https://generativelanguage.googleapis.com/v1beta"
+      : "https://api.openai.com/v1");
+  const modelId = (env.LW_LLM_MODEL?.trim() ?? "").replace(/^models\//, "");
   const apiKey = env.LW_LLM_API_KEY ?? env.OPENAI_API_KEY ?? "";
   await ensureDefaultRegistry(db, userId, env);
   await createCredential(db, ring, {
@@ -506,7 +534,12 @@ async function installLiveModel(
       kind: "model",
       provider,
       modelId,
-      api: provider === "anthropic-compatible" ? "anthropic-messages" : "openai-completions",
+      api:
+        provider === "gemini"
+          ? "google-generative-ai"
+          : provider === "anthropic-compatible"
+            ? "anthropic-messages"
+            : "openai-completions",
       baseUrl,
       contextWindow: 128000,
       maxTokens: 4096,
@@ -715,10 +748,23 @@ function liveProblem(env: NodeJS.ProcessEnv): string | undefined {
   }
   if (!env.LW_LLM_MODEL?.trim()) return "真实模型需要 LW_LLM_MODEL";
   const provider = env.LW_LLM_PROVIDER?.trim();
-  if (provider && provider !== "openai-compatible" && provider !== "anthropic-compatible") {
-    return "LW_LLM_PROVIDER 只能是 openai-compatible 或 anthropic-compatible";
+  if (
+    provider &&
+    provider !== "openai-compatible" &&
+    provider !== "anthropic-compatible" &&
+    provider !== "gemini"
+  ) {
+    return "LW_LLM_PROVIDER 只能是 gemini、openai-compatible 或 anthropic-compatible";
   }
   return undefined;
+}
+
+function liveProvider(
+  env: NodeJS.ProcessEnv,
+): "gemini" | "anthropic-compatible" | "openai-compatible" {
+  const provider = env.LW_LLM_PROVIDER?.trim();
+  if (provider === "gemini" || provider === "anthropic-compatible") return provider;
+  return "openai-compatible";
 }
 
 function embedProblem(env: NodeJS.ProcessEnv): string | undefined {
@@ -740,6 +786,112 @@ function redact(text: string, secrets: readonly string[]): string {
     if (out.includes(secret)) out = out.split(secret).join("[redacted]");
   }
   return out;
+}
+
+function watchModelFetch(input: {
+  debug: boolean;
+  secrets: readonly string[];
+  exchanges: ModelExchange[];
+  log: (line: string) => void;
+}): () => void {
+  const original = globalThis.fetch;
+  globalThis.fetch = async (request, init) => {
+    const described = describeFetch(request, init);
+    const response = await original(request, init);
+    if (!described || !isModelPath(described.path)) return response;
+    let bodyExcerpt: string | undefined;
+    if (!response.ok) {
+      bodyExcerpt = redact(truncate(await response.clone().text(), 500), input.secrets);
+    }
+    if (!response.ok || input.debug) {
+      const exchange: ModelExchange = {
+        method: described.method,
+        path: described.path,
+        ...(described.model ? { model: described.model } : {}),
+        status: response.status,
+        ...(described.auth ? { auth: described.auth } : {}),
+        ...(bodyExcerpt ? { bodyExcerpt } : {}),
+      };
+      input.exchanges.push(exchange);
+      if (input.debug) input.log(formatExchange(exchange));
+    }
+    return response;
+  };
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+function describeFetch(
+  request: Parameters<typeof fetch>[0],
+  init?: RequestInit,
+): { method: string; path: string; model?: string; auth?: string } | undefined {
+  let href = "";
+  let method = init?.method ?? "GET";
+  const body = init?.body;
+  let headers = new Headers(init?.headers);
+  if (typeof request === "string" || request instanceof URL) {
+    href = String(request);
+  } else {
+    href = request.url;
+    method = init?.method ?? request.method;
+    if (!init?.headers) headers = new Headers(request.headers);
+  }
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return undefined;
+  }
+  const model = typeof body === "string" ? modelField(body) : undefined;
+  const auth = authMarker(headers, url);
+  return {
+    method: method.toUpperCase(),
+    path: url.pathname,
+    ...(model ? { model } : {}),
+    ...(auth ? { auth } : {}),
+  };
+}
+
+/** 只记头的名字。值一律写成 [redacted]，密钥不进日志。 */
+function authMarker(headers: Headers, url: URL): string | undefined {
+  const marks: string[] = [];
+  if (headers.has("x-goog-api-key")) marks.push("x-goog-api-key=[redacted]");
+  if (headers.has("authorization")) marks.push("authorization=[redacted]");
+  if (url.searchParams.has("key") || url.searchParams.has("api_key")) {
+    marks.push("query-key=[redacted]");
+  }
+  return marks.length > 0 ? marks.join(" ") : undefined;
+}
+
+function modelField(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { model?: unknown };
+    return typeof parsed.model === "string" ? parsed.model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isModelPath(path: string): boolean {
+  return (
+    path.endsWith("/chat/completions") ||
+    path.endsWith("/embeddings") ||
+    path.includes(":generateContent") ||
+    path.includes(":streamGenerateContent")
+  );
+}
+
+function formatExchange(exchange: ModelExchange): string {
+  const model = exchange.model ? ` model=${exchange.model}` : "";
+  const auth = exchange.auth ? ` ${exchange.auth}` : "";
+  const body = exchange.bodyExcerpt ? ` ${exchange.bodyExcerpt}` : "";
+  return `${exchange.method} ${exchange.path}${model}${auth} HTTP ${exchange.status}${body}`;
+}
+
+function truncate(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max)}…`;
 }
 
 function closeServer(server: Server): Promise<void> {

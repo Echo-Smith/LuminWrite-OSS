@@ -2,8 +2,8 @@ import { analyzePlain } from "@luminwrite/plainspeak";
 import { readStoredPlan, type StoredResearchPlan } from "@luminwrite/research";
 
 export { lwEvalRoot, runLwEval } from "./lweval.js";
-export type { EvalCapture, EvalJudgment } from "./pipeline.js";
-export { judgeCapture, readJsonFile, renderReport } from "./pipeline.js";
+export type { EvalCapture, EvalJudgment, ModelExchange } from "./pipeline.js";
+export { judgeCapture, readJsonFile, renderReport, stripHtml } from "./pipeline.js";
 
 export interface SmokeSample {
   id: string;
@@ -67,6 +67,7 @@ export interface TaskApiSnapshot {
   documentId?: string;
   resultVersionId?: string;
   proposalId?: string;
+  error?: { code?: string; message?: string; retryable?: boolean };
 }
 
 const TASK_DONE = new Set(["completed", "failed", "canceled", "rejected"]);
@@ -121,7 +122,12 @@ async function waitForTask(
   for (;;) {
     const task = await api.getTask(id);
     if (TASK_DONE.has(task.state)) {
-      if (task.state !== "completed") throw new Error(`任务结束于 ${task.state}`);
+      if (task.state !== "completed") {
+        const detail = task.error?.message?.trim();
+        throw new Error(
+          detail ? `任务结束于 ${task.state}：${detail}` : `任务结束于 ${task.state}`,
+        );
+      }
       return task;
     }
     if (Date.now() - started > timeoutMs) throw new Error("任务超时");

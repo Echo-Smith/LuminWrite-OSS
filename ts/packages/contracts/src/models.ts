@@ -24,7 +24,11 @@ export type RegistryEntrySpec =
       kind: "model";
       provider: string;
       modelId: string;
-      api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+      api?:
+        | "openai-completions"
+        | "openai-responses"
+        | "anthropic-messages"
+        | "google-generative-ai";
       baseUrl?: string;
       contextWindow?: number;
       maxTokens?: number;
