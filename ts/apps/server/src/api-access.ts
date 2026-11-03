@@ -14,6 +14,7 @@ const OWNER_ONLY_PREFIXES = [
   "/me/registry",
   "/me/feeds",
   "/me/subscriptions",
+  "/me/settings",
   "/feeds",
   "/subscriptions",
 ];
@@ -62,6 +63,10 @@ export function requiredScope(method: string, path: string): ApiScope | "owner-o
   if (/^\/documents\/[^/]+\/sessions\/[^/]+\/(?:discard|undo-discard)$/.test(normalized)) {
     return "owner-only";
   }
+  if (/^\/sessions\/[^/]+\/archive(\/undo)?$/.test(normalized)) return "owner-only";
+  if (/^\/sessions\/[^/]+$/.test(normalized) && verb === "DELETE") return "owner-only";
+  if (/^\/documents\/[^/]+$/.test(normalized) && verb === "DELETE") return "owner-only";
+  if (/^\/turns\/[^/]+$/.test(normalized)) return verb === "GET" ? "tasks:read" : "deny";
   if (/^\/versions\/[^/]+$/.test(normalized)) {
     return verb === "GET" ? "documents:read" : "deny";
   }

@@ -20,21 +20,35 @@ import { DatabaseSync } from "node:sqlite";
  * 子对话的 record.parent 继续指向父对话。删掉父对话的行之后，若子对话还指着它，
  * pi 读历史会落到不存在的对话上。
  *
- * 清退（进程不再使用这些对话之后调用；测试里先 Harness.close）：
+ * 清退不要求关掉 Harness。另一个会话可以开着，只要没有未提交的读事务。
  * 1. 目标对话，加上 owner_conversation_id 落在目标里的任务子对话，整段删除。
  * 2. 仍要保留、但 parent 指向被删对话的 fork：去掉 record.parent，留下它自己的
  *    entries 和已复制的 documents。这是 fork 之后再删旧对话。
  * 3. 删除这些对话的 entries、tasks、submissions、conversation/task 范围的 documents
  *    和 document_revisions，以及对应的 record_ids。
  * 4. 不动 durable_metadata、session 范围的 documents，也不动其他对话。
- * 5. wal_checkpoint(TRUNCATE) 之后 VACUUM，避免原文留在空闲页或 WAL。
- *    文件仍被打开的 Harness 占用时 VACUUM 会失败，行已经删掉，vacuumed 为 false。
+ * 5. 清退连接打开 secure_delete，DELETE 时把释放的页（含溢出页）抹零，
+ *    再 wal_checkpoint(TRUNCATE)。VACUUM 能做就做，不是成功条件。
+ *    检查点被别的读事务挡住时，行已经删掉，residue 为 wal_pending。
  */
+export type PiResidue = "cleared" | "wal_pending";
+
 export interface PiPurgeReport {
   deletedConversationIds: string[];
   detachedForkIds: string[];
   vacuumed: boolean;
+  residue: PiResidue;
 }
+
+export interface PiWork {
+  tasks: number;
+  submissions: number;
+  /** 调用方传入、且自己或子对话上还有未结束任务的对话 id。 */
+  busyConversationIds: string[];
+}
+
+const LIVE_TASK = new Set(["pending", "running", "waiting", "completing"]);
+const LIVE_SUBMISSION = new Set(["queued", "placed"]);
 
 interface ConversationRow {
   id: number;
@@ -64,8 +78,15 @@ export function purgePiConversations(
   const database = new DatabaseSync(sqlitePath);
   try {
     database.exec("PRAGMA busy_timeout = 5000");
-    if (requested.size === 0)
-      return { deletedConversationIds: [], detachedForkIds: [], vacuumed: false };
+    database.exec("PRAGMA secure_delete = ON");
+    if (requested.size === 0) {
+      return {
+        deletedConversationIds: [],
+        detachedForkIds: [],
+        vacuumed: false,
+        residue: "cleared",
+      };
+    }
     const conversations = database
       .prepare("SELECT id, owner_conversation_id, record FROM conversations")
       .all() as unknown as ConversationRow[];
@@ -100,6 +121,7 @@ export function purgePiConversations(
         deletedConversationIds: [],
         detachedForkIds: detached.map(String),
         vacuumed: false,
+        residue: "cleared",
       };
     }
     const dropList = [...drop];
@@ -143,9 +165,9 @@ export function purgePiConversations(
       database.exec("ROLLBACK");
       throw error;
     }
+    const checkpoint = checkpointTruncate(database);
     let vacuumed = false;
     try {
-      database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       database.exec("VACUUM");
       vacuumed = true;
     } catch {
@@ -155,9 +177,97 @@ export function purgePiConversations(
       deletedConversationIds: dropList.map(String),
       detachedForkIds: detached.map(String),
       vacuumed,
+      residue: checkpoint.truncated ? "cleared" : "wal_pending",
     };
   } finally {
     database.close();
+  }
+}
+
+/** 这些对话上还没结束的 pi 任务和提交。文件不存在或还没有表时当作没有。 */
+export function inspectPiWork(sqlitePath: string, conversationIds: readonly string[]): PiWork {
+  const requested = new Set<number>();
+  for (const id of conversationIds) {
+    if (!/^\d+$/.test(id)) continue;
+    requested.add(Number(id));
+  }
+  if (requested.size === 0) return { tasks: 0, submissions: 0, busyConversationIds: [] };
+  let database: DatabaseSync;
+  try {
+    database = new DatabaseSync(sqlitePath, { readOnly: true });
+  } catch {
+    return { tasks: 0, submissions: 0, busyConversationIds: [] };
+  }
+  try {
+    database.exec("PRAGMA busy_timeout = 5000");
+    const conversations = database
+      .prepare("SELECT id, owner_conversation_id FROM conversations")
+      .all() as unknown as Array<{ id: number; owner_conversation_id: number | null }>;
+    const scope = new Set<number>(requested);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const row of conversations) {
+        if (scope.has(row.id) || row.owner_conversation_id == null) continue;
+        if (scope.has(row.owner_conversation_id)) {
+          scope.add(row.id);
+          grew = true;
+        }
+      }
+    }
+    const tasks = database.prepare("SELECT status FROM tasks WHERE conversation_id = ?");
+    const submissions = database.prepare(
+      "SELECT status FROM submissions WHERE conversation_id = ?",
+    );
+    let taskCount = 0;
+    let submissionCount = 0;
+    const busy = new Set<number>();
+    for (const id of scope) {
+      let live = false;
+      for (const row of tasks.all(id) as unknown as Array<{ status: string }>) {
+        if (LIVE_TASK.has(row.status)) {
+          taskCount += 1;
+          live = true;
+        }
+      }
+      for (const row of submissions.all(id) as unknown as Array<{ status: string }>) {
+        if (LIVE_SUBMISSION.has(row.status)) {
+          submissionCount += 1;
+          live = true;
+        }
+      }
+      if (live) busy.add(id);
+    }
+    const byId = new Map(conversations.map((row) => [row.id, row]));
+    const busyParents = new Set<number>();
+    for (const id of busy) {
+      let cursor: number | null = id;
+      const seen = new Set<number>();
+      while (cursor != null && !seen.has(cursor)) {
+        seen.add(cursor);
+        if (requested.has(cursor)) busyParents.add(cursor);
+        cursor = byId.get(cursor)?.owner_conversation_id ?? null;
+      }
+    }
+    const busyConversationIds = [...busyParents].map(String);
+    return { tasks: taskCount, submissions: submissionCount, busyConversationIds };
+  } catch {
+    return { tasks: 0, submissions: 0, busyConversationIds: [] };
+  } finally {
+    database.close();
+  }
+}
+
+function checkpointTruncate(database: DatabaseSync): { truncated: boolean } {
+  try {
+    const row = database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+      | { busy?: number; log?: number }
+      | undefined;
+    const busy = Number(row?.busy ?? 1);
+    const log = Number(row?.log ?? 1);
+    return { truncated: busy === 0 && log === 0 };
+  } catch {
+    return { truncated: false };
   }
 }
 

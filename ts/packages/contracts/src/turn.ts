@@ -14,6 +14,7 @@ export const TurnStatusSchema = z.enum([
   "conflicted",
   "failed",
   "cancelled",
+  "no_change",
 ]);
 export type TurnStatus = z.infer<typeof TurnStatusSchema>;
 

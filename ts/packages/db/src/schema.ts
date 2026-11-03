@@ -43,6 +43,7 @@ export const users = pgTable(
     id: text("id").primaryKey(),
     displayName: text("display_name").notNull(),
     tokenHash: text("token_hash").notNull(),
+    autoPurgeDiscarded: boolean("auto_purge_discarded").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     singleton: boolean("singleton").notNull().default(true),
   },

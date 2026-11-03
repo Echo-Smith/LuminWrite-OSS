@@ -50,6 +50,7 @@ describe("子代理运行", () => {
         status: "succeeded",
         piConversationId: "7",
       });
+      await db.markTurn(begun.turnId, { status: "cancelled" });
       await db.discardDocument(created.id);
       await db.purgeDiscarded({ retentionDays: 0 });
       expect(await db.query("SELECT id FROM subagent_runs")).toEqual([]);
