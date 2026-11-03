@@ -12,7 +12,7 @@ import {
 import { EMBED_DIM, type EmbeddingPort } from "./embed.js";
 import { KbInputError, normalizeBody, parseUpload } from "./parse.js";
 import { RETRIEVAL_POOL, rrfMerge } from "./rrf.js";
-import { searchText, segment } from "./segment.js";
+import { searchTextWithTitle, segment } from "./segment.js";
 
 export type SourceKind = "upload" | "url" | "rss_item" | "web" | "document";
 
@@ -69,6 +69,8 @@ export interface KnowledgeBase {
   recordEvidence(input: RecordEvidenceInput): Promise<CitationView>;
   resolveEvidence(ownerId: string, evidenceId: string): Promise<CitationView>;
   listEvidence(ownerId: string, citingDocumentId: string): Promise<CitedEvidence[]>;
+  /** 按当前规则重写每块的 search_text。第一块带标题分词。 */
+  rebuildSearchText(): Promise<number>;
   readSource(
     ownerId: string,
     sourceId: string,
@@ -399,6 +401,28 @@ export function createKnowledgeBase(input: { db: LwDatabase; embedder?: Embedder
       return listEvidenceRows(db, ownerId, citingDocumentId);
     },
 
+    async rebuildSearchText() {
+      const rows = await db.query<{
+        id: string;
+        ord: number | string;
+        text: string;
+        title: string | null;
+        search_text: string;
+      }>(
+        `SELECT c.id, c.ord, c.text, c.search_text, s.title
+         FROM chunks c
+         JOIN sources s ON s.id = c.source_id`,
+      );
+      let updated = 0;
+      for (const row of rows) {
+        const next = searchTextWithTitle(row.title ?? "", row.text, Number(row.ord) === 0);
+        if (next === row.search_text) continue;
+        await db.query(`UPDATE chunks SET search_text = $2 WHERE id = $1`, [row.id, next]);
+        updated += 1;
+      }
+      return updated;
+    },
+
     async createFolder(folder) {
       const name = folder.name.trim();
       if (!name || name.length > 80) throw new KbInputError("文件夹名称不合法");
@@ -699,7 +723,7 @@ async function writeSource(
           input.ownerId,
           index,
           chunk.text,
-          searchText(chunk.text),
+          searchTextWithTitle(input.title, chunk.text, index === 0),
           embedding ? vectorLiteral(embedding) : null,
           embedding ? model : null,
           chunk.charStart,

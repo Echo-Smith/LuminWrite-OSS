@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
   CONSTRAINT uk_users_singleton UNIQUE (singleton)
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_purge_discarded boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS documents (
   id text PRIMARY KEY,
   owner_id text NOT NULL,

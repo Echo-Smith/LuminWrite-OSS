@@ -45,7 +45,12 @@ import { builtinRoles, outsideScope, type RoleDef } from "@luminwrite/roles";
 
 import { bindDelegate } from "./delegate.js";
 import type { SessionKnowledge } from "./knowledge.js";
-import { type PiPurgeReport, purgePiConversations as purgePiStorage } from "./pi-purge.js";
+import {
+  inspectPiWork,
+  type PiPurgeReport,
+  type PiWork,
+  purgePiConversations as purgePiStorage,
+} from "./pi-purge.js";
 import { type PlanBlock, planOps, targetIndex } from "./plan.js";
 import type { HarnessChange, HarnessPort } from "./port.js";
 import { screenOps } from "./screen.js";
@@ -53,7 +58,14 @@ import type { DossierSnapshot, SessionSnapshot, WritingStore } from "./store.js"
 
 const ctx: Context = BACKGROUND_CONTEXT;
 
-const terminal = new Set<TurnStatus>(["applied", "proposed", "failed", "conflicted", "cancelled"]);
+const terminal = new Set<TurnStatus>([
+  "applied",
+  "proposed",
+  "failed",
+  "conflicted",
+  "cancelled",
+  "no_change",
+]);
 
 function parseTag(text: string, tag: string): string {
   const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text);
@@ -153,14 +165,18 @@ export interface TurnResult {
   status: TurnStatus;
   submissionId: string;
   versionId?: string;
+  /** 失败原因。成功、冲突和 no_change 时为空。 */
+  error?: string | null;
 }
 
 export interface WritingRuntime extends HarnessPort {
   submitTurn(req: TurnRequest): Promise<TurnResult>;
   events(documentId: string, afterSeq?: number): Promise<RunEvent[]>;
   readRelatedDossier(sessionId: string, documentId: string): Promise<DossierSnapshot>;
-  /** 关掉 Harness 之后调用最稳妥。文件仍被占用时，行会删掉，但 VACUUM 可能失败。 */
+  /** 不关 Harness。secure_delete 抹零释放页，检查点截不断时 residue 为 wal_pending。 */
   purgePiConversations?(ids: readonly string[]): Promise<PiPurgeReport>;
+  /** pi 里还没结束的任务。永久删除前用来拒绝。 */
+  activePiWork?(conversationIds: readonly string[]): Promise<PiWork>;
 }
 
 export interface TurnModelChoice {
@@ -354,6 +370,8 @@ export async function createWritingRuntime(options: {
   function admit(conversationId: ConversationId, name: string): string | undefined {
     return delegate?.charge(conversationId, name);
   }
+  const turnBySession = new Map<string, string>();
+  const notedTurns = new Set<string>();
   const storage = await openNodeSqliteStorage(options.sqlitePath);
   const models = options.models ?? createClosedModels();
   const faux = fauxFor(models);
@@ -782,6 +800,8 @@ export async function createWritingRuntime(options: {
             ...(args.scopeRef ? { scopeRef: args.scopeRef } : {}),
           });
           if (!result.ok) return { isError: true, output: [{ type: "text", text: result.reason }] };
+          const turnId = turnBySession.get(args.sessionId);
+          if (turnId) notedTurns.add(turnId);
           return {
             output: [
               { type: "text", text: JSON.stringify({ id: result.id, status: "candidate" }) },
@@ -944,6 +964,9 @@ export async function createWritingRuntime(options: {
     async purgePiConversations(ids) {
       return purgePiStorage(options.sqlitePath, ids);
     },
+    async activePiWork(ids) {
+      return inspectPiWork(options.sqlitePath, ids);
+    },
     async submitTurn(req) {
       const begun = await options.store.beginTurn(req);
       const existing = await options.store.getTurn(begun.turnId);
@@ -953,6 +976,7 @@ export async function createWritingRuntime(options: {
           status: existing.status,
           submissionId: existing.piSubmissionId ?? "",
           ...(existing.resultVersionId ? { versionId: existing.resultVersionId } : {}),
+          error: existing.error,
         };
       }
       if (options.turnSpend) {
@@ -976,10 +1000,16 @@ export async function createWritingRuntime(options: {
         if (!options.resolveTurn || fauxAllowed(options.env)) chain = [LOCAL_FAUX];
         else {
           await options.store.markTurn(begun.turnId, { status: "failed", error: "没有可用模型" });
-          return { turnId: begun.turnId, status: "failed", submissionId: "" };
+          return {
+            turnId: begun.turnId,
+            status: "failed",
+            submissionId: "",
+            error: "没有可用模型",
+          };
         }
       }
       await options.store.markTurn(begun.turnId, { status: "running" });
+      turnBySession.set(session.id, begun.turnId);
       const dossier = await options.store.readDossier(req.documentId);
       const blocks = await options.store.readBlocksAt(req.documentId, session.baseVersionId);
       const index = targetIndex(req.instruction, blocks, req.selection);
@@ -1107,7 +1137,9 @@ export async function createWritingRuntime(options: {
         }
         const message = error instanceof Error ? error.message : "没有可用模型";
         await options.store.markTurn(begun.turnId, { status: "failed", error: message });
-        return { turnId: begun.turnId, status: "failed", submissionId: "" };
+        notedTurns.delete(begun.turnId);
+        turnBySession.delete(session.id);
+        return { turnId: begun.turnId, status: "failed", submissionId: "", error: message };
       }
       for (const event of fallbacks) {
         await options.store.appendEvent(req.documentId, {
@@ -1131,9 +1163,15 @@ export async function createWritingRuntime(options: {
       await translate(conversation, req.documentId, begun.turnId);
       let turn = await options.store.getTurn(begun.turnId);
       if (turn && (turn.status === "running" || turn.status === "queued")) {
-        await options.store.markTurn(begun.turnId, { status: "failed", error: "尚未实现" });
+        if (notedTurns.has(begun.turnId)) {
+          await options.store.markTurn(begun.turnId, { status: "no_change" });
+        } else {
+          await options.store.markTurn(begun.turnId, { status: "failed", error: "尚未实现" });
+        }
         turn = await options.store.getTurn(begun.turnId);
       }
+      notedTurns.delete(begun.turnId);
+      turnBySession.delete(session.id);
       const tokens = outcome.value.usage;
       await options.usage?.record({
         requestId: req.idempotencyKey,
@@ -1166,6 +1204,7 @@ export async function createWritingRuntime(options: {
         status: turn?.status ?? "failed",
         submissionId: outcome.value.submissionId,
         ...(turn?.resultVersionId ? { versionId: turn.resultVersionId } : {}),
+        error: turn?.error ?? null,
       };
     },
   };

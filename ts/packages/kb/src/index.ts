@@ -16,7 +16,7 @@ export {
 } from "./kb.js";
 export { KbInputError, normalizeBody, parseUpload } from "./parse.js";
 export { RETRIEVAL_POOL, RRF_K, rrfMerge } from "./rrf.js";
-export { searchText, segment } from "./segment.js";
+export { searchText, searchTextWithTitle, segment } from "./segment.js";
 
 export const phase = "foundation" as const;
 export const note =

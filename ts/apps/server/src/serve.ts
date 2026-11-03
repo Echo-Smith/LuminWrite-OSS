@@ -65,6 +65,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     await feeds.start();
     bindDocumentIndex(db, jobs, kb);
     await startDocumentIndex(jobs, kb);
+    await kb.rebuildSearchText();
     runtime = await createWritingRuntime({
       sqlitePath: join(location.dataDir, "pi.sqlite"),
       store: writingStoreFromDatabase(db),
@@ -113,11 +114,30 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     const purgeEvery = discardPurgeIntervalMs(env);
     const purge = () => {
       void (async () => {
-        const result = await db.purgeDiscarded({ retentionDays });
+        if (!(await db.autoPurgeDiscarded(owner.userId))) return;
+        const archived = await db.query<{ id: string; pi: string | null }>(
+          `SELECT s.id, s.pi_conversation_id AS pi
+           FROM sessions s
+           LEFT JOIN documents d ON d.id = s.document_id
+           WHERE s.pi_conversation_id IS NOT NULL
+             AND (s.discarded_at IS NOT NULL OR d.discarded_at IS NOT NULL)`,
+        );
+        const piIds = archived.map((row) => row.pi).filter((id): id is string => Boolean(id));
+        const work = opened.activePiWork
+          ? await opened.activePiWork(piIds)
+          : { busyConversationIds: [] as string[] };
+        const busyPi = new Set(work.busyConversationIds);
+        const protectSessionIds = archived
+          .filter((row) => row.pi && busyPi.has(row.pi))
+          .map((row) => row.id);
+        const result = await db.purgeDiscarded({ retentionDays, protectSessionIds });
         const ids = result.purgedSessions
           .map((session) => session.piConversationId)
           .filter((id): id is string => Boolean(id));
         if (ids.length > 0) await opened.purgePiConversations?.(ids);
+        if (result.purged.length > 0 || result.purgedSessions.length > 0) {
+          await db.scrubFreedText();
+        }
       })().catch(() => undefined);
     };
     purge();

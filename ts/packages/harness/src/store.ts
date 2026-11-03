@@ -30,7 +30,7 @@ export interface SessionSnapshot {
   kind: SessionKind;
   baseVersionId: string;
   piConversationId: string | null;
-  status: "open" | "closed";
+  status: "open" | "closed" | "deleting";
   modelPin: string | null;
 }
 

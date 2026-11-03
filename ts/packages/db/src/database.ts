@@ -64,6 +64,7 @@ import { type DatabaseLocation, pgliteDataDir } from "./config.js";
 import { newId } from "./ids.js";
 import { migrationSql } from "./migrate.js";
 import * as schema from "./schema.js";
+import { type Residue, scrubFreedText } from "./scrub.js";
 
 const {
   documents,
@@ -84,6 +85,8 @@ const {
   sessions,
   sessionReads,
   documentDossier,
+  subagentRuns,
+  researchPlans,
   users,
   sources,
   evidence,
@@ -136,6 +139,43 @@ export class SessionClosed extends Error {
     this.name = "SessionClosed";
   }
 }
+
+/** 永久删除被拒绝，或 deleting 期间不能开始新工作。调用方应回 409，不要重试。 */
+export class DeleteRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeleteRefused";
+  }
+}
+
+const ACTIVE_TURN_STATUSES = ["queued", "running", "validating"] as const;
+const TERMINAL_SUBAGENT = new Set(["succeeded", "failed", "cancelled", "budget_exceeded"]);
+
+export function deletionBusyReason(input: {
+  turns: number;
+  tasks?: number;
+  subagents: number;
+}): string | undefined {
+  const bits: string[] = [];
+  if (input.turns > 0) bits.push(`${input.turns} 个回合在生成`);
+  if ((input.tasks ?? 0) > 0) bits.push(`${input.tasks} 个任务还没结束`);
+  if (input.subagents > 0) bits.push(`${input.subagents} 个子代理还在跑`);
+  if (bits.length === 0) return undefined;
+  return `还有 ${bits.join("，")}，等它结束或先取消`;
+}
+
+export interface SessionDeleteClaim {
+  sessionId: string;
+  documentId: string;
+  piConversationId: string | null;
+}
+
+export interface DocumentDeleteClaim {
+  documentId: string;
+  sessions: Array<{ id: string; status: string; piConversationId: string | null }>;
+}
+
+export type { Residue };
 
 export class SessionScopeError extends Error {
   constructor(message: string) {
@@ -322,7 +362,7 @@ export interface SessionView {
   piConversationId: string | null;
   createdByType: string;
   createdById: string;
-  status: "open" | "closed";
+  status: "open" | "closed" | "deleting";
   modelPin: string | null;
   discardedAt: string | null;
   createdAt: string;
@@ -565,6 +605,37 @@ export class LwDatabase {
 
   async deleteOwner(id: string): Promise<void> {
     await this.orm.delete(users).where(eq(users.id, id));
+  }
+
+  async autoPurgeDiscarded(userId: string): Promise<boolean> {
+    const rows = await this.orm
+      .select({ enabled: users.autoPurgeDiscarded })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return rows[0]?.enabled ?? false;
+  }
+
+  async setAutoPurgeDiscarded(userId: string, enabled: boolean): Promise<boolean> {
+    const updated = await this.orm
+      .update(users)
+      .set({ autoPurgeDiscarded: enabled })
+      .where(eq(users.id, userId))
+      .returning({ id: users.id });
+    if (!updated[0]) throw new Error("找不到所有者");
+    return enabled;
+  }
+
+  async scrubFreedText(): Promise<Residue> {
+    if (this.driver.kind !== "pglite") {
+      try {
+        await this.exec("CHECKPOINT");
+      } catch {
+        return "wal_pending";
+      }
+      return "wal_pending";
+    }
+    return scrubFreedText(this.driver.client);
   }
 
   async createDocument(input: {
@@ -823,7 +894,8 @@ export class LwDatabase {
 
   async undoDiscard(id: string): Promise<{ discardedAt: null }> {
     const result = await this.orm.transaction(async (tx) => {
-      await this.lock(tx, id);
+      const doc = await this.lock(tx, id);
+      if (doc.status === "deleting") throw new DeleteRefused("这篇文档正在删除，不能撤销归档");
       await tx.update(documents).set({ discardedAt: null }).where(eq(documents.id, id));
       return { discardedAt: null };
     });
@@ -860,9 +932,15 @@ export class LwDatabase {
    * 硬删已过保留期的丢弃文档。只在这个事务里把 `lw.version_write` 设成 `purge`，
    * 触发器才放行版本删除。普通 DELETE / UPDATE 仍然失败。
    */
-  async purgeDiscarded(input?: { retentionDays?: number; now?: Date }): Promise<{
+  async purgeDiscarded(input?: {
+    retentionDays?: number;
+    now?: Date;
+    /** 调用方知道 pi 里还有任务时传进来。这些会话和它们的文档留到下一轮。 */
+    protectSessionIds?: readonly string[];
+  }): Promise<{
     purged: string[];
     purgedSessions: Array<{ id: string; documentId: string; piConversationId: string | null }>;
+    skipped: Array<{ id: string; kind: "document" | "session"; reason: string }>;
   }> {
     const retentionDays = input?.retentionDays ?? DEFAULT_DISCARD_RETENTION_DAYS;
     if (!Number.isFinite(retentionDays) || retentionDays < 0) {
@@ -870,12 +948,27 @@ export class LwDatabase {
     }
     const now = input?.now ?? this.clock();
     const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+    const busy = await this.sessionIdsWithLiveWork();
+    for (const id of input?.protectSessionIds ?? []) busy.add(id);
+    const reason = "还有工作在进行，留到下一轮";
     return this.orm.transaction(async (tx) => {
       const docs = await tx
         .select({ id: documents.id })
         .from(documents)
         .where(and(isNotNull(documents.discardedAt), lte(documents.discardedAt, cutoff)));
-      const ids = docs.map((row) => row.id);
+      const skipped: Array<{ id: string; kind: "document" | "session"; reason: string }> = [];
+      const ids: string[] = [];
+      for (const doc of docs) {
+        const children = await tx
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(eq(sessions.documentId, doc.id));
+        if (children.some((row) => busy.has(row.id))) {
+          skipped.push({ id: doc.id, kind: "document", reason });
+          continue;
+        }
+        ids.push(doc.id);
+      }
       const expiredSessions = and(
         isNotNull(sessions.discardedAt),
         lte(sessions.discardedAt, cutoff),
@@ -892,24 +985,28 @@ export class LwDatabase {
             ? expiredSessions
             : or(inArray(sessions.documentId, ids), expiredSessions),
         );
-      const purgedSessions = sessionRows.map((row) => ({
-        id: row.id,
-        documentId: row.documentId,
-        piConversationId: row.piConversationId,
-      }));
+      const purgedSessions = [];
+      for (const row of sessionRows) {
+        if (ids.includes(row.documentId)) {
+          purgedSessions.push(row);
+          continue;
+        }
+        if (busy.has(row.id)) {
+          skipped.push({ id: row.id, kind: "session", reason });
+          continue;
+        }
+        purgedSessions.push(row);
+      }
       if (ids.length === 0 && purgedSessions.length === 0) {
-        return { purged: [], purgedSessions: [] };
+        return { purged: [], purgedSessions: [], skipped };
       }
       await tx.execute(sql`select set_config('lw.version_write', 'purge', true)`);
       for (const id of ids) await this.purgeOne(tx, id);
       for (const session of purgedSessions) {
         if (ids.includes(session.documentId)) continue;
-        await tx.delete(sessionReads).where(eq(sessionReads.sessionId, session.id));
-        await tx.execute(sql`DELETE FROM research_plans WHERE session_id = ${session.id}`);
-        await tx.execute(sql`DELETE FROM subagent_runs WHERE session_id = ${session.id}`);
-        await tx.delete(sessions).where(eq(sessions.id, session.id));
+        await this.eraseSessionRows(tx, session.id);
       }
-      return { purged: ids, purgedSessions };
+      return { purged: ids, purgedSessions, skipped };
     });
   }
 
@@ -996,38 +1093,58 @@ export class LwDatabase {
   ): Promise<{ turnId: string; created: boolean; status: TurnStatus }> {
     const id = newId("trn");
     const actor = actorParts(req.actor);
-    const session = await this.resolveSession(req);
-    const inserted = await this.orm
-      .insert(turns)
-      .values({
-        id,
-        documentId: req.documentId,
-        kind: req.kind,
-        delivery: req.delivery,
-        status: "queued",
-        selection: req.selection ?? null,
-        scope: req.scope,
-        baseVersionId: session.baseVersionId,
-        resultVersionId: null,
-        applyMode: req.applyMode,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        sessionId: session.id,
-        idempotencyKey: req.idempotencyKey,
-        piConversationId: null,
-        piSubmissionId: null,
-        instruction: req.instruction,
-        error: null,
-        createdAt: new Date(),
-      })
-      .onConflictDoNothing({ target: [turns.documentId, turns.idempotencyKey] })
-      .returning({ id: turns.id });
-    if (inserted.length === 0) {
-      const existing = await this.turnByKey(req.documentId, req.idempotencyKey);
-      if (!existing) throw new Error("幂等键冲突但找不到回合");
-      return { turnId: existing.id, created: false, status: existing.status };
-    }
-    return { turnId: id, created: true, status: "queued" };
+    return this.orm.transaction(async (tx) => {
+      const prior = await tx
+        .select()
+        .from(turns)
+        .where(
+          and(eq(turns.documentId, req.documentId), eq(turns.idempotencyKey, req.idempotencyKey)),
+        )
+        .limit(1);
+      const existing = prior[0];
+      if (existing) {
+        return { turnId: existing.id, created: false, status: existing.status as TurnStatus };
+      }
+      const session = await this.lockOpenSession(tx, req);
+      const inserted = await tx
+        .insert(turns)
+        .values({
+          id,
+          documentId: req.documentId,
+          kind: req.kind,
+          delivery: req.delivery,
+          status: "queued",
+          selection: req.selection ?? null,
+          scope: req.scope,
+          baseVersionId: session.baseVersionId,
+          resultVersionId: null,
+          applyMode: req.applyMode,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          sessionId: session.id,
+          idempotencyKey: req.idempotencyKey,
+          piConversationId: null,
+          piSubmissionId: null,
+          instruction: req.instruction,
+          error: null,
+          createdAt: new Date(),
+        })
+        .onConflictDoNothing({ target: [turns.documentId, turns.idempotencyKey] })
+        .returning({ id: turns.id });
+      if (inserted.length === 0) {
+        const raced = await tx
+          .select()
+          .from(turns)
+          .where(
+            and(eq(turns.documentId, req.documentId), eq(turns.idempotencyKey, req.idempotencyKey)),
+          )
+          .limit(1);
+        const row = raced[0];
+        if (!row) throw new Error("幂等键冲突但找不到回合");
+        return { turnId: row.id, created: false, status: row.status as TurnStatus };
+      }
+      return { turnId: id, created: true, status: "queued" };
+    });
   }
 
   async markTurn(
@@ -1777,19 +1894,15 @@ export class LwDatabase {
   }
 
   async resolveSession(req: TurnRequest): Promise<SessionView> {
-    if (req.sessionId) {
-      const session = await this.getSession(req.sessionId);
-      if (!session) throw new SessionNotFound(req.sessionId);
-      if (session.documentId !== req.documentId) {
-        throw new SessionScopeError("会话只能修订自己所属的文档");
-      }
-      if (session.discardedAt || session.status !== "open") throw new SessionClosed(session.id);
-      return session;
+    const session = req.sessionId
+      ? await this.getSession(req.sessionId)
+      : await this.mainSession(req.documentId);
+    if (!session) throw new SessionNotFound(req.sessionId ?? req.documentId);
+    if (session.documentId !== req.documentId) {
+      throw new SessionScopeError("会话只能修订自己所属的文档");
     }
-    const main = await this.mainSession(req.documentId);
-    if (!main) throw new SessionNotFound(req.documentId);
-    if (main.discardedAt || main.status !== "open") throw new SessionClosed(main.id);
-    return main;
+    await this.assertSessionWritable(session);
+    return session;
   }
 
   async getSession(id: string): Promise<SessionView | undefined> {
@@ -1825,6 +1938,7 @@ export class LwDatabase {
   }): Promise<SessionView> {
     return this.orm.transaction(async (tx) => {
       const doc = await this.lock(tx, input.documentId);
+      if (doc.status === "deleting") throw new DeleteRefused("这篇文档正在删除，不能新开会话");
       let baseVersionId = input.baseVersionId;
       if (input.kind === "fork") {
         if (!baseVersionId) throw new SessionScopeError("分叉会话必须指定版本");
@@ -1884,12 +1998,121 @@ export class LwDatabase {
   async undoDiscardSession(id: string): Promise<{ discardedAt: null }> {
     const session = await this.getSession(id);
     if (!session) throw new SessionNotFound(id);
+    if (session.status === "deleting") throw new DeleteRefused("这个会话正在删除，不能撤销归档");
     const now = this.clock();
     await this.orm
       .update(sessions)
       .set({ discardedAt: null, status: "open", updatedAt: now })
       .where(eq(sessions.id, id));
     return { discardedAt: null };
+  }
+
+  async claimPermanentSessionDelete(
+    id: string,
+  ): Promise<{ ok: true; claim: SessionDeleteClaim } | { ok: false; error: string }> {
+    return this.orm.transaction(async (tx) => {
+      const found = await tx.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+      const peek = found[0];
+      if (!peek) throw new SessionNotFound(id);
+      await this.lock(tx, peek.documentId);
+      const locked = await tx
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, id))
+        .for("update")
+        .limit(1);
+      const session = locked[0];
+      if (!session) throw new SessionNotFound(id);
+      if (!session.discardedAt) return { ok: false, error: "先归档，再永久删除" };
+      const work = await this.liveWorkInTx(tx, [id]);
+      const reason = deletionBusyReason(work);
+      if (reason) return { ok: false, error: reason };
+      await tx
+        .update(sessions)
+        .set({ status: "deleting", updatedAt: this.clock() })
+        .where(eq(sessions.id, id));
+      return {
+        ok: true,
+        claim: {
+          sessionId: id,
+          documentId: session.documentId,
+          piConversationId: session.piConversationId,
+        },
+      };
+    });
+  }
+
+  async releasePermanentSessionDelete(id: string): Promise<void> {
+    await this.orm
+      .update(sessions)
+      .set({ status: "closed", updatedAt: this.clock() })
+      .where(and(eq(sessions.id, id), eq(sessions.status, "deleting")));
+  }
+
+  async eraseSession(id: string): Promise<void> {
+    await this.orm.transaction(async (tx) => {
+      await this.eraseSessionRows(tx, id);
+    });
+  }
+
+  async claimPermanentDocumentDelete(
+    id: string,
+  ): Promise<{ ok: true; claim: DocumentDeleteClaim } | { ok: false; error: string }> {
+    return this.orm.transaction(async (tx) => {
+      const doc = await this.lock(tx, id);
+      if (!doc.discardedAt) return { ok: false, error: "先归档，再永久删除" };
+      const rows = await tx
+        .select()
+        .from(sessions)
+        .where(eq(sessions.documentId, id))
+        .for("update");
+      const work = await this.liveWorkInTx(
+        tx,
+        rows.map((row) => row.id),
+      );
+      const reason = deletionBusyReason(work);
+      if (reason) return { ok: false, error: reason };
+      await tx.update(documents).set({ status: "deleting" }).where(eq(documents.id, id));
+      for (const row of rows) {
+        await tx
+          .update(sessions)
+          .set({ status: "deleting", updatedAt: this.clock() })
+          .where(eq(sessions.id, row.id));
+      }
+      return {
+        ok: true,
+        claim: {
+          documentId: id,
+          sessions: rows.map((row) => ({
+            id: row.id,
+            status: row.status,
+            piConversationId: row.piConversationId,
+          })),
+        },
+      };
+    });
+  }
+
+  async releasePermanentDocumentDelete(claim: DocumentDeleteClaim): Promise<void> {
+    await this.orm.transaction(async (tx) => {
+      await tx
+        .update(documents)
+        .set({ status: "active" })
+        .where(and(eq(documents.id, claim.documentId), eq(documents.status, "deleting")));
+      for (const session of claim.sessions) {
+        await tx
+          .update(sessions)
+          .set({ status: session.status, updatedAt: this.clock() })
+          .where(and(eq(sessions.id, session.id), eq(sessions.status, "deleting")));
+      }
+    });
+  }
+
+  async eraseDocument(id: string): Promise<void> {
+    await this.orm.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('lw.version_write', 'purge', true)`);
+      await this.purgeOne(tx, id);
+    });
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -2486,6 +2709,96 @@ export class LwDatabase {
     if (ownerId) await this.deleteUnusedTags(tx, ownerId);
   }
 
+  private async assertSessionWritable(session: SessionView): Promise<void> {
+    if (session.status === "deleting") {
+      throw new DeleteRefused("这个会话正在删除，不能开始新回合");
+    }
+    const doc = await this.getDocument(session.documentId);
+    if (doc?.status === "deleting") throw new DeleteRefused("这篇文档正在删除，不能开始新回合");
+    if (session.discardedAt || session.status !== "open") throw new SessionClosed(session.id);
+  }
+
+  private async lockOpenSession(tx: Tx, req: TurnRequest) {
+    const doc = await this.lock(tx, req.documentId);
+    if (doc.status === "deleting") throw new DeleteRefused("这篇文档正在删除，不能开始新回合");
+    const rows = req.sessionId
+      ? await tx
+          .select()
+          .from(sessions)
+          .where(eq(sessions.id, req.sessionId))
+          .for("update")
+          .limit(1)
+      : await tx
+          .select()
+          .from(sessions)
+          .where(and(eq(sessions.documentId, req.documentId), eq(sessions.kind, "main")))
+          .for("update")
+          .limit(1);
+    const session = rows[0];
+    if (!session) throw new SessionNotFound(req.sessionId ?? req.documentId);
+    if (session.documentId !== req.documentId) {
+      throw new SessionScopeError("会话只能修订自己所属的文档");
+    }
+    if (session.status === "deleting") throw new DeleteRefused("这个会话正在删除，不能开始新回合");
+    if (session.discardedAt || session.status !== "open") throw new SessionClosed(session.id);
+    return session;
+  }
+
+  private async liveWorkInTx(
+    tx: Tx,
+    sessionIds: string[],
+  ): Promise<{ turns: number; subagents: number }> {
+    if (sessionIds.length === 0) return { turns: 0, subagents: 0 };
+    const turnRows = await tx
+      .select({ id: turns.id })
+      .from(turns)
+      .where(
+        and(inArray(turns.sessionId, sessionIds), inArray(turns.status, [...ACTIVE_TURN_STATUSES])),
+      );
+    const runRows = await tx
+      .select({ status: subagentRuns.status })
+      .from(subagentRuns)
+      .where(inArray(subagentRuns.sessionId, sessionIds));
+    const subagents = runRows.filter((row) => !TERMINAL_SUBAGENT.has(row.status)).length;
+    return { turns: turnRows.length, subagents };
+  }
+
+  private async sessionIdsWithLiveWork(): Promise<Set<string>> {
+    const turnRows = await this.orm
+      .select({ sessionId: turns.sessionId })
+      .from(turns)
+      .where(inArray(turns.status, [...ACTIVE_TURN_STATUSES]));
+    const runRows = await this.orm
+      .select({ sessionId: subagentRuns.sessionId, status: subagentRuns.status })
+      .from(subagentRuns);
+    const ids = new Set(turnRows.map((row) => row.sessionId));
+    for (const row of runRows) {
+      if (!TERMINAL_SUBAGENT.has(row.status)) ids.add(row.sessionId);
+    }
+    return ids;
+  }
+
+  private async eraseSessionRows(tx: Tx, id: string): Promise<void> {
+    const taskRows = await tx
+      .select({ id: apiTasks.id })
+      .from(apiTasks)
+      .where(eq(apiTasks.sessionId, id));
+    for (const task of taskRows) {
+      await tx.delete(apiTaskEvents).where(eq(apiTaskEvents.taskId, task.id));
+    }
+    await tx.delete(apiTasks).where(eq(apiTasks.sessionId, id));
+    await tx.delete(evidence).where(eq(evidence.sessionId, id));
+    await tx.delete(researchPlans).where(eq(researchPlans.sessionId, id));
+    await tx.delete(subagentRuns).where(eq(subagentRuns.sessionId, id));
+    const turnRows = await tx.select({ id: turns.id }).from(turns).where(eq(turns.sessionId, id));
+    for (const turn of turnRows) {
+      await tx.delete(runEvents).where(eq(runEvents.turnId, turn.id));
+    }
+    await tx.delete(turns).where(eq(turns.sessionId, id));
+    await tx.delete(sessionReads).where(eq(sessionReads.sessionId, id));
+    await tx.delete(sessions).where(eq(sessions.id, id));
+  }
+
   private async sessionInTx(tx: Tx, id: string) {
     const rows = await tx.select().from(sessions).where(eq(sessions.id, id)).limit(1);
     return rows[0];
@@ -2506,16 +2819,6 @@ export class LwDatabase {
   private async versionInTx(tx: Tx, id: string) {
     const rows = await tx.select().from(docVersions).where(eq(docVersions.id, id)).limit(1);
     return rows[0];
-  }
-
-  private async turnByKey(documentId: string, key: string): Promise<TurnView | undefined> {
-    const rows = await this.orm
-      .select()
-      .from(turns)
-      .where(and(eq(turns.documentId, documentId), eq(turns.idempotencyKey, key)))
-      .limit(1);
-    const row = rows[0];
-    return row ? toTurn(row) : undefined;
   }
 
   private async lock(tx: Tx, documentId: string) {
@@ -3222,6 +3525,11 @@ function isUniqueViolation(error: unknown): boolean {
   return false;
 }
 
+function sessionStatus(value: string): "open" | "closed" | "deleting" {
+  if (value === "closed" || value === "deleting") return value;
+  return "open";
+}
+
 function toSession(row: typeof sessions.$inferSelect): SessionView {
   return {
     id: row.id,
@@ -3231,7 +3539,7 @@ function toSession(row: typeof sessions.$inferSelect): SessionView {
     piConversationId: row.piConversationId,
     createdByType: row.createdByType,
     createdById: row.createdById,
-    status: row.status === "closed" ? "closed" : "open",
+    status: sessionStatus(row.status),
     modelPin: row.modelPin,
     discardedAt: stampOrNull(row.discardedAt),
     createdAt: stamp(row.createdAt),

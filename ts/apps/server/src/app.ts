@@ -13,6 +13,7 @@ import {
   CredentialInputError,
   createApiKey,
   createCredential,
+  DeleteRefused,
   DocumentNotFound,
   deleteCredential,
   discardRetentionDays,
@@ -50,9 +51,9 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-
 import { agentCard } from "./agent-card.js";
 import { enforceApiKey, resolveApiApplyMode } from "./api-access.js";
+import { permanentlyDeleteDocument, permanentlyDeleteSession } from "./delete.js";
 import { bindSlot, listForUser, probeCredential, saveRegistryEntry } from "./model-registry.js";
 import { registerNoteRoutes } from "./notes.js";
 import { defaultRateLimiter, TaskConcurrency, type TokenBucketLimiter } from "./rate-limit.js";
@@ -228,7 +229,11 @@ function httpError(error: unknown): { status: 404 | 409; body: { error: string }
   ) {
     return { status: 404, body: { error: error.message } };
   }
-  if (error instanceof SessionScopeError || error instanceof SessionClosed) {
+  if (
+    error instanceof SessionScopeError ||
+    error instanceof SessionClosed ||
+    error instanceof DeleteRefused
+  ) {
     return { status: 409, body: { error: error.message } };
   }
   return undefined;
@@ -264,15 +269,37 @@ async function purgeDiscarded(
 ): Promise<{
   purged: string[];
   purgedSessions: Array<{ id: string; documentId: string; piConversationId: string | null }>;
+  skipped: Array<{ id: string; kind: "document" | "session"; reason: string }>;
   pi?: { deletedConversationIds: string[]; detachedForkIds: string[]; vacuumed: boolean };
+  residue?: "cleared" | "wal_pending";
 }> {
-  const result = await deps.db.purgeDiscarded({ retentionDays });
+  const archived = await deps.db.query<{ id: string; pi: string | null }>(
+    `SELECT s.id, s.pi_conversation_id AS pi
+     FROM sessions s
+     LEFT JOIN documents d ON d.id = s.document_id
+     WHERE s.pi_conversation_id IS NOT NULL
+       AND (s.discarded_at IS NOT NULL OR d.discarded_at IS NOT NULL)`,
+  );
+  const piIds = archived.map((row) => row.pi).filter((id): id is string => Boolean(id));
+  const work = deps.runtime.activePiWork
+    ? await deps.runtime.activePiWork(piIds)
+    : { tasks: 0, submissions: 0, busyConversationIds: [] as string[] };
+  const busyPi = new Set(work.busyConversationIds);
+  const protectSessionIds = archived
+    .filter((row) => row.pi && busyPi.has(row.pi))
+    .map((row) => row.id);
+  const result = await deps.db.purgeDiscarded({ retentionDays, protectSessionIds });
   const ids = result.purgedSessions
     .map((session) => session.piConversationId)
     .filter((id): id is string => Boolean(id));
-  if (ids.length === 0 || !deps.runtime.purgePiConversations) return result;
-  const pi = await deps.runtime.purgePiConversations(ids);
-  return { ...result, pi };
+  if (result.purged.length === 0 && result.purgedSessions.length === 0) return result;
+  const pi =
+    ids.length > 0 && deps.runtime.purgePiConversations
+      ? await deps.runtime.purgePiConversations(ids)
+      : undefined;
+  const pg = await deps.db.scrubFreedText();
+  const residue = pi?.residue === "wal_pending" || pg === "wal_pending" ? "wal_pending" : "cleared";
+  return { ...result, ...(pi ? { pi } : {}), residue };
 }
 
 function userIdOf(actor: Actor): string | undefined {
@@ -606,6 +633,48 @@ export function createApp(deps: AppDeps): Hono<Env> {
     }
   });
 
+  api.delete("/documents/:id", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const denied = await requireDocument(c, c.req.param("id"));
+    if (denied) return denied;
+    const result = await permanentlyDeleteDocument(deps, c.req.param("id"));
+    return c.json(result.body, result.status);
+  });
+
+  api.get("/turns/:id", async (c) => {
+    const turn = await deps.db.getTurn(c.req.param("id"));
+    if (!turn) return c.json({ error: "找不到回合" }, 404);
+    const denied = await requireDocument(c, turn.documentId);
+    if (denied) return denied;
+    return c.json({
+      id: turn.id,
+      documentId: turn.documentId,
+      sessionId: turn.sessionId,
+      status: turn.status,
+      error: turn.error,
+      resultVersionId: turn.resultVersionId,
+    });
+  });
+
+  api.get("/me/settings", async (c) => {
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    return c.json({ autoPurgeDiscarded: await deps.db.autoPurgeDiscarded(userId) });
+  });
+
+  api.put("/me/settings", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const userId = userIdOf(c.get("actor"));
+    if (!userId) return c.json({ error: "需要所有者令牌" }, 401);
+    const parsed = z.object({ autoPurgeDiscarded: z.boolean() }).safeParse(await readBody(c));
+    if (!parsed.success) return c.json({ error: "设置参数不合法" }, 400);
+    const autoPurgeDiscarded = await deps.db.setAutoPurgeDiscarded(
+      userId,
+      parsed.data.autoPurgeDiscarded,
+    );
+    return c.json({ autoPurgeDiscarded });
+  });
+
   api.post("/documents/:id/discard", async (c) => {
     const denied = await requireDocument(c, c.req.param("id"));
     if (denied) return denied;
@@ -731,6 +800,40 @@ export function createApp(deps: AppDeps): Hono<Env> {
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
     }
+  });
+
+  api.post("/sessions/:id/archive", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const denied = await requireSession(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      return c.json(await deps.db.discardSession(c.req.param("id")));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.post("/sessions/:id/archive/undo", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const denied = await requireSession(c, c.req.param("id"));
+    if (denied) return denied;
+    try {
+      return c.json(await deps.db.undoDiscardSession(c.req.param("id")));
+    } catch (error) {
+      const mapped = httpError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  api.delete("/sessions/:id", async (c) => {
+    if (c.get("actor").type !== "user") return c.json({ error: "需要所有者令牌" }, 403);
+    const denied = await requireSession(c, c.req.param("id"));
+    if (denied) return denied;
+    const result = await permanentlyDeleteSession(deps, c.req.param("id"));
+    return c.json(result.body, result.status);
   });
 
   api.post("/sessions/:id/close", async (c) => {

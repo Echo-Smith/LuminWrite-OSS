@@ -21,3 +21,13 @@ export function segment(text: string): string[] {
 export function searchText(text: string): string {
   return segment(text).join(" ");
 }
+
+/** 第一块的检索文本前面带上标题分词。标题不写进块正文。 */
+export function searchTextWithTitle(title: string, text: string, first: boolean): string {
+  const body = searchText(text);
+  if (!first) return body;
+  const heading = searchText(title);
+  if (!heading) return body;
+  if (!body) return heading;
+  return `${heading} ${body}`;
+}

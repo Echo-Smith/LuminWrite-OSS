@@ -98,7 +98,8 @@ describe("写作笔记注入与 pi 会话清退", () => {
         idempotencyKey: "main-note",
         actor: user,
       });
-      expect(mainNote.status).toBe("failed");
+      expect(mainNote.status).toBe("no_change");
+      expect(mainNote.error ?? null).toBeNull();
       expect(proposed).toEqual(["段尾不要再总结"]);
       const read = await runtime.submitTurn({
         documentId: other.id,
